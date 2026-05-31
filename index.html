@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Stressform FEA Tool</title>
+    <style>
+      html,
+      body,
+      #root {
+        min-height: 100%;
+        margin: 0;
+        background: #09090b;
+      }
+
+      #boot-fallback {
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #09090b;
+        color: #e8e4dc;
+        font: 12px "Courier New", monospace;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="static-status"
+      style="
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        z-index: 99999;
+        background: #e06030;
+        color: #09090b;
+        padding: 8px 10px;
+        border-radius: 3px;
+        font: 700 12px Arial, sans-serif;
+        letter-spacing: 0.08em;
+      "
+    >
+      STATIC PAGE LOADED
+    </div>
+    <div id="root">
+      <div id="boot-fallback">Loading Stressform...</div>
+    </div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
