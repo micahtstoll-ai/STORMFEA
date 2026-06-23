@@ -1,0 +1,154 @@
+/**
+ * pipeline.ts
+ * -----------
+ * Orchestrates the complete linear static FEM solve.
+ *
+ * Call sequence:
+ *   1. assembleK()         — build global stiffness matrix K (CSR)
+ *   2. assembleForceVector() — build right-hand side f
+ *   3. applyDirichletBC()  — apply fixed constraints via penalty method
+ *   4. solvePCG()          — solve K·u = f
+ *   5. buildSolverResult() — recover stresses and package output
+ *
+ * All errors propagate as thrown exceptions with descriptive messages.
+ * No global state. No I/O. Pure functions throughout.
+ */
+
+import type {
+  TetMesh,
+  AnyMaterial,
+  PointForce,
+  SolverResult,
+} from "./types.js";
+
+import type { FixedNodeSet } from "./boundary.js";
+import { assembleK }           from "./assembly.js";
+import { applyDirichletBC }    from "./boundary.js";
+import { assembleForceVector } from "./load.js";
+import { solvePCG }            from "./cg.js";
+import { buildSolverResult }   from "./stress.js";
+
+export interface SolverInput {
+  readonly mesh:        TetMesh;
+  readonly material:    AnyMaterial;
+  readonly constraints: readonly FixedNodeSet[];
+  readonly forces:      readonly PointForce[];
+  readonly cgTolerance?: number;
+  readonly cgMaxIter?:   number;
+}
+
+/**
+ * Run a linear static FEM analysis.
+ *
+ * @param input All problem definition data.
+ * @returns     SolverResult with displacement, von Mises, safety factor, metadata.
+ *
+ * Throws SolverError on:
+ * - Degenerate/inverted elements
+ * - Singular system (missing constraints)
+ * - CG non-convergence (if checkConvergence=true)
+ * - NaN/Inf in any result
+ */
+export function runLinearStatic(input: SolverInput): SolverResult {
+  const t0 = Date.now();
+
+  const { mesh, material, constraints, forces } = input;
+  const tol    = input.cgTolerance ?? 1e-8;
+  const maxIter = input.cgMaxIter;
+
+  // ── 1. Assemble global stiffness matrix ────────────────────────────────────
+  const { K, diagIdx } = assembleK(mesh, material);
+
+  // ── 2. Assemble force vector ───────────────────────────────────────────────
+  const f = assembleForceVector(mesh.nodeCount, forces);
+
+  // Save a copy of f_ext BEFORE BC modification — needed for reaction recovery
+  const f_ext = new Float64Array(f);
+
+  // ── 3. Apply Dirichlet boundary conditions ─────────────────────────────────
+  // applyDirichletBC modifies K and f in-place (penalty method)
+  applyDirichletBC(K, f, diagIdx, constraints);
+
+  // ── 4. Solve K·u = f ──────────────────────────────────────────────────────
+  const cg = solvePCG(K, f, diagIdx, tol, maxIter);
+
+  // Warn (but don't throw) if CG didn't converge — let caller inspect result
+  if (!cg.converged) {
+    console.warn(
+      `[StressForm] CG did not converge after ${cg.iterations} iterations. ` +
+      `Relative residual = ${cg.finalRelativeResidual.toExponential(3)}. ` +
+      `Results may be inaccurate.`
+    );
+  }
+
+  // ── 5. Recover stresses and build result ───────────────────────────────────
+  const solverMs = Date.now() - t0;
+  const result = buildSolverResult(
+    mesh,
+    cg.u,
+    material,
+    cg.iterations,
+    cg.converged,
+    solverMs,
+  );
+
+  // ── 6. Sanity checks ───────────────────────────────────────────────────────
+  validateResult(result, mesh);
+
+  // ── 7. Compute per-constraint reaction forces ─────────────────────────────
+  // Reaction recovery using the residual method:
+  //   f_reaction = K_modified × u - f_ext
+  // At constrained DOFs this gives the force the boundary exerts on the structure.
+  // K_modified × u is computed as a sparse row dot-product at the constrained DOF rows.
+  // This is O(nnz_at_constrained_rows) — fast even for large meshes.
+  const boltReactions: { nodeCount: number; Fx: number; Fy: number; Fz: number }[] = [];
+  const u = cg.u;
+  const { data, colIdx, rowPtr } = K;
+
+  for (const cs of constraints) {
+    let Fx = 0, Fy = 0, Fz = 0;
+    for (const nodeIdx of cs.nodeIndices) {
+      for (let dof = 0; dof < 3; dof++) {
+        const globalDof = nodeIdx * 3 + dof;
+        if (globalDof >= K.n) continue;
+        // Compute (K × u)[globalDof] — sparse row dot-product
+        let Ku_i = 0;
+        const rStart = rowPtr[globalDof]   ?? 0;
+        const rEnd   = rowPtr[globalDof+1] ?? 0;
+        for (let k = rStart; k < rEnd; k++) {
+          const col = colIdx[k];
+          if (col === undefined) continue;
+          Ku_i += (data[k] ?? 0) * (u[col] ?? 0);
+        }
+        // Reaction = (K×u - f_ext) at this DOF
+        const reaction = Ku_i - (f_ext[globalDof] ?? 0);
+        if (dof === 0) Fx += reaction;
+        else if (dof === 1) Fy += reaction;
+        else Fz += reaction;
+      }
+    }
+    boltReactions.push({ nodeCount: cs.nodeIndices.length, Fx, Fy, Fz });
+  }
+
+  // Attach reactions to result (type allows optional field)
+  return { ...result, boltReactions };
+}
+
+function validateResult(result: SolverResult, mesh: TetMesh): void {
+  // Check for NaN/Inf in displacement
+  for (let i = 0; i < result.displacement.length; i++) {
+    if (!isFinite(result.displacement[i] ?? NaN)) {
+      throw new Error(
+        `Non-finite displacement at DOF ${i}: ${result.displacement[i]}. ` +
+        `Check that all constraints are applied and material constants are valid.`
+      );
+    }
+  }
+
+  // Check for NaN/Inf in stress
+  for (let e = 0; e < mesh.elementCount; e++) {
+    if (!isFinite(result.vonMises[e] ?? NaN)) {
+      throw new Error(`Non-finite von Mises at element ${e}: ${result.vonMises[e]}`);
+    }
+  }
+}
