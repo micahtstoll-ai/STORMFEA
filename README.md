@@ -1,24 +1,24 @@
-# StressForm — FDM-Aware FEA for FTC 3D Printed Parts
+# STORMFEA — FDM-Aware FEA for FTC 3D Printed Parts
 
-**Nordic Storm FTC Team 5962 · Saint Peter Area Robotics · St. Peter, MN**  
+**Nordic Storm FTC Team 5962 · Saint Peter Area Robotics · St. Peter, MN**
 *BIOBUZZ Season 2026–2027*
 
 ---
 
 ## What It Does
 
-StressForm is a finite element analysis tool purpose-built for FDM 3D printed parts. Unlike every existing FEA tool, it models the **anisotropic mechanical behavior** of FDM material — the fact that through-layer direction is only ~65% as stiff as in-layer, and inter-layer bond strength is ~58% of in-plane yield.
+STORMFEA is a finite element analysis tool purpose-built for FDM 3D printed parts. Unlike every existing FEA tool, it models the **anisotropic mechanical behavior** of FDM material — the fact that through-layer direction is only ~65% as stiff as in-layer, and inter-layer bond strength is ~58% of in-plane yield.
 
 For FTC bracket design, this means:
 - A flat-printed bracket predicted "safe" by conventional FEA may fail at 55% of the predicted load
-- StressForm correctly identifies **which direction** and **which failure mode** governs
+- STORMFEA correctly identifies **which direction** and **which failure mode** governs
 - Results include fatigue life estimates for cyclic loading (FTC mechanisms cycle hundreds of times per match)
 
 ---
 
 ## Differentiators vs Standard FEA
 
-| Feature | Conventional FEA | StressForm |
+| Feature | Conventional FEA | STORMFEA |
 |---------|-----------------|------------|
 | Material model | Isotropic (E, ν) | Transversely isotropic (5 constants) |
 | Yield criterion | Von Mises | Hill (1948) anisotropic criterion |
@@ -33,11 +33,11 @@ For FTC bracket design, this means:
 ## Requirements
 
 - **Node.js** v20 or higher
-- **TetGen** 1.5.1 — for STL meshing  
-  Download: https://github.com/emersonkeenan/tetgen1.5.1-beta1  
-  Rename to `tetgen.exe` and place in `stressform-local/`
-- **Gmsh** 4.x — for STEP meshing (required for Onshape integration)  
-  Install: `winget install Gmsh.Gmsh` (Windows)  
+- **TetGen** 1.5.1 — for STL meshing
+  Download: https://github.com/emersonkeenan/tetgen1.5.1-beta1
+  Rename to `tetgen.exe` and place in `stormfea/`
+- **Gmsh** 4.x — for STEP meshing (required for Onshape integration)
+  Install: `winget install Gmsh.Gmsh` (Windows)
   Or download from https://gmsh.info
 - **Puppeteer** (installed automatically via `npm install`) — bundles its own
   headless Chromium, used to render the PDF report. See "PDF export" below
@@ -49,7 +49,7 @@ For FTC bracket design, this means:
 
 ```bash
 # Clone or extract the project
-cd stressform-local
+cd stormfea
 
 # Install dependencies
 npm install
@@ -117,7 +117,7 @@ to tell whether two separate holes got merged under one surface tag.
 ## Running
 
 ```bash
-cd stressform-local
+cd stormfea
 npm start
 # Open http://localhost:3000
 ```
@@ -129,26 +129,21 @@ Or double-click `start.bat` on Windows — it adds the binaries to PATH and open
 ## Building the Electron Desktop App
 
 ```bash
-cd stressform-electron
+cd stormfea-electron
 npm install
 
 # Build (Windows)
-.\node_modules\.bin\electron-packager.cmd . StressForm ^
-  --platform=win32 --arch=x64 --out=release --overwrite ^
-  --extra-resource=..\stressform-local\dist ^
-  --extra-resource=..\stressform-local\client ^
-  --extra-resource=..\stressform-local\node_modules ^
-  --icon=assets\icon.ico
+.\node_modules\.bin\electron-packager.cmd . STORMFEA --platform=win32 --arch=x64 --out=release --overwrite --extra-resource=..\stormfea\dist --extra-resource=..\stormfea\client --extra-resource=..\stormfea\node_modules --icon=assets\icon.ico
 ```
 
-Output: `stressform-electron\release\StressForm-win32-x64\StressForm.exe`
+Output: `stormfea-electron\release\STORMFEA-win32-x64\STORMFEA.exe`
 
 ---
 
 ## Project Structure
 
 ```
-stressform-local/
+stormfea/
 ├── server/
 │   ├── index.ts          Express server — routes for upload, analyse, calibration, Onshape
 │   ├── analysis.ts       Main analysis pipeline — FEM solve, failure modes, fatigue
@@ -175,7 +170,7 @@ stressform-local/
 ├── ROADMAP.md            Development history and future plans
 └── README.md             This file
 
-stressform-electron/
+stormfea-electron/
 ├── electron/
 │   └── main.js           Electron main process — launches server, opens BrowserWindow
 └── package.json
@@ -193,9 +188,9 @@ Express Server (Node.js)
    ┌────────────────────────────────────┐
    │  Upload pipeline                   │
    │  STL → TetGen → TetMesh            │
-   │  STEP → Gmsh → TetMesh + holes    │
-   └──────────────┬─────────────────────┘
-                  ↓
+   │  STEP → Gmsh → TetMesh + holes     │
+   └─────────────────┬───────────────────┘
+                      ↓
    ┌────────────────────────────────────┐
    │  FEM Solver                        │
    │  buildC (orthotropic)              │
@@ -203,8 +198,8 @@ Express Server (Node.js)
    │  applyBCs (penalty)                │
    │  PCG solve → u (displacement)      │
    │  SPR → σ (nodal stress)            │
-   └──────────────┬─────────────────────┘
-                  ↓
+   └─────────────────┬───────────────────┘
+                      ↓
    ┌────────────────────────────────────┐
    │  Post-processing                   │
    │  Hill criterion → SF               │
@@ -273,5 +268,5 @@ The lap shear coupon directly measures your printer's inter-layer bond strength 
 
 ## Built By
 
-Micah Stoll · Nordic Storm FTC 5962 · Saint Peter Area Robotics · St. Peter, MN  
+Micah Stoll · Nordic Storm FTC 5962 · Saint Peter Area Robotics · St. Peter, MN
 BIOBUZZ Season 2026–2027
