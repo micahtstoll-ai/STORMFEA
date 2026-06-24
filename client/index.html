@@ -547,32 +547,32 @@ body:not(.has-results) #btn-stress { display: none !important; }
   <!-- STORMFEA Compass Mark -->
   <svg width="34" height="34" viewBox="0 0 34 34" fill="none" style="margin-right:10px;flex-shrink:0" aria-label="STORMFEA compass mark">
     <!-- Bezel ring -->
-    <circle cx="17" cy="17" r="15.5" fill="none" stroke="var(--gold)" stroke-width="1.1" opacity=".7"/>
+    <circle cx="17" cy="17" r="15.5" fill="none" stroke="var(--gold)" stroke-width="1.1" opacity="1"/>
     <!-- Cardinal diamond points: N bright, S/E/W dim -->
     <polygon points="17,2 20,17 17,14 14,17" fill="var(--gold)"/>
-    <polygon points="17,32 20,17 17,20 14,17" fill="var(--gold)" opacity=".5"/>
-    <polygon points="32,17 17,20 20,17 17,14" fill="var(--gold)" opacity=".5"/>
-    <polygon points="2,17  17,20 14,17 17,14" fill="var(--gold)" opacity=".5"/>
+    <polygon points="17,32 20,17 17,20 14,17" fill="var(--gold)" opacity=".7"/>
+    <polygon points="32,17 17,20 20,17 17,14" fill="var(--gold)" opacity=".7"/>
+    <polygon points="2,17  17,20 14,17 17,14" fill="var(--gold)" opacity=".7"/>
     <!-- Intercardinal ticks at 45° -->
-    <line x1="28.5" y1="5.5"  x2="26"  y2="8"    stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
-    <line x1="5.5"  y1="5.5"  x2="8"   y2="8"    stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
-    <line x1="28.5" y1="28.5" x2="26"  y2="26"   stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
-    <line x1="5.5"  y1="28.5" x2="8"   y2="26"   stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
+    <line x1="28.5" y1="5.5"  x2="26"  y2="8"    stroke="var(--gold)" stroke-width="1.1" opacity=".6" stroke-linecap="round"/>
+    <line x1="5.5"  y1="5.5"  x2="8"   y2="8"    stroke="var(--gold)" stroke-width="1.1" opacity=".6" stroke-linecap="round"/>
+    <line x1="28.5" y1="28.5" x2="26"  y2="26"   stroke="var(--gold)" stroke-width="1.1" opacity=".6" stroke-linecap="round"/>
+    <line x1="5.5"  y1="28.5" x2="8"   y2="26"   stroke="var(--gold)" stroke-width="1.1" opacity=".6" stroke-linecap="round"/>
     <!-- Pivot -->
-    <circle cx="17" cy="17" r="2.5" fill="none" stroke="var(--gold)" stroke-width="1.1" opacity=".8"/>
+    <circle cx="17" cy="17" r="2.5" fill="none" stroke="var(--gold)" stroke-width="1.1" opacity="1"/>
     <circle cx="17" cy="17" r="1"   fill="var(--gold)"/>
   </svg>
 
   <!-- App name -->
   <div style="display:flex;flex-direction:column;margin-right:16px;gap:2px">
     <h1 style="font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;letter-spacing:.06em;color:var(--gold);line-height:1;margin:0">STORMFEA</h1>
-    <div style="font-family:'Outfit',sans-serif;font-size:9px;color:var(--text-lo);letter-spacing:.04em;line-height:1">Presented by Nordic Storm · FTC 5962</div>
+    <div style="font-family:'Outfit',sans-serif;font-size:9px;color:var(--text-mid);letter-spacing:.04em;line-height:1">Presented by Nordic Storm · FTC 5962</div>
   </div>
 
   <div style="width:1px;height:20px;background:var(--border);margin-right:16px"></div>
 
   <!-- Tabs — workflow nav + utility tabs -->
-  <div style="display:flex;gap:0;align-self:stretch" id="tabs">
+  <div style="display:flex;gap:0;align-self:stretch;flex:1;justify-content:space-evenly" id="tabs">
     <!-- Workflow tabs: instrument panel selectors, top-line active indicator -->
     <button class="tab-btn active" data-tab="setup"       onclick="switchTab('setup')">SETUP</button>
     <button class="tab-btn"        data-tab="orient"      onclick="switchTab('orient')">ORIENT</button>
