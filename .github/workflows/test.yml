@@ -23,5 +23,5 @@ jobs:
     - name: Install project dependencies
       run: npm ci
 
-    - name: Execute unit tests via Vitest
+    - name: Compile TypeScript and run solver validation suite
       run: npm run test
