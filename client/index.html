@@ -349,6 +349,11 @@ input[type=range]:focus-visible { outline: 2px solid var(--gold); outline-offset
 @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 @keyframes shimmer{0%{background-position:-200px 0}100%{background-position:200px 0}}
 @keyframes spin-slow{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@keyframes tab-pulse{0%,100%{background:transparent}50%{background:var(--gold-faint)}}
+.tab-has-new{animation:tab-pulse 700ms ease 2}
+#mode-badge{display:none;position:absolute;bottom:44px;left:12px;background:var(--bg-panel);border:1px solid var(--gold-glow);border-radius:3px;padding:3px 8px;font-family:'Rajdhani',sans-serif;font-weight:700;font-size:9px;color:var(--gold);letter-spacing:.1em;pointer-events:none}
+#save-flash{position:fixed;bottom:16px;right:16px;font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);letter-spacing:.06em;pointer-events:none;opacity:0;z-index:200}
+#hole-counter{display:none;position:fixed;pointer-events:none;background:var(--bg-panel);border:1px solid var(--gold-glow);border-radius:3px;padding:2px 7px;font-family:'DM Mono',monospace;font-size:10px;color:var(--gold);letter-spacing:.04em;transform:translate(14px,-50%);z-index:60}
 .card{animation:fadeIn var(--t-slow) ease forwards}
 
 /* ── Buttons ────────────────────────────────────────────────────────────────── */
@@ -894,6 +899,11 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <span id="bed-face-label">CLICK A FACE TO SET AS PRINT BED</span>
     </div>
 
+    <!-- Active mode badge (above hint bar, disappears in view/orbit mode) -->
+    <div id="mode-badge"></div>
+    <!-- Hole point counter (follows cursor in addhole mode) -->
+    <div id="hole-counter"></div>
+
     <!-- Hint bar -->
     <div id="hint" style="position:absolute;bottom:12px;left:50%;transform:translateX(-50%);pointer-events:none;display:flex;flex-direction:column;align-items:center;gap:3px;text-align:center">
       <div id="hint-primary" style="font-size:11px;color:var(--text-mid);letter-spacing:.02em;transition:opacity var(--t-slow)">drag to rotate · scroll to zoom · arrow keys rotate · +/- zoom · R reset</div>
@@ -919,25 +929,49 @@ body:not(.has-results) #btn-stress { display: none !important; }
     <div style="font-size:10px;color:var(--text-lo);margin-bottom:10px">Affects bearing area and pull-through calculation</div>
     <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px" id="fastener-options">
       <button class="btn fastener-opt" data-type="shank" onclick="selectFastener('shank')"
-        style="text-align:left;padding:7px 10px;font-size:11px">
-        <div style="font-weight:600;color:var(--text-hi)">Bolt shank only</div>
-        <div style="font-size:10px;color:var(--text-lo);margin-top:1px">No head contact — bolt passes through, nut on other side tightened from back</div>
+        style="text-align:left;padding:7px 10px;font-size:11px;display:flex;gap:10px;align-items:flex-start">
+        <svg width="20" height="28" viewBox="0 0 20 28" style="flex-shrink:0;margin-top:2px;color:var(--text-mid)" fill="currentColor">
+          <rect x="7" y="0" width="6" height="28" rx="1.5"/>
+        </svg>
+        <div>
+          <div style="font-weight:600;color:var(--text-hi)">Bolt shank only</div>
+          <div style="font-size:10px;color:var(--text-lo);margin-top:1px">No head contact — bolt passes through, nut on other side tightened from back</div>
+        </div>
       </button>
       <button class="btn fastener-opt" data-type="button" onclick="selectFastener('button')"
-        style="text-align:left;padding:7px 10px;font-size:11px">
-        <div style="font-weight:600;color:var(--text-hi)">Button head (M-series)</div>
-        <div style="font-size:10px;color:var(--text-lo);margin-top:1px">Low-profile round head bears on surface. Standard FTC bolt.</div>
+        style="text-align:left;padding:7px 10px;font-size:11px;display:flex;gap:10px;align-items:flex-start">
+        <svg width="20" height="28" viewBox="0 0 20 28" style="flex-shrink:0;margin-top:2px;color:var(--text-mid)" fill="currentColor">
+          <ellipse cx="10" cy="5" rx="8" ry="5"/>
+          <rect x="7" y="5" width="6" height="23" rx="1.5"/>
+        </svg>
+        <div>
+          <div style="font-weight:600;color:var(--text-hi)">Button head (M-series)</div>
+          <div style="font-size:10px;color:var(--text-lo);margin-top:1px">Low-profile round head bears on surface. Standard FTC bolt.</div>
+        </div>
       </button>
       <button class="btn fastener-opt" data-type="hex" onclick="selectFastener('hex')"
-        style="text-align:left;padding:7px 10px;font-size:11px">
-        <div style="font-weight:600;color:var(--text-hi)">Hex head / hex nut</div>
-        <div style="font-size:10px;color:var(--text-lo);margin-top:1px">Six-sided head or nut bears on surface.
-          <span style="color:var(--warn)">Corner stress concentration ~1.2–1.4× not modelled — consider a washer.</span></div>
+        style="text-align:left;padding:7px 10px;font-size:11px;display:flex;gap:10px;align-items:flex-start">
+        <svg width="20" height="28" viewBox="0 0 20 28" style="flex-shrink:0;margin-top:2px;color:var(--text-mid)" fill="currentColor">
+          <polygon points="10,0 18,4.5 18,9 10,9 2,9 2,4.5"/>
+          <rect x="7" y="9" width="6" height="19" rx="1.5"/>
+        </svg>
+        <div>
+          <div style="font-weight:600;color:var(--text-hi)">Hex head / hex nut</div>
+          <div style="font-size:10px;color:var(--text-lo);margin-top:1px">Six-sided head or nut bears on surface.
+            <span style="color:var(--warn)">Corner stress concentration ~1.2–1.4× not modelled — consider a washer.</span></div>
+        </div>
       </button>
       <button class="btn fastener-opt" data-type="washer" onclick="selectFastener('washer')"
-        style="text-align:left;padding:7px 10px;font-size:11px">
-        <div style="font-weight:600;color:var(--text-hi)">Washer + bolt</div>
-        <div style="font-size:10px;color:var(--text-lo);margin-top:1px">Washer distributes load — largest effective bearing area, lowest pull-through risk.</div>
+        style="text-align:left;padding:7px 10px;font-size:11px;display:flex;gap:10px;align-items:flex-start">
+        <svg width="20" height="28" viewBox="0 0 20 28" style="flex-shrink:0;margin-top:2px;color:var(--text-mid)" fill="currentColor">
+          <ellipse cx="10" cy="7" rx="9" ry="4"/>
+          <ellipse cx="10" cy="7" rx="3" ry="1.5" fill="var(--bg-card)"/>
+          <rect x="7" y="10" width="6" height="18" rx="1.5"/>
+        </svg>
+        <div>
+          <div style="font-weight:600;color:var(--text-hi)">Washer + bolt</div>
+          <div style="font-size:10px;color:var(--text-lo);margin-top:1px">Washer distributes load — largest effective bearing area, lowest pull-through risk.</div>
+        </div>
       </button>
     </div>
     <!-- Washer OD input — shown only for washer type -->
@@ -992,7 +1026,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <!-- Magnitude with live lbf -->
       <label for="fp-mag" style="font-size:11px">Magnitude (<span id="fp-unit-label">N</span>)</label>
       <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
-        <input id="fp-mag" type="number" value="500" min="1" style="flex:1"
+        <input id="fp-mag" type="number" value="500" min="0.1" style="flex:1"
           oninput="const _v=+this.value; document.getElementById('fp-mag-lbf').textContent=S.units==='imperial'?(_v*0.22481).toFixed(1)+' lbf':_v.toFixed(0)+' N'; updateForcePreview()">
         <span id="fp-mag-lbf" style="font-size:10px;color:var(--text-label);white-space:nowrap"></span>
       </div>
@@ -2540,6 +2574,17 @@ async function handleFile(file) {
     updateHintBar();
     updateOrientDerivedDisplay();
     hideOverlay();
+    // One-time shortcut discovery hint (3s after first file load)
+    if (!localStorage.getItem('seen-shortcuts-hint')) {
+      setTimeout(() => {
+        const _hs = document.getElementById('hint-secondary');
+        if (_hs && S.mode === 'view') {
+          _hs.textContent = 'Press ? for keyboard shortcuts';
+          setTimeout(() => { if (_hs.textContent === 'Press ? for keyboard shortcuts') _hs.textContent = ''; }, 6000);
+        }
+        localStorage.setItem('seen-shortcuts-hint', '1');
+      }, 3000);
+    }
   } catch (e) {
     hideOverlay();
     const demoTag = S._isDemoSession ? ' [demo archetype context — check S.fileData.holes shape]' : '';
@@ -2735,6 +2780,13 @@ function setMode(m) {
     clearHolePoints();
   }
   clearHover();
+  const _modeBadge = document.getElementById('mode-badge');
+  if (_modeBadge) {
+    const _modeLabels = { bolt: '● BOLT MODE', force: '● FORCE MODE', bed: '● BED MODE', addhole: '● ADD HOLE MODE' };
+    const _lbl = _modeLabels[m];
+    if (_lbl) { _modeBadge.textContent = _lbl; _modeBadge.style.display = 'block'; }
+    else _modeBadge.style.display = 'none';
+  }
 }
 function toggleMode(m) { setMode(S.mode === m ? 'view' : m); }
 
@@ -2859,7 +2911,7 @@ function confirmFastener() {
     washerOD:     washerOD,      // mm, only for washer type
   };
 
-  pushUndoSnapshot();
+  pushUndoSnapshot('place bolt');
   S.bolts.push(bolt);
   addBoltMarker(bolt);
   updateBoltList();
@@ -2903,6 +2955,20 @@ function clearHover() {
 }
 
 function handleHover(e) {
+  if (S.mode === 'addhole') {
+    const _hc = document.getElementById('hole-counter');
+    if (_hc && _hc.style.display !== 'none') {
+      _hc.style.left = e.clientX + 'px';
+      _hc.style.top  = e.clientY + 'px';
+    }
+    if (S._holePts && S._holePts.length === 2 && mesh3d) {
+      const _hit = raycast(e.clientX, e.clientY);
+      if (_hit) updateHolePreviewRing(_hit.worldPos);
+      else clearHolePreviewRing();
+    }
+    clearStressHover();
+    return;
+  }
   if (S.mode === 'bed') { handleBedHover(e); return; }
   if (S.mode === 'view') { handleStressHover(e); return; }
   if (S.mode !== 'bolt' || !mesh3d) { clearHover(); clearStressHover(); return; }
@@ -3076,6 +3142,12 @@ function addHolePoint(hit) {
 
   S._holePts.push({ part, marker: m });
   updateHintBar();
+  const _hc = document.getElementById('hole-counter');
+  if (_hc) {
+    const _n = S._holePts.length;
+    _hc.style.display = 'block';
+    _hc.textContent = _n < 3 ? `${_n} / 3` : '3 / 3 — fitting…';
+  }
   if (S._holePts.length === 3) finishManualHole();
 }
 
@@ -3084,6 +3156,50 @@ function clearHolePoints() {
     S._holePts.forEach(p => scene.remove(p.marker));
     S._holePts = [];
   }
+  clearHolePreviewRing();
+  const _hc = document.getElementById('hole-counter');
+  if (_hc) _hc.style.display = 'none';
+}
+
+let _holePreviewRing = null;
+
+function updateHolePreviewRing(cursorWorldPos) {
+  if (!S._holePts || S._holePts.length !== 2 || !scene) return;
+  const a = S._holePts[0].marker.position.clone();
+  const b = S._holePts[1].marker.position.clone();
+  const c = cursorWorldPos.clone();
+  const ab = b.clone().sub(a), ac = c.clone().sub(a);
+  const abXac = ab.clone().cross(ac);
+  const denom = 2 * abXac.lengthSq();
+  if (denom < 1e-12) { clearHolePreviewRing(); return; }
+  const term1 = abXac.clone().cross(ab).multiplyScalar(ac.lengthSq());
+  const term2 = ac.clone().cross(abXac).multiplyScalar(ab.lengthSq());
+  const toCentre = term1.add(term2).divideScalar(denom);
+  const centre = a.clone().add(toCentre);
+  const radius = toCentre.length();
+  const normal = abXac.clone().normalize();
+  if (radius < 0.001 || radius > 200) { clearHolePreviewRing(); return; }
+  if (_holePreviewRing) { scene.remove(_holePreviewRing); _holePreviewRing = null; }
+  const u = new THREE.Vector3();
+  if (Math.abs(normal.x) <= Math.abs(normal.y) && Math.abs(normal.x) <= Math.abs(normal.z)) u.set(1,0,0);
+  else if (Math.abs(normal.y) <= Math.abs(normal.z)) u.set(0,1,0);
+  else u.set(0,0,1);
+  u.cross(normal).normalize();
+  const v = normal.clone().cross(u).normalize();
+  const SEGS = 48, pts = [];
+  for (let i = 0; i <= SEGS; i++) {
+    const angle = (i / SEGS) * Math.PI * 2;
+    pts.push(centre.clone().addScaledVector(u, Math.cos(angle) * radius).addScaledVector(v, Math.sin(angle) * radius));
+  }
+  const geo = new THREE.BufferGeometry().setFromPoints(pts);
+  const mat = new THREE.LineBasicMaterial({ color: 0xffc24b, depthTest: false, transparent: true, opacity: 0.7 });
+  _holePreviewRing = new THREE.Line(geo, mat);
+  _holePreviewRing.renderOrder = 999;
+  scene.add(_holePreviewRing);
+}
+
+function clearHolePreviewRing() {
+  if (_holePreviewRing) { scene.remove(_holePreviewRing); _holePreviewRing = null; }
 }
 
 // Circumcircle of three points in 3D -> { centre, radius, normal }
@@ -3430,7 +3546,22 @@ function confirmForce() {
   clearForcePreview();
   dispatchStateChange();
   if (!S.pendingForce) return;
-  const mag = +document.getElementById('fp-mag').value || 500;
+  const mag = +document.getElementById('fp-mag').value;
+  if (!(mag > 0)) {
+    let _magErr = document.getElementById('fp-mag-error');
+    if (!_magErr) {
+      _magErr = document.createElement('div');
+      _magErr.id = 'fp-mag-error';
+      _magErr.style.cssText = 'font-family:"DM Mono",monospace;font-size:9px;color:var(--danger);margin-top:3px;letter-spacing:.02em';
+      const _magWrap = document.getElementById('fp-mag').closest('div');
+      if (_magWrap) _magWrap.insertAdjacentElement('afterend', _magErr);
+    }
+    _magErr.textContent = 'Force must be greater than zero';
+    document.getElementById('fp-mag').focus();
+    return;
+  }
+  const _magErr = document.getElementById('fp-mag-error');
+  if (_magErr) _magErr.remove();
 
   // If editing an existing force, replace it
   if (S.pendingForce.editIndex !== undefined) {
@@ -3447,7 +3578,7 @@ function confirmForce() {
       magnitude: mag,
       label:     `F${S.forces.length + 1}`,
     };
-    pushUndoSnapshot();
+    pushUndoSnapshot('place force');
     S.forces.push(force);
   }
   rebuildOverlays();
@@ -3722,7 +3853,7 @@ function editForce(i) {
 }
 
 function removeBolt(i) {
-  pushUndoSnapshot();
+  pushUndoSnapshot('delete bolt');
   S.bolts.splice(i, 1);
   S.bolts.forEach((b, j) => b.label = `B${j+1}`);
   rebuildOverlays();
@@ -3731,7 +3862,7 @@ function removeBolt(i) {
   updateAnalyseButton();
 }
 function removeForce(i) {
-  pushUndoSnapshot();
+  pushUndoSnapshot('delete force');
   S.forces.splice(i, 1);
   S.forces.forEach((f, j) => f.label = `F${j+1}`);
   rebuildOverlays();
@@ -3747,8 +3878,10 @@ function removeForce(i) {
 // in a way users expect.
 
 const UNDO_MAX = 20;
-const _undoStack = [];  // [{ bolts, forces }, ...]  index 0 = oldest
-const _redoStack = [];
+const _undoStack  = [];  // [{ bolts, forces }, ...]  index 0 = oldest
+const _undoLabels = [];  // parallel action name for each _undoStack entry
+const _redoStack  = [];
+const _redoLabels = [];
 
 function _cloneConstraints() {
   return {
@@ -3768,17 +3901,21 @@ function _cloneConstraints() {
   };
 }
 
-function pushUndoSnapshot() {
+function pushUndoSnapshot(label) {
   _undoStack.push(_cloneConstraints());
-  if (_undoStack.length > UNDO_MAX) _undoStack.shift();
-  _redoStack.length = 0;  // new action clears redo
+  _undoLabels.push(label || '');
+  if (_undoStack.length > UNDO_MAX) { _undoStack.shift(); _undoLabels.shift(); }
+  _redoStack.length = 0;
+  _redoLabels.length = 0;
   updateUndoRedoButtons();
 }
 
 function performUndo() {
   if (!_undoStack.length) return;
   _redoStack.push(_cloneConstraints());
+  _redoLabels.push(_undoLabels[_undoLabels.length - 1] || '');
   const snap = _undoStack.pop();
+  _undoLabels.pop();
   _restoreConstraints(snap);
   updateUndoRedoButtons();
   showErrorToast('Undone', { severity: 'info', source: '[undo]' });
@@ -3787,7 +3924,9 @@ function performUndo() {
 function performRedo() {
   if (!_redoStack.length) return;
   _undoStack.push(_cloneConstraints());
+  _undoLabels.push(_redoLabels[_redoLabels.length - 1] || '');
   const snap = _redoStack.pop();
+  _redoLabels.pop();
   _restoreConstraints(snap);
   updateUndoRedoButtons();
   showErrorToast('Redone', { severity: 'info', source: '[undo]' });
@@ -3812,14 +3951,14 @@ function updateUndoRedoButtons() {
     ub.disabled = _undoStack.length === 0;
     ub.style.opacity = _undoStack.length ? '1' : '0.35';
     ub.title = _undoStack.length
-      ? `Undo (${_undoStack.length} step${_undoStack.length > 1 ? 's' : ''})`
+      ? `Undo: ${_undoLabels[_undoLabels.length - 1] || 'last action'}`
       : 'Nothing to undo';
   }
   if (rb) {
     rb.disabled = _redoStack.length === 0;
     rb.style.opacity = _redoStack.length ? '1' : '0.35';
     rb.title = _redoStack.length
-      ? `Redo (${_redoStack.length} step${_redoStack.length > 1 ? 's' : ''})`
+      ? `Redo: ${_redoLabels[_redoLabels.length - 1] || 'last action'}`
       : 'Nothing to redo';
   }
 }
@@ -4219,6 +4358,12 @@ async function runAnalysis() {
       showConvergenceBadge('upgraded', changePct, dataStd.summary.nodeCount, dataFine.summary.nodeCount);
       // Brief tone to signal the update
       playAnalysisTone(true);
+      // Notify user that results were silently upgraded
+      const _sfDelta = dataFine.summary.safetyFactor - dataStd.summary.safetyFactor;
+      const _sfMsg = Math.abs(_sfDelta) > 0.05
+        ? `Results refined — fine mesh complete · SF ${_sfDelta >= 0 ? '+' : ''}${_sfDelta.toFixed(2)}`
+        : 'Results refined — fine mesh complete';
+      showErrorToast(_sfMsg, { severity: 'info', source: '[convergence]' });
     }
 
     // Store convergence data for the manual study button
@@ -4611,6 +4756,14 @@ function showResults(s) {
   <!-- Bolt load table -->
   ${renderBoltLoadTable(s)}
   `;
+
+  // Pulse the RESULTS tab to draw attention if the user is on a different tab
+  const _rb = document.querySelector('[data-tab="results"]');
+  if (_rb && !_rb.classList.contains('active')) {
+    _rb.classList.remove('tab-has-new');
+    void _rb.offsetWidth;  // force reflow so animation restarts
+    _rb.classList.add('tab-has-new');
+  }
 }
 
 // ── Bolt load table ─────────────────────────────────────────────────────────────
@@ -4742,7 +4895,11 @@ function switchTab(name) {
     const el = document.getElementById('tab-' + t);
     if (el) el.style.display = t === name ? 'block' : 'none';
     const btn = document.querySelector(`[data-tab="${t}"]`);
-    if (btn) btn.className = 'btn' + (t === name ? ' active' : '');
+    if (btn) {
+      const _keepNew = t !== name && btn.classList.contains('tab-has-new');
+      btn.className = 'btn' + (t === name ? ' active' : '');
+      if (_keepNew) btn.classList.add('tab-has-new');
+    }
   });
   // Auto-enter bed face-select mode when orient tab is opened (if a mesh is loaded)
   if (name === 'orient' && mesh3d && S.mode !== 'bed') {
@@ -7908,10 +8065,23 @@ async function saveSession() {
       body: JSON.stringify(session),
     });
     updateSessionIndicator('saved');
+    flashSaved();
   } catch(e) {
     console.warn('[session] save failed:', e);
     showErrorToast('Session save failed: ' + (e && e.message ? e.message : e), { error: e, severity: 'warn', source: '[session]' });
   }
+}
+
+function flashSaved() {
+  let el = document.getElementById('save-flash');
+  if (!el) { el = document.createElement('div'); el.id = 'save-flash'; document.body.appendChild(el); }
+  el.textContent = 'SAVED';
+  el.style.transition = 'none';
+  el.style.opacity = '0.7';
+  requestAnimationFrame(() => {
+    el.style.transition = 'opacity 1.5s ease';
+    el.style.opacity = '0';
+  });
 }
 
 async function loadSession() {
