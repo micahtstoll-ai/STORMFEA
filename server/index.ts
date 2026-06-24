@@ -268,7 +268,8 @@ app.post("/api/analyse", async (req, res) => {
         isotropicComparison:  result.isotropicComparison,
         boltReactions:        (result as any).boltReactions ?? [],
       },
-      vertexStressB64: Buffer.from(result.vertexStress.buffer).toString("base64"),
+      vertexStressB64:          Buffer.from(result.vertexStress.buffer).toString("base64"),
+      vertexPrincipalStressB64: Buffer.from(result.vertexPrincipalStress.buffer).toString("base64"),
     });
 
   } catch (err) {

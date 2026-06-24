@@ -15,12 +15,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set today's date
+        run: echo "TODAY=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
+
       - uses: anthropics/claude-code-action@beta
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             Run the /start-design-loop command as defined in .claude/commands/start-design-loop.md.
-            Today's date is ${{ github.event.repository.updated_at || 'unknown' }}.
+            Today's date is ${{ env.TODAY }}.
             Research YouTube, GitHub, and Anthropic docs for UI improvement ideas for STORMFEA,
             then open a GitHub issue in micahtstoll-ai/stormfea with your ranked findings.

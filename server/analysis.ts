@@ -21,7 +21,7 @@ import type { SolverInput }                 from "./solver/pipeline.js";
 import type { IsotropicMaterial, AnyMaterial, OrthotropicMaterial } from "./solver/types.js";
 import { isOrthotropic } from "./solver/types.js";
 import { recoverElementStressComponents }   from "./solver/stress_detail.js";
-import { sprSmoothedStress, recoverElementStress } from "./solver/stress.js";
+import { sprSmoothedStress, recoverElementStress, nodeAveragedPrincipalStress } from "./solver/stress.js";
 import type { HoleFeature }                 from "./holes.js";
 import { meshWithTetGen }                   from "./tetgen.js";
 import { meshStepWithGmsh }                 from "./gmsh_mesh.js";
@@ -895,6 +895,7 @@ export interface IsotropicComparison {
 
 export interface AnalysisResult {
   vertexStress:           Float32Array;
+  vertexPrincipalStress:  Float32Array;
   surfaceTriangleCount:   number;
   maxVonMisesMPa:         number;
   maxDisplacementMm:      number;
@@ -1774,6 +1775,46 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     vertexStress[v] = nearestNodeStress(vx, vy, vz);
   }
 
+  // ── Principal stress vertex mapping ───────────────────────────────────────
+  // Map σ1 (max principal) per node to the display mesh using the same
+  // nearest-node grid already built above.
+  const nodePrincipal = result.nodePrincipalStress;
+  const vertexPrincipalStress = new Float32Array(vertCount);
+  if (nodePrincipal) {
+    const np: Float64Array = nodePrincipal;
+    function nearestNodePrincipal(vx: number, vy: number, vz: number): number {
+      const ci=Math.floor((vx-nxMin)/CELL3);
+      const cj=Math.floor((vy-nyMin)/CELL3);
+      const ck=Math.floor((vz-nzMin)/CELL3);
+      let bestDist2=Infinity, bestS=0;
+      const R2=R3D*R3D;
+      for(let di=-1;di<=1;di++) for(let dj=-1;dj<=1;dj++) for(let dk=-1;dk<=1;dk++){
+        const ni2=ci+di,nj2=cj+dj,nk2=ck+dk;
+        if(ni2<0||ni2>=gW3||nj2<0||nj2>=gH3||nk2<0||nk2>=gD3) continue;
+        const cell=grid3.get(ni2*gH3*gD3+nj2*gD3+nk2);
+        if(!cell) continue;
+        for(const n of cell){
+          const dx=(mesh.nodes[n*3]??0)-vx,dy=(mesh.nodes[n*3+1]??0)-vy,dz=(mesh.nodes[n*3+2]??0)-vz;
+          const d2=dx*dx+dy*dy+dz*dz;
+          if(d2<R2 && d2<bestDist2){bestDist2=d2; bestS=np[n*3]??0;}
+        }
+      }
+      if(bestDist2===Infinity){
+        for(let n=0;n<mesh.nodeCount;n++){
+          const dx=(mesh.nodes[n*3]??0)-vx,dy=(mesh.nodes[n*3+1]??0)-vy,dz=(mesh.nodes[n*3+2]??0)-vz;
+          const d2=dx*dx+dy*dy+dz*dz;
+          if(d2<bestDist2){bestDist2=d2; bestS=np[n*3]??0;}
+        }
+      }
+      return bestS;
+    }
+    for (let v = 0; v < vertCount; v++) {
+      vertexPrincipalStress[v] = nearestNodePrincipal(
+        req.positions[v*3] ?? 0, req.positions[v*3+1] ?? 0, req.positions[v*3+2] ?? 0
+      );
+    }
+  }
+
   // ── Summary ────────────────────────────────────────────────────────────────
   const maxVM = result.maxVonMisesMPa;
   const sf    = effectiveYield / (maxVM || 0.001);
@@ -2118,6 +2159,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
 
   return {
     vertexStress,
+    vertexPrincipalStress,
     surfaceTriangleCount: vertCount / 3,
     maxVonMisesMPa:     maxVM,
     maxDisplacementMm:  result.maxDisplacementMm,

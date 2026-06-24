@@ -2148,7 +2148,7 @@ function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverrid
   return { colors, effectiveMin, effectiveMax, range, rawMin: minV, rawMax: maxV };
 }
 
-function applyStressColors(stressB64, maxStress) {
+function applyStressColors(stressB64, maxStress, principalStressB64) {
   if (!mesh3d) return;
   const buf = Uint8Array.from(atob(stressB64), c => c.charCodeAt(0));
   const vertexStress = new Float32Array(buf.buffer);
@@ -2200,15 +2200,23 @@ function applyStressColors(stressB64, maxStress) {
   markPeakStressLocation(vertexStress, rawMax);
 
   // Cache stress arrays for mode switching
-  // Approximate principal stress s1 ≈ von Mises × 1.15 (conservative for triaxial tension)
-  // Damage ratio: normalize by effective yield
-  const s1Array = new Float32Array(vertexStress.length);
+  const s1Array  = new Float32Array(vertexStress.length);
   const dmgArray = new Float32Array(vertexStress.length);
   const effYield = S.results?.summary?.effectiveYieldMPa ?? 1;
+
+  // Decode server-computed principal stresses if available; fall back to vm×1.15
+  let principalVerts = null;
+  if (principalStressB64) {
+    try {
+      const pb = Uint8Array.from(atob(principalStressB64), c => c.charCodeAt(0));
+      principalVerts = new Float32Array(pb.buffer);
+    } catch(e) { /* ignore decode errors — use fallback */ }
+  }
+
   for (let i=0; i<vertexStress.length; i++) {
     const vm = vertexStress[i] ?? 0;
-    s1Array[i]  = vm * 1.15;  // conservative principal stress estimate
-    dmgArray[i] = vm / effYield;  // utilization ratio (1.0 = at yield)
+    s1Array[i]  = (principalVerts && principalVerts.length > i) ? (principalVerts[i] ?? vm * 1.15) : vm * 1.15;
+    dmgArray[i] = vm / effYield;
   }
   S._stressArrays = { vm: vertexStress, s1: s1Array, dmg: dmgArray };
 }
@@ -3392,7 +3400,7 @@ function toggleStress() {
   btn.innerHTML = S.showStress ? '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="currentColor"><rect x="1" y="1" width="8" height="8" rx="1"/><rect x="3" y="3" width="4" height="4" fill="var(--bg-base)"/></svg> STRESS' : '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="3.5"/></svg> DEFAULT';
   btn.className = 'btn' + (S.showStress ? ' active' : '');
   if (S.showStress && S.results) {
-    applyStressColors(S.results.vertexStressB64, S.results.summary.maxVonMisesMPa);
+    applyStressColors(S.results.vertexStressB64, S.results.summary.maxVonMisesMPa, S.results.vertexPrincipalStressB64);
   } else {
     resetColors();
     document.getElementById('legend').style.display = 'none';
@@ -3939,7 +3947,7 @@ async function runAnalysis() {
     S.results = dataStd;
     syncResultsUI();
 
-    applyStressColors(dataStd.vertexStressB64, dataStd.summary.maxVonMisesMPa);
+    applyStressColors(dataStd.vertexStressB64, dataStd.summary.maxVonMisesMPa, dataStd.vertexPrincipalStressB64);
     showResults(dataStd.summary);
     showOrientComparison(dataStd.summary);
     storeAsBaseline(dataStd.summary, S.fileData?.fileName);
@@ -4070,7 +4078,7 @@ async function runAnalysis() {
       // Not converged — update results with fine mesh data and warn
       S.results = dataFine;
       syncResultsUI();
-      applyStressColors(dataFine.vertexStressB64, dataFine.summary.maxVonMisesMPa);
+      applyStressColors(dataFine.vertexStressB64, dataFine.summary.maxVonMisesMPa, dataFine.vertexPrincipalStressB64);
       showResults(dataFine.summary);
       showOrientComparison(dataFine.summary);
       storeAsBaseline(dataFine.summary, S.fileData?.fileName);
@@ -5292,7 +5300,7 @@ function closeSplitView() {
     if (camera) { camera.aspect = w / h; camera.updateProjectionMatrix(); }
   }
   // Reapply current result stress
-  if (S.results) applyStressColors(S.results.vertexStressB64, S.results.summary.maxVonMisesMPa);
+  if (S.results) applyStressColors(S.results.vertexStressB64, S.results.summary.maxVonMisesMPa, S.results.vertexPrincipalStressB64);
 }
 
 function renderSplitFrame() {

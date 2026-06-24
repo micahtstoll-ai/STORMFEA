@@ -160,4 +160,10 @@ export interface SolverResult {
    * Length = number of FixedNodeSets. Computed from f_reaction = K×u - f_ext at constrained DOFs.
    */
   readonly boltReactions?: readonly { nodeCount: number; Fx: number; Fy: number; Fz: number }[];
+
+  /**
+   * Principal stresses (σ1 ≥ σ2 ≥ σ3) averaged to nodes, in MPa.
+   * Flat layout: [σ1₀, σ2₀, σ3₀, σ1₁, σ2₁, σ3₁, ...]. Length = nodeCount × 3.
+   */
+  readonly nodePrincipalStress?: Float64Array;
 }
