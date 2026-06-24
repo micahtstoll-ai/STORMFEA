@@ -35,7 +35,8 @@
   }
 
   function render(message, opts) {
-    var severity = (opts && opts.severity) === 'warn' ? 'warn' : 'error';
+    var severity = (opts && opts.severity) === 'warn' ? 'warn'
+               : (opts && opts.severity) === 'info' ? 'info' : 'error';
     var source = (opts && opts.source) || '';
     var stack = '';
     if (opts) {
@@ -53,7 +54,8 @@
       return;
     }
 
-    var accent = severity === 'warn' ? 'var(--warn)' : 'var(--danger)';
+    var accent = severity === 'warn' ? 'var(--warn)'
+             : severity === 'info' ? 'var(--gold)' : 'var(--danger)';
     var el = document.createElement('div');
     el.style.cssText = 'pointer-events:auto;background:var(--bg-panel);border:1px solid var(--border);border-left:3px solid ' + accent + ';border-radius:4px;padding:8px 10px;font-size:10px;color:var(--text-mid);box-shadow:0 4px 14px rgba(0,0,0,.25)';
 
@@ -61,7 +63,7 @@
     headRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:4px';
 
     var tag = document.createElement('span');
-    tag.textContent = severity === 'warn' ? 'WARNING' : 'ERROR';
+    tag.textContent = severity === 'warn' ? 'WARNING' : severity === 'info' ? 'INFO' : 'ERROR';
     tag.style.cssText = 'font-weight:700;letter-spacing:.08em;font-size:10px;color:' + accent;
 
     var src = document.createElement('span');
@@ -175,20 +177,24 @@
 /* Palette: Gold (classic Nordic Storm) */
 :root,
 [data-palette="gold"] {
-  --gold:       #C9A227;
-  --gold-bright:#dbb832;
-  --gold-dim:   #9a7d1e;
-  --gold-glow:  #C9A22740;
-  --gold-faint: #C9A22714;
+  --gold:          #C9A227;
+  --gold-bright:   #dbb832;
+  --gold-dim:      #9a7d1e;
+  --gold-glow:     #C9A22740;
+  --gold-faint:    #C9A22714;
+  --gold-alpha-hi: #C9A22788;
+  --gold-alpha-lo: #C9A22733;
 }
 
 /* Palette: Amber (instrument — default) */
 [data-palette="amber"] {
-  --gold:       #F5A623;
-  --gold-bright:#f7bb4a;
-  --gold-dim:   #c07818;
-  --gold-glow:  #F5A62340;
-  --gold-faint: #F5A62314;
+  --gold:          #F5A623;
+  --gold-bright:   #f7bb4a;
+  --gold-dim:      #c07818;
+  --gold-glow:     #F5A62340;
+  --gold-faint:    #F5A62314;
+  --gold-alpha-hi: #F5A62388;
+  --gold-alpha-lo: #F5A62333;
 }
 
 /* Dark mode: black page, warm-tinted text */
@@ -351,6 +357,8 @@ input[type=range]:focus-visible { outline: 2px solid var(--gold); outline-offset
 @keyframes spin-slow{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 @keyframes tab-pulse{0%,100%{background:transparent}50%{background:var(--gold-faint)}}
 .tab-has-new{animation:tab-pulse 700ms ease 2}
+.sset-body{overflow:hidden;transition:max-height .25s ease}
+.sset-hdr{display:flex;align-items:center;gap:6px;width:100%;text-align:left;background:none;border:none;cursor:pointer;padding:4px 0;font-family:'Rajdhani',sans-serif;font-weight:700;font-size:11px;color:var(--gold);letter-spacing:.08em;margin-bottom:4px;border-bottom:1px solid var(--gold-faint)}
 #mode-badge{display:none;position:absolute;bottom:44px;left:12px;background:var(--bg-panel);border:1px solid var(--gold-glow);border-radius:3px;padding:3px 8px;font-family:'Rajdhani',sans-serif;font-weight:700;font-size:9px;color:var(--gold);letter-spacing:.1em;pointer-events:none}
 #save-flash{position:fixed;bottom:16px;right:16px;font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);letter-spacing:.06em;pointer-events:none;opacity:0;z-index:200}
 #hole-counter{display:none;position:fixed;pointer-events:none;background:var(--bg-panel);border:1px solid var(--gold-glow);border-radius:3px;padding:2px 7px;font-family:'DM Mono',monospace;font-size:10px;color:var(--gold);letter-spacing:.04em;transform:translate(14px,-50%);z-index:60}
@@ -825,9 +833,9 @@ body:not(.has-results) #btn-stress { display: none !important; }
     <!-- Toolbar (shown when file loaded) -->
     <div id="toolbar" style="display:none;position:absolute;top:12px;left:12px;display:flex;gap:6px;flex-wrap:wrap;max-width:440px">
       <button class="btn active" id="btn-view"  onclick="setMode('view')"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="5" y1="1" x2="5" y2="9"/><line x1="1" y1="5" x2="9" y2="5"/><line x1="2.2" y1="2.2" x2="7.8" y2="7.8"/><line x1="7.8" y1="2.2" x2="2.2" y2="7.8"/></svg> ORBIT</button>
-      <button class="btn"        id="btn-bed"   onclick="setMode('bed')" style="color:var(--gold)88;border-color:var(--gold-glow)"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="1.5" y="1.5" width="7" height="7" rx="1"/><rect x="3.5" y="3.5" width="3" height="3"/></svg> BED</button>
-      <button class="btn"        id="btn-force" onclick="setMode('force')" style="color:var(--gold)88;border-color:var(--gold)33"><svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> FORCE</button>
-      <button class="btn"        id="btn-addhole" onclick="toggleMode('addhole')" style="color:var(--gold)88;border-color:var(--gold)33" title="Manually define a hole the auto-detector missed (e.g. angled / side-wall holes)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> HOLE</button>
+      <button class="btn"        id="btn-bed"   onclick="setMode('bed')" style="color:var(--gold-alpha-hi);border-color:var(--gold-glow)"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="1.5" y="1.5" width="7" height="7" rx="1"/><rect x="3.5" y="3.5" width="3" height="3"/></svg> BED</button>
+      <button class="btn"        id="btn-force" onclick="setMode('force')" style="color:var(--gold-alpha-hi);border-color:var(--gold-alpha-lo)"><svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> FORCE</button>
+      <button class="btn"        id="btn-addhole" onclick="toggleMode('addhole')" style="color:var(--gold-alpha-hi);border-color:var(--gold-alpha-lo)" title="Manually define a hole the auto-detector missed (e.g. angled / side-wall holes)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> HOLE</button>
         <div style="width:1px;height:20px;background:var(--border);margin:0 4px;align-self:center;flex-shrink:0"></div>
         <button class="btn" id="undo-btn" onclick="performUndo()" disabled
           aria-label="Undo" title="Nothing to undo"
@@ -918,6 +926,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <div id="overlay-bar-wrap" style="display:none;width:160px;height:2px;background:var(--border);border-radius:1px;overflow:hidden">
         <div id="overlay-bar" style="height:100%;width:0%;background:var(--gold);border-radius:1px;transition:width 0.4s ease"></div>
       </div>
+      <button id="abort-btn" class="btn" style="display:none;margin-top:14px;font-size:10px" onclick="abortAnalysis()">Cancel</button>
     </div>
 
     <!-- Fastener picker popup — shown after clicking a hole in bolt mode -->
@@ -1027,7 +1036,8 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <label for="fp-mag" style="font-size:11px">Magnitude (<span id="fp-unit-label">N</span>)</label>
       <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
         <input id="fp-mag" type="number" value="500" min="0.1" style="flex:1"
-          oninput="const _v=+this.value; document.getElementById('fp-mag-lbf').textContent=S.units==='imperial'?(_v*0.22481).toFixed(1)+' lbf':_v.toFixed(0)+' N'; updateForcePreview()">
+          oninput="const _v=+this.value; document.getElementById('fp-mag-lbf').textContent=S.units==='imperial'?(_v*0.22481).toFixed(1)+' lbf':_v.toFixed(0)+' N'; updateForcePreview()"
+          onkeydown="if(event.key==='Enter')confirmForce()">
         <span id="fp-mag-lbf" style="font-size:10px;color:var(--text-label);white-space:nowrap"></span>
       </div>
       <!-- Face dropdown -->
@@ -1213,7 +1223,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
 
       <!-- STEP 1: Detected holes — click to bolt -->
       <div style="margin-bottom:24px">
-        <div style="font-size:11px;letter-spacing:.04em;color:var(--gold)88;margin-bottom:10px"><svg width="11" height="11" viewBox="0 0 11 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5.5" cy="5.5" r="4"/><circle cx="5.5" cy="5.5" r="1.5" fill="currentColor" stroke="none"/></svg> STEP 1 — SELECT BOLT HOLES</div>
+        <div style="font-size:11px;letter-spacing:.04em;color:var(--gold-alpha-hi);margin-bottom:10px"><svg width="11" height="11" viewBox="0 0 11 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5.5" cy="5.5" r="4"/><circle cx="5.5" cy="5.5" r="1.5" fill="currentColor" stroke="none"/></svg> STEP 1 — SELECT BOLT HOLES</div>
         <div id="holes-info-wrap">
           <div style="font-size:11px;color:var(--text-mid);padding:12px;border:1px dashed var(--border);border-radius:3px;text-align:center">Upload a file to detect holes.</div>
         </div>
@@ -1229,8 +1239,8 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <!-- STEP 2: Forces -->
       <div style="margin-bottom:24px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-          <div style="font-size:11px;letter-spacing:.04em;color:var(--gold)88"<svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg>> STEP 2 — APPLY FORCE</div>
-          <button class="btn" id="place-force-btn" onclick="openForcePopupDirect()" style="color:var(--gold)88;border-color:var(--gold)33">+ Place Force</button>
+          <div style="font-size:11px;letter-spacing:.04em;color:var(--gold-alpha-hi)"<svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg>> STEP 2 — APPLY FORCE</div>
+          <button class="btn" id="place-force-btn" onclick="openForcePopupDirect()" style="color:var(--gold-alpha-hi);border-color:var(--gold-alpha-lo)">+ Place Force</button>
         </div>
         <div style="font-size:11px;color:var(--text-lo);margin-bottom:8px">Click <svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> FORCE in the toolbar, then click anywhere on the 3D model.</div>
         <div id="force-list"><div style="font-size:11px;color:var(--text-mid);padding:8px;text-align:center">None yet.</div></div>
@@ -1262,107 +1272,125 @@ body:not(.has-results) #btn-stress { display: none !important; }
 
       <h2 class="section-title" style="margin-bottom:14px">SIMULATION SETTINGS</h2>
 
-      <div style="margin-bottom:16px">
-        <label for="s-material">Material</label>
-        <select id="s-material" onchange="updateSettingsPreview()">
-          <option value="pla">PLA — E=3500 MPa, yield 50 MPa</option>
-          <option value="petg">PETG — E=2100 MPa, yield 45 MPa</option>
-          <option value="abs">ABS — E=2300 MPa, yield 40 MPa</option>
-          <option value="asa">ASA — E=2100 MPa, yield 40 MPa</option>
-          <option value="tpu">TPU — E=200 MPa, yield 15 MPa</option>
-          <option value="pa12">PA12 (Nylon) — E=1700 MPa, yield 48 MPa</option>
-        </select>
-      </div>
-
-      <div style="margin-bottom:16px">
-        <label for="s-pattern">Infill pattern</label>
-        <select id="s-pattern" onchange="updateSettingsPreview()">
-          <option value="gyroid">Gyroid — best all-round, near-isotropic (+18%)</option>
-          <option value="cubic">Cubic — good structural, isotropic-ish (+12%)</option>
-          <option value="grid" selected>Grid — standard, anisotropic (baseline)</option>
-          <option value="trihexagon">Tri-hexagon — good surface bonding (+5%)</option>
-          <option value="adaptive">Adaptive cubic — variable density (+8%)</option>
-          <option value="honeycomb">Honeycomb — better compressive than tensile (-8%)</option>
-          <option value="lines">Lines — weakest, print speed only (-5%)</option>
-          <option value="concentric">Concentric — decorative (-15%)</option>
-          <option value="lightning">Lightning — visual only, no strength (-45%)</option>
-        </select>
-      </div>
-
-      <div style="margin-bottom:16px">
-        <label>Infill % — <span id="s-infill-val">20</span>% <span id="s-infill-note" style="color:var(--text-label)"></span></label>
-        <input type="range" id="s-infill" min="0" max="100" value="20" oninput="document.getElementById('s-infill-val').textContent=this.value;updateSettingsPreview()">
-        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-lo);margin-top:3px"><span>0% (walls only)</span><span>100% (solid — strongest)</span></div>
-      </div>
-
-      <div style="margin-bottom:16px">
-        <label>Wall count — <span id="s-walls-val">3</span> perimeters</label>
-        <input type="range" id="s-walls" min="1" max="8" value="3" oninput="document.getElementById('s-walls-val').textContent=this.value;updateSettingsPreview()">
-      </div>
-
-      <div style="margin-bottom:16px">
-        <label>Layer height — <span id="s-lh-val">0.20</span> mm
-          <span id="s-lh-note" style="color:var(--text-lo);margin-left:6px"></span>
-        </label>
-        <input type="range" id="s-lh" min="5" max="35" value="20"
-               oninput="updateLayerHeightDisplay(this.value);updateSettingsPreview()">
-        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-lo);margin-top:3px">
-          <span>0.05mm</span>
-          <span style="color:var(--text-label)">stronger Z ←-> faster print</span>
-          <span>0.35mm</span>
+      <!-- MATERIAL section (expanded by default) -->
+      <div style="margin-bottom:8px">
+        <button class="sset-hdr" onclick="toggleSettingsSection('material')">
+          <span id="sset-arrow-material" style="color:var(--gold);transition:transform .2s;display:inline-block;width:10px">▼</span> MATERIAL
+        </button>
+        <div id="sset-material" class="sset-body" style="max-height:600px">
+          <div style="margin-bottom:16px">
+            <label for="s-material">Material</label>
+            <select id="s-material" onchange="updateSettingsPreview()">
+              <option value="pla">PLA — E=3500 MPa, yield 50 MPa</option>
+              <option value="petg">PETG — E=2100 MPa, yield 45 MPa</option>
+              <option value="abs">ABS — E=2300 MPa, yield 40 MPa</option>
+              <option value="asa">ASA — E=2100 MPa, yield 40 MPa</option>
+              <option value="tpu">TPU — E=200 MPa, yield 15 MPa</option>
+              <option value="pa12">PA12 (Nylon) — E=1700 MPa, yield 48 MPa</option>
+            </select>
+          </div>
+          <div style="margin-bottom:16px">
+            <label for="s-pattern">Infill pattern</label>
+            <select id="s-pattern" onchange="updateSettingsPreview()">
+              <option value="gyroid">Gyroid — best all-round, near-isotropic (+18%)</option>
+              <option value="cubic">Cubic — good structural, isotropic-ish (+12%)</option>
+              <option value="grid" selected>Grid — standard, anisotropic (baseline)</option>
+              <option value="trihexagon">Tri-hexagon — good surface bonding (+5%)</option>
+              <option value="adaptive">Adaptive cubic — variable density (+8%)</option>
+              <option value="honeycomb">Honeycomb — better compressive than tensile (-8%)</option>
+              <option value="lines">Lines — weakest, print speed only (-5%)</option>
+              <option value="concentric">Concentric — decorative (-15%)</option>
+              <option value="lightning">Lightning — visual only, no strength (-45%)</option>
+            </select>
+          </div>
+          <div style="margin-bottom:16px">
+            <label>Infill % — <span id="s-infill-val">20</span>% <span id="s-infill-note" style="color:var(--text-label)"></span></label>
+            <input type="range" id="s-infill" min="0" max="100" value="20" oninput="document.getElementById('s-infill-val').textContent=this.value;updateSettingsPreview()">
+            <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-lo);margin-top:3px"><span>0% (walls only)</span><span>100% (solid — strongest)</span></div>
+          </div>
         </div>
       </div>
 
-      <div style="margin-bottom:16px">
-        <label>Print orientation (derived from bed face + forces)</label>
-        <!-- Read-only — computed from bed face picker and applied forces.
-             Hidden select preserved for session save/restore compatibility. -->
-        <select id="s-orient" style="display:none" aria-hidden="true">
-          <option value="flat">flat</option>
-          <option value="upright">upright</option>
-          <option value="angled">angled</option>
-        </select>
-        <div id="orient-derived-display"
-          style="background:var(--bg-input);border:1px solid var(--border-mid);
-                 border-radius:4px;padding:7px 10px;font-size:12px;color:var(--text-mid);
-                 display:flex;align-items:center;justify-content:space-between">
-          <span id="orient-derived-label">Set bed face and add forces to derive</span>
-          <span id="orient-derived-badge" style="font-size:10px;font-family:'DM Mono',monospace;
-                color:var(--text-lo);border:1px solid var(--border);border-radius:3px;
-                padding:1px 6px;margin-left:8px;white-space:nowrap"></span>
-        </div>
-        <div style="font-size:10px;color:var(--text-lo);margin-top:5px;line-height:1.5">
-          Set the bed face in the Orientation tab, then add forces — orientation is computed automatically from the angle between your forces and layer direction.
+      <!-- PRINT section (collapsed by default) -->
+      <div style="margin-bottom:8px">
+        <button class="sset-hdr" onclick="toggleSettingsSection('print')">
+          <span id="sset-arrow-print" style="color:var(--gold);transition:transform .2s;display:inline-block;width:10px">▶</span> PRINT
+        </button>
+        <div id="sset-print" class="sset-body" style="max-height:0px">
+          <div style="margin-bottom:16px">
+            <label>Wall count — <span id="s-walls-val">3</span> perimeters</label>
+            <input type="range" id="s-walls" min="1" max="8" value="3" oninput="document.getElementById('s-walls-val').textContent=this.value;updateSettingsPreview()">
+          </div>
+          <div style="margin-bottom:16px">
+            <label>Layer height — <span id="s-lh-val">0.20</span> mm
+              <span id="s-lh-note" style="color:var(--text-lo);margin-left:6px"></span>
+            </label>
+            <input type="range" id="s-lh" min="5" max="35" value="20"
+                   oninput="updateLayerHeightDisplay(this.value);updateSettingsPreview()">
+            <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-lo);margin-top:3px">
+              <span>0.05mm</span>
+              <span style="color:var(--text-label)">stronger Z ←-> faster print</span>
+              <span>0.35mm</span>
+            </div>
+          </div>
+          <div style="margin-bottom:16px">
+            <label for="s-mesh">Mesh quality (affects solve time)</label>
+            <select id="s-mesh">
+              <option value="coarse">Coarse — fast (~5s), lower accuracy</option>
+              <option value="standard" selected>Standard — balanced (~15s)</option>
+              <option value="fine">Fine — slow (~60s), higher accuracy</option>
+            </select>
+          </div>
+          <div style="margin-bottom:16px">
+            <label for="s-mesh-order">Element order <span style="color:var(--text-lo)">(STEP files only)</span></label>
+            <select id="s-mesh-order">
+              <option value="1" selected>C3D4 — Linear (default, fast)</option>
+              <option value="2">C3D10 — Quadratic (more accurate, ~3× slower)</option>
+            </select>
+            <div style="font-size:10px;color:var(--text-lo);margin-top:4px;line-height:1.6">
+              C3D10 uses 10-node quadratic tetrahedra — eliminates shear locking for more accurate stress concentrations near holes. STEP files only.
+            </div>
+          </div>
         </div>
       </div>
 
-      <div style="margin-bottom:16px">
-        <label for="s-mesh">Mesh quality (affects solve time)</label>
-        <select id="s-mesh">
-          <option value="coarse">Coarse — fast (~5s), lower accuracy</option>
-          <option value="standard" selected>Standard — balanced (~15s)</option>
-          <option value="fine">Fine — slow (~60s), higher accuracy</option>
-        </select>
-      </div>
-
-      <div style="margin-bottom:16px">
-        <label for="s-mesh-order">Element order <span style="color:var(--text-lo)">(STEP files only)</span></label>
-        <select id="s-mesh-order">
-          <option value="1" selected>C3D4 — Linear (default, fast)</option>
-          <option value="2">C3D10 — Quadratic (more accurate, ~3× slower)</option>
-        </select>
-        <div style="font-size:10px;color:var(--text-lo);margin-top:4px;line-height:1.6">
-          C3D10 uses 10-node quadratic tetrahedra — eliminates shear locking for more accurate stress concentrations near holes. STEP files only.
-        </div>
-      </div>
-
-      <!-- Effective strength preview -->
-      <div id="settings-preview" style="margin-top:20px;padding:12px 14px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
-        <div style="font-size:11px;color:var(--text-label);letter-spacing:.04em;margin-bottom:8px">EFFECTIVE STRENGTH ESTIMATE</div>
-        <div id="preview-content" style="font-size:10px;color:var(--text-mid);line-height:1.8"></div>
-        <div style="font-size:10px;color:var(--text-mid);margin-top:8px;line-height:1.6">
-          Infill reduces effective stiffness and yield strength.<br>
-          Layer orientation determines inter-layer vs in-layer loading.
+      <!-- RESULTS section (expanded by default) -->
+      <div style="margin-bottom:8px">
+        <button class="sset-hdr" onclick="toggleSettingsSection('results')">
+          <span id="sset-arrow-results" style="color:var(--gold);transition:transform .2s;display:inline-block;width:10px">▼</span> RESULTS
+        </button>
+        <div id="sset-results" class="sset-body" style="max-height:600px">
+          <div style="margin-bottom:16px">
+            <label>Print orientation (derived from bed face + forces)</label>
+            <!-- Read-only — computed from bed face picker and applied forces.
+                 Hidden select preserved for session save/restore compatibility. -->
+            <select id="s-orient" style="display:none" aria-hidden="true">
+              <option value="flat">flat</option>
+              <option value="upright">upright</option>
+              <option value="angled">angled</option>
+            </select>
+            <div id="orient-derived-display"
+              style="background:var(--bg-input);border:1px solid var(--border-mid);
+                     border-radius:4px;padding:7px 10px;font-size:12px;color:var(--text-mid);
+                     display:flex;align-items:center;justify-content:space-between">
+              <span id="orient-derived-label">Set bed face and add forces to derive</span>
+              <span id="orient-derived-badge" style="font-size:10px;font-family:'DM Mono',monospace;
+                    color:var(--text-lo);border:1px solid var(--border);border-radius:3px;
+                    padding:1px 6px;margin-left:8px;white-space:nowrap"></span>
+            </div>
+            <div style="font-size:10px;color:var(--text-lo);margin-top:5px;line-height:1.5">
+              Set the bed face in the Orientation tab, then add forces — orientation is computed automatically from the angle between your forces and layer direction.
+            </div>
+          </div>
+          <!-- Effective strength preview -->
+          <div id="settings-preview" style="margin-bottom:16px;padding:12px 14px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
+            <div style="font-size:11px;color:var(--text-label);letter-spacing:.04em;margin-bottom:8px">EFFECTIVE STRENGTH ESTIMATE</div>
+            <div id="preview-content" style="font-size:10px;color:var(--text-mid);line-height:1.8"></div>
+            <div style="font-size:10px;color:var(--text-mid);margin-top:8px;line-height:1.6">
+              Infill reduces effective stiffness and yield strength.<br>
+              Layer orientation determines inter-layer vs in-layer loading.
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1383,7 +1411,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <!-- Scrollable content area -->
       <div style="flex:1;overflow-y:auto;padding:var(--sp-2) var(--sp-3)">
         <h2 class="section-title">ANALYSIS RESULTS</h2>
-        <div id="results-placeholder" style="font-size:11px;color:var(--text-mid);text-align:center;padding:40px 0">No analysis run yet.<br>Place constraints and forces, then click Analyse.</div>
+        <div id="results-placeholder" style="font-size:11px;color:var(--text-mid);text-align:center;padding:40px 0">No analysis run yet.<br>Place constraints and forces, then click Analyse.<br><button class="btn" onclick="switchTab('constraints')" style="margin-top:6px;font-size:10px">Go to Constraints →</button></div>
         <div id="results-content" aria-live="polite" aria-atomic="false" style="display:none"></div>
 
       <!-- A vs B comparison panel -->
@@ -2747,14 +2775,14 @@ function setMode(m) {
     const btn = document.getElementById('btn-' + id);
     if (btn) btn.className = 'btn' + (id === m ? ' active' : id === 'bolt' ? ' cyan' : '');
   });
-  document.getElementById('btn-force').style.color = m === 'force' ? '' : 'var(--gold)88';
+  document.getElementById('btn-force').style.color = m === 'force' ? '' : 'var(--gold-alpha-hi)';
   document.getElementById('btn-force').style.borderColor = m === 'force' ? '' : 'var(--gold-glow)';
 
   // BED button styling
   const bedBtn = document.getElementById('btn-bed');
   if (bedBtn) {
     bedBtn.className = 'btn' + (m === 'bed' ? ' active' : '');
-    bedBtn.style.color       = m === 'bed' ? '' : 'var(--gold)88';
+    bedBtn.style.color       = m === 'bed' ? '' : 'var(--gold-alpha-hi)';
     bedBtn.style.borderColor = m === 'bed' ? '' : 'var(--gold-glow)';
   }
 
@@ -2762,8 +2790,8 @@ function setMode(m) {
   const ahBtn = document.getElementById('btn-addhole');
   if (ahBtn) {
     ahBtn.className = 'btn' + (m === 'addhole' ? ' active' : '');
-    ahBtn.style.color       = m === 'addhole' ? '' : 'var(--gold)88';
-    ahBtn.style.borderColor = m === 'addhole' ? '' : 'var(--gold)33';
+    ahBtn.style.color       = m === 'addhole' ? '' : 'var(--gold-alpha-hi)';
+    ahBtn.style.borderColor = m === 'addhole' ? '' : 'var(--gold-alpha-lo)';
   }
 
   updateHintBar();
@@ -3676,7 +3704,7 @@ function updateBoltList() {
   const el = document.getElementById('bolt-list');
   document.getElementById('badge-bolts').innerHTML = `<svg width="11" height="11" viewBox="0 0 11 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5.5" cy="5.5" r="4"/><circle cx="5.5" cy="5.5" r="1.5" fill="currentColor" stroke="none"/></svg> ${S.bolts.length} bolt${S.bolts.length!==1?'s':''}`;
   if (!S.bolts.length) {
-    el.innerHTML = '<div style="font-size:11px;color:var(--text-mid);padding:12px;border:1px dashed var(--border);border-radius:3px;text-align:center">No bolts placed yet. Switch to Bolt mode and click a hole.</div>';
+    el.innerHTML = '<div style="font-size:11px;color:var(--text-mid);padding:12px;border:1px dashed var(--border);border-radius:3px;text-align:center">No bolts placed yet. Switch to Bolt mode and click a hole.<br><button class="btn" onclick="setMode(\'bolt\')" style="margin-top:6px;font-size:10px">Enter Bolt Mode →</button></div>';
     return;
   }
   el.innerHTML = S.bolts.map((b,i) => `
@@ -3700,7 +3728,7 @@ function updateForceList() {
   const el = document.getElementById('force-list');
   document.getElementById('badge-forces').innerHTML = `<svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> ${S.forces.length} force${S.forces.length!==1?'s':''}`;
   if (!S.forces.length) {
-    el.innerHTML = '<div style="font-size:11px;color:var(--text-mid);padding:12px;border:1px dashed var(--border);border-radius:3px;text-align:center">No forces placed yet. Switch to Force mode and click the mesh.</div>';
+    el.innerHTML = '<div style="font-size:11px;color:var(--text-mid);padding:12px;border:1px dashed var(--border);border-radius:3px;text-align:center">No forces placed yet. Switch to Force mode and click the mesh.<br><button class="btn" onclick="setMode(\'force\')" style="margin-top:6px;font-size:10px">Enter Force Mode →</button></div>';
     return;
   }
   const dirLabel = d => {
@@ -4176,9 +4204,23 @@ function updateAnalyseButton() {
   syncResultsUI();
 }
 
+let _analysisAborted = false;
+
+function abortAnalysis() {
+  _analysisAborted = true;
+  hideOverlay();
+  const btn = document.getElementById('analyse-btn');
+  if (btn) btn.disabled = false;
+  showErrorToast('Analysis cancelled', { severity: 'info', source: '[abort]' });
+}
+
 // ─── Run analysis ─────────────────────────────────────────────────────────────
 async function runAnalysis() {
   if (!S.fileData || !S.bolts.length || !S.forces.length) return;
+
+  _analysisAborted = false;
+  const abortBtn = document.getElementById('abort-btn');
+  if (abortBtn) abortBtn.style.display = 'block';
 
   showOverlay('Building mesh...', 'Preparing geometry for meshing');
   // Deliberately NOT auto-switching to the RESULTS tab here. The persistent
@@ -4214,8 +4256,10 @@ async function runAnalysis() {
       body: JSON.stringify(bodyStd),
     });
     if (!resp.ok) throw new Error(await resp.text());
+    if (_analysisAborted) return;
     setOverlayPhase('Mapping stress...', 'Projecting onto render mesh and smoothing', 97);
     dataStd = await resp.json();
+    if (_analysisAborted) return;
     S.results = dataStd;
     syncResultsUI();
 
@@ -4336,7 +4380,9 @@ async function runAnalysis() {
       body: JSON.stringify(bodyFine),
     });
     if (!respFine.ok) return;
+    if (_analysisAborted) return;
     const dataFine = await respFine.json();
+    if (_analysisAborted) return;
 
     const vmStd   = dataStd.summary.maxVonMisesMPa;
     const vmFine  = dataFine.summary.maxVonMisesMPa;
@@ -4424,7 +4470,7 @@ function showConvergenceBadge(state, changePct, nodesStd, nodesFine) {
       sub: `Standard mesh (${nodesStd?.toLocaleString()} nodes) matches fine mesh (${nodesFine?.toLocaleString()} nodes). Results are mesh-independent.`,
     },
     upgraded: {
-      color: 'var(--warn)', bg: 'var(--bg-card)', border: 'var(--gold)33',
+      color: 'var(--warn)', bg: 'var(--bg-card)', border: 'var(--gold-alpha-lo)',
       icon: '',
       text: `Mesh auto-upgraded — standard mesh was not converged (${changePct?.toFixed(1)}% change)`,
       sub: `Results updated to fine mesh (${nodesFine?.toLocaleString()} nodes). Standard mesh underestimated peak stress by ${changePct?.toFixed(1)}%.`,
@@ -4475,6 +4521,25 @@ function updateStickyResults(s) {
     matEl.textContent = matName + ' · ' + infill + '% infill · ' + deriveOrientString().toUpperCase();
   }
   if (expBtn) expBtn.style.display = 'block';
+
+  // Show split-view shortcut when both baseline and comparison exist
+  let splitBtn = document.getElementById('sticky-split-btn');
+  if (AB.baseline !== null && AB.comparison !== null) {
+    if (!splitBtn) {
+      splitBtn = document.createElement('button');
+      splitBtn.id = 'sticky-split-btn';
+      splitBtn.className = 'btn';
+      splitBtn.title = 'Compare designs side by side';
+      splitBtn.onclick = openSplitView;
+      splitBtn.style.cssText = 'font-size:10px;padding:5px 10px;flex-shrink:0;color:var(--gold);border-color:var(--gold-glow)';
+      splitBtn.innerHTML = '<svg width="12" height="10" viewBox="0 0 14 10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><rect x="0.5" y="0.5" width="13" height="9" rx="1.5"/><line x1="7" y1="0.5" x2="7" y2="9.5"/></svg> Split';
+      if (expBtn && expBtn.parentNode) expBtn.parentNode.insertBefore(splitBtn, expBtn);
+    }
+    splitBtn.style.display = 'block';
+  } else if (splitBtn) {
+    splitBtn.style.display = 'none';
+  }
+
   bar.style.display = 'flex';
 }
 
@@ -4637,7 +4702,7 @@ function showResults(s) {
     ${s.isotropicComparison ? `
     <div style="margin-bottom:16px">
       <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:4px">VS. CONVENTIONAL FEA &nbsp;<button onclick="switchTab('sources')" style="font-size:9px;color:var(--text-lo);background:none;border:none;cursor:pointer;font-family:inherit;padding:0;text-decoration:underline;vertical-align:middle">Why? →</button></div>
-      <div style="padding:10px 12px;background:${s.isotropicComparison.falseSafe?'var(--gold-faint)':'var(--bg-card)'};border:1px solid ${s.isotropicComparison.falseSafe?'var(--gold-glow)':s.isotropicComparison.optimismPct>10?'var(--gold)33':'var(--border)'};border-radius:3px">
+      <div style="padding:10px 12px;background:${s.isotropicComparison.falseSafe?'var(--gold-faint)':'var(--bg-card)'};border:1px solid ${s.isotropicComparison.falseSafe?'var(--gold-glow)':s.isotropicComparison.optimismPct>10?'var(--gold-alpha-lo)':'var(--border)'};border-radius:3px">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
           <div style="padding:8px;background:var(--bg-input);border-radius:3px;border:1px solid var(--border-mid)">
             <div style="font-size:9px;color:var(--text-lo);letter-spacing:.1em;margin-bottom:3px">ISOTROPIC FEA (conventional)</div>
@@ -4763,6 +4828,23 @@ function showResults(s) {
     _rb.classList.remove('tab-has-new');
     void _rb.offsetWidth;  // force reflow so animation restarts
     _rb.classList.add('tab-has-new');
+  }
+
+  // One-time stress heatmap explanation tip (first analysis ever)
+  if (!localStorage.getItem('seen-stress-tip')) {
+    localStorage.setItem('seen-stress-tip', '1');
+    const _legend = document.getElementById('legend');
+    if (_legend) {
+      const _tip = document.createElement('div');
+      _tip.id = 'stress-tip-callout';
+      _tip.style.cssText = 'position:absolute;right:0;bottom:calc(100% + 8px);background:var(--bg-card);border:1px solid var(--gold-glow);border-radius:4px;padding:8px 10px;font-family:"DM Mono",monospace;font-size:10px;color:var(--text-mid);line-height:1.6;white-space:nowrap;cursor:pointer;z-index:10;box-shadow:0 4px 14px rgba(0,0,0,.25)';
+      _tip.innerHTML = 'Red = highest stress zones<br>Dark = safe. Focus on red<br>areas near your bolts.';
+      _tip.title = 'Click to dismiss';
+      _tip.onclick = () => _tip.remove();
+      _legend.style.position = 'relative';
+      _legend.appendChild(_tip);
+      setTimeout(() => { if (_tip.parentNode) _tip.remove(); }, 8000);
+    }
   }
 }
 
@@ -4942,6 +5024,8 @@ function hideOverlay() {
   if (subEl) subEl.textContent = '';
   const bar  = document.getElementById('overlay-bar-wrap');
   if (bar) bar.style.display = 'none';
+  const abortBtn = document.getElementById('abort-btn');
+  if (abortBtn) abortBtn.style.display = 'none';
 }
 
 // Timed phase sequencer — advances through phases while server is busy
@@ -5234,12 +5318,45 @@ function renderWorkflowRail() {
   </div>
 </div>`;
 
-  host.innerHTML = rows + runRow;
+  const checkHtml = !canAnalyse ? `<div style="display:flex;gap:10px;padding:4px 10px 8px 24px;font-family:'DM Mono',monospace;font-size:9px;flex-wrap:wrap">
+    ${[
+      { label:'File',   ok: !!S.fileData },
+      { label:'Bolts',  ok: S.bolts.length > 0 },
+      { label:'Forces', ok: S.forces.length > 0 },
+    ].map(c => `<span style="display:inline-flex;align-items:center;gap:3px;color:${c.ok?'var(--gold)':'var(--text-lo)'}">
+      ${c.ok
+        ? '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg>'
+        : '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="3.5"/></svg>'
+      }${c.label}</span>`).join('')}
+  </div>` : '';
+
+  host.innerHTML = rows + checkHtml + runRow;
 
   // Drive the standalone "Upload to Begin" button purely off a body class + CSS.
   document.body.classList.toggle('has-file', !!S.fileData);
 }
 renderWorkflowRail();
+
+function toggleSettingsSection(key) {
+  const body  = document.getElementById('sset-' + key);
+  const arrow = document.getElementById('sset-arrow-' + key);
+  if (!body) return;
+  const open = body.style.maxHeight === '0px';
+  body.style.maxHeight = open ? '600px' : '0px';
+  if (arrow) arrow.textContent = open ? '▼' : '▶';
+  localStorage.setItem('sset-' + key, open ? '1' : '0');
+}
+(function initSettingsSections() {
+  ['material', 'print', 'results'].forEach(key => {
+    const stored = localStorage.getItem('sset-' + key);
+    const defaultOpen = key !== 'print';
+    const open = stored === null ? defaultOpen : stored === '1';
+    const body  = document.getElementById('sset-' + key);
+    const arrow = document.getElementById('sset-arrow-' + key);
+    if (body)  body.style.maxHeight = open ? '600px' : '0px';
+    if (arrow) arrow.textContent    = open ? '▼' : '▶';
+  });
+})();
 
 
 // ══════════════════════════════════════════════════════════════════════════════
