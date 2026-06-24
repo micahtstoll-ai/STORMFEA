@@ -585,19 +585,19 @@ body:not(.has-results) #btn-stress { display: none !important; }
   <div style="width:1px;height:20px;background:var(--border);margin-right:16px"></div>
 
   <!-- Tabs — workflow nav + utility tabs -->
-  <div style="display:flex;gap:0;align-self:stretch" id="tabs">
+  <div style="display:flex;gap:0;align-self:stretch" id="tabs" role="tablist" aria-label="Workflow">
     <!-- Workflow tabs: instrument panel selectors, top-line active indicator -->
-    <button class="tab-btn active" data-tab="setup"       onclick="switchTab('setup')">SETUP</button>
-    <button class="tab-btn"        data-tab="orient"      onclick="switchTab('orient')">ORIENT</button>
-    <button class="tab-btn"        data-tab="constraints" onclick="switchTab('constraints')">CONSTRAIN</button>
-    <button class="tab-btn"        data-tab="settings"    onclick="switchTab('settings')">SIMULATE</button>
-    <button class="tab-btn"        data-tab="results"     onclick="switchTab('results')">RESULTS</button>
+    <button class="tab-btn active" role="tab" id="tab-btn-setup"       aria-selected="true"  aria-controls="tab-setup"       data-tab="setup"       onclick="switchTab('setup')">SETUP</button>
+    <button class="tab-btn"        role="tab" id="tab-btn-orient"      aria-selected="false" aria-controls="tab-orient"      data-tab="orient"      onclick="switchTab('orient')">ORIENT</button>
+    <button class="tab-btn"        role="tab" id="tab-btn-constraints" aria-selected="false" aria-controls="tab-constraints" data-tab="constraints" onclick="switchTab('constraints')">CONSTRAIN</button>
+    <button class="tab-btn"        role="tab" id="tab-btn-settings"    aria-selected="false" aria-controls="tab-settings"    data-tab="settings"    onclick="switchTab('settings')">SIMULATE</button>
+    <button class="tab-btn"        role="tab" id="tab-btn-results"     aria-selected="false" aria-controls="tab-results"     data-tab="results"     onclick="switchTab('results')">RESULTS</button>
     <!-- Utility separator -->
     <div style="width:1px;background:var(--border);align-self:stretch;flex-shrink:0;margin:0 4px"></div>
     <!-- Utility tabs: smaller, receded -->
-    <button class="tab-btn tab-util" data-tab="calibrate" onclick="switchTab('calibrate')"><svg width="9" height="9" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="3" y1="3" x2="7" y2="7"/><line x1="7" y1="3" x2="3" y2="7"/></svg> CAL</button>
-    <button class="tab-btn tab-util" data-tab="sources"   onclick="switchTab('sources')"><svg width="9" height="9" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> SRC</button>
-    <button class="tab-btn tab-util" data-tab="debug"     onclick="switchTab('debug')"><svg width="9" height="9" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="2.3" y1="7.7" x2="7.7" y2="2.3"/></svg> DBG</button>
+    <button class="tab-btn tab-util" role="tab" id="tab-btn-calibrate" aria-selected="false" aria-controls="tab-calibrate" data-tab="calibrate" onclick="switchTab('calibrate')"><svg width="9" height="9" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="3" y1="3" x2="7" y2="7"/><line x1="7" y1="3" x2="3" y2="7"/></svg> CAL</button>
+    <button class="tab-btn tab-util" role="tab" id="tab-btn-sources"   aria-selected="false" aria-controls="tab-sources"   data-tab="sources"   onclick="switchTab('sources')"><svg width="9" height="9" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> SRC</button>
+    <button class="tab-btn tab-util" role="tab" id="tab-btn-debug"     aria-selected="false" aria-controls="tab-debug"     data-tab="debug"     onclick="switchTab('debug')"><svg width="9" height="9" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="2.3" y1="7.7" x2="7.7" y2="2.3"/></svg> DBG</button>
   </div>
   <style>
     /* Tab button — instrument panel selector style */
@@ -669,7 +669,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
 </header>
 
 <!-- Preferences panel — shown/hidden by gear icon in header -->
-<div id="prefs-panel" style="display:none;position:fixed;top:56px;right:12px;z-index:200;
+<div id="prefs-panel" role="dialog" aria-modal="true" aria-label="Settings" style="display:none;position:fixed;top:56px;right:12px;z-index:200;
       width:260px;background:var(--bg-panel);border:1px solid var(--border);
       border-radius:4px;box-shadow:0 8px 24px rgba(0,0,0,.4);padding:14px 16px">
 
@@ -930,11 +930,11 @@ body:not(.has-results) #btn-stress { display: none !important; }
     </div>
 
     <!-- Fastener picker popup — shown after clicking a hole in bolt mode -->
-  <div id="fastener-popup" style="display:none;position:fixed;z-index:9000;
+  <div id="fastener-popup" role="dialog" aria-modal="true" aria-labelledby="fp-dialog-title" style="display:none;position:fixed;z-index:9000;
     background:var(--bg-card);border:1px solid var(--border);border-radius:5px;
     padding:14px 16px;min-width:240px;box-shadow:0 8px 24px rgba(0,0,0,.5);
     font-family:'Outfit',system-ui,sans-serif">
-    <div style="font-size:11px;font-weight:600;color:var(--text-hi);margin-bottom:2px">Fastener type</div>
+    <div id="fp-dialog-title" style="font-size:11px;font-weight:600;color:var(--text-hi);margin-bottom:2px">Fastener type</div>
     <div style="font-size:10px;color:var(--text-lo);margin-bottom:10px">Affects bearing area and pull-through calculation</div>
     <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px" id="fastener-options">
       <button class="btn fastener-opt" data-type="shank" onclick="selectFastener('shank')"
@@ -1002,7 +1002,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
   </div>
 
   <!-- Force popup -->
-    <div id="force-popup" style="display:none;position:absolute;background:var(--bg-card);border:1px solid var(--border-mid);border-radius:4px;padding:14px;width:224px;z-index:100">
+    <div id="force-popup" role="dialog" aria-modal="true" aria-label="Apply force" style="display:none;position:absolute;background:var(--bg-card);border:1px solid var(--border-mid);border-radius:4px;padding:14px;width:224px;z-index:100">
       <!-- Title + quick presets -->
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
         <div style="font-size:11px;color:var(--text-label);letter-spacing:.1em">APPLY FORCE</div>
@@ -1118,7 +1118,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
     <div style="flex:1;overflow-y:auto">
 
     <!-- SETUP TAB -->
-    <div id="tab-setup" style="padding:var(--sp-2) var(--sp-3)">
+    <div id="tab-setup" role="tabpanel" tabindex="0" aria-labelledby="tab-btn-setup" style="padding:var(--sp-2) var(--sp-3)">
       <h2 class="section-title">WORKFLOW</h2>
       <div id="workflow-steps"></div>
       <button class="btn primary" id="upload-begin-btn" style="width:100%;margin-top:8px" onclick="document.getElementById('filein').click()">Load Part</button>
@@ -1170,7 +1170,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
     </div>
 
     <!-- ORIENTATION TAB -->
-    <div id="tab-orient" style="display:none;padding:var(--sp-2) var(--sp-3)">
+    <div id="tab-orient" role="tabpanel" tabindex="0" aria-labelledby="tab-btn-orient" style="display:none;padding:var(--sp-2) var(--sp-3)">
       <h2 class="section-title">PRINT ORIENTATION</h2>
       <div style="font-size:11px;color:var(--text-lo);margin-bottom:14px;line-height:1.7">
         Hover over a face — it highlights gold. Click to snap that face flat to the build plate.
@@ -1219,7 +1219,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         </div>
 
     <!-- CONSTRAINTS TAB -->
-    <div id="tab-constraints" style="display:none;padding:var(--sp-2) var(--sp-3)">
+    <div id="tab-constraints" role="tabpanel" tabindex="0" aria-labelledby="tab-btn-constraints" style="display:none;padding:var(--sp-2) var(--sp-3)">
 
       <!-- STEP 1: Detected holes — click to bolt -->
       <div style="margin-bottom:24px">
@@ -1268,7 +1268,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         </div>
 
     <!-- SETTINGS TAB -->
-    <div id="tab-settings" style="display:none;padding:var(--sp-2) var(--sp-3)">
+    <div id="tab-settings" role="tabpanel" tabindex="0" aria-labelledby="tab-btn-settings" style="display:none;padding:var(--sp-2) var(--sp-3)">
 
       <h2 class="section-title" style="margin-bottom:14px">SIMULATION SETTINGS</h2>
 
@@ -1406,7 +1406,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         </div>
 
     <!-- RESULTS TAB -->
-    <div id="tab-results" style="display:none;padding:0;display:flex;flex-direction:column;overflow:hidden">
+    <div id="tab-results" role="tabpanel" tabindex="0" aria-labelledby="tab-btn-results" style="display:none;padding:0;display:flex;flex-direction:column;overflow:hidden">
 
       <!-- Scrollable content area -->
       <div style="flex:1;overflow-y:auto;padding:var(--sp-2) var(--sp-3)">
@@ -1442,7 +1442,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
     </div>  <!-- end tab-results -->
 
     <!-- CALIBRATE TAB -->
-    <div id="tab-calibrate" style="display:none;padding:var(--sp-2) var(--sp-3);overflow-y:auto">
+    <div id="tab-calibrate" role="tabpanel" tabindex="0" aria-labelledby="tab-btn-calibrate" style="display:none;padding:var(--sp-2) var(--sp-3);overflow-y:auto">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
         <div style="font-family:'Outfit',system-ui,sans-serif;font-size:13px;font-weight:700;letter-spacing:.2em;color:var(--success)">PRINTER CALIBRATION</div>
       </div>
@@ -1641,7 +1641,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
     </div>
 
     <!-- SOURCES TAB -->
-    <div id="tab-sources" style="display:none;padding:var(--sp-2) var(--sp-3);overflow-y:auto">
+    <div id="tab-sources" role="tabpanel" tabindex="0" aria-labelledby="tab-btn-sources" style="display:none;padding:var(--sp-2) var(--sp-3);overflow-y:auto">
       <div style="font-family:'Outfit',system-ui,sans-serif;font-size:13px;font-weight:700;letter-spacing:.2em;color:var(--text-label);margin-bottom:4px">RESEARCH BASIS</div>
       <div style="font-size:10px;color:var(--text-lo);margin-bottom:20px;line-height:1.7">
         All model constants, multipliers, and failure criteria in STORMFEA are derived from peer-reviewed experimental data. This screen documents the specific sources for every parameter. Where data is inconsistent or limited, confidence level is noted.
@@ -1650,7 +1650,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
     </div>
 
     <!-- DEBUG TAB -->
-    <div id="tab-debug" style="display:none;padding:var(--sp-2) var(--sp-3);overflow-y:auto;font-family:'Courier New',monospace">
+    <div id="tab-debug" role="tabpanel" tabindex="0" aria-labelledby="tab-btn-debug" style="display:none;padding:var(--sp-2) var(--sp-3);overflow-y:auto;font-family:'Courier New',monospace">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
         <div style="font-family:'Outfit',system-ui,sans-serif;font-size:13px;font-weight:700;letter-spacing:.2em;color:var(--gold)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="2.3" y1="7.7" x2="7.7" y2="2.3"/></svg> DEBUG PANEL</div>
         <div style="display:flex;gap:6px">
@@ -4981,6 +4981,7 @@ function switchTab(name) {
       const _keepNew = t !== name && btn.classList.contains('tab-has-new');
       btn.className = 'btn' + (t === name ? ' active' : '');
       if (_keepNew) btn.classList.add('tab-has-new');
+      btn.setAttribute('aria-selected', t === name ? 'true' : 'false');
     }
   });
   // Auto-enter bed face-select mode when orient tab is opened (if a mesh is loaded)
@@ -5151,15 +5152,15 @@ function computeWorkflowState() {
       key:'bolts', n:'03', t:'Place bolt constraints', tab:'constraints', mandatory:true,
       status: nBolts > 0 ? 'done' : 'todo',
       sub: !hasFile ? 'Upload first.'
-         : nBolts > 0 ? `${nBolts} bolt${nBolts>1?'s':''} fixed.`
-         : 'Add a bolt at each hole that is bolted down (Constraints tab).',
+         : nBolts > 0 ? `${nBolts} bolt${nBolts>1?'s':''} ✓`
+         : '0 bolts — need ≥ 1.',
     },
     {
       key:'forces', n:'04', t:'Apply forces', tab:'constraints', mandatory:true,
       status: nForces > 0 ? 'done' : 'todo',
       sub: !hasFile ? 'Upload first.'
-         : nForces > 0 ? `${nForces} force${nForces>1?'s':''} applied.`
-         : 'Enter Force mode, click the part, set direction + magnitude.',
+         : nForces > 0 ? `${nForces} force${nForces>1?'s':''} ✓`
+         : '0 forces — need ≥ 1.',
     },
     {
       key:'settings', n:'05', t:'Print settings', tab:'settings', mandatory:false,
@@ -5274,6 +5275,16 @@ function renderWorkflowRail() {
   if (!host) return;
   const { steps, canAnalyse, blockingReason, currentKey } = computeWorkflowState();
 
+  const STEP_TIPS = {
+    upload:   'An STL or STEP geometry file is required for mesh generation.',
+    orient:   'Layer direction sets anisotropy — affects strength 50–200%.',
+    bolts:    'Bolted holes constrain rigid-body motion and distribute reaction loads.',
+    forces:   'External loads applied to the structure for FEA.',
+    settings: 'Material, infill, and mesh quality affect simulation accuracy.',
+  };
+
+  const orientFlat = (S.orientMul ?? 0.55) < 0.6;
+
   const rows = steps.map((s, i) => {
     const isCurrent = s.key === currentKey;
     const isDone    = s.status === 'done';
@@ -5291,14 +5302,20 @@ function renderWorkflowRail() {
     if (isDone) innerIcon = `<svg width="6" height="6" viewBox="0 0 10 10" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5 4,7.5 8.5,2.5"/></svg>`;
     else if (isWarn) innerIcon = `<span style="font-size:7px;font-weight:700;color:white;line-height:1">!</span>`;
 
+    const optNote = !s.mandatory
+      ? (s.key === 'orient' && S.fileData && orientFlat
+          ? ' <span style="color:var(--warn)">· ⚠ flat = −45% strength</span>'
+          : ' <span style="opacity:.5">· optional</span>')
+      : '';
+
     return `<div onclick="switchTab('${s.tab}')" style="display:flex;align-items:stretch;cursor:pointer;border-left:2px solid ${stripColor};padding-left:10px">
   <div style="display:flex;flex-direction:column;align-items:center;width:14px;flex-shrink:0;padding-top:4px">
     <div style="width:6px;height:6px;border-radius:50%;background:${circleBg};border:1.5px solid ${circleBorder};display:flex;align-items:center;justify-content:center;flex-shrink:0;${circleAnim}">${innerIcon}</div>
     ${!isLast ? `<div style="width:1px;flex:1;min-height:8px;background:${lineColor};margin:3px 0"></div>` : ''}
   </div>
   <div style="flex:1;padding:0 10px ${isLast ? '0' : '10px'} 8px">
-    <div style="font-family:'Outfit',sans-serif;font-size:var(--text-sm);font-weight:600;color:${titleColor};letter-spacing:.04em">${s.t}</div>
-    <div style="font-family:'Outfit',sans-serif;font-size:var(--text-xs);color:${isWarn ? 'var(--warn)' : 'var(--text-lo)'};line-height:1.5;margin-top:2px">${s.sub}${!s.mandatory ? ' <span style="opacity:.5">· optional</span>' : ''}</div>
+    <div title="${STEP_TIPS[s.key] || ''}" style="font-family:'Outfit',sans-serif;font-size:var(--text-sm);font-weight:600;color:${titleColor};letter-spacing:.04em">${s.t}</div>
+    <div style="font-family:'Outfit',sans-serif;font-size:var(--text-xs);color:${isWarn ? 'var(--warn)' : 'var(--text-lo)'};line-height:1.5;margin-top:2px">${s.sub}${optNote}</div>
   </div>
 </div>`;
   }).join('');
@@ -5318,6 +5335,16 @@ function renderWorkflowRail() {
   </div>
 </div>`;
 
+  // "Fix this now" CTA — actionable gold button pointing at the first blocking step
+  let fixCtaHtml = '';
+  if (!canAnalyse && S.fileData) {
+    if (S.bolts.length === 0) {
+      fixCtaHtml = `<div style="padding:4px 10px 10px 24px"><button class="btn" onclick="switchTab('constraints');setMode('bolt')" style="font-size:10px;padding:5px 10px;border-color:var(--gold);color:var(--gold)">→ Add a bolt constraint</button></div>`;
+    } else if (S.forces.length === 0) {
+      fixCtaHtml = `<div style="padding:4px 10px 10px 24px"><button class="btn" onclick="switchTab('constraints');setMode('force')" style="font-size:10px;padding:5px 10px;border-color:var(--gold);color:var(--gold)">→ Apply a force</button></div>`;
+    }
+  }
+
   const checkHtml = !canAnalyse ? `<div style="display:flex;gap:10px;padding:4px 10px 8px 24px;font-family:'DM Mono',monospace;font-size:9px;flex-wrap:wrap">
     ${[
       { label:'File',   ok: !!S.fileData },
@@ -5330,7 +5357,7 @@ function renderWorkflowRail() {
       }${c.label}</span>`).join('')}
   </div>` : '';
 
-  host.innerHTML = rows + checkHtml + runRow;
+  host.innerHTML = rows + fixCtaHtml + checkHtml + runRow;
 
   // Drive the standalone "Upload to Begin" button purely off a body class + CSS.
   document.body.classList.toggle('has-file', !!S.fileData);
@@ -9105,18 +9132,27 @@ document.addEventListener('keydown', (e) => {
     // ── 3D viewer keyboard controls ─────────────────────────────────────────
     // Active when the canvas is focused (tabindex=0) or no input is focused.
     // Arrow keys rotate, +/= zoom in, -/_ zoom out, R resets view.
-    case 'ArrowLeft':
+    // When focus is on a tab button, Left/Right navigate between tabs instead.
+    case 'ArrowLeft': {
+      const tabBtnsL = [...document.querySelectorAll('#tabs [role="tab"]')];
+      const idxL = tabBtnsL.indexOf(document.activeElement);
+      if (idxL > 0) { tabBtnsL[idxL - 1].focus(); e.preventDefault(); break; }
       if (!mesh3d) break;
       camAz += 0.08;
       updateCamera();
       e.preventDefault();
       break;
-    case 'ArrowRight':
+    }
+    case 'ArrowRight': {
+      const tabBtnsR = [...document.querySelectorAll('#tabs [role="tab"]')];
+      const idxR = tabBtnsR.indexOf(document.activeElement);
+      if (idxR >= 0 && idxR < tabBtnsR.length - 1) { tabBtnsR[idxR + 1].focus(); e.preventDefault(); break; }
       if (!mesh3d) break;
       camAz -= 0.08;
       updateCamera();
       e.preventDefault();
       break;
+    }
     case 'ArrowUp':
       if (!mesh3d) break;
       camEl = Math.min(Math.PI / 2 - 0.08, camEl + 0.08);
