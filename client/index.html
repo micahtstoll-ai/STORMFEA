@@ -4128,8 +4128,10 @@ async function runAnalysis() {
     hideOverlay();
     playAnalysisTone(true);
     updateHintBar();
+    updateAnalyseButton();
   } catch (e) {
     hideOverlay();
+    updateAnalyseButton();
     document.getElementById('results-content').style.display = 'none';
     document.getElementById('results-placeholder').style.display = 'block';
     const errMsg = e.message || String(e);
