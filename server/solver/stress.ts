@@ -53,6 +53,56 @@ function i32(arr: Int32Array, i: number): number {
   return v;
 }
 
+// ─── Principal stress eigenvalues (analytic 3×3 symmetric) ───────────────────
+/**
+ * Compute the three principal stresses (eigenvalues of the symmetric stress tensor)
+ * using the trigonometric solution to the depressed cubic characteristic polynomial.
+ *
+ * Returns [σ1, σ2, σ3] sorted descending (σ1 = max tensile, σ3 = max compressive).
+ * σ3 may be negative for compressive stress states.
+ *
+ * Reference: Smith (1961), Kopp (2008) "Efficient numerical diagonalization of
+ * hermitian 3×3 matrices", Int J Mod Phys C 19(3).
+ */
+export function computePrincipalStresses(
+  sxx: number, syy: number, szz: number,
+  txy: number, tyz: number, txz: number,
+): [number, number, number] {
+  // Stress invariants
+  const I1 = sxx + syy + szz;
+  const I2 = sxx*syy + syy*szz + szz*sxx - txy*txy - tyz*tyz - txz*txz;
+  const I3 = sxx*(syy*szz - tyz*tyz)
+           - txy*(txy*szz - tyz*txz)
+           + txz*(txy*tyz - syy*txz);
+
+  // Depressed cubic substitution: μ³ + q·μ + r = 0, λ = μ + I1/3
+  const q = I2 - I1*I1/3;
+  const r = -2*I1*I1*I1/27 + I1*I2/3 - I3;
+
+  if (Math.abs(q) < 1e-20) {
+    const e = I1/3;
+    return [e, e, e];
+  }
+
+  // Trigonometric solution (valid since q ≤ 0 for real symmetric matrices)
+  const m = 2 * Math.sqrt(-q/3);
+  const cosArg = Math.max(-1, Math.min(1, -4*r / (m*m*m)));
+  const theta = Math.acos(cosArg) / 3;
+  const PI23 = 2*Math.PI/3;
+  const shift = I1/3;
+
+  const e0 = m * Math.cos(theta)        + shift;
+  const e1 = m * Math.cos(theta - PI23) + shift;
+  const e2 = m * Math.cos(theta + PI23) + shift;
+
+  // Sort descending: σ1 ≥ σ2 ≥ σ3
+  let s0 = e0, s1 = e1, s2 = e2;
+  if (s0 < s1) { const t=s0; s0=s1; s1=t; }
+  if (s0 < s2) { const t=s0; s0=s2; s2=t; }
+  if (s1 < s2) { const t=s1; s1=s2; s2=t; }
+  return [s0, s1, s2];
+}
+
 // ─── Hill (1948) anisotropic yield criterion ─────────────────────────────────
 /**
  * Hill's 1948 quadratic yield criterion, specialised to the transverse
@@ -122,16 +172,18 @@ export function recoverElementStress(
   displacement: Float64Array,
   mat:          AnyMaterial,
 ): {
-  vonMises:     Float64Array;
-  safetyFactor: Float64Array;
-  maxVonMises:  number;
-  minSF:        number;
+  vonMises:      Float64Array;
+  safetyFactor:  Float64Array;
+  elemPrincipal: Float64Array;
+  maxVonMises:   number;
+  minSF:         number;
 } {
   const C = buildAnyConstitutiveMatrix(mat);
   const yieldStr = 'kind' in mat ? (mat as import("./types.js").OrthotropicMaterial).yieldXY
                                  : (mat as IsotropicMaterial).yieldStrength;
   const vonMises     = new Float64Array(mesh.elementCount);
   const safetyFactor = new Float64Array(mesh.elementCount);
+  const elemPrincipal = new Float64Array(mesh.elementCount * 3);
 
   let maxVM = 0;
   let minSF = 999;
@@ -143,6 +195,8 @@ export function recoverElementStress(
     { xi:0.1381966, eta:0.5854102, zeta:0.1381966 },
     { xi:0.1381966, eta:0.1381966, zeta:0.5854102 },
   ];
+
+  let _lastSig: [number, number, number] = [0, 0, 0];
 
   for (let e = 0; e < mesh.elementCount; e++) {
     const npe  = mesh.nodesPerElem ?? 4;
@@ -218,6 +272,7 @@ export function recoverElementStress(
       const sxx=sigAvg[0]??0, syy=sigAvg[1]??0, szz=sigAvg[2]??0;
       const txy=sigAvg[3]??0, tyz=sigAvg[4]??0, txz=sigAvg[5]??0;
 
+      _lastSig = computePrincipalStresses(sxx, syy, szz, txy, tyz, txz);
       vm = Math.sqrt(0.5*((sxx-syy)**2+(syy-szz)**2+(szz-sxx)**2+6*(txy**2+tyz**2+txz**2)));
 
       if (isOrthotropic(mat)) {
@@ -264,6 +319,7 @@ export function recoverElementStress(
       const sxx=sig[0]??0, syy=sig[1]??0, szz=sig[2]??0;
       const txy=sig[3]??0, tyz=sig[4]??0, txz=sig[5]??0;
 
+      _lastSig = computePrincipalStresses(sxx, syy, szz, txy, tyz, txz);
       vm = Math.sqrt(0.5*((sxx-syy)**2+(syy-szz)**2+(szz-sxx)**2+6*(txy**2+tyz**2+txz**2)));
 
       if (!isFinite(vm)) {
@@ -286,9 +342,16 @@ export function recoverElementStress(
     safetyFactor[e] = sf;
     if (vm > maxVM) maxVM = vm;
     if (sf < minSF) minSF = sf;
+
+    // Principal stresses — re-read sxx/syy/szz/txy/tyz/txz from the sig/sigAvg
+    // arrays computed above. We store them as a closure variable set per-branch.
+    const [ps1, ps2, ps3] = _lastSig;
+    elemPrincipal[e*3]   = ps1;
+    elemPrincipal[e*3+1] = ps2;
+    elemPrincipal[e*3+2] = ps3;
   }
 
-  return { vonMises, safetyFactor, maxVonMises: maxVM, minSF };
+  return { vonMises, safetyFactor, elemPrincipal, maxVonMises: maxVM, minSF };
 }
 
 // ─── SPR (Superconvergent Patch Recovery) stress smoothing ───────────────────
@@ -496,6 +559,46 @@ export function maxDisplacement(displacement: Float64Array): number {
   return maxD;
 }
 
+// ─── Node-averaged principal stress ──────────────────────────────────────────
+
+/**
+ * Average element principal stresses (σ1, σ2, σ3) at shared nodes.
+ * Returns a flat Float64Array of length nodeCount×3: [σ1₀,σ2₀,σ3₀, σ1₁,...].
+ */
+export function nodeAveragedPrincipalStress(
+  mesh:         TetMesh,
+  elemPrincipal: Float64Array,
+): Float64Array {
+  const nodePrincipal = new Float64Array(mesh.nodeCount * 3);
+  const nodeCount     = new Int32Array(mesh.nodeCount);
+  const npe = mesh.nodesPerElem ?? 4;
+
+  for (let e = 0; e < mesh.elementCount; e++) {
+    const base = e * npe;
+    const ps1 = elemPrincipal[e*3]   ?? 0;
+    const ps2 = elemPrincipal[e*3+1] ?? 0;
+    const ps3 = elemPrincipal[e*3+2] ?? 0;
+    for (let ni = 0; ni < npe; ni++) {
+      const n = mesh.elements[base + ni] ?? 0;
+      nodePrincipal[n*3]   = (nodePrincipal[n*3]   ?? 0) + ps1;
+      nodePrincipal[n*3+1] = (nodePrincipal[n*3+1] ?? 0) + ps2;
+      nodePrincipal[n*3+2] = (nodePrincipal[n*3+2] ?? 0) + ps3;
+      nodeCount[n] = (nodeCount[n] ?? 0) + 1;
+    }
+  }
+
+  for (let n = 0; n < mesh.nodeCount; n++) {
+    const cnt = nodeCount[n] ?? 0;
+    if (cnt > 0) {
+      nodePrincipal[n*3]   = (nodePrincipal[n*3]   ?? 0) / cnt;
+      nodePrincipal[n*3+1] = (nodePrincipal[n*3+1] ?? 0) / cnt;
+      nodePrincipal[n*3+2] = (nodePrincipal[n*3+2] ?? 0) / cnt;
+    }
+  }
+
+  return nodePrincipal;
+}
+
 // ─── Package stress results ───────────────────────────────────────────────────
 
 /**
@@ -509,19 +612,20 @@ export function buildSolverResult(
   converged:    boolean,
   solverMs:     number,
 ): SolverResult {
-  const { vonMises, safetyFactor, maxVonMises, minSF } =
+  const { vonMises, safetyFactor, elemPrincipal, maxVonMises, minSF } =
     recoverElementStress(mesh, displacement, mat);
 
   return {
     displacement,
     vonMises,
     safetyFactor,
-    maxDisplacementMm: maxDisplacement(displacement),
-    maxVonMisesMPa:    maxVonMises,
-    minSafetyFactor:   minSF,
+    maxDisplacementMm:   maxDisplacement(displacement),
+    maxVonMisesMPa:      maxVonMises,
+    minSafetyFactor:     minSF,
     cgIterations,
     converged,
     solverMs,
+    nodePrincipalStress: nodeAveragedPrincipalStress(mesh, elemPrincipal),
   };
 }
 
