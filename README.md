@@ -47,17 +47,43 @@ For FTC bracket design, this means:
 
 ## Installation
 
-```bash
-# Clone or extract the project
-cd stormfea
+### Option A — double-click (recommended for Windows)
 
-# Install dependencies
+1. Install [Node.js v20+](https://nodejs.org) if you haven't already.
+2. Download or clone this repository:
+   ```powershell
+   git clone https://github.com/micahtstoll-ai/STORMFEA.git
+   cd STORMFEA
+   ```
+   Or download the ZIP from GitHub → "Code" → "Download ZIP", then extract it.
+3. Place `tetgen.exe` inside the `STORMFEA` folder (see [Requirements](#requirements)).
+4. Double-click **`start.bat`**.
+
+`start.bat` handles everything automatically on first run: it installs npm
+dependencies, compiles TypeScript, syncs the client files, warns you if TetGen
+or Gmsh is missing, and opens `http://localhost:3000` in your browser.
+
+### Option B — command line
+
+```powershell
+# 1. Clone the repo (only needed once)
+git clone https://github.com/micahtstoll-ai/STORMFEA.git
+cd STORMFEA
+
+# 2. Install dependencies (only needed once)
 npm install
 
-# Add TetGen and Gmsh to PATH (Windows)
-$env:PATH += ";$PWD"  # PowerShell
-# or use start.bat which does this automatically
+# 3. Compile TypeScript (only needed once, or after code changes)
+npm run build
+
+# 4. Start the server
+npm start
+# Open http://localhost:3000
 ```
+
+> **Common mistake:** running `npm install` before `cd STORMFEA` will fail
+> because there is no `package.json` in your home folder. Always `cd` into
+> the project directory first.
 
 ---
 
@@ -116,13 +142,15 @@ to tell whether two separate holes got merged under one surface tag.
 
 ## Running
 
-```bash
-cd stormfea
+```powershell
+cd STORMFEA
+npm run build   # compile TypeScript (skip if dist/ already exists)
 npm start
 # Open http://localhost:3000
 ```
 
-Or double-click `start.bat` on Windows — it adds the binaries to PATH and opens the browser.
+Or double-click `start.bat` on Windows — it compiles if needed, adds the
+binaries to PATH, and opens the browser automatically.
 
 ---
 
