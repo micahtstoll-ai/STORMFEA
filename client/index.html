@@ -2266,28 +2266,74 @@ function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverrid
   // have different smoothed stress values (indicates welding failure or mesh crack).
   if (debugMode) {
     const discontinuities = [];
-    const indexData = geo.index?.array;
-    if (indexData) {
-      for (let t = 0; t < indexData.length; t += 3) {
-        const v0 = indexData[t], v1 = indexData[t+1], v2 = indexData[t+2];
-        const s0 = smoothed[v0], s1 = smoothed[v1], s2 = smoothed[v2];
-        const maxDelta = Math.max(Math.abs(s0-s1), Math.abs(s1-s2), Math.abs(s2-s0));
-        if (maxDelta > 10) { // 10 MPa discontinuity within a single triangle
-          discontinuities.push({ triangle: t/3, v0, v1, v2, s0, s1, s2, maxDelta });
+    const geoIndex = geo.index;
+    const posArray = posArr;
+    const POSITION_TOL = 1e-5; // Within 10 microns, considered "same location"
+
+    // Track vertices that are at the same location but in different groups
+    const coordMap = new Map();
+    for (let i = 0; i < nVerts; i++) {
+      const x = posArray[i*3], y = posArray[i*3+1], z = posArray[i*3+2];
+      const key = `${Math.round(x/POSITION_TOL)},${Math.round(y/POSITION_TOL)},${Math.round(z/POSITION_TOL)}`;
+      if (!coordMap.has(key)) coordMap.set(key, []);
+      coordMap.get(key).push({ i, s: smoothed[i], g: weldGroup[i] });
+    }
+
+    // Find cases where vertices at same location have different groups
+    const weldingIssues = [];
+    for (const [coord, verts] of coordMap) {
+      if (verts.length > 1) {
+        const groups = new Set(verts.map(v => v.g));
+        if (groups.size > 1) {
+          const stresses = verts.map(v => v.s);
+          const stressDelta = Math.max(...stresses) - Math.min(...stresses);
+          if (stressDelta > 5) { // More than 5 MPa difference at same location
+            weldingIssues.push({ coord, verts, stressDelta });
+          }
         }
       }
     }
+
+    if (geoIndex) {
+      for (let t = 0; t < geoIndex.length; t += 3) {
+        const v0 = geoIndex[t], v1 = geoIndex[t+1], v2 = geoIndex[t+2];
+        const s0 = smoothed[v0], s1 = smoothed[v1], s2 = smoothed[v2];
+        const maxDelta = Math.max(Math.abs(s0-s1), Math.abs(s1-s2), Math.abs(s2-s0));
+        if (maxDelta > 10) { // 10 MPa discontinuity within a single triangle
+          const x0=posArray[v0*3],y0=posArray[v0*3+1],z0=posArray[v0*3+2];
+          const x1=posArray[v1*3],y1=posArray[v1*3+1],z1=posArray[v1*3+2];
+          const x2=posArray[v2*3],y2=posArray[v2*3+1],z2=posArray[v2*3+2];
+          const d01 = Math.hypot(x1-x0, y1-y0, z1-z0);
+          const d12 = Math.hypot(x2-x1, y2-y1, z2-z1);
+          const d20 = Math.hypot(x0-x2, y0-y2, z0-z2);
+          discontinuities.push({ triangle: t/3, v0, v1, v2, s0, s1, s2, maxDelta, triSize: Math.max(d01, d12, d20) });
+        }
+      }
+    }
+
     const groups = new Map();
     for (let i = 0; i < nVerts; i++) {
       const g = weldGroup[i];
       if (!groups.has(g)) groups.set(g, []);
       groups.get(g).push(i);
     }
-    console.log(`[DEBUG WELD] ${nVerts} vertices, ${nGroups} groups, largest group ${Math.max(...Array.from(groups.values()).map(g => g.length))} verts`);
+
+    const groupSizes = Array.from(groups.values()).map(g => g.length);
+    console.log(`[DEBUG WELD] ${nVerts} vertices, ${nGroups} groups`);
+    console.log(`[DEBUG WELD] Group size distribution: min=${Math.min(...groupSizes)}, max=${Math.max(...groupSizes)}, avg=${(groupSizes.reduce((a,b)=>a+b)/groupSizes.length).toFixed(1)}`);
+    console.log(`[DEBUG WELD] Vertices at same location but different groups: ${weldingIssues.length}`);
+
+    if (weldingIssues.length > 0) {
+      console.log(`[DEBUG WELD] ⚠ Welding issues found (vertices at same location, different stress):`);
+      weldingIssues.slice(0, 5).forEach((issue, i) => {
+        console.log(`  Issue ${i}: coord=${issue.coord}, ${issue.verts.length} vertices, stress variation=${issue.stressDelta.toFixed(1)} MPa`);
+      });
+    }
+
     if (discontinuities.length > 0) {
-      console.log(`[DEBUG WELD] Found ${discontinuities.length} high-delta triangles (ΔS > 10 MPa):`);
+      console.log(`[DEBUG WELD] High-delta triangles (ΔS > 10 MPa): ${discontinuities.length} found`);
       discontinuities.slice(0, 10).forEach(d => {
-        console.log(`  Triangle ${d.triangle}: v${d.v0}(${d.s0.toFixed(1)} MPa, group ${weldGroup[d.v0]}) v${d.v1}(${d.s1.toFixed(1)} MPa, group ${weldGroup[d.v1]}) v${d.v2}(${d.s2.toFixed(1)} MPa, group ${weldGroup[d.v2]}) Δ=${d.maxDelta.toFixed(1)}`);
+        console.log(`  Triangle ${d.triangle}: Δ=${d.maxDelta.toFixed(1)} MPa, size=${d.triSize.toFixed(4)} mm, groups=${weldGroup[d.v0]}/${weldGroup[d.v1]}/${weldGroup[d.v2]}`);
       });
     }
   }
