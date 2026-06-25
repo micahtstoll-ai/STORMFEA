@@ -147,12 +147,12 @@ function buildIC0(K: CSRMatrix, diagIdx: Int32Array): IC0Factor {
       // scratch[k] already holds L[i,k] for all k < j that have been computed.
       for (let q = jStart; q < jDPos; q++) {
         const k = LcolIdx[q] ?? 0;
-        scratch[j] -= (scratch[k] ?? 0) * (Ldata[q] ?? 0);
+        scratch[j] = (scratch[j] ?? 0) - (scratch[k] ?? 0) * (Ldata[q] ?? 0);
       }
 
       // L[i,j] = scratch[j] / L[j,j]
       const ljj = Ldata[jDPos] ?? 0;
-      const lij = Math.abs(ljj) > 1e-300 ? scratch[j] / ljj : 0;
+      const lij = Math.abs(ljj) > 1e-300 ? (scratch[j] ?? 0) / ljj : 0;
       scratch[j] = lij;
       Ldata[p]   = lij;
     }
@@ -230,10 +230,11 @@ function backwardSolve(
     const rowStart = LrowPtr[i]  ?? 0;
     const dPos     = diagIdx[i]  ?? 0;
     const lii      = Ldata[dPos] ?? 1;
-    x[i] /= lii;
+    x[i] = (x[i] ?? 0) / lii;
     const xi = x[i] ?? 0;
     for (let p = rowStart; p < dPos; p++) {
-      x[LcolIdx[p] ?? 0] -= (Ldata[p] ?? 0) * xi;
+      const jj = LcolIdx[p] ?? 0;
+      x[jj] = (x[jj] ?? 0) - (Ldata[p] ?? 0) * xi;
     }
   }
 }
