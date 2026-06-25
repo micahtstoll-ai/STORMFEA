@@ -50,6 +50,9 @@
 import type { CSRMatrix } from "./types.js";
 import { matvec } from "./assembly.js";
 
+// NOTE: axpby is kept for external callers that may import it, but is no longer
+// used inside solvePCG (replaced by the in-place update below for zero allocation).
+
 // ─── Vector operations ────────────────────────────────────────────────────────
 
 function dot(a: Float64Array, b: Float64Array): number {
@@ -144,6 +147,9 @@ export function solvePCG(
 
   let rz = dot(r, z); // r·z scalar
 
+  // Pre-allocate Ap once — reused every iteration to avoid per-iteration heap allocation.
+  const Ap = new Float64Array(n);
+
   let iter = 0;
   let relRes = norm(r) / fNorm;
 
@@ -188,8 +194,8 @@ export function solvePCG(
       );
     }
 
-    // Ap = K·p
-    const Ap = matvec(K, p);
+    // Ap = K·p  (written into pre-allocated buffer — no heap allocation per iteration)
+    matvec(K, p, Ap);
 
     // α = (r·z) / (p·Ap)
     const pAp = dot(p, Ap);
@@ -225,9 +231,8 @@ export function solvePCG(
     const beta = Math.abs(rz) > 1e-300 ? rzNew / rz : 0;
     rz = rzNew;
 
-    // p = z + β·p
-    const pNew = axpby(1, z, beta, p);
-    for (let i = 0; i < n; i++) p[i] = pNew[i] ?? 0;
+    // p = z + β·p  (in-place, no heap allocation)
+    for (let i = 0; i < n; i++) p[i] = (z[i] ?? 0) + beta * (p[i] ?? 0);
   }
 
   return {
