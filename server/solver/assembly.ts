@@ -51,17 +51,23 @@ function buildSparsityPattern(mesh: TetMesh): {
 
   const neighbours: Set<number>[] = Array.from({ length: n }, () => new Set<number>());
 
+  // Pre-allocate dofs scratch outside the element loop
+  const dofScratch = new Int32Array(npe * 3);
+
   for (let e = 0; e < mesh.elementCount; e++) {
     const nodeBase = e * npe;
-    const dofs: number[] = [];
     for (let ni = 0; ni < npe; ni++) {
       const nodeIdx = i32(mesh.elements, nodeBase + ni);
-      dofs.push(nodeIdx * 3, nodeIdx * 3 + 1, nodeIdx * 3 + 2);
+      dofScratch[ni * 3]     = nodeIdx * 3;
+      dofScratch[ni * 3 + 1] = nodeIdx * 3 + 1;
+      dofScratch[ni * 3 + 2] = nodeIdx * 3 + 2;
     }
-    for (const r of dofs) {
+    const dofCount = npe * 3;
+    for (let di = 0; di < dofCount; di++) {
+      const r = dofScratch[di]!;
       const nset = neighbours[r];
       if (nset === undefined) throw new RangeError(`DOF ${r} out of range n=${n}`);
-      for (const c of dofs) nset.add(c);
+      for (let dj = 0; dj < dofCount; dj++) nset.add(dofScratch[dj]!);
     }
   }
 
@@ -148,18 +154,21 @@ export function assembleK(
   const nnz = rowPtr[n] ?? 0;
   const data = new Float64Array(nnz);
 
+  // Pre-allocate scratch arrays outside the element loop — avoids per-element allocation.
+  const elemNodes = new Int32Array(npe);        // node indices for this element
+  const scratchCoords = new Float64Array(30);   // node coordinates for C3D10 elements (10×3)
+
   for (let e = 0; e < mesh.elementCount; e++) {
     const base = e * npe;
 
-    // Extract node indices for this element
-    const elemNodes: number[] = [];
-    for (let ni = 0; ni < npe; ni++) elemNodes.push(i32(mesh.elements, base + ni));
+    // Extract node indices for this element (into pre-allocated scratch)
+    for (let ni = 0; ni < npe; ni++) elemNodes[ni] = i32(mesh.elements, base + ni);
 
     // Compute element stiffness matrix
     let ke: Float64Array;
     if (npe === 10) {
-      // C3D10: extract 10×3 node coordinates
-      const nodeCoords = new Float64Array(30);
+      // C3D10: extract 10×3 node coordinates into pre-allocated scratch
+      const nodeCoords = scratchCoords;
       for (let ni = 0; ni < 10; ni++) {
         const n = elemNodes[ni]!;
         nodeCoords[ni*3]   = mesh.nodes[n*3]   ?? 0;
@@ -169,7 +178,7 @@ export function assembleK(
       ke = c3d10ElementStiffness(nodeCoords, C);
     } else {
       // C3D4: use existing function
-      const [na, nb, nc, nd] = elemNodes as [number,number,number,number];
+      const na = elemNodes[0]!, nb = elemNodes[1]!, nc = elemNodes[2]!, nd = elemNodes[3]!;
       ke = elementStiffness(mesh.nodes, na, nb, nc, nd, C);
     }
 
@@ -193,10 +202,14 @@ export function assembleK(
 /**
  * Compute K·x (CSR matrix-vector product).
  * This is the inner loop of the CG solver — keep it tight.
+ *
+ * @param out Optional pre-allocated output buffer of length K.n.
+ *            When provided, avoids a heap allocation per call.
+ *            If omitted, a new Float64Array is allocated and returned.
  */
-export function matvec(K: CSRMatrix, x: Float64Array): Float64Array {
+export function matvec(K: CSRMatrix, x: Float64Array, out?: Float64Array): Float64Array {
   const { n, data, colIdx, rowPtr } = K;
-  const y = new Float64Array(n);
+  const y = out ?? new Float64Array(n);
   for (let i = 0; i < n; i++) {
     const start = rowPtr[i] ?? 0;
     const end   = rowPtr[i + 1] ?? data.length;

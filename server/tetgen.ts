@@ -57,7 +57,9 @@ function weldVertices(stlPositions: Float32Array, triangleCount: number): WeldRe
   const outer = new Map<number, Map<number, number>>();
   const slotToWeld = new Int32Array(triangleCount * 3);
   let vertCount = 0;
-  const posArr: number[] = [];
+  // Pre-allocate for the worst case (no welding): every slot is unique.
+  // Actual used positions are sliced to vertCount*3 at return.
+  const posArr = new Float64Array(triangleCount * 3 * 3);
 
   for (let slot = 0; slot < triangleCount * 3; slot++) {
     const x = stlPositions[slot * 3]     ?? 0;
@@ -70,7 +72,13 @@ function weldVertices(stlPositions: Float32Array, triangleCount: number): WeldRe
     let inner = outer.get(outerKey);
     if (!inner) { inner = new Map(); outer.set(outerKey, inner); }
     let idx = inner.get(qx);
-    if (idx === undefined) { idx = vertCount++; inner.set(qx, idx); posArr.push(x, y, z); }
+    if (idx === undefined) {
+      idx = vertCount++;
+      inner.set(qx, idx);
+      posArr[idx * 3]     = x;
+      posArr[idx * 3 + 1] = y;
+      posArr[idx * 3 + 2] = z;
+    }
     slotToWeld[slot] = idx;
   }
 
@@ -78,7 +86,7 @@ function weldVertices(stlPositions: Float32Array, triangleCount: number): WeldRe
   for (let t = 0; t < triangleCount * 3; t++) faces[t] = slotToWeld[t] ?? 0;
 
   return {
-    positions: new Float64Array(posArr),
+    positions: posArr.slice(0, vertCount * 3),
     faces,
     vertCount,
     triCount: triangleCount,

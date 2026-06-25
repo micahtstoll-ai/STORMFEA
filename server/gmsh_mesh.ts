@@ -125,7 +125,10 @@ function parseMsh2(text: string): {
   i++;
   const totalElems = parseInt(lines[i++]!, 10);
 
-  const tets: number[] = [];
+  // Pre-allocate tets buffer at worst-case size (10 nodes × totalElems).
+  // Actual used entries are sliced to tetPos at the end.
+  const tetsBuf = new Int32Array(totalElems * 10);
+  let tetPos = 0;
   const surfaceTris = new Map<number, Array<[number,number,number]>>();
   let detectedNPE = 4;
 
@@ -140,13 +143,13 @@ function parseMsh2(text: string): {
     if (etype === 4) {
       // C3D4: 4-node linear tet
       for (let k = 0; k < 4; k++)
-        tets.push(nodeIdToIdx.get(parseInt(parts[base+k]!, 10)) ?? 0);
+        tetsBuf[tetPos++] = nodeIdToIdx.get(parseInt(parts[base+k]!, 10)) ?? 0;
 
     } else if (etype === 11) {
       // C3D10: 10-node quadratic tet — Gmsh ordering matches our element.ts
       detectedNPE = 10;
       for (let k = 0; k < 10; k++)
-        tets.push(nodeIdToIdx.get(parseInt(parts[base+k]!, 10)) ?? 0);
+        tetsBuf[tetPos++] = nodeIdToIdx.get(parseInt(parts[base+k]!, 10)) ?? 0;
 
     } else if (etype === 2 || etype === 9) {
       // Linear or quadratic triangle — use corner nodes only for surface display
@@ -158,11 +161,11 @@ function parseMsh2(text: string): {
     }
   }
 
-  const elementCount = tets.length / detectedNPE;
+  const elementCount = tetPos / detectedNPE;
   return {
     nodes:    nodesFlat,
     nodeCount,
-    elements: new Int32Array(tets),
+    elements: tetsBuf.slice(0, tetPos),
     elementCount,
     nodesPerElem: detectedNPE,
     surfaceTris,
@@ -196,7 +199,8 @@ function clusterByDistance(
     [nodes[idx * 3] ?? 0, nodes[idx * 3 + 1] ?? 0]);
 
   // Median nearest-neighbor distance, used to set an adaptive threshold
-  const nnDists: number[] = [];
+  // Pre-allocate typed array to avoid push overhead for large surface node sets
+  const nnDists = new Float64Array(n);
   for (let i = 0; i < n; i++) {
     let minD = Infinity;
     for (let j = 0; j < n; j++) {
@@ -205,9 +209,9 @@ function clusterByDistance(
       const d = Math.sqrt(dx * dx + dy * dy);
       if (d < minD) minD = d;
     }
-    nnDists.push(minD);
+    nnDists[i] = minD;
   }
-  nnDists.sort((a, b) => a - b);
+  nnDists.sort();
   const medianNN = nnDists[Math.floor(nnDists.length / 2)] ?? 1.0;
   const threshold = Math.max(0.5, medianNN * 5);
 
@@ -491,11 +495,16 @@ export async function meshStepWithGmsh(
   const bottomFaceNodes = bottomSurfs.flatMap(s => s.nodeIndices ?? []);
 
   // Build surface triangle array for heatmap rendering
-  // Collect all surface triangles (excluding inner hole surfaces from display)
-  const allSurfTris: number[] = [];
+  // Count total triangles first, then fill a pre-allocated Int32Array
+  let totalSurfTriCount = 0;
+  for (const [, tris] of parsed.surfaceTris.entries()) totalSurfTriCount += tris.length;
+  const allSurfTris = new Int32Array(totalSurfTriCount * 3);
+  let surfTriPos = 0;
   for (const [, tris] of parsed.surfaceTris.entries()) {
     for (const [a,b,c] of tris) {
-      allSurfTris.push(a, b, c);
+      allSurfTris[surfTriPos++] = a;
+      allSurfTris[surfTriPos++] = b;
+      allSurfTris[surfTriPos++] = c;
     }
   }
 
@@ -523,6 +532,6 @@ export async function meshStepWithGmsh(
     holeRadius,
     topFaceNodes,
     bottomFaceNodes,
-    surfaceTriangles: new Int32Array(allSurfTris),
+    surfaceTriangles: allSurfTris,
   };
 }

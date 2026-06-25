@@ -17,6 +17,19 @@
 
 import { generateBoxMesh }                  from "./solver/meshgen.js";
 import { runLinearStatic }                  from "./solver/pipeline.js";
+
+// ─── Memory profiling snap helper ────────────────────────────────────────────
+// Activated by STORMFEA_PROFILE_MEMORY=1. Mirrors the helper in pipeline.ts.
+const _analysisProfileMem = process.env["STORMFEA_PROFILE_MEMORY"] === "1";
+let _analysisLastHeapMB = 0;
+function _snapAnalysis(label: string): void {
+  if (!_analysisProfileMem) return;
+  if (typeof globalThis.gc === "function") globalThis.gc();
+  const heapMB = process.memoryUsage().heapUsed / 1024 / 1024;
+  const deltaMB = heapMB - _analysisLastHeapMB;
+  console.log(`[mem/analysis] ${label}: heap=${heapMB.toFixed(1)}MB delta=${deltaMB >= 0 ? "+" : ""}${deltaMB.toFixed(1)}MB`);
+  _analysisLastHeapMB = heapMB;
+}
 import type { SolverInput }                 from "./solver/pipeline.js";
 import type { IsotropicMaterial, AnyMaterial, OrthotropicMaterial } from "./solver/types.js";
 import { isOrthotropic } from "./solver/types.js";
@@ -1465,9 +1478,11 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     };
     const opts = clOpts[req.meshQuality as keyof typeof clOpts] ?? clOpts.standard;
     const elementOrder = req.print.meshOrder ?? 1;
+    _snapAnalysis("before Gmsh mesh");
     console.log("[analysis] meshing STEP with Gmsh...");
     gmshResult = await meshStepWithGmsh(req.stepBuffer, { ...opts, elementOrder });
     mesh = gmshResult.mesh;
+    _snapAnalysis("after Gmsh mesh");
     surfaceToNode = new Int32Array(gmshResult.surfaceTriangles.length);
     for (let i = 0; i < gmshResult.surfaceTriangles.length; i++) {
       surfaceToNode[i] = gmshResult.surfaceTriangles[i] ?? 0;
@@ -1476,11 +1491,13 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   } else {
     // ── STL path: TetGen ─────────────────────────────────────────────────────
     try {
+      _snapAnalysis("before TetGen mesh");
       console.log("[analysis] meshing with TetGen...");
       const tetResult = await meshWithTetGen(req.positions, req.triangleCount);
       mesh          = tetResult.mesh;
       surfaceToNode = tetResult.surfaceToNode;
       console.log(`[analysis] TetGen mesh: ${mesh.nodeCount} nodes, ${mesh.elementCount} elements`);
+      _snapAnalysis("after TetGen mesh");
     } catch (err) {
       console.warn("[analysis] TetGen failed, falling back to box mesh:", err);
       meshFallback = true;
@@ -1676,7 +1693,9 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // especially at stress concentrations near holes.
   // Falls back to direct averaging for under-determined patches (<4 elements).
   // Reference: Zienkiewicz & Zhu (1992) Int J Numer Methods Eng 33(7).
+  _snapAnalysis("before sprSmoothedStress");
   const nodeStress = sprSmoothedStress(mesh, result.vonMises);
+  _snapAnalysis("after sprSmoothedStress");
 
   // ── Map stress back to surface vertices ────────────────────────────────────
   // Vertex count must match the CLIENT's display mesh (req.positions /
