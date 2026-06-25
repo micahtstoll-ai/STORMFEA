@@ -2762,6 +2762,21 @@ function raycast(clientX, clientY) {
   return { localPos, worldPos: hits[0].point.clone(), faceIndex: hits[0].faceIndex };
 }
 
+function raycastMesh(mesh, clientX, clientY) {
+  if (!mesh) return null;
+  const el = document.getElementById('viewer');
+  const rect = el.getBoundingClientRect();
+  const x = ((clientX - rect.left) / rect.width) * 2 - 1;
+  const y = -((clientY - rect.top) / rect.height) * 2 + 1;
+  const rc = new THREE.Raycaster();
+  rc.setFromCamera(new THREE.Vector2(x, y), camera);
+  const hits = rc.intersectObject(mesh);
+  if (!hits.length) return null;
+  const inv = new THREE.Matrix4().copy(mesh.matrixWorld).invert();
+  const localPos = hits[0].point.clone().applyMatrix4(inv);
+  return { localPos, worldPos: hits[0].point.clone(), faceIndex: hits[0].faceIndex };
+}
+
 // ─── Hole proximity in local space ───────────────────────────────────────────
 let hoverHole = null, hoverMesh3d = null;
 
@@ -2941,17 +2956,40 @@ function handleHover(e) {
 // more honest answer anyway (interpolating across a real discontinuity would
 // invent a value that doesn't exist in the underlying field).
 function handleStressHover(e) {
-  // Suppress during split view: S._stressArrays always reflects Design B /
-  // current, regardless of which half the cursor is actually over, so
-  // showing it while hovering Design A's half would display the wrong
-  // design's value. The static split labels already show the SF comparison.
-  if (_splitActive) { clearStressHover(); return; }
-  if (!S.showStress || !S._stressArrays || !mesh3d) { clearStressHover(); return; }
+  if (!S.showStress || !mesh3d) { clearStressHover(); return; }
 
-  const hit = raycast(e.clientX, e.clientY);
+  let targetMesh, targetStressArrays;
+  const mode = S.stressMode || 'vm';
+
+  if (_splitActive) {
+    // In split view, detect which half the cursor is over and use appropriate mesh/arrays
+    if (!_splitMeshA || !AB.baseline?.stressArrays || !AB.comparison?.stressArrays) {
+      clearStressHover(); return;
+    }
+    const viewerRect = document.getElementById('viewer').getBoundingClientRect();
+    const splitPx = Math.round(0.5 * viewerRect.width);
+    const cursorX = e.clientX - viewerRect.left;
+
+    if (cursorX < splitPx) {
+      // Left half: Design A
+      targetMesh = _splitMeshA;
+      targetStressArrays = AB.baseline.stressArrays;
+    } else {
+      // Right half: Design B
+      targetMesh = mesh3d;
+      targetStressArrays = AB.comparison.stressArrays;
+    }
+  } else {
+    // Normal mode: use current mesh and stress arrays
+    if (!S._stressArrays) { clearStressHover(); return; }
+    targetMesh = mesh3d;
+    targetStressArrays = S._stressArrays;
+  }
+
+  const hit = raycastMesh(targetMesh, e.clientX, e.clientY);
   if (!hit || hit.faceIndex === undefined || hit.faceIndex === null) { clearStressHover(); return; }
 
-  const geo = mesh3d.geometry;
+  const geo = targetMesh.geometry;
   const posAttr = geo.attributes.position;
   const base = hit.faceIndex * 3; // unindexed STL: triangle i owns verts [3i, 3i+1, 3i+2]
 
@@ -2964,8 +3002,7 @@ function handleStressHover(e) {
     if (d < bestD) { bestD = d; bestVi = vi; }
   }
 
-  const mode = S.stressMode || 'vm';
-  const arr  = S._stressArrays[mode];
+  const arr  = targetStressArrays[mode];
   const val  = arr ? (arr[bestVi] ?? 0) : 0;
 
   const labels = { vm: 'von Mises', s1: 'Principal σ₁', dmg: 'Damage ratio' };
