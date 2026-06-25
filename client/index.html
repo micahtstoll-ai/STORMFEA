@@ -1718,6 +1718,7 @@ const S = {
 // ─── Three.js setup ───────────────────────────────────────────────────────────
 let scene, camera, renderer, mesh3d, animId;
 const overlays = []; // overlay 3D objects on the mesh
+let displacementWireframe = null; // wireframe mesh for displacement visualization
 
 // ─── Camera orbit state ──────────────────────────────────────────────────────
 // Coordinate convention: Y is . The build plate is the XZ plane at Y=0.
@@ -2194,6 +2195,10 @@ function loadMeshFromPositions(posB64) {
   rotX = 0; rotY = 0;
   mesh3d.rotation.set(0, 0, 0);
   scene.add(mesh3d);
+
+  // Initialize displacement wireframe (hidden until toggled)
+  // Will be populated after analysis results arrive
+  displacementWireframe = null;
 
   // Fit camera to part: orbit center at part mid-height, zoom to fit
   const partSize = Math.max(sz.x, sz.y, sz.z) * scale;
@@ -4416,6 +4421,24 @@ async function runAnalysis() {
     }
 
     applyStressColors(dataStd.vertexStressB64, dataStd.summary.maxVonMisesMPa, dataStd.vertexPrincipalStressB64);
+
+    // Create displacement wireframe and add to scene
+    if (S.displacements && mesh3d) {
+      // Remove old wireframe if it exists
+      if (displacementWireframe) {
+        scene.remove(displacementWireframe);
+      }
+      // Create new wireframe with default exaggeration factor (will be adjustable in Step 6)
+      displacementWireframe = createDisplacementWireframe(mesh3d.geometry, S.displacements, 5.0);
+      if (displacementWireframe) {
+        displacementWireframe.visible = false; // hidden by default
+        scene.add(displacementWireframe);
+        console.log('[wireframe] displacement wireframe created and added to scene');
+      } else {
+        console.warn('[wireframe] failed to create displacement wireframe');
+      }
+    }
+
     showResults(dataStd.summary);
     showOrientComparison(dataStd.summary);
     storeAsBaseline(dataStd.summary, S.fileData?.fileName);
@@ -4555,6 +4578,20 @@ async function runAnalysis() {
       }
 
       applyStressColors(dataFine.vertexStressB64, dataFine.summary.maxVonMisesMPa, dataFine.vertexPrincipalStressB64);
+
+      // Recreate displacement wireframe with fine mesh data
+      if (S.displacements && mesh3d) {
+        if (displacementWireframe) {
+          scene.remove(displacementWireframe);
+        }
+        displacementWireframe = createDisplacementWireframe(mesh3d.geometry, S.displacements, 5.0);
+        if (displacementWireframe) {
+          displacementWireframe.visible = false;
+          scene.add(displacementWireframe);
+          console.log('[wireframe] displacement wireframe updated with fine mesh data');
+        }
+      }
+
       showResults(dataFine.summary);
       showOrientComparison(dataFine.summary);
       storeAsBaseline(dataFine.summary, S.fileData?.fileName);
