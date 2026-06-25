@@ -8327,6 +8327,7 @@ async function runABComparison() {
         pattern:     document.getElementById('s-pattern')?.value,
         orientation: document.getElementById('s-orient')?.value,
         layerHeightMm: +(document.getElementById('s-lh')?.value ?? 20) / 100,
+        meshOrder:     +(document.getElementById('s-mesh-order')?.value ?? 1),
       },
     };
 
@@ -8382,6 +8383,46 @@ function renderABComparison() {
   const govB = B.failureModes?.find(m=>m.checked)?.mode || 'Bulk yield';
   const govChanged = govA !== govB;
 
+  // Helper to format setting values for display
+  const formatSettingValue = (key, value) => {
+    if (key === 'materialId') {
+      const matMap = {'pla':'PLA','petg':'PETG','abs':'ABS','asa':'ASA','tpu':'TPU','pa12':'PA12'};
+      return matMap[value] || value;
+    }
+    if (key === 'infillPct') return `${value}%`;
+    if (key === 'pattern') {
+      const patMap = {'gyroid':'Gyroid','cubic':'Cubic','grid':'Grid','trihexagon':'Tri-hexagon','adaptive':'Adaptive','honeycomb':'Honeycomb','lines':'Lines','concentric':'Concentric','lightning':'Lightning'};
+      return patMap[value] || value;
+    }
+    if (key === 'orientation') {
+      const orMap = {'flat':'Flat (weakest)','upright':'Upright (strongest)','angled':'Angled'};
+      return orMap[value] || value;
+    }
+    if (key === 'layerHeightMm') return `${parseFloat(value).toFixed(2)}mm`;
+    if (key === 'meshOrder') return value === 1 || value === '1' ? 'Linear (C3D4)' : 'Quadratic (C3D10)';
+    return value;
+  };
+
+  // Detect changed settings
+  const settingsA = AB.baseline.settings || {};
+  const settingsB = AB.comparison.settings || {};
+  const changedSettings = [];
+  ['materialId','infillPct','pattern','orientation','layerHeightMm','meshOrder'].forEach(key => {
+    if (settingsA[key] !== settingsB[key]) {
+      changedSettings.push({
+        key,
+        label: key === 'materialId' ? 'Material' :
+               key === 'infillPct' ? 'Infill %' :
+               key === 'pattern' ? 'Pattern' :
+               key === 'orientation' ? 'Orientation' :
+               key === 'layerHeightMm' ? 'Layer height' :
+               key === 'meshOrder' ? 'Mesh order' : key,
+        valA: formatSettingValue(key, settingsA[key]),
+        valB: formatSettingValue(key, settingsB[key])
+      });
+    }
+  });
+
   const row = (label, vA, vB, deltaHtml) =>
     `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 60px;gap:6px;padding:5px 0;border-bottom:1px solid var(--border);font-size:11px;align-items:center">
       <div style="color:var(--text-label)">${label}</div>
@@ -8397,6 +8438,20 @@ function renderABComparison() {
     ? `<div style="padding:8px 12px;background:var(--bg-card);border:1px solid var(--danger)44;border-radius:3px;font-size:11px;color:var(--danger);margin-bottom:12px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Design B is ${((sfA-sfB)/sfA*100).toFixed(0)}% weaker</div>`
     : `<div style="padding:8px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:3px;font-size:11px;color:var(--text-lo);margin-bottom:12px">≈ No significant difference (&lt;2%)</div>`;
 
+  let resultsRows = row('Safety factor',      `${sfA.toFixed(2)}×`, `<b style="color:${sfColor}">${sfB.toFixed(2)}×</b>`, delta(sfA,sfB,'',true)) +
+    row('Fail force (' + U.forceLabel() + ')',  `${U.force(fA).toFixed(0)}`,  `${U.force(fB).toFixed(0)}`, delta(fA,fB,'',true)) +
+    row('Peak stress (' + U.stressLabel() + ')', `${U.stress(vmA).toFixed(S.units==='imperial'?0:1)}`, `${U.stress(vmB).toFixed(S.units==='imperial'?0:1)}`, delta(vmA,vmB,'',false)) +
+    row('Max displacement (' + U.lenLabel() + ')', `${U.len(dA).toFixed(S.units==='imperial'?4:3)}`, `${U.len(dB).toFixed(S.units==='imperial'?4:3)}`, delta(dA,dB,'',false));
+
+  // Add settings rows if any changed
+  let settingsRows = '';
+  if (changedSettings.length > 0) {
+    settingsRows = `<div style="border-top:1px solid var(--border);margin-top:4px;padding-top:6px;color:var(--text-label);font-size:9px;letter-spacing:.05em;margin-bottom:4px">CHANGED SETTINGS</div>`;
+    changedSettings.forEach(s => {
+      settingsRows += row(s.label, s.valA, s.valB, '');
+    });
+  }
+
   el.innerHTML = splitBtnHtml + verdict +
     `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 60px;gap:6px;padding:4px 0;margin-bottom:4px">
       <div style="font-size:10px;color:var(--text-lo)">Metric</div>
@@ -8404,10 +8459,8 @@ function renderABComparison() {
       <div style="font-size:10px;color:var(--gold)">${AB.comparison.fileName}</div>
       <div style="font-size:10px;color:var(--text-lo);text-align:right">Δ</div>
     </div>` +
-    row('Safety factor',      `${sfA.toFixed(2)}×`, `<b style="color:${sfColor}">${sfB.toFixed(2)}×</b>`, delta(sfA,sfB,'',true)) +
-    row('Fail force (' + U.forceLabel() + ')',  `${U.force(fA).toFixed(0)}`,  `${U.force(fB).toFixed(0)}`, delta(fA,fB,'',true)) +
-    row('Peak stress (' + U.stressLabel() + ')', `${U.stress(vmA).toFixed(S.units==='imperial'?0:1)}`, `${U.stress(vmB).toFixed(S.units==='imperial'?0:1)}`, delta(vmA,vmB,'',false)) +
-    row('Max displacement (' + U.lenLabel() + ')', `${U.len(dA).toFixed(S.units==='imperial'?4:3)}`, `${U.len(dB).toFixed(S.units==='imperial'?4:3)}`, delta(dA,dB,'',false)) +
+    resultsRows +
+    settingsRows +
     (govChanged ? `<div style="font-size:10px;color:var(--warn);padding:6px 0"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Governing failure mode changed: ${govA} -> ${govB}</div>` : '') +
     `<button class="btn" style="width:100%;margin-top:10px;font-size:11px" onclick="clearABComparison()">Clear comparison</button>`;
 
