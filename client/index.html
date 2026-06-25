@@ -2225,29 +2225,77 @@ function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverrid
   const groupStressCnt = new Int32Array(nVerts);
   let nGroups = 0;
   const weldMap = new Map();
+  const debugMode = new URLSearchParams(window.location.search).has('debugWeld');
+  const debugVertices = new Set();
+
+  // Find bounding box for stable grid indexing. Uses FLOOR-based indexing
+  // (consistent with server-side spatial grid in analysis.ts:1728-1730).
+  // This avoids edge cases with Math.round() on negative coordinates:
+  // round(-0.75) = -1, but round(-0.25) = 0, causing vertices that should
+  // weld together to hash into non-adjacent cells.
+  let xMin = Infinity, xMax = -Infinity;
+  let yMin = Infinity, yMax = -Infinity;
+  let zMin = Infinity, zMax = -Infinity;
+  for (let i = 0; i < nVerts; i++) {
+    const x = posArr[i*3], y = posArr[i*3+1], z = posArr[i*3+2];
+    if (x < xMin) xMin = x; if (x > xMax) xMax = x;
+    if (y < yMin) yMin = y; if (y > yMax) yMax = y;
+    if (z < zMin) zMin = z; if (z > zMax) zMax = z;
+  }
 
   for (let i = 0; i < nVerts; i++) {
     const px = posArr[i*3], py = posArr[i*3+1], pz = posArr[i*3+2];
-    const ci = Math.round(px / WELD_CELL);
-    const cj = Math.round(py / WELD_CELL);
-    const ck = Math.round(pz / WELD_CELL);
+    // Floor-based grid: consistent with server's spatial indexing algorithm
+    const ci = Math.floor((px - xMin) / WELD_CELL);
+    const cj = Math.floor((py - yMin) / WELD_CELL);
+    const ck = Math.floor((pz - zMin) / WELD_CELL);
     let foundGroup = -1;
+    let foundAt = null;
     outer: for (let di = -1; di <= 1; di++) {
       for (let dj = -1; dj <= 1; dj++) {
         for (let dk = -1; dk <= 1; dk++) {
           const key = `${ci+di},${cj+dj},${ck+dk}`;
           const existing = weldMap.get(key);
-          if (existing !== undefined) { foundGroup = existing; break outer; }
+          if (existing !== undefined) { foundGroup = existing; foundAt = key; break outer; }
         }
       }
     }
     if (foundGroup === -1) {
       foundGroup = nGroups++;
+      if (debugMode) debugVertices.add(i);
     }
     weldMap.set(`${ci},${cj},${ck}`, foundGroup);
     weldGroup[i] = foundGroup;
     groupStressSum[foundGroup] += vertexStress[i] ?? 0;
     groupStressCnt[foundGroup]++;
+  }
+
+  // Optional verification pass (debug mode only): ensure grid-based grouping
+  // correctly captured all vertices within WELD_EPS. With the floor-based
+  // grid and bounding-box normalization, the grid should work correctly,
+  // but this pass catches any remaining edge cases.
+  if (debugMode) {
+    const WELD_EPS_SQ = WELD_EPS * WELD_EPS;
+    const groupReps = new Map();
+    for (let i = 0; i < nVerts; i++) {
+      const g = weldGroup[i];
+      if (!groupReps.has(g)) groupReps.set(g, i);
+    }
+
+    let misaligned = 0;
+    for (let i = 0; i < nVerts; i++) {
+      const px = posArr[i*3], py = posArr[i*3+1], pz = posArr[i*3+2];
+      const g = weldGroup[i];
+      const repIdx = groupReps.get(g);
+      const repX = posArr[repIdx*3], repY = posArr[repIdx*3+1], repZ = posArr[repIdx*3+2];
+      const dist2 = (px-repX)*(px-repX) + (py-repY)*(py-repY) + (pz-repZ)*(pz-repZ);
+      if (dist2 > WELD_EPS_SQ) {
+        misaligned++;
+      }
+    }
+    if (misaligned > 0) {
+      console.log(`[DEBUG WELD] Warning: ${misaligned} vertices exceed WELD_EPS distance from their group rep`);
+    }
   }
 
   // Per-vertex smoothed value: 100% group average. All geometrically
@@ -2256,6 +2304,82 @@ function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverrid
   for (let i = 0; i < nVerts; i++) {
     const g = weldGroup[i];
     smoothed[i] = groupStressCnt[g] > 0 ? groupStressSum[g] / groupStressCnt[g] : 0;
+  }
+
+  // Detect discontinuities: find vertices that are spatially very close but
+  // have different smoothed stress values (indicates welding failure or mesh crack).
+  if (debugMode) {
+    const discontinuities = [];
+    const geoIndex = geo.index;
+    const posArray = posArr;
+    const POSITION_TOL = 1e-5; // Within 10 microns, considered "same location"
+
+    // Track vertices that are at the same location but in different groups
+    const coordMap = new Map();
+    for (let i = 0; i < nVerts; i++) {
+      const x = posArray[i*3], y = posArray[i*3+1], z = posArray[i*3+2];
+      const key = `${Math.round(x/POSITION_TOL)},${Math.round(y/POSITION_TOL)},${Math.round(z/POSITION_TOL)}`;
+      if (!coordMap.has(key)) coordMap.set(key, []);
+      coordMap.get(key).push({ i, s: smoothed[i], g: weldGroup[i] });
+    }
+
+    // Find cases where vertices at same location have different groups
+    const weldingIssues = [];
+    for (const [coord, verts] of coordMap) {
+      if (verts.length > 1) {
+        const groups = new Set(verts.map(v => v.g));
+        if (groups.size > 1) {
+          const stresses = verts.map(v => v.s);
+          const stressDelta = Math.max(...stresses) - Math.min(...stresses);
+          if (stressDelta > 5) { // More than 5 MPa difference at same location
+            weldingIssues.push({ coord, verts, stressDelta });
+          }
+        }
+      }
+    }
+
+    if (geoIndex) {
+      for (let t = 0; t < geoIndex.length; t += 3) {
+        const v0 = geoIndex[t], v1 = geoIndex[t+1], v2 = geoIndex[t+2];
+        const s0 = smoothed[v0], s1 = smoothed[v1], s2 = smoothed[v2];
+        const maxDelta = Math.max(Math.abs(s0-s1), Math.abs(s1-s2), Math.abs(s2-s0));
+        if (maxDelta > 10) { // 10 MPa discontinuity within a single triangle
+          const x0=posArray[v0*3],y0=posArray[v0*3+1],z0=posArray[v0*3+2];
+          const x1=posArray[v1*3],y1=posArray[v1*3+1],z1=posArray[v1*3+2];
+          const x2=posArray[v2*3],y2=posArray[v2*3+1],z2=posArray[v2*3+2];
+          const d01 = Math.hypot(x1-x0, y1-y0, z1-z0);
+          const d12 = Math.hypot(x2-x1, y2-y1, z2-z1);
+          const d20 = Math.hypot(x0-x2, y0-y2, z0-z2);
+          discontinuities.push({ triangle: t/3, v0, v1, v2, s0, s1, s2, maxDelta, triSize: Math.max(d01, d12, d20) });
+        }
+      }
+    }
+
+    const groups = new Map();
+    for (let i = 0; i < nVerts; i++) {
+      const g = weldGroup[i];
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(i);
+    }
+
+    const groupSizes = Array.from(groups.values()).map(g => g.length);
+    console.log(`[DEBUG WELD] ${nVerts} vertices, ${nGroups} groups`);
+    console.log(`[DEBUG WELD] Group size distribution: min=${Math.min(...groupSizes)}, max=${Math.max(...groupSizes)}, avg=${(groupSizes.reduce((a,b)=>a+b)/groupSizes.length).toFixed(1)}`);
+    console.log(`[DEBUG WELD] Vertices at same location but different groups: ${weldingIssues.length}`);
+
+    if (weldingIssues.length > 0) {
+      console.log(`[DEBUG WELD] ⚠ Welding issues found (vertices at same location, different stress):`);
+      weldingIssues.slice(0, 5).forEach((issue, i) => {
+        console.log(`  Issue ${i}: coord=${issue.coord}, ${issue.verts.length} vertices, stress variation=${issue.stressDelta.toFixed(1)} MPa`);
+      });
+    }
+
+    if (discontinuities.length > 0) {
+      console.log(`[DEBUG WELD] High-delta triangles (ΔS > 10 MPa): ${discontinuities.length} found`);
+      discontinuities.slice(0, 10).forEach(d => {
+        console.log(`  Triangle ${d.triangle}: Δ=${d.maxDelta.toFixed(1)} MPa, size=${d.triSize.toFixed(4)} mm, groups=${weldGroup[d.v0]}/${weldGroup[d.v1]}/${weldGroup[d.v2]}`);
+      });
+    }
   }
 
   // Percentile range on smoothed values — clips outliers at both ends so a
@@ -2277,7 +2401,8 @@ function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverrid
   // Gamma curve so mid-range detail is visible: gamma < 1 expands the
   // low-stress end, compresses the peak — hotspots stay visible as warm
   // colors but don't flood the whole model.
-  const GAMMA = 0.55;
+  const disableGamma = new URLSearchParams(window.location.search).has('disableGamma');
+  const GAMMA = disableGamma ? 1.0 : 0.55;
   const colors = new Float32Array(nVerts * 3);
   for (let i = 0; i < nVerts; i++) {
     const linear = range > 0 ? Math.max(0, Math.min(1, (smoothed[i] - effectiveMin) / range)) : 0;
@@ -2286,13 +2411,50 @@ function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverrid
     colors[i*3] = r; colors[i*3+1] = g; colors[i*3+2] = b;
   }
 
-  return { colors, effectiveMin, effectiveMax, range, rawMin: minV, rawMax: maxV };
+  if (debugMode) {
+    console.log(`[DEBUG COLOR] gamma=${GAMMA}, range=[${effectiveMin.toFixed(2)}, ${effectiveMax.toFixed(2)}], effectiveRange=${range.toFixed(2)}`);
+  }
+
+  return { colors, effectiveMin, effectiveMax, range, rawMin: minV, rawMax: maxV, debugMode };
+}
+
+// Validate stress array integrity (catches regressions in mesh-vertex mapping)
+function validateStressArray(stressArray, expectedLength, label) {
+  if (!stressArray || stressArray.length !== expectedLength) {
+    throw new Error(
+      `[validateStressArray] ${label}: length mismatch. Expected ${expectedLength}, got ${stressArray?.length ?? 'undefined'}. ` +
+      `This usually means the server's vertex-stress array was sized from the wrong mesh. Ensure server uses req.triangleCount * 3, not gmshResult.surfaceTriangles.length`
+    );
+  }
+  let hasNaN = 0, hasInf = 0;
+  for (let i = 0; i < stressArray.length; i++) {
+    if (!isFinite(stressArray[i])) {
+      if (isNaN(stressArray[i])) hasNaN++;
+      else hasInf++;
+    }
+  }
+  if (hasNaN > 0 || hasInf > 0) {
+    console.warn(
+      `[validateStressArray] ${label}: found ${hasNaN} NaN and ${hasInf} Inf values. ` +
+      `This indicates corrupt or invalid stress data from the solver.`
+    );
+  }
+  return true;
 }
 
 function applyStressColors(stressB64, maxStress, principalStressB64) {
   if (!mesh3d) return;
   const buf = Uint8Array.from(atob(stressB64), c => c.charCodeAt(0));
   const vertexStress = new Float32Array(buf.buffer);
+  const expectedLength = mesh3d.geometry.attributes.position.count * 3;
+
+  // Validate array integrity
+  try {
+    validateStressArray(vertexStress, expectedLength, "vertexStress");
+  } catch (e) {
+    console.error(e.message);
+    return;
+  }
 
   const { colors, effectiveMin, effectiveMax, range, rawMin, rawMax } =
     computeSmoothedStressColors(vertexStress);

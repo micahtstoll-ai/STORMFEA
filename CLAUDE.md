@@ -87,5 +87,56 @@ When making automated PRs or commits:
 4. Never use: `git add -A` or `git add .` - add files explicitly
 5. Never delete: Build artifacts (dist/), lock files, or config files
 
+## Heatmap Rendering — Common Pitfalls & Lessons Learned
+
+### Known Issue: Vertex Welding Algorithm (FIXED)
+**Problem:** Visible line artifacts in heatmap coloring, appearing as straight lines across the 3D visualization. These were caused by vertices at mesh seams not being properly grouped for stress smoothing.
+
+**Root Cause:** The spatial hash grid for vertex welding used `Math.round()` for grid cell indexing, which caused edge cases with negative coordinates:
+- `Math.round(-0.25) = 0` but `Math.round(-0.75) = -1`
+- Vertices within 0.01mm (WELD_EPS) could hash to non-adjacent cells
+- The 27-cell neighborhood search would eventually find connections, but only after multiple passes
+- Under certain mesh geometries, this led to vertices that should be welded together remaining separate
+
+**Solution Applied (commit: 49bc5d6):**
+- Switched from `Math.round()` to `Math.floor()` with bounding-box normalization (consistent with server-side spatial indexing in `server/analysis.ts:1728-1730`)
+- This ensures all vertices are consistently hashed within a normalized [0, extent) range
+- Added diagnostic debug modes (`?debugWeld=true`) for future troubleshooting
+
+**Key Insight:** The server's spatial grid (`analysis.ts`) uses `Math.floor((x - xMin) / cellSize)`, so the client's vertex welding should match this approach for consistency and to avoid edge-case artifacts.
+
+### Vertex Welding Requirements (Invariants)
+When modifying heatmap or mesh coloring code:
+1. **Every vertex in display mesh MUST receive a stress value** — verify `vertexStress.length === triangleCount * 3`
+2. **Vertices at same location (distance < 1 micron) MUST get identical stress** — weld before color assignment
+3. **Use consistent grid-cell indexing** — match server's `floor((x - min) / cell)` approach, never `round(x / cell)`
+4. **Test on edge cases:** negative coordinates, mesh boundaries, seams between large and small triangles
+
+### Material & Shading Essentials
+- **Always use Gouraud shading** (vertex-interpolated) for stress heatmaps: `flatShading: false` in MeshPhongMaterial
+- **Never use flat-shading** on ColorAttribute geometries — creates hard edges at triangle boundaries that appear as artifacts
+- **Color clamping:** Use per-vertex colors, not per-triangle; gamma curve (`GAMMA = 0.55`) expands low-stress regions
+
+### Debug Tools Available
+- `?debugWeld=true` — Logs vertex grouping statistics, discontinuity detection, potential welding issues
+- `?disableGamma=true` — Disables gamma curve (test if color banding is from gamma expansion)
+- Console output includes group size distribution and high-discontinuity triangles
+
+### Code Review Checklist (Stress Rendering Changes)
+Before submitting a PR that modifies mesh visualization or stress heatmap:
+- [ ] Are coincident vertices being welded BEFORE color assignment? (weld tolerance: 0.01mm)
+- [ ] Is shading mode explicitly set to Gouraud (`flatShading: false`)? 
+- [ ] Does every display vertex receive a stress value (no NaN, no Infinity)?
+- [ ] Stress array length validated: `vertexStress.length === triangleCount * 3`?
+- [ ] Spatial grid indexing is consistent: floor-based with bounding-box normalization?
+- [ ] Tested on mesh with negative coordinates (e.g., model centered at origin vs at positive quadrant)?
+- [ ] Visual regression test added or updated for new coloring logic?
+- [ ] Known limitation documented (if any) in user-facing messages?
+
+### References
+- Vertex Welding: `client/index.html` lines ~2210–2280 (computeSmoothedStressColors function)
+- Server Spatial Grid: `server/analysis.ts` lines 1712–1776 (nearestNodeStress function)
+- Stress Recovery: `server/solver/stress.ts` lines 376–515 (sprSmoothedStress function)
+
 ## Questions?
 If you need clarification on these guidelines, ask in the GitHub issue or PR description.

@@ -1775,6 +1775,15 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     vertexStress[v] = nearestNodeStress(vx, vy, vz);
   }
 
+  // Validate vertex stress array (catch regressions in mesh-vertex count mismatch)
+  if (vertexStress.length !== vertCount) {
+    throw new Error(
+      `[analysis] Vertex stress array size mismatch: ${vertexStress.length} ` +
+      `vertices but expected ${vertCount} (req.triangleCount=${req.triangleCount} * 3). ` +
+      `Check that vertCount is derived from req.triangleCount, not gmshResult.surfaceTriangles.length.`
+    );
+  }
+
   // ── Principal stress vertex mapping ───────────────────────────────────────
   // Map σ1 (max principal) per node to the display mesh using the same
   // nearest-node grid already built above.
