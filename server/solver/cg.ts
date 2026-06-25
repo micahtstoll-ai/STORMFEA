@@ -35,6 +35,17 @@
  * correctly: the constrained DOFs get very small z_i ≈ 0, making them
  * effectively transparent to the search direction update.
  *
+ * IC(0) PRECONDITIONER
+ * ====================
+ * Incomplete Cholesky factorization with zero fill-in (IC(0)):
+ * Computes a sparse lower-triangular L such that K ≈ L·Lᵀ, keeping only
+ * entries where K is non-zero (no new fill). The preconditioner applies
+ * M⁻¹·v = L⁻ᵀ·(L⁻¹·v) via forward and backward triangular solves.
+ *
+ * IC(0) typically reduces iteration count by 3-10x compared to Jacobi for
+ * well-conditioned FEM systems. Falls back to Jacobi if a negative pivot
+ * is encountered (non-positive-definite subproblem).
+ *
  * CONVERGENCE
  * ===========
  * Convergence criterion: ‖rk‖₂ / ‖f‖₂ < TOLERANCE (relative residual).
@@ -81,6 +92,152 @@ function axpby(alpha: number, x: Float64Array, beta: number, y: Float64Array): F
   return z;
 }
 
+// ─── IC(0) incomplete Cholesky factorization ─────────────────────────────────
+
+interface IC0Factor {
+  readonly Ldata:   Float64Array;
+  readonly LcolIdx: Int32Array;
+  readonly LrowPtr: Int32Array;
+  readonly diagIdx: Int32Array;
+}
+
+/**
+ * Build IC(0) incomplete Cholesky factor of K.
+ *
+ * Computes a sparse lower-triangular factor L (same sparsity as lower
+ * triangle of K) such that K ≈ L·Lᵀ. Uses a dense scratch array for O(1)
+ * access during inner-product accumulation.
+ *
+ * @param K       Symmetric SPD stiffness matrix in CSR format.
+ * @param diagIdx Positions of diagonal entries in K.data.
+ * @throws Error with message containing "IC0_NONPOSDEF" if a negative or
+ *         near-zero pivot is encountered (system not SPD).
+ */
+function buildIC0(K: CSRMatrix, diagIdx: Int32Array): IC0Factor {
+  const n = K.n;
+  // Copy K.data — we modify Ldata in-place while computing the factorization.
+  const Ldata   = K.data.slice();
+  const LcolIdx = K.colIdx;
+  const LrowPtr = K.rowPtr;
+
+  // Dense scratch array: scratch[j] = L[i,j] for the current row i being processed.
+  // Initialized to zero; zeroed out at end of each row.
+  const scratch = new Float64Array(n);
+
+  for (let i = 0; i < n; i++) {
+    const rowStart = LrowPtr[i]       ?? 0;
+    const rowEnd   = LrowPtr[i + 1]   ?? 0;
+    const dPos     = diagIdx[i]       ?? 0; // position of L[i,i] in Ldata
+
+    // ── Off-diagonal lower triangle: L[i,j] for j < i ────────────────────
+    // First pass: fill scratch with the K values for row i (already in Ldata).
+    // We will overwrite them with the IC(0) values as we compute them.
+    for (let p = rowStart; p < dPos; p++) {
+      const j = LcolIdx[p] ?? 0;
+      scratch[j] = Ldata[p] ?? 0; // initialize scratch[j] = K[i,j]
+    }
+
+    // Second pass: compute L[i,j] = (K[i,j] - sum_{k<j} L[i,k]*L[j,k]) / L[j,j]
+    for (let p = rowStart; p < dPos; p++) {
+      const j      = LcolIdx[p] ?? 0;
+      const jStart = LrowPtr[j]     ?? 0;
+      const jDPos  = diagIdx[j]     ?? 0; // position of L[j,j]
+
+      // Subtract sum_{k<j} L[i,k]*L[j,k] from scratch[j].
+      // scratch[k] already holds L[i,k] for all k < j that have been computed.
+      for (let q = jStart; q < jDPos; q++) {
+        const k = LcolIdx[q] ?? 0;
+        scratch[j] -= (scratch[k] ?? 0) * (Ldata[q] ?? 0);
+      }
+
+      // L[i,j] = scratch[j] / L[j,j]
+      const ljj = Ldata[jDPos] ?? 0;
+      const lij = Math.abs(ljj) > 1e-300 ? scratch[j] / ljj : 0;
+      scratch[j] = lij;
+      Ldata[p]   = lij;
+    }
+
+    // ── Diagonal: L[i,i] = sqrt(K[i,i] - sum_{k<i} L[i,k]^2) ────────────
+    let pivotSq = Ldata[dPos] ?? 0; // starts as K[i,i]
+    for (let p = rowStart; p < dPos; p++) {
+      const lij = Ldata[p] ?? 0;
+      pivotSq -= lij * lij;
+    }
+
+    if (pivotSq < 1e-14) {
+      throw new Error(
+        `IC0_NONPOSDEF: negative or near-zero pivot at row ${i} (pivotSq=${pivotSq.toExponential(3)}). ` +
+        `System may not be positive definite — check constraints and mesh quality.`
+      );
+    }
+    Ldata[dPos] = Math.sqrt(pivotSq);
+
+    // ── Zero out scratch entries used in this row ──────────────────────────
+    for (let p = rowStart; p < dPos; p++) {
+      scratch[LcolIdx[p] ?? 0] = 0;
+    }
+  }
+
+  return { Ldata, LcolIdx, LrowPtr: K.rowPtr, diagIdx };
+}
+
+// ─── Triangular solves ────────────────────────────────────────────────────────
+
+/**
+ * Forward substitution: solve L·x = b.
+ * L is lower-triangular in CSR format (same sparsity as lower triangle of K).
+ * Result is written into x in-place.
+ */
+function forwardSolve(
+  Ldata:   Float64Array,
+  LcolIdx: Int32Array,
+  LrowPtr: Int32Array,
+  diagIdx: Int32Array,
+  b:       Float64Array,
+  x:       Float64Array,
+): void {
+  const n = LrowPtr.length - 1;
+  for (let i = 0; i < n; i++) {
+    const rowStart = LrowPtr[i]  ?? 0;
+    const dPos     = diagIdx[i]  ?? 0;
+    let sum = 0;
+    for (let p = rowStart; p < dPos; p++) {
+      sum += (Ldata[p] ?? 0) * (x[LcolIdx[p] ?? 0] ?? 0);
+    }
+    const lii = Ldata[dPos] ?? 1;
+    x[i] = ((b[i] ?? 0) - sum) / lii;
+  }
+}
+
+/**
+ * Backward substitution: solve Lᵀ·x = b.
+ * Uses scatter approach: initializes x = b, then processes rows in reverse,
+ * scattering contributions to already-computed x values.
+ */
+function backwardSolve(
+  Ldata:   Float64Array,
+  LcolIdx: Int32Array,
+  LrowPtr: Int32Array,
+  diagIdx: Int32Array,
+  b:       Float64Array,
+  x:       Float64Array,
+): void {
+  const n = LrowPtr.length - 1;
+  // Initialize x = b
+  for (let i = 0; i < n; i++) x[i] = b[i] ?? 0;
+
+  for (let i = n - 1; i >= 0; i--) {
+    const rowStart = LrowPtr[i]  ?? 0;
+    const dPos     = diagIdx[i]  ?? 0;
+    const lii      = Ldata[dPos] ?? 1;
+    x[i] /= lii;
+    const xi = x[i] ?? 0;
+    for (let p = rowStart; p < dPos; p++) {
+      x[LcolIdx[p] ?? 0] -= (Ldata[p] ?? 0) * xi;
+    }
+  }
+}
+
 // ─── PCG solver ──────────────────────────────────────────────────────────────
 
 export interface CGResult {
@@ -88,16 +245,20 @@ export interface CGResult {
   readonly iterations: number;
   readonly converged:  boolean;
   readonly finalRelativeResidual: number;
+  readonly preconditionerUsed: 'ic0' | 'jacobi';
 }
 
 /**
  * Solve K·u = f using Preconditioned Conjugate Gradient.
  *
- * @param K       Global stiffness matrix in CSR format (modified in-place by BCs).
- * @param f       Right-hand side force vector in Newtons.
- * @param diagIdx Diagonal entry positions in K.data, for Jacobi preconditioner.
- * @param tol     Relative residual tolerance (default 1e-8).
- * @param maxIter Maximum iterations (default 3 × DOF count).
+ * @param K             Global stiffness matrix in CSR format (modified in-place by BCs).
+ * @param f             Right-hand side force vector in Newtons.
+ * @param diagIdx       Diagonal entry positions in K.data, for preconditioner.
+ * @param tol           Relative residual tolerance (default 1e-8).
+ * @param maxIter       Maximum iterations (default 3 × DOF count).
+ * @param preconditioner Which preconditioner to use: 'ic0' (default) or 'jacobi'.
+ *                       IC(0) typically converges in 3-10x fewer iterations.
+ *                       Falls back to Jacobi if IC(0) factorization fails.
  */
 export function solvePCG(
   K:        CSRMatrix,
@@ -105,6 +266,7 @@ export function solvePCG(
   diagIdx:  Int32Array,
   tol       = 1e-8,
   maxIter?: number,
+  preconditioner: 'jacobi' | 'ic0' = 'ic0',
 ): CGResult {
   const n    = K.n;
   // Hard cap at 5 000 iterations regardless of DOF count.
@@ -118,13 +280,47 @@ export function solvePCG(
   // timeout on the HTTP route.
   const imax = maxIter ?? Math.min(5000, Math.max(1000, 3 * n));
 
-  // Build Jacobi preconditioner: M⁻¹_i = 1 / K[i][i]
+  const debugCG     = process.env["STORMFEA_DEBUG_CG"]      === "1";
+  const benchPrecond = process.env["STORMFEA_BENCH_PRECOND"] === "1" || debugCG;
+
+  // ── Build preconditioner ─────────────────────────────────────────────────────
+  let useIC0 = preconditioner === 'ic0';
+  let Ldata:   Float64Array | null = null;
+  let LcolIdx: Int32Array   | null = null;
+  let LrowPtr: Int32Array   | null = null;
+  let LdiagIdx: Int32Array  | null = null;
+
+  if (useIC0) {
+    try {
+      const tFactor = benchPrecond ? Date.now() : 0;
+      const L = buildIC0(K, diagIdx);
+      Ldata    = L.Ldata;
+      LcolIdx  = L.LcolIdx;
+      LrowPtr  = L.LrowPtr;
+      LdiagIdx = L.diagIdx;
+      if (benchPrecond) {
+        console.log(`[cg:bench] ic0-factor: n=${n} nnz_L=${K.data.length} elapsed=${Date.now() - tFactor}ms`);
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('IC0_NONPOSDEF')) {
+        console.warn(`[cg] IC(0) negative pivot — falling back to Jacobi preconditioner`);
+        useIC0 = false;
+      } else {
+        throw e;
+      }
+    }
+  }
+
+  // Always build Jacobi Minv as fallback
   const Minv = new Float64Array(n);
   for (let i = 0; i < n; i++) {
-    const diagPos = diagIdx[i] ?? 0;
-    const kii = K.data[diagPos] ?? 0;
+    const kii = K.data[diagIdx[i] ?? 0] ?? 0;
     Minv[i] = Math.abs(kii) > 1e-300 ? 1.0 / kii : 1.0;
   }
+
+  // Scratch buffer for IC(0) triangular solves (forward solve output → backward solve input)
+  const tmp = new Float64Array(n);
 
   // Initial guess u = 0
   const u = new Float64Array(n);
@@ -135,12 +331,23 @@ export function solvePCG(
   const fNorm = norm(f);
   if (fNorm < 1e-300) {
     // Zero right-hand side → zero solution (trivially correct)
-    return { u, iterations: 0, converged: true, finalRelativeResidual: 0 };
+    return {
+      u,
+      iterations: 0,
+      converged: true,
+      finalRelativeResidual: 0,
+      preconditionerUsed: preconditioner === 'ic0' ? 'ic0' : 'jacobi',
+    };
   }
 
-  // z = M⁻¹·r
+  // z = M⁻¹·r  (initial preconditioned residual)
   const z = new Float64Array(n);
-  for (let i = 0; i < n; i++) z[i] = (r[i] ?? 0) * (Minv[i] ?? 1);
+  if (useIC0 && Ldata && LcolIdx && LrowPtr && LdiagIdx) {
+    forwardSolve(Ldata, LcolIdx, LrowPtr, LdiagIdx, r, tmp);
+    backwardSolve(Ldata, LcolIdx, LrowPtr, LdiagIdx, tmp, z);
+  } else {
+    for (let i = 0; i < n; i++) z[i] = (r[i] ?? 0) * (Minv[i] ?? 1);
+  }
 
   // p = z
   const p = z.slice();
@@ -171,9 +378,11 @@ export function solvePCG(
   // Diagnostic logging is opt-in (STORMFEA_DEBUG_CG=1) — off by default so
   // normal solves and the test suite stay quiet, but trivially enabled when
   // actually chasing a non-convergence/timeout in the field.
-  const debugCG = process.env["STORMFEA_DEBUG_CG"] === "1";
   let nextLogIter = 1;
   const initialRelRes = relRes;
+
+  // Benchmark timing for the solve loop
+  const tSolveStart = Date.now();
 
   for (iter = 0; iter < imax; iter++) {
     // Check convergence at start of iteration (initial r may already satisfy tol)
@@ -221,7 +430,12 @@ export function solvePCG(
     if (relRes < tol) { iter++; break; }
 
     // z_new = M⁻¹·r
-    for (let i = 0; i < n; i++) z[i] = (r[i] ?? 0) * (Minv[i] ?? 1);
+    if (useIC0 && Ldata && LcolIdx && LrowPtr && LdiagIdx) {
+      forwardSolve(Ldata, LcolIdx, LrowPtr, LdiagIdx, r, tmp);
+      backwardSolve(Ldata, LcolIdx, LrowPtr, LdiagIdx, tmp, z);
+    } else {
+      for (let i = 0; i < n; i++) z[i] = (r[i] ?? 0) * (Minv[i] ?? 1);
+    }
 
     // β = (r_new·z_new) / (r·z)
     const rzNew = dot(r, z);
@@ -235,10 +449,19 @@ export function solvePCG(
     for (let i = 0; i < n; i++) p[i] = (z[i] ?? 0) + beta * (p[i] ?? 0);
   }
 
+  if (benchPrecond) {
+    console.log(
+      `[cg:bench] preconditioner=${useIC0 ? 'ic0' : 'jacobi'} iters=${iter} ` +
+      `relRes=${relRes.toExponential(3)} n=${n} nnz=${K.data.length} ` +
+      `elapsed=${Date.now() - tSolveStart}ms`
+    );
+  }
+
   return {
     u,
     iterations:             iter,
     converged:              relRes < tol,
     finalRelativeResidual:  relRes,
+    preconditionerUsed:     useIC0 ? 'ic0' as const : 'jacobi' as const,
   };
 }

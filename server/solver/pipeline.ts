@@ -33,8 +33,9 @@ export interface SolverInput {
   readonly material:    AnyMaterial;
   readonly constraints: readonly FixedNodeSet[];
   readonly forces:      readonly PointForce[];
-  readonly cgTolerance?: number;
-  readonly cgMaxIter?:   number;
+  readonly cgTolerance?:   number;
+  readonly cgMaxIter?:     number;
+  readonly preconditioner?: 'jacobi' | 'ic0';
 }
 
 /**
@@ -68,8 +69,9 @@ export function runLinearStatic(input: SolverInput): SolverResult {
   const t0 = Date.now();
 
   const { mesh, material, constraints, forces } = input;
-  const tol    = input.cgTolerance ?? 1e-8;
-  const maxIter = input.cgMaxIter;
+  const tol            = input.cgTolerance ?? 1e-8;
+  const maxIter        = input.cgMaxIter;
+  const preconditioner = input.preconditioner ?? 'ic0';
 
   _snap("before assembleK");
 
@@ -91,7 +93,7 @@ export function runLinearStatic(input: SolverInput): SolverResult {
   _snap("after applyDirichletBC");
 
   // ── 4. Solve K·u = f ──────────────────────────────────────────────────────
-  const cg = solvePCG(K, f, diagIdx, tol, maxIter);
+  const cg = solvePCG(K, f, diagIdx, tol, maxIter, preconditioner);
 
   _snap("after solvePCG");
 

@@ -655,6 +655,36 @@ console.log("\n[12] Pure axial tension bar — exact textbook comparison (sigma 
     `ratio=${(meanVM2/meanVM).toFixed(4)}`);
 }
 
+// ── Test group 13: IC(0) vs Jacobi iteration count ───────────────────────────
+console.log("\n[13] IC(0) vs Jacobi preconditioner convergence");
+{
+  const mesh = generateBoxMesh(0, 0, 0, 10, 10, 10, 8, 8, 8);
+  const mat  = { E: 3500, nu: 0.36, yieldStrength: 50, label: "pla" };
+  const fixed: number[] = [], loaded: number[] = [];
+  for (let n = 0; n < mesh.nodeCount; n++) {
+    const x = mesh.nodes[n * 3] ?? 0;
+    if (x < 0.01) fixed.push(n);
+    if (x > 9.99) loaded.push(n);
+  }
+  const forces = loaded.map(n => ({ nodeIndex: n, forceN: [100 / loaded.length, 0, 0] as [number, number, number] }));
+  const baseInput = { mesh, material: mat, constraints: [{ nodeIndices: fixed }], forces };
+
+  const r0 = runLinearStatic({ ...baseInput, preconditioner: 'ic0' as const });
+  const r1 = runLinearStatic({ ...baseInput, preconditioner: 'jacobi' as const });
+
+  const ratio = r1.cgIterations / Math.max(r0.cgIterations, 1);
+  console.log(`[bench] IC(0): ${r0.cgIterations} iters vs Jacobi: ${r1.cgIterations} iters (${ratio.toFixed(2)}x speedup)`);
+
+  test("[13.1] IC(0) converges",             r0.converged);
+  test("[13.2] Jacobi converges",            r1.converged);
+  test("[13.3] IC(0) fewer iters than Jacobi", r0.cgIterations < r1.cgIterations,
+    `IC0=${r0.cgIterations}, Jacobi=${r1.cgIterations}`);
+  test("[13.4] IC(0) iters < 500",           r0.cgIterations < 500,
+    `got ${r0.cgIterations}`);
+  test("[13.5] Same displacement within 1%", near(r0.maxDisplacementMm, r1.maxDisplacementMm, 0.01),
+    `IC0=${r0.maxDisplacementMm.toFixed(6)}, Jacobi=${r1.maxDisplacementMm.toFixed(6)}`);
+}
+
 // ── Summary ───────────────────────────────────────────────────────────────────
 // Deferred via setTimeout(0) so it runs as a macrotask AFTER every top-level
 // await (groups 6–8 use `await import`) has settled — and after any future
