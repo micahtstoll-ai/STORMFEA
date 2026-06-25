@@ -896,6 +896,7 @@ export interface IsotropicComparison {
 export interface AnalysisResult {
   vertexStress:           Float32Array;
   vertexPrincipalStress:  Float32Array;
+  vertexDisplacement:     Float32Array;
   surfaceTriangleCount:   number;
   maxVonMisesMPa:         number;
   maxDisplacementMm:      number;
@@ -1824,6 +1825,54 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     }
   }
 
+  // ── Nodal displacement vertex mapping ───────────────────────────────────────
+  // Map nodal displacements (ux, uy, uz) to surface vertices.
+  // Each surface vertex gets the displacement of its nearest FEA node.
+  // Layout: [ux0, uy0, uz0, ux1, uy1, uz1, ...] with length = vertCount * 3
+  const vertexDisplacement = new Float32Array(vertCount * 3);
+  const disp = result.displacement;
+
+  function nearestNodeDisplacement(vx: number, vy: number, vz: number): [number, number, number] {
+    const ci=Math.floor((vx-nxMin)/CELL3);
+    const cj=Math.floor((vy-nyMin)/CELL3);
+    const ck=Math.floor((vz-nzMin)/CELL3);
+    let bestDist2=Infinity, bestN=-1;
+    const R2=R3D*R3D;
+    for(let di=-1;di<=1;di++) for(let dj=-1;dj<=1;dj++) for(let dk=-1;dk<=1;dk++){
+      const ni2=ci+di,nj2=cj+dj,nk2=ck+dk;
+      if(ni2<0||ni2>=gW3||nj2<0||nj2>=gH3||nk2<0||nk2>=gD3) continue;
+      const cell=grid3.get(ni2*gH3*gD3+nj2*gD3+nk2);
+      if(!cell) continue;
+      for(const n of cell){
+        const dx=(mesh.nodes[n*3]??0)-vx,dy=(mesh.nodes[n*3+1]??0)-vy,dz=(mesh.nodes[n*3+2]??0)-vz;
+        const d2=dx*dx+dy*dy+dz*dz;
+        if(d2<R2 && d2<bestDist2){bestDist2=d2; bestN=n;}
+      }
+    }
+    if(bestN<0){
+      // Fallback: global linear scan for the truly nearest node
+      for(let n=0;n<mesh.nodeCount;n++){
+        const dx=(mesh.nodes[n*3]??0)-vx,dy=(mesh.nodes[n*3+1]??0)-vy,dz=(mesh.nodes[n*3+2]??0)-vz;
+        const d2=dx*dx+dy*dy+dz*dz;
+        if(d2<bestDist2){bestDist2=d2; bestN=n;}
+      }
+    }
+    return bestN >= 0 ? [
+      disp[bestN*3]??0,
+      disp[bestN*3+1]??0,
+      disp[bestN*3+2]??0
+    ] : [0, 0, 0];
+  }
+
+  for (let v = 0; v < vertCount; v++) {
+    const [ux, uy, uz] = nearestNodeDisplacement(
+      req.positions[v*3] ?? 0, req.positions[v*3+1] ?? 0, req.positions[v*3+2] ?? 0
+    );
+    vertexDisplacement[v*3]   = ux;
+    vertexDisplacement[v*3+1] = uy;
+    vertexDisplacement[v*3+2] = uz;
+  }
+
   // ── Summary ────────────────────────────────────────────────────────────────
   const maxVM = result.maxVonMisesMPa;
   const sf    = effectiveYield / (maxVM || 0.001);
@@ -2169,6 +2218,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   return {
     vertexStress,
     vertexPrincipalStress,
+    vertexDisplacement,
     surfaceTriangleCount: vertCount / 3,
     maxVonMisesMPa:     maxVM,
     maxDisplacementMm:  result.maxDisplacementMm,
