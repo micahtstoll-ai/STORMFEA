@@ -522,7 +522,8 @@ body:not(.has-results) #export-img-btn,
 body:not(.has-results) #convergence-btn,
 body:not(.has-results) #ab-compare-btn,
 body:not(.has-results) #legend,
-body:not(.has-results) #btn-stress { display: none !important; }
+body:not(.has-results) #btn-stress,
+body:not(.has-results) #btn-displacement-wire { display: none !important; }
 </style>
 </head>
 <body>
@@ -847,6 +848,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
     <!-- Top-right toggles -->
     <div id="topright" style="display:none;position:absolute;top:12px;right:12px;display:flex;gap:6px">
       <button class="btn" id="btn-stress" onclick="toggleStress()" style="display:none"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="currentColor"><rect x="1" y="1" width="8" height="8" rx="1"/><rect x="3" y="3" width="4" height="4" fill="var(--bg-base)"/></svg> STRESS</button>
+      <button class="btn" id="btn-displacement-wire" onclick="toggleDisplacementWire()" style="display:none" title="Show displacement wireframe (green lines)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.2"><line x1="1" y1="1" x2="5" y2="5"/><line x1="5" y1="1" x2="9" y2="5"/><line x1="1" y1="9" x2="5" y2="5"/><line x1="9" y1="9" x2="5" y2="5"/></svg> DISPLACEMENT</button>
       <button class="btn" id="btn-debug"  onclick="toggleDebug()"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4"><polygon points="5,1 9,5 5,9 1,5"/></svg> DEBUG</button>
     </div>
 
@@ -1696,6 +1698,7 @@ const S = {
   forces:        [],
   mode:          'view', // 'view'|'bolt'|'force'|'bed'
   showStress:    false,
+  showDisplacementWire: false,
   debugMode:     false,
   pendingForce:  null,
   pendingDir:    [0,0,-1],
@@ -3863,6 +3866,19 @@ function toggleStress() {
   }
 }
 
+// ─── Displacement wireframe toggle ──────────────────────────────────────────
+function toggleDisplacementWire() {
+  S.showDisplacementWire = !S.showDisplacementWire;
+  const btn = document.getElementById('btn-displacement-wire');
+  btn.className = 'btn' + (S.showDisplacementWire ? ' active' : '');
+  if (displacementWireframe) {
+    displacementWireframe.visible = S.showDisplacementWire;
+    console.log(`[wireframe] displacement wireframe ${S.showDisplacementWire ? 'shown' : 'hidden'}`);
+  } else {
+    console.warn('[wireframe] displacement wireframe not available');
+  }
+}
+
 // ─── UI list updates ──────────────────────────────────────────────────────────
 function updateBoltList() {
   const el = document.getElementById('bolt-list');
@@ -4434,6 +4450,8 @@ async function runAnalysis() {
         displacementWireframe.visible = false; // hidden by default
         scene.add(displacementWireframe);
         console.log('[wireframe] displacement wireframe created and added to scene');
+        // Show the displacement toggle button now that wireframe is available
+        document.getElementById('btn-displacement-wire').style.display = 'block';
       } else {
         console.warn('[wireframe] failed to create displacement wireframe');
       }
@@ -4589,6 +4607,7 @@ async function runAnalysis() {
           displacementWireframe.visible = false;
           scene.add(displacementWireframe);
           console.log('[wireframe] displacement wireframe updated with fine mesh data');
+          document.getElementById('btn-displacement-wire').style.display = 'block';
         }
       }
 
