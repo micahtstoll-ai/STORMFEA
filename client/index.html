@@ -2475,6 +2475,82 @@ function decodeDisplacementB64(b64String) {
   return new Float32Array(buf.buffer);
 }
 
+function createDisplacementWireframe(originalGeometry, displacements, exaggerationFactor) {
+  if (!originalGeometry || !displacements) return null;
+
+  // Clone the geometry to get edges
+  const geo = originalGeometry.clone();
+  const positions = geo.attributes.position.array;
+  const posCount = positions.length / 3;
+
+  // Expected displacement array length: posCount * 3 (ux, uy, uz per vertex)
+  if (displacements.length !== posCount * 3) {
+    console.warn(
+      `[wireframe] displacement array size mismatch: got ${displacements.length} ` +
+      `elements but expected ${posCount * 3} for ${posCount} vertices`
+    );
+    return null;
+  }
+
+  // Create a new position array with displacements applied
+  const displacedPositions = new Float32Array(positions);
+  for (let i = 0; i < posCount; i++) {
+    const ux = displacements[i*3]   ?? 0;
+    const uy = displacements[i*3+1] ?? 0;
+    const uz = displacements[i*3+2] ?? 0;
+    displacedPositions[i*3]   += ux * exaggerationFactor;
+    displacedPositions[i*3+1] += uy * exaggerationFactor;
+    displacedPositions[i*3+2] += uz * exaggerationFactor;
+  }
+
+  // Extract edges with deduplication from the original geometry
+  const edges = new Set();
+  const indices = geo.index;
+
+  if (indices) {
+    const idx = indices.array;
+    for (let i = 0; i < idx.length; i += 3) {
+      const a = idx[i], b = idx[i+1], c = idx[i+2];
+      // Add three edges of the triangle (deduplicate by sorting)
+      edges.add([Math.min(a,b), Math.max(a,b)].join(','));
+      edges.add([Math.min(b,c), Math.max(b,c)].join(','));
+      edges.add([Math.min(c,a), Math.max(c,a)].join(','));
+    }
+  } else {
+    // Fallback: assume tri-indexed positions
+    for (let i = 0; i < posCount; i += 3) {
+      edges.add([Math.min(i,i+1), Math.max(i,i+1)].join(','));
+      edges.add([Math.min(i+1,i+2), Math.max(i+1,i+2)].join(','));
+      edges.add([Math.min(i+2,i), Math.max(i+2,i)].join(','));
+    }
+  }
+
+  // Build wireframe edge positions
+  const wireframePositions = [];
+  for (const edge of edges) {
+    const [a, b] = edge.split(',').map(Number);
+    wireframePositions.push(displacedPositions[a*3], displacedPositions[a*3+1], displacedPositions[a*3+2]);
+    wireframePositions.push(displacedPositions[b*3], displacedPositions[b*3+1], displacedPositions[b*3+2]);
+  }
+
+  // Create wireframe geometry
+  const wireGeo = new THREE.BufferGeometry();
+  wireGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(wireframePositions), 3));
+
+  // Create material (green #00ff00 with 60% opacity)
+  const wireMat = new THREE.LineBasicMaterial({
+    color: 0x00ff00,
+    opacity: 0.6,
+    transparent: true,
+    linewidth: 1,
+    depthTest: true,
+  });
+
+  // Create line mesh
+  const wireMesh = new THREE.LineSegments(wireGeo, wireMat);
+  return wireMesh;
+}
+
 function applyStressColors(stressB64, maxStress, principalStressB64) {
   if (!mesh3d) return;
   const buf = Uint8Array.from(atob(stressB64), c => c.charCodeAt(0));
