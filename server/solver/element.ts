@@ -26,7 +26,7 @@
  * (all scaled by 1/(6V))
  */
 
-import type { IsotropicMaterial, OrthotropicMaterial, AnyMaterial } from "./types.js";
+import type { IsotropicMaterial, OrthotropicMaterial, GyroidOrthotropic, AnyMaterial } from "./types.js";
 
 // ─── Safe typed-array access ──────────────────────────────────────────────────
 function f64(arr: Float64Array, i: number): number {
@@ -177,11 +177,72 @@ export function buildOrthotropicConstitutiveMatrix(mat: OrthotropicMaterial): Fl
 }
 
 /**
+ * Build the 6×6 constitutive matrix for gyroid infill with density-based scaling.
+ *
+ * Gyroid lattice properties degrade non-linearly with relative density ρ ∈ [0, 1].
+ * Uses power-law model with correction factors for directional anisotropy.
+ *
+ * Formulas (base material is PLA):
+ *   E_xy(ρ) = 3500 × ρ^1.75 × (1 − 0.12(1 − ρ))  [in-plane modulus, MPa]
+ *   E_z(ρ)  = 2275 × ρ^2.1  × (1 − 0.18(1 − ρ))  [through-thickness modulus, MPa]
+ *   G_xz(ρ) = 1143 × ρ^2.3  × (1 − 0.22(1 − ρ))  [shear modulus, MPa]
+ *   G_xy derived from E_xy via: G_xy = E_xy / (2(1 + ν_xy))
+ *   ν_xy and ν_xz held constant from input
+ *
+ * The material is treated as orthotropic after density-scaling.
+ *
+ * Reference: Birosz et al. (2022), power-law lattice degradation.
+ */
+export function buildGyroidConstitutiveMatrix(mat: GyroidOrthotropic): Float64Array {
+  const { density, nu_xy, nu_xz, yieldXY, yieldZ, label } = mat;
+
+  if (density < 0 || density > 1.0) {
+    throw new Error(`Gyroid density must be in [0, 1.0], got ${density}`);
+  }
+
+  // Power-law degradation formulas for PLA gyroid (based on empirical data)
+  // Exponents: E_xy^1.75, E_z^2.1, G_xz^2.3 with linear correction factors
+  const rho = density;
+  const one_minus_rho = 1 - rho;
+
+  const E_xy = 3500 * Math.pow(rho, 1.75) * (1 - 0.12 * one_minus_rho);
+  const E_z  = 2275 * Math.pow(rho, 2.1)  * (1 - 0.18 * one_minus_rho);
+  const G_xz = 1143 * Math.pow(rho, 2.3)  * (1 - 0.22 * one_minus_rho);
+
+  // Handle edge case: ρ ≈ 0 (very low density → very small stiffness)
+  if (rho < 0.01 && (E_xy < 1 || E_z < 1 || G_xz < 1)) {
+    console.warn(`Gyroid density ${(rho*100).toFixed(1)}% produces very small stiffness (E_xy=${E_xy.toFixed(2)} MPa)`);
+  }
+
+  // Create an orthotropic material with the scaled elastic properties
+  const scaledOrthotropic: OrthotropicMaterial = {
+    kind: "orthotropic",
+    E_xy,
+    E_z,
+    nu_xy,
+    nu_xz,
+    G_xz,
+    yieldXY,
+    yieldZ,
+    label: `${label} (ρ=${(density * 100).toFixed(1)}%)`,
+  };
+
+  // Use the standard orthotropic builder to assemble the constitutive matrix
+  return buildOrthotropicConstitutiveMatrix(scaledOrthotropic);
+}
+
+/**
  * Build the correct constitutive matrix for either material type.
+ * Routes to isotropic, orthotropic, or gyroid builders based on material kind.
  */
 export function buildAnyConstitutiveMatrix(mat: AnyMaterial): Float64Array {
-  if ('kind' in mat && mat.kind === 'orthotropic') {
-    return buildOrthotropicConstitutiveMatrix(mat as OrthotropicMaterial);
+  if ('kind' in mat) {
+    if (mat.kind === 'gyroid-orthotropic') {
+      return buildGyroidConstitutiveMatrix(mat as GyroidOrthotropic);
+    }
+    if (mat.kind === 'orthotropic') {
+      return buildOrthotropicConstitutiveMatrix(mat as OrthotropicMaterial);
+    }
   }
   return buildConstitutiveMatrix(mat as IsotropicMaterial);
 }
