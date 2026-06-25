@@ -15,10 +15,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate required secrets
+        run: |
+          if [ -z "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+            echo "ERROR: ANTHROPIC_API_KEY secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.GITHUB_TOKEN }}" ]; then
+            echo "ERROR: GITHUB_TOKEN secret is not set"
+            exit 1
+          fi
+          echo "✓ All required secrets are available"
+
       - name: Set today's date
         run: echo "TODAY=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
 
       - uses: anthropics/claude-code-action@beta
+        timeout-minutes: 30
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
