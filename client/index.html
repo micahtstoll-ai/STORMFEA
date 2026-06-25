@@ -786,36 +786,70 @@ body:not(.has-results) #btn-stress { display: none !important; }
       </div>
     </div>
 
-    <!-- Drop zone (shown when no file) -->
-    <div id="dropzone" onclick="document.getElementById('filein').click()"
-         ondragover="event.preventDefault();this.classList.add('drag-over')"
-         ondragleave="this.classList.remove('drag-over')"
-         ondrop="event.preventDefault();this.classList.remove('drag-over');handleFile(event.dataTransfer.files[0])"
-         style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;border:1px solid var(--border);-webkit-mask-image:radial-gradient(ellipse 80% 80% at 50% 50%,black 40%,transparent 100%)">
-      <!-- Compass mark — animates slow idle, speeds on hover -->
-      <div id="dropzone-compass" style="opacity:.28;margin-bottom:20px;animation:spin-slow 12s linear infinite;transform-origin:center">
-        <svg width="52" height="52" viewBox="0 0 34 34" fill="none" aria-hidden="true">
-          <circle cx="17" cy="17" r="15.5" fill="none" stroke="var(--gold)" stroke-width="1.1" opacity=".7"/>
-          <polygon points="17,2 20,17 17,14 14,17" fill="var(--gold)"/>
-          <polygon points="17,32 20,17 17,20 14,17" fill="var(--gold)" opacity=".5"/>
-          <polygon points="32,17 17,20 20,17 17,14" fill="var(--gold)" opacity=".5"/>
-          <polygon points="2,17  17,20 14,17 17,14" fill="var(--gold)" opacity=".5"/>
-          <line x1="28.5" y1="5.5"  x2="26"  y2="8"    stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
-          <line x1="5.5"  y1="5.5"  x2="8"   y2="8"    stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
-          <line x1="28.5" y1="28.5" x2="26"  y2="26"   stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
-          <line x1="5.5"  y1="28.5" x2="8"   y2="26"   stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
-          <circle cx="17" cy="17" r="2.5" fill="none" stroke="var(--gold)" stroke-width="1.1" opacity=".8"/>
-          <circle cx="17" cy="17" r="1"   fill="var(--gold)"/>
-        </svg>
+    <!-- Drop zone wrapper (shown when no file loaded) -->
+    <div id="dropzone-wrapper"
+         style="position:absolute;inset:0;display:flex;flex-direction:row;">
+
+      <!-- STL/STEP zone (original) -->
+      <div id="dropzone"
+           onclick="document.getElementById('filein').click()"
+           ondragover="event.preventDefault();this.classList.add('drag-over')"
+           ondragleave="this.classList.remove('drag-over')"
+           ondrop="event.preventDefault();this.classList.remove('drag-over');handleFile(event.dataTransfer.files[0])"
+           style="flex:3;display:flex;flex-direction:column;align-items:center;justify-content:center;
+                  cursor:pointer;border:1px solid var(--border);border-right:none;
+                  -webkit-mask-image:radial-gradient(ellipse 80% 80% at 50% 50%,black 40%,transparent 100%)">
+        <div id="dropzone-compass" style="opacity:.28;margin-bottom:20px;animation:spin-slow 12s linear infinite;transform-origin:center">
+          <svg width="52" height="52" viewBox="0 0 34 34" fill="none" aria-hidden="true">
+            <circle cx="17" cy="17" r="15.5" fill="none" stroke="var(--gold)" stroke-width="1.1" opacity=".7"/>
+            <polygon points="17,2 20,17 17,14 14,17" fill="var(--gold)"/>
+            <polygon points="17,32 20,17 17,20 14,17" fill="var(--gold)" opacity=".5"/>
+            <polygon points="32,17 17,20 20,17 17,14" fill="var(--gold)" opacity=".5"/>
+            <polygon points="2,17  17,20 14,17 17,14" fill="var(--gold)" opacity=".5"/>
+            <line x1="28.5" y1="5.5"  x2="26"  y2="8"    stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
+            <line x1="5.5"  y1="5.5"  x2="8"   y2="8"    stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
+            <line x1="28.5" y1="28.5" x2="26"  y2="26"   stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
+            <line x1="5.5"  y1="28.5" x2="8"   y2="26"   stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
+            <circle cx="17" cy="17" r="2.5" fill="none" stroke="var(--gold)" stroke-width="1.1" opacity=".8"/>
+            <circle cx="17" cy="17" r="1"   fill="var(--gold)"/>
+          </svg>
+        </div>
+        <div style="font-family:'Rajdhani',sans-serif;font-size:22px;font-weight:700;letter-spacing:.10em;color:var(--text-lo)">LOAD PART</div>
+        <div style="font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo);margin-top:var(--sp-1);letter-spacing:.04em">drag &amp; drop &nbsp;·&nbsp; .stl &nbsp;·&nbsp; .step</div>
+        <input id="filein" type="file" accept=".stl,.step,.stp" style="display:none" onchange="handleFile(this.files[0])">
       </div>
-      <div style="font-family:'Rajdhani',sans-serif;font-size:22px;font-weight:700;letter-spacing:.10em;color:var(--text-lo)">LOAD PART</div>
-      <div style="font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo);margin-top:var(--sp-1);letter-spacing:.04em">drag &amp; drop &nbsp;·&nbsp; .stl &nbsp;·&nbsp; .step</div>
-      <input id="filein" type="file" accept=".stl,.step,.stp" style="display:none" onchange="handleFile(this.files[0])">
-    </div>
+
+      <!-- GCode zone (new) -->
+      <div id="gcode-drop-zone"
+           onclick="document.getElementById('gcode-filein').click()"
+           style="flex:2;display:flex;flex-direction:column;align-items:center;justify-content:center;
+                  cursor:pointer;border:1px solid var(--border);border-left:1px dashed var(--border);
+                  -webkit-mask-image:radial-gradient(ellipse 80% 80% at 50% 50%,black 40%,transparent 100%)">
+        <div id="gcode-drop-icon" style="opacity:.28;margin-bottom:16px;animation:spin-slow 18s linear infinite;transform-origin:center">
+          <svg width="44" height="44" viewBox="0 0 34 34" fill="none" aria-hidden="true">
+            <circle cx="17" cy="17" r="15.5" fill="none" stroke="var(--gold)" stroke-width="1.1" opacity=".7" stroke-dasharray="3 2"/>
+            <line x1="10" y1="12" x2="24" y2="12" stroke="var(--gold)" stroke-width="1.1" stroke-linecap="round" opacity=".8"/>
+            <line x1="10" y1="17" x2="24" y2="17" stroke="var(--gold)" stroke-width="1.1" stroke-linecap="round" opacity=".6"/>
+            <line x1="10" y1="22" x2="24" y2="22" stroke="var(--gold)" stroke-width="1.1" stroke-linecap="round" opacity=".4"/>
+            <polyline points="14,9 17,6 20,9" fill="none" stroke="var(--gold)" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" opacity=".6"/>
+          </svg>
+        </div>
+        <div style="font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;letter-spacing:.10em;color:var(--text-lo)">LOAD GCODE</div>
+        <div style="font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo);margin-top:var(--sp-1);letter-spacing:.04em">drag &amp; drop &nbsp;·&nbsp; .gcode</div>
+        <input id="gcode-filein" type="file" accept=".gcode" style="display:none">
+      </div>
+
+    </div><!-- end #dropzone-wrapper -->
     <style>
       #dropzone.drag-over { border-color: var(--gold); }
       #dropzone.drag-over #dropzone-compass { animation-duration: 2s; opacity: .6; }
       #dropzone:hover #dropzone-compass { animation-duration: 4s; opacity: .45; }
+      #gcode-drop-zone { transition: border-color .15s, background .15s; }
+      #gcode-drop-zone:hover { border-color: var(--gold); }
+      #gcode-drop-zone:hover #gcode-drop-icon { animation-duration: 6s; opacity: .45; }
+      #gcode-drop-zone.drag-over { border-color: var(--gold); }
+      #gcode-drop-zone.drag-over #gcode-drop-icon { animation-duration: 3s; opacity: .65; }
+      #gcode-drop-zone.drop-error { border-color: #c0392b; }
     </style>
 
     <!-- Toolbar (shown when file loaded) -->
@@ -1278,6 +1312,13 @@ body:not(.has-results) #btn-stress { display: none !important; }
           <span style="color:var(--text-label)">stronger Z ←-> faster print</span>
           <span>0.35mm</span>
         </div>
+      </div>
+
+      <!-- .gcode import badge — shown by applyGcodeParamsToUI(), hidden by default -->
+      <div id="gcode-import-badge" style="display:none;padding:8px 12px;background:rgba(212,175,55,0.08);border:1px solid rgba(212,175,55,0.3);border-radius:4px;margin-bottom:16px;font-size:10px;color:var(--gold)">
+        <svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg>
+        <span id="gcode-import-badge-text">Imported from .gcode</span>
+        <span id="gcode-import-badge-extra" style="color:var(--text-lo);margin-left:6px"></span>
       </div>
 
       <div style="margin-bottom:16px">
@@ -4070,6 +4111,117 @@ function rebuildOverlays() {
   overlays.length = 0;
   S.bolts.forEach(addBoltMarker);
   S.forces.forEach(addForceArrow);
+}
+
+// ─── G-code parameter parser ──────────────────────────────────────────────────
+function inferLayerHeightFromZ(lines) {
+  const zVals = [];
+  const seen  = new Set();
+  for (const line of lines) {
+    const m = line.match(/^G[01]\s[^\n]*Z([\d.]+)/i);
+    if (!m) continue;
+    const z = parseFloat(m[1]);
+    if (!seen.has(z)) { seen.add(z); zVals.push(z); }
+    if (zVals.length >= 200) break;
+  }
+  if (zVals.length < 2) return { layerHeightMm: null, firstLayerHeightMm: null };
+  zVals.sort((a, b) => a - b);
+  const deltas = [];
+  for (let i = 1; i < zVals.length; i++) {
+    const d = zVals[i] - zVals[i - 1];
+    if (d > 0.01 && d < 2.0) deltas.push(d);
+  }
+  if (!deltas.length) return { layerHeightMm: null, firstLayerHeightMm: null };
+  deltas.sort((a, b) => a - b);
+  const med = deltas[Math.floor(deltas.length / 2)];
+  const firstDelta = zVals[1] - zVals[0];
+  const firstLh = (firstDelta > 0 && Math.abs(firstDelta - med) / med > 0.15)
+    ? +firstDelta.toFixed(4) : null;
+  return { layerHeightMm: +med.toFixed(4), firstLayerHeightMm: firstLh };
+}
+
+function parseGcodeParams(lines) {
+  const votes = { prusaslicer: 0, superslicer: 0, cura: 0, bambu: 0 };
+  const headerLines = lines.slice(0, 250);
+  for (const l of headerLines) {
+    if (/^; generated by PrusaSlicer/i.test(l))  votes.prusaslicer += 3;
+    if (/^; generated by SuperSlicer/i.test(l))  votes.superslicer += 3;
+    if (/^;Generated with Cura/i.test(l))        votes.cura        += 3;
+    if (/^; generated by BambuStudio/i.test(l))  votes.bambu       += 3;
+    if (/^;FLAVOR:/.test(l))                      votes.cura        += 1;
+    if (/^;LAYER_CHANGE$/.test(l))                votes.prusaslicer += 1;
+    if (/^;HEIGHT:/.test(l))                      votes.prusaslicer += 1;
+    if (/^;WIDTH:/.test(l))                       votes.prusaslicer += 1;
+    if (/^;LAYER:/.test(l))                       votes.cura        += 1;
+    if (/^;TYPE:/.test(l))                        votes.cura        += 1;
+    if (/^;CHANGE_LAYER$/.test(l))                votes.bambu       += 1;
+    if (/^;LAYER_NUM:/.test(l))                   votes.bambu       += 1;
+    if (/^; line_width = /.test(l))               votes.bambu       += 1;
+    if (/^; layer_height = /.test(l))             votes.bambu       += 1;
+  }
+  const topSlicer = Object.entries(votes).sort((a, b) => b[1] - a[1])[0];
+  const slicerDetected = topSlicer[1] >= 2
+    ? (topSlicer[0] === 'superslicer' ? 'prusaslicer' : topSlicer[0])
+    : 'unknown';
+
+  let layerCount = null, layerHeightMm = null, firstLayerHeightMm = null, extrusionWidthMm = null;
+  const psHeights = [], psWidths = [];
+
+  for (const l of lines) {
+    let m = l.match(/^;LAYER_COUNT:(\d+)$/);
+    if (m) { layerCount = parseInt(m[1], 10); continue; }
+
+    if (slicerDetected === 'prusaslicer') {
+      m = l.match(/^;HEIGHT:([\d.]+)$/);
+      if (m) { psHeights.push(parseFloat(m[1])); continue; }
+      m = l.match(/^;WIDTH:([\d.]+)$/);
+      if (m) { psWidths.push(parseFloat(m[1])); continue; }
+    }
+
+    if (slicerDetected === 'bambu') {
+      m = l.match(/^; layer_height = ([\d.]+)$/);
+      if (m && layerHeightMm === null) { layerHeightMm = parseFloat(m[1]); continue; }
+      m = l.match(/^; initial_layer_print_height = ([\d.]+)$/);
+      if (m && firstLayerHeightMm === null) { firstLayerHeightMm = parseFloat(m[1]); continue; }
+      m = l.match(/^; line_width = ([\d.]+)$/);
+      if (m && extrusionWidthMm === null) { extrusionWidthMm = parseFloat(m[1]); continue; }
+    }
+  }
+
+  if (slicerDetected === 'prusaslicer' && psHeights.length > 0) {
+    firstLayerHeightMm = psHeights[0];
+    if (psHeights.length > 1) {
+      const rest = psHeights.slice(1).sort((a, b) => a - b);
+      layerHeightMm = rest[Math.floor(rest.length / 2)];
+      if (Math.abs(layerHeightMm - firstLayerHeightMm) < 0.001) firstLayerHeightMm = null;
+    } else {
+      layerHeightMm = firstLayerHeightMm;
+      firstLayerHeightMm = null;
+    }
+  }
+
+  if (slicerDetected === 'prusaslicer' && psWidths.length > 0) {
+    const freq = {};
+    let modeKey = null, modeCount = 0;
+    for (const w of psWidths) {
+      const k = w.toFixed(4);
+      freq[k] = (freq[k] || 0) + 1;
+      if (freq[k] > modeCount) { modeCount = freq[k]; modeKey = k; }
+    }
+    extrusionWidthMm = parseFloat(modeKey);
+  }
+
+  if (layerHeightMm === null) {
+    const fb = inferLayerHeightFromZ(lines);
+    layerHeightMm = fb.layerHeightMm;
+    firstLayerHeightMm = fb.firstLayerHeightMm;
+  }
+
+  // Clamp to physically plausible range
+  if (layerHeightMm !== null && (layerHeightMm < 0.02 || layerHeightMm > 1.0)) layerHeightMm = null;
+  if (extrusionWidthMm !== null && (extrusionWidthMm < 0.1 || extrusionWidthMm > 2.0)) extrusionWidthMm = null;
+
+  return { layerCount, layerHeightMm, firstLayerHeightMm, extrusionWidthMm, slicerDetected };
 }
 
 // ─── Settings preview ─────────────────────────────────────────────────────────
@@ -9863,12 +10015,80 @@ document.addEventListener('click', e => {
   }
 });
 
+// ─── G-code UI mapping ────────────────────────────────────────────────────────
+function applyGcodeParamsToUI(params) {
+  const imported = [], warnings = [];
+
+  if (params.layerHeightMm != null && isFinite(params.layerHeightMm)) {
+    const SLIDER_MIN = 5, SLIDER_MAX = 35;
+    const raw = Math.round(params.layerHeightMm * 100);
+    const clamped = Math.max(SLIDER_MIN, Math.min(SLIDER_MAX, raw));
+    const lhSlider = document.getElementById('s-lh');
+    if (lhSlider) {
+      lhSlider.value = String(clamped);
+      lhSlider.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    imported.push('layer height ' + (clamped / 100).toFixed(2) + ' mm');
+    if (raw < SLIDER_MIN) warnings.push('Layer height ' + params.layerHeightMm.toFixed(3) + ' mm is below the 0.05 mm minimum — clamped to 0.05 mm.');
+    else if (raw > SLIDER_MAX) warnings.push('Layer height ' + params.layerHeightMm.toFixed(3) + ' mm exceeds the 0.35 mm maximum — clamped to 0.35 mm.');
+  }
+
+  const badge      = document.getElementById('gcode-import-badge');
+  const badgeText  = document.getElementById('gcode-import-badge-text');
+  const badgeExtra = document.getElementById('gcode-import-badge-extra');
+
+  if (badge && imported.length > 0) {
+    if (badgeText) badgeText.textContent = 'Imported from .gcode: ' + imported.join(', ');
+    const extras = [];
+    if (params.extrusionWidthMm != null && isFinite(params.extrusionWidthMm)) extras.push('line width ' + params.extrusionWidthMm.toFixed(2) + ' mm');
+    if (params.layerCount != null && isFinite(params.layerCount)) extras.push(params.layerCount + ' layers');
+    if (params.slicerDetected) extras.push('sliced with ' + params.slicerDetected);
+    if (badgeExtra) badgeExtra.textContent = extras.length > 0 ? '(' + extras.join(', ') + ')' : '';
+    badge.style.display = 'block';
+  } else if (badge) {
+    badge.style.display = 'none';
+  }
+
+  if (imported.length > 0) {
+    _showGcodeImportToast(imported, params);
+  } else if (typeof showErrorToast === 'function') {
+    showErrorToast('The .gcode file was parsed but contained no usable print parameters.', { severity: 'warn', source: '[gcode-import]' });
+  }
+  for (const w of warnings) {
+    if (typeof showErrorToast === 'function') showErrorToast(w, { severity: 'warn', source: '[gcode-import]' });
+  }
+}
+
+function _showGcodeImportToast(imported, params) {
+  let toast = document.getElementById('gcode-import-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'gcode-import-toast';
+    toast.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--bg-panel);border:1px solid rgba(212,175,55,0.3);border-left:3px solid var(--gold);border-radius:4px;padding:8px 16px;font-size:11px;color:var(--text-mid);z-index:9999;pointer-events:none;transition:opacity .4s;max-width:420px;text-align:center';
+    document.body.appendChild(toast);
+  }
+  const extLine = (params.extrusionWidthMm != null && isFinite(params.extrusionWidthMm))
+    ? ' · line width ' + params.extrusionWidthMm.toFixed(2) + ' mm' : '';
+  toast.innerHTML = '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px;margin-right:5px" fill="none" stroke="var(--gold)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg>'
+    + '<strong style="color:var(--text-hi)">.gcode imported</strong> — ' + imported.join(', ')
+    + '<span style="color:var(--text-lo)">' + extLine + '</span>';
+  toast.style.opacity = '1';
+  clearTimeout(toast._hideTimer);
+  toast._hideTimer = setTimeout(function() { toast.style.opacity = '0'; }, 4000);
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 initThree();
 
 // Start session persistence after Three.js init
 setTimeout(initSessionPersistence, 100);
 updateSettingsPreview();
+  // .gcode parse complete → apply params to UI
+  document.addEventListener('gcodeParseComplete', function(e) {
+    if (e.detail && typeof e.detail === 'object' && !e.detail.error) {
+      applyGcodeParamsToUI(e.detail);
+    }
+  });
 updateAnalyseButton();
 
 // Check server is alive
@@ -9876,6 +10096,103 @@ fetch('/api/health').catch(() => {
   document.getElementById('overlay-msg').textContent = 'Cannot reach server — is it running?';
   document.getElementById('overlay').style.display = 'flex';
 });
+</script>
+<script>
+/* ── G-code file reader ─────────────────────────────────────────────────── */
+(function () {
+  'use strict';
+  var CHUNK_SIZE = 4 * 1024 * 1024;
+
+  function readGcodeFile(file) {
+    if (!file || file.size === 0) {
+      document.dispatchEvent(new CustomEvent('gcodeParseComplete', { detail: { lines: [] } }));
+      return;
+    }
+    var fileSize = file.size, offset = 0, remainder = '', lines = [];
+    var reader = new FileReader();
+
+    function readNextChunk() {
+      reader.readAsText(file.slice(offset, offset + CHUNK_SIZE));
+    }
+
+    reader.onload = function(e) {
+      var text = remainder + e.target.result;
+      remainder = '';
+      text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      var chunkLines = text.split('\n');
+      remainder = chunkLines.pop();
+      for (var i = 0; i < chunkLines.length; i++) lines.push(chunkLines[i]);
+      offset += CHUNK_SIZE;
+
+      document.dispatchEvent(new CustomEvent('gcodeParseProgress', {
+        detail: { linesProcessed: lines.length, total: fileSize }
+      }));
+
+      if (offset < fileSize) {
+        setTimeout(readNextChunk, 0);
+      } else {
+        if (remainder.length > 0) { lines.push(remainder); remainder = ''; }
+        var gcodeParams = (typeof parseGcodeParams === 'function') ? parseGcodeParams(lines) : null;
+        document.dispatchEvent(new CustomEvent('gcodeParseComplete', {
+          detail: gcodeParams ? Object.assign({}, gcodeParams, { lines: lines }) : { lines: lines }
+        }));
+      }
+    };
+
+    reader.onerror = function() {
+      var msg = 'G-code read failed' + (reader.error ? ': ' + (reader.error.message || reader.error.name) : '');
+      console.error('[gcodeReader]', msg);
+      if (window.showErrorToast) showErrorToast(msg, { severity: 'error', source: '[gcodeReader]' });
+      document.dispatchEvent(new CustomEvent('gcodeParseComplete', { detail: { lines: lines, error: true } }));
+    };
+
+    readNextChunk();
+  }
+
+  document.addEventListener('gcodeFileLoaded', function(e) {
+    if (e.detail && e.detail.file) readGcodeFile(e.detail.file);
+  });
+})();
+</script>
+<script>
+/* ── G-code drop zone events ─────────────────────────────────────────────── */
+(function () {
+  'use strict';
+  function _acceptGcode(file, zone) {
+    if (!file) return false;
+    if (!file.name.toLowerCase().endsWith('.gcode')) {
+      zone.classList.add('drop-error');
+      setTimeout(function() { zone.classList.remove('drop-error'); }, 1200);
+      if (window.showErrorToast) showErrorToast('Only .gcode files accepted. Got: ' + file.name, { severity: 'warn', source: '[gcode-drop-zone]' });
+      return false;
+    }
+    document.dispatchEvent(new CustomEvent('gcodeFileLoaded', { bubbles: true, detail: { file: file } }));
+    return true;
+  }
+
+  var zone = document.getElementById('gcode-drop-zone');
+  var input = document.getElementById('gcode-filein');
+  if (!zone || !input) { console.warn('[gcode-drop-zone] elements not found'); return; }
+
+  zone.addEventListener('dragover', function(e) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    zone.classList.add('drag-over');
+    zone.classList.remove('drop-error');
+  });
+  zone.addEventListener('dragleave', function(e) {
+    if (!zone.contains(e.relatedTarget)) zone.classList.remove('drag-over');
+  });
+  zone.addEventListener('drop', function(e) {
+    e.preventDefault();
+    zone.classList.remove('drag-over');
+    _acceptGcode(e.dataTransfer.files[0], zone);
+  });
+  input.addEventListener('change', function() {
+    if (input.files[0]) _acceptGcode(input.files[0], zone);
+    input.value = '';
+  });
+})();
 </script>
 
 <!-- Keyboard shortcut reference overlay -->
