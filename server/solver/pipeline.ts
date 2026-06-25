@@ -49,6 +49,21 @@ export interface SolverInput {
  * - CG non-convergence (if checkConvergence=true)
  * - NaN/Inf in any result
  */
+// ─── Memory profiling helper ──────────────────────────────────────────────────
+// Activated by STORMFEA_PROFILE_MEMORY=1 environment variable.
+// Optionally calls gc() when --expose-gc is active.
+const _profileMem = process.env["STORMFEA_PROFILE_MEMORY"] === "1";
+let _lastHeapMB = 0;
+
+function _snap(label: string): void {
+  if (!_profileMem) return;
+  if (typeof globalThis.gc === "function") globalThis.gc();
+  const heapMB = process.memoryUsage().heapUsed / 1024 / 1024;
+  const deltaMB = heapMB - _lastHeapMB;
+  console.log(`[mem] ${label}: heap=${heapMB.toFixed(1)}MB delta=${deltaMB >= 0 ? "+" : ""}${deltaMB.toFixed(1)}MB`);
+  _lastHeapMB = heapMB;
+}
+
 export function runLinearStatic(input: SolverInput): SolverResult {
   const t0 = Date.now();
 
@@ -56,8 +71,12 @@ export function runLinearStatic(input: SolverInput): SolverResult {
   const tol    = input.cgTolerance ?? 1e-8;
   const maxIter = input.cgMaxIter;
 
+  _snap("before assembleK");
+
   // ── 1. Assemble global stiffness matrix ────────────────────────────────────
   const { K, diagIdx } = assembleK(mesh, material);
+
+  _snap("after assembleK");
 
   // ── 2. Assemble force vector ───────────────────────────────────────────────
   const f = assembleForceVector(mesh.nodeCount, forces);
@@ -69,8 +88,12 @@ export function runLinearStatic(input: SolverInput): SolverResult {
   // applyDirichletBC modifies K and f in-place (penalty method)
   applyDirichletBC(K, f, diagIdx, constraints);
 
+  _snap("after applyDirichletBC");
+
   // ── 4. Solve K·u = f ──────────────────────────────────────────────────────
   const cg = solvePCG(K, f, diagIdx, tol, maxIter);
+
+  _snap("after solvePCG");
 
   // Warn (but don't throw) if CG didn't converge — let caller inspect result
   if (!cg.converged) {
@@ -83,6 +106,7 @@ export function runLinearStatic(input: SolverInput): SolverResult {
 
   // ── 5. Recover stresses and build result ───────────────────────────────────
   const solverMs = Date.now() - t0;
+  _snap("before buildSolverResult");
   const result = buildSolverResult(
     mesh,
     cg.u,
@@ -91,6 +115,8 @@ export function runLinearStatic(input: SolverInput): SolverResult {
     cg.converged,
     solverMs,
   );
+
+  _snap("after buildSolverResult");
 
   // ── 6. Sanity checks ───────────────────────────────────────────────────────
   validateResult(result, mesh);

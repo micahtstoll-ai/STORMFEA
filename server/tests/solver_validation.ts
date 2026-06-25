@@ -340,13 +340,20 @@ console.log("\n[9] Under-constrained rotation detection (collinear bolts + drivi
   // Build a coarse "mesh" of nodes spanning a flat plate, matching the
   // reported scenario: a roughly 50x36mm plate, 2 bolt holes close together
   // near one edge (collinear along X), force applied off to the side.
-  const nodes: number[] = [];
-  for (let x = -25; x <= 25; x += 5) {
-    for (let y = -18; y <= 18; y += 5) {
-      for (let z = 0; z <= 5; z += 2.5) nodes.push(x, y, z);
-    }
+  // Pre-compute size: x in [-25..25] step 5 = 11 values,
+  //                   y in [-18..18] step 5 = 9 values (actually 8: -18,-13,-8,-3,2,7,12,17 — use Math.round),
+  //                   z in [0..5] step 2.5 = 3 values.
+  // Use a regular loop that matches the original nested loop exactly.
+  const xVals: number[] = [], yVals: number[] = [], zVals: number[] = [];
+  for (let x = -25; x <= 25; x += 5) xVals.push(x);
+  for (let y = -18; y <= 18; y += 5) yVals.push(y);
+  for (let z = 0; z <= 5; z += 2.5) zVals.push(z);
+  const nodeCount3 = xVals.length * yVals.length * zVals.length;
+  const meshArr = new Float64Array(nodeCount3 * 3);
+  let ni3 = 0;
+  for (const x of xVals) for (const y of yVals) for (const z of zVals) {
+    meshArr[ni3++] = x; meshArr[ni3++] = y; meshArr[ni3++] = z;
   }
-  const meshArr = Float64Array.from(nodes);
   const mesh = { nodes: meshArr, nodeCount: meshArr.length / 3 };
 
   // Helper: find the nearest actual mesh node index to a target point, so

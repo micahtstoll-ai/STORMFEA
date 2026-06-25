@@ -198,6 +198,16 @@ export function recoverElementStress(
 
   let _lastSig: [number, number, number] = [0, 0, 0];
 
+  // Pre-allocate per-element scratch arrays outside the element loop.
+  // Each is zeroed before use as needed (noted per array below).
+  const _ue30        = new Float64Array(30);  // C3D10: element displacements
+  const _nodeCoords  = new Float64Array(30);  // C3D10: element node coordinates
+  const _sigAvg      = new Float64Array(6);   // C3D10: accumulated Gauss-point stress (zeroed per element)
+  const _eps         = new Float64Array(6);   // strain vector (overwritten each Gauss pt)
+  const _ue12        = new Float64Array(12);  // C3D4: element displacements
+  const _eps4        = new Float64Array(6);   // C3D4: strain vector
+  const _sig4        = new Float64Array(6);   // C3D4: stress vector
+
   for (let e = 0; e < mesh.elementCount; e++) {
     const npe  = mesh.nodesPerElem ?? 4;
     const base = e * npe;
@@ -211,8 +221,8 @@ export function recoverElementStress(
       // Result is significantly more accurate than the C3D4 corner-node fallback,
       // especially at stress concentrations near holes.
 
-      // Gather all 10 node displacements (30 entries)
-      const ue30 = new Float64Array(30);
+      // Gather all 10 node displacements (30 entries) into pre-allocated scratch
+      const ue30 = _ue30;
       for (let ni = 0; ni < 10; ni++) {
         const nodeIdx = i32(mesh.elements, base + ni);
         ue30[ni*3]   = f64(displacement, nodeIdx*3);
@@ -220,8 +230,8 @@ export function recoverElementStress(
         ue30[ni*3+2] = f64(displacement, nodeIdx*3+2);
       }
 
-      // Extract 10×3 node coordinates for this element
-      const nodeCoords = new Float64Array(30);
+      // Extract 10×3 node coordinates for this element into pre-allocated scratch
+      const nodeCoords = _nodeCoords;
       for (let ni = 0; ni < 10; ni++) {
         const nodeIdx = i32(mesh.elements, base + ni);
         nodeCoords[ni*3]   = mesh.nodes[nodeIdx*3]   ?? 0;
@@ -229,23 +239,24 @@ export function recoverElementStress(
         nodeCoords[ni*3+2] = mesh.nodes[nodeIdx*3+2] ?? 0;
       }
 
-      // Average stress over 4 Gauss points
-      const sigAvg = new Float64Array(6);
+      // Average stress over 4 Gauss points (zero sigAvg before accumulating)
+      const sigAvg = _sigAvg;
+      sigAvg.fill(0);
       let nValidGP = 0;
 
       for (const gp of GAUSS_PTS) {
         try {
           const { B: B30 } = buildB_c3d10(nodeCoords, gp.xi, gp.eta, gp.zeta);
 
-          // ε = B · u_e  (6×30 × 30 → 6)
-          const eps = new Float64Array(6);
+          // ε = B · u_e  (6×30 × 30 → 6) — reuse scratch eps
+          const eps = _eps;
           for (let r = 0; r < 6; r++) {
             let s = 0;
             for (let c = 0; c < 30; c++) s += (B30[r*30+c]??0) * (ue30[c]??0);
             eps[r] = s;
           }
 
-          // σ = C · ε
+          // σ = C · ε (accumulate into sigAvg)
           for (let r = 0; r < 6; r++) {
             let s = 0;
             for (let c = 0; c < 6; c++) s += (C[r*6+c]??0) * (eps[c]??0);
@@ -293,7 +304,8 @@ export function recoverElementStress(
       const geom = computeGeometry(mesh.nodes, n0, n1, n2, n3);
       const B    = buildB(geom);
 
-      const ue = new Float64Array(12);
+      // Use pre-allocated scratch arrays — no per-element heap allocations
+      const ue = _ue12;
       const cornerNodes = [n0, n1, n2, n3] as const;
       for (let ni = 0; ni < 4; ni++) {
         const nodeIdx = cornerNodes[ni] ?? 0;
@@ -302,14 +314,14 @@ export function recoverElementStress(
         ue[ni*3+2] = f64(displacement, nodeIdx*3+2);
       }
 
-      const eps = new Float64Array(6);
+      const eps = _eps4;
       for (let r = 0; r < 6; r++) {
         let s = 0;
         for (let c = 0; c < 12; c++) s += (B[r*12+c]??0) * (ue[c]??0);
         eps[r] = s;
       }
 
-      const sig = new Float64Array(6);
+      const sig = _sig4;
       for (let r = 0; r < 6; r++) {
         let s = 0;
         for (let c = 0; c < 6; c++) s += (C[r*6+c]??0) * (eps[c]??0);
@@ -412,6 +424,16 @@ export function sprSmoothedStress(
     elemCentZ[e] = cz / 4;
   }
 
+  // Pre-allocate SPR scratch arrays outside node loop to avoid per-node heap allocations.
+  // M rows are fully overwritten each iteration, so no zeroing is needed.
+  const _sprM: [Float64Array, Float64Array, Float64Array, Float64Array] = [
+    new Float64Array(5),
+    new Float64Array(5),
+    new Float64Array(5),
+    new Float64Array(5),
+  ];
+  const _sprA = new Float64Array(4);  // back-substitution result
+
   // For each node: SPR fit or fallback to averaging
   for (let n = 0; n < mesh.nodeCount; n++) {
     const patch = nodeElements[n]!;
@@ -454,13 +476,12 @@ export function sprSmoothedStress(
     }
 
     // Solve 4×4 symmetric system via Gaussian elimination with partial pivoting
-    // Build augmented matrix [AtA | Atb]
-    const M = [
-      [AtA00, AtA01, AtA02, AtA03, Atb0],
-      [AtA01, AtA11, AtA12, AtA13, Atb1],
-      [AtA02, AtA12, AtA22, AtA23, Atb2],
-      [AtA03, AtA13, AtA23, AtA33, Atb3],
-    ] as number[][];
+    // Build augmented matrix [AtA | Atb] using pre-allocated rows
+    const M = _sprM;
+    M[0][0]=AtA00; M[0][1]=AtA01; M[0][2]=AtA02; M[0][3]=AtA03; M[0][4]=Atb0;
+    M[1][0]=AtA01; M[1][1]=AtA11; M[1][2]=AtA12; M[1][3]=AtA13; M[1][4]=Atb1;
+    M[2][0]=AtA02; M[2][1]=AtA12; M[2][2]=AtA22; M[2][3]=AtA23; M[2][4]=Atb2;
+    M[3][0]=AtA03; M[3][1]=AtA13; M[3][2]=AtA23; M[3][3]=AtA33; M[3][4]=Atb3;
 
     // Gaussian elimination
     let solveFailed = false;
@@ -494,8 +515,8 @@ export function sprSmoothedStress(
       continue;
     }
 
-    // Back substitution
-    const a = new Float64Array(4);
+    // Back substitution — use pre-allocated buffer
+    const a = _sprA;
     for (let row = 3; row >= 0; row--) {
       let sum = M[row]![4]!;
       for (let col = row + 1; col < 4; col++) {
