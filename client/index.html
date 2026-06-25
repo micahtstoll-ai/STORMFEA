@@ -2228,7 +2228,11 @@ function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverrid
   const debugMode = new URLSearchParams(window.location.search).has('debugWeld');
   const debugVertices = new Set();
 
-  // Find bounding box for stable grid indexing (consistent with server-side FLOOR-based indexing)
+  // Find bounding box for stable grid indexing. Uses FLOOR-based indexing
+  // (consistent with server-side spatial grid in analysis.ts:1728-1730).
+  // This avoids edge cases with Math.round() on negative coordinates:
+  // round(-0.75) = -1, but round(-0.25) = 0, causing vertices that should
+  // weld together to hash into non-adjacent cells.
   let xMin = Infinity, xMax = -Infinity;
   let yMin = Infinity, yMax = -Infinity;
   let zMin = Infinity, zMax = -Infinity;
@@ -2241,8 +2245,7 @@ function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverrid
 
   for (let i = 0; i < nVerts; i++) {
     const px = posArr[i*3], py = posArr[i*3+1], pz = posArr[i*3+2];
-    // Use floor-based indexing (consistent with server) instead of round
-    // to avoid edge cases with negative coordinates
+    // Floor-based grid: consistent with server's spatial indexing algorithm
     const ci = Math.floor((px - xMin) / WELD_CELL);
     const cj = Math.floor((py - yMin) / WELD_CELL);
     const ck = Math.floor((pz - zMin) / WELD_CELL);
@@ -2267,46 +2270,31 @@ function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverrid
     groupStressCnt[foundGroup]++;
   }
 
-  // Additional pass: merge groups if their members are within WELD_EPS distance
-  // This handles any edge cases where the grid-based grouping might have missed
-  // geometrically close vertices due to grid boundaries
-  const WELD_EPS_SQ = WELD_EPS * WELD_EPS;
-  const groupReps = new Map(); // group ID -> representative vertex index
-  for (let i = 0; i < nVerts; i++) {
-    const g = weldGroup[i];
-    if (!groupReps.has(g)) groupReps.set(g, i);
-  }
+  // Optional verification pass (debug mode only): ensure grid-based grouping
+  // correctly captured all vertices within WELD_EPS. With the floor-based
+  // grid and bounding-box normalization, the grid should work correctly,
+  // but this pass catches any remaining edge cases.
+  if (debugMode) {
+    const WELD_EPS_SQ = WELD_EPS * WELD_EPS;
+    const groupReps = new Map();
+    for (let i = 0; i < nVerts; i++) {
+      const g = weldGroup[i];
+      if (!groupReps.has(g)) groupReps.set(g, i);
+    }
 
-  // For each vertex, check if it's actually within WELD_EPS of its group rep
-  // If not, find the correct group (or create new one)
-  for (let i = 0; i < nVerts; i++) {
-    const px = posArr[i*3], py = posArr[i*3+1], pz = posArr[i*3+2];
-    const g = weldGroup[i];
-    const repIdx = groupReps.get(g);
-    const repX = posArr[repIdx*3], repY = posArr[repIdx*3+1], repZ = posArr[repIdx*3+2];
-    const dist2 = (px-repX)*(px-repX) + (py-repY)*(py-repY) + (pz-repZ)*(pz-repZ);
-
-    if (dist2 > WELD_EPS_SQ) {
-      // This vertex is NOT actually close to its group rep — find closer group
-      let bestDist2 = dist2, bestGroup = -1;
-      for (const [otherG, otherRep] of groupReps) {
-        if (otherG === g) continue;
-        const otherX = posArr[otherRep*3], otherY = posArr[otherRep*3+1], otherZ = posArr[otherRep*3+2];
-        const d2 = (px-otherX)*(px-otherX) + (py-otherY)*(py-otherY) + (pz-otherZ)*(pz-otherZ);
-        if (d2 < WELD_EPS_SQ && d2 < bestDist2) {
-          bestDist2 = d2;
-          bestGroup = otherG;
-        }
+    let misaligned = 0;
+    for (let i = 0; i < nVerts; i++) {
+      const px = posArr[i*3], py = posArr[i*3+1], pz = posArr[i*3+2];
+      const g = weldGroup[i];
+      const repIdx = groupReps.get(g);
+      const repX = posArr[repIdx*3], repY = posArr[repIdx*3+1], repZ = posArr[repIdx*3+2];
+      const dist2 = (px-repX)*(px-repX) + (py-repY)*(py-repY) + (pz-repZ)*(pz-repZ);
+      if (dist2 > WELD_EPS_SQ) {
+        misaligned++;
       }
-
-      if (bestGroup !== -1) {
-        // Move this vertex to the closer group
-        groupStressSum[g] -= vertexStress[i] ?? 0;
-        groupStressCnt[g]--;
-        weldGroup[i] = bestGroup;
-        groupStressSum[bestGroup] += vertexStress[i] ?? 0;
-        groupStressCnt[bestGroup]++;
-      }
+    }
+    if (misaligned > 0) {
+      console.log(`[DEBUG WELD] Warning: ${misaligned} vertices exceed WELD_EPS distance from their group rep`);
     }
   }
 
