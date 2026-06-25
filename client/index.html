@@ -2418,10 +2418,43 @@ function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverrid
   return { colors, effectiveMin, effectiveMax, range, rawMin: minV, rawMax: maxV, debugMode };
 }
 
+// Validate stress array integrity (catches regressions in mesh-vertex mapping)
+function validateStressArray(stressArray, expectedLength, label) {
+  if (!stressArray || stressArray.length !== expectedLength) {
+    throw new Error(
+      `[validateStressArray] ${label}: length mismatch. Expected ${expectedLength}, got ${stressArray?.length ?? 'undefined'}. ` +
+      `This usually means the server's vertex-stress array was sized from the wrong mesh. Ensure server uses req.triangleCount * 3, not gmshResult.surfaceTriangles.length`
+    );
+  }
+  let hasNaN = 0, hasInf = 0;
+  for (let i = 0; i < stressArray.length; i++) {
+    if (!isFinite(stressArray[i])) {
+      if (isNaN(stressArray[i])) hasNaN++;
+      else hasInf++;
+    }
+  }
+  if (hasNaN > 0 || hasInf > 0) {
+    console.warn(
+      `[validateStressArray] ${label}: found ${hasNaN} NaN and ${hasInf} Inf values. ` +
+      `This indicates corrupt or invalid stress data from the solver.`
+    );
+  }
+  return true;
+}
+
 function applyStressColors(stressB64, maxStress, principalStressB64) {
   if (!mesh3d) return;
   const buf = Uint8Array.from(atob(stressB64), c => c.charCodeAt(0));
   const vertexStress = new Float32Array(buf.buffer);
+  const expectedLength = mesh3d.geometry.attributes.position.count * 3;
+
+  // Validate array integrity
+  try {
+    validateStressArray(vertexStress, expectedLength, "vertexStress");
+  } catch (e) {
+    console.error(e.message);
+    return;
+  }
 
   const { colors, effectiveMin, effectiveMax, range, rawMin, rawMax } =
     computeSmoothedStressColors(vertexStress);
