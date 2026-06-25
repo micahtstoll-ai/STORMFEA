@@ -495,8 +495,8 @@ h1, h2, h3 { font-weight: inherit; font-size: inherit; margin: 0; }
   body { background: #fff !important; color: #000 !important; font-size: 10px; }
   #viewer, #toolbar, #topright, #badges, #legend, #hint, #bed-indicator,
   #force-popup, header .btn, #tabs, #theme-toggle, #analyse-btn, #analyse-status,
-  #convergence-btn, #tab-setup, #tab-orient, #tab-constraints, #tab-settings,
-  #tab-calibrate, #tab-sources, #tab-debug { display: none !important; }
+  #convergence-btn, #tab-setup, #tab-orient, #tab-loads, #tab-material,
+  #tab-results, #tab-prefs, #tab-calibrate, #tab-sources, #tab-debug { display: none !important; }
   #tab-results { display: block !important; padding: 0 !important; }
   #results-content { display: block !important; }
   .print-page-header { display: block !important; }
@@ -576,12 +576,13 @@ body:not(.has-results) #btn-stress { display: none !important; }
     <!-- Workflow tabs: instrument panel selectors, top-line active indicator -->
     <button class="tab-btn active" data-tab="setup"       onclick="switchTab('setup')">SETUP</button>
     <button class="tab-btn"        data-tab="orient"      onclick="switchTab('orient')">ORIENT</button>
-    <button class="tab-btn"        data-tab="constraints" onclick="switchTab('constraints')">CONSTRAIN</button>
-    <button class="tab-btn"        data-tab="settings"    onclick="switchTab('settings')">SIMULATE</button>
+    <button class="tab-btn"        data-tab="loads"       onclick="switchTab('loads')">LOADS</button>
+    <button class="tab-btn"        data-tab="material"    onclick="switchTab('material')">MATERIAL</button>
     <button class="tab-btn"        data-tab="results"     onclick="switchTab('results')">RESULTS</button>
     <!-- Utility separator -->
     <div style="width:1px;background:var(--border);align-self:stretch;flex-shrink:0;margin:0 4px"></div>
     <!-- Utility tabs: smaller, receded -->
+    <button class="tab-btn tab-util" data-tab="prefs"     onclick="switchTab('prefs')"><svg width="9" height="9" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/></svg> PREFS</button>
     <button class="tab-btn tab-util" data-tab="calibrate" onclick="switchTab('calibrate')"><svg width="9" height="9" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="3" y1="3" x2="7" y2="7"/><line x1="7" y1="3" x2="3" y2="7"/></svg> CAL</button>
     <button class="tab-btn tab-util" data-tab="sources"   onclick="switchTab('sources')"><svg width="9" height="9" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> SRC</button>
     <button class="tab-btn tab-util" data-tab="debug"     onclick="switchTab('debug')"><svg width="9" height="9" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="2.3" y1="7.7" x2="7.7" y2="2.3"/></svg> DBG</button>
@@ -1030,7 +1031,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
   <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--bg-base);border-left:1px solid var(--border)">
 
     <!-- Persistent results bar — visible on EVERY tab, not just RESULTS.
-         Lets you tweak a setting on SIMULATION/CONSTRAINTS and immediately
+         Lets you tweak a setting on MATERIAL/LOADS and immediately
          see the SF change without navigating away and back, which was the
          main reported friction in the old per-analysis comparison workflow. -->
     <div id="results-sticky" style="display:none;flex-shrink:0;padding:12px 22px;
@@ -1174,8 +1175,8 @@ body:not(.has-results) #btn-stress { display: none !important; }
       </div>
         </div>
 
-    <!-- CONSTRAINTS TAB -->
-    <div id="tab-constraints" style="display:none;padding:var(--sp-2) var(--sp-3)">
+    <!-- LOADS TAB -->
+    <div id="tab-loads" style="display:none;padding:var(--sp-2) var(--sp-3)">
 
       <!-- STEP 1: Detected holes — click to bolt -->
       <div style="margin-bottom:24px">
@@ -1186,9 +1187,9 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <div id="holes-list" style="margin-top:6px"></div>
       </div>
 
-      <!-- Active bolt constraints -->
+      <!-- Boundary conditions -->
       <div style="margin-bottom:24px">
-        <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:10px">ACTIVE BOLT CONSTRAINTS</div>
+        <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:10px">BOUNDARY CONDITIONS</div>
         <div id="bolt-list"><div style="font-size:11px;color:var(--text-mid);padding:8px;text-align:center">None yet.</div></div>
       </div>
 
@@ -1213,20 +1214,20 @@ body:not(.has-results) #btn-stress { display: none !important; }
 
 
       <!-- Next step CTA — updated by updateNextButtons() -->
-      <div id="next-constraints-wrap" class="tab-cta">
-        <button id="next-constraints" class="btn primary"
+      <div id="next-loads-wrap" class="tab-cta">
+        <button id="next-loads" class="btn primary"
           style="width:100%;font-family:'Rajdhani',sans-serif;letter-spacing:.08em;opacity:0.4;cursor:default"
-          onclick="nextStepFromTab('constraints')" disabled>
-          Next: Simulation →
+          onclick="nextStepFromTab('loads')" disabled>
+          Next: Material →
         </button>
-        <div id="next-constraints-hint" style="font-size:var(--text-xs);color:var(--text-lo);text-align:center;margin-top:var(--sp-1);min-height:12px;font-family:'DM Mono',monospace"></div>
+        <div id="next-loads-hint" style="font-size:var(--text-xs);color:var(--text-lo);text-align:center;margin-top:var(--sp-1);min-height:12px;font-family:'DM Mono',monospace"></div>
       </div>
         </div>
 
-    <!-- SETTINGS TAB -->
-    <div id="tab-settings" style="display:none;padding:var(--sp-2) var(--sp-3)">
+    <!-- MATERIAL TAB -->
+    <div id="tab-material" style="display:none;padding:var(--sp-2) var(--sp-3)">
 
-      <h2 class="section-title" style="margin-bottom:14px">SIMULATION SETTINGS</h2>
+      <h2 class="section-title" style="margin-bottom:14px">MATERIAL & SOLVER</h2>
 
       <div style="margin-bottom:16px">
         <label for="s-material">Material</label>
@@ -1302,7 +1303,8 @@ body:not(.has-results) #btn-stress { display: none !important; }
         </div>
       </div>
 
-      <div style="margin-bottom:16px">
+      <div style="margin-bottom:16px;padding-top:14px;border-top:1px solid var(--border)">
+        <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:14px">SOLVER TUNING</div>
         <label for="s-mesh">Mesh quality (affects solve time)</label>
         <select id="s-mesh">
           <option value="coarse">Coarse — fast (~5s), lower accuracy</option>
@@ -1323,7 +1325,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       </div>
 
       <!-- Effective strength preview -->
-      <div id="settings-preview" style="margin-top:20px;padding:12px 14px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
+      <div id="material-preview" style="margin-top:20px;padding:12px 14px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
         <div style="font-size:11px;color:var(--text-label);letter-spacing:.04em;margin-bottom:8px">EFFECTIVE STRENGTH ESTIMATE</div>
         <div id="preview-content" style="font-size:10px;color:var(--text-mid);line-height:1.8"></div>
         <div style="font-size:10px;color:var(--text-mid);margin-top:8px;line-height:1.6">
@@ -1332,38 +1334,14 @@ body:not(.has-results) #btn-stress { display: none !important; }
         </div>
       </div>
 
-      <!-- Audio Feedback Settings -->
-      <div style="margin-top:20px;padding-top:14px;border-top:1px solid var(--border)">
-        <h2 class="section-title" style="margin-bottom:14px">AUDIO FEEDBACK</h2>
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
-          <input type="checkbox" id="audio-enabled-toggle"
-            style="width:16px;height:16px;cursor:pointer"
-            onchange="AudioManager.setEnabled(this.checked)">
-          <label for="audio-enabled-toggle" style="cursor:pointer;flex:1">
-            <div style="font-size:11px;color:var(--text-hi);margin-bottom:2px">Analysis progress tones</div>
-            <div style="font-size:10px;color:var(--text-lo)">Upload, mesh generation, solve, and completion notifications</div>
-          </label>
-        </div>
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px">
-          <label for="audio-volume" style="font-size:11px;color:var(--text-label);min-width:40px">Volume</label>
-          <input type="range" id="audio-volume" min="0" max="100" value="60"
-            style="flex:1;cursor:pointer"
-            oninput="AudioManager.setVolume(this.value / 100)">
-          <span id="audio-volume-display" style="font-size:10px;color:var(--text-lo);min-width:25px;text-align:right">60%</span>
-        </div>
-        <div style="font-size:10px;color:var(--text-lo);margin-top:8px;line-height:1.5">
-          Tones help identify each analysis stage — especially useful in loud lab environments. Disable if using hearing aids or in quiet settings where visual feedback is preferred.
-        </div>
-      </div>
-
       <!-- Next step CTA — updated by updateNextButtons() -->
-      <div id="next-settings-wrap" class="tab-cta">
-        <button id="next-settings" class="btn primary"
+      <div id="next-material-wrap" class="tab-cta">
+        <button id="next-material" class="btn primary"
           style="width:100%;font-family:'Rajdhani',sans-serif;letter-spacing:.08em;opacity:0.4;cursor:default"
-          onclick="nextStepFromTab('settings')" disabled>
-          Next: Results →
+          onclick="nextStepFromTab('material')" disabled>
+          Next: Analyse →
         </button>
-        <div id="next-settings-hint" style="font-size:var(--text-xs);color:var(--text-lo);text-align:center;margin-top:var(--sp-1);min-height:12px;font-family:'DM Mono',monospace"></div>
+        <div id="next-material-hint" style="font-size:var(--text-xs);color:var(--text-lo);text-align:center;margin-top:var(--sp-1);min-height:12px;font-family:'DM Mono',monospace"></div>
       </div>
         </div>
 
@@ -1402,6 +1380,30 @@ body:not(.has-results) #btn-stress { display: none !important; }
       </div>
         </div>  <!-- end scrollable content -->
     </div>  <!-- end tab-results -->
+
+    <!-- PREFERENCES TAB -->
+    <div id="tab-prefs" style="display:none;padding:var(--sp-2) var(--sp-3);overflow-y:auto">
+      <h2 class="section-title" style="margin-bottom:14px">AUDIO FEEDBACK</h2>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+        <input type="checkbox" id="audio-enabled-toggle"
+          style="width:16px;height:16px;cursor:pointer"
+          onchange="AudioManager.setEnabled(this.checked)">
+        <label for="audio-enabled-toggle" style="cursor:pointer;flex:1">
+          <div style="font-size:11px;color:var(--text-hi);margin-bottom:2px">Analysis progress tones</div>
+          <div style="font-size:10px;color:var(--text-lo)">Upload, mesh generation, solve, and completion notifications</div>
+        </label>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px">
+        <label for="audio-volume" style="font-size:11px;color:var(--text-label);min-width:40px">Volume</label>
+        <input type="range" id="audio-volume" min="0" max="100" value="60"
+          style="flex:1;cursor:pointer"
+          oninput="AudioManager.setVolume(this.value / 100)">
+        <span id="audio-volume-display" style="font-size:10px;color:var(--text-lo);min-width:25px;text-align:right">60%</span>
+      </div>
+      <div style="font-size:10px;color:var(--text-lo);margin-top:8px;line-height:1.5">
+        Tones help identify each analysis stage — especially useful in loud lab environments. Disable if using hearing aids or in quiet settings where visual feedback is preferred.
+      </div>
+    </div>  <!-- end tab-prefs -->
 
     <!-- CALIBRATE TAB -->
     <div id="tab-calibrate" style="display:none;padding:var(--sp-2) var(--sp-3);overflow-y:auto">
@@ -3370,7 +3372,7 @@ function finishManualHole() {
 
   if (typeof markSessionDirty === 'function') markSessionDirty();
   bumpManualStat('added');
-  switchTab('constraints');
+  switchTab('loads');
   updateHolesList();
   setHint(
     `Hole added: ø${U.lenStr(fit.radius * 2)} — switch to Constraints to add a bolt`,
@@ -4971,10 +4973,10 @@ function renderBoltLoadTable(s) {
 
 // ─── Tab switching ───────────────────────────────────────────────────────────── ────────────────────────────────────────────────────────────
 function switchTab(name) {
-  if (name === 'settings') syncAppearanceBtns();
+  if (name === 'material') syncAppearanceBtns();
   updateNextButtons();
   if (typeof updateHintBar === 'function') updateHintBar();
-  ['setup','orient','constraints','settings','results','calibrate','sources','debug'].forEach(t => {
+  ['setup','orient','loads','material','results','prefs','calibrate','sources','debug'].forEach(t => {
     const el = document.getElementById('tab-' + t);
     if (el) el.style.display = t === name ? 'block' : 'none';
     const btn = document.querySelector(`[data-tab="${t}"]`);
@@ -5143,21 +5145,21 @@ function computeWorkflowState() {
          : `${S.bedFaceName} down — strong in-layer loading.`,
     },
     {
-      key:'bolts', n:'03', t:'Place bolt constraints', tab:'constraints', mandatory:true,
+      key:'bolts', n:'03', t:'Place bolt constraints', tab:'loads', mandatory:true,
       status: nBolts > 0 ? 'done' : 'todo',
       sub: !hasFile ? 'Upload first.'
          : nBolts > 0 ? `${nBolts} bolt${nBolts>1?'s':''} fixed.`
-         : 'Add a bolt at each hole that is bolted down (Constraints tab).',
+         : 'Add a bolt at each hole that is bolted down (Loads tab).',
     },
     {
-      key:'forces', n:'04', t:'Apply forces', tab:'constraints', mandatory:true,
+      key:'forces', n:'04', t:'Apply forces', tab:'loads', mandatory:true,
       status: nForces > 0 ? 'done' : 'todo',
       sub: !hasFile ? 'Upload first.'
          : nForces > 0 ? `${nForces} force${nForces>1?'s':''} applied.`
          : 'Enter Force mode, click the part, set direction + magnitude.',
     },
     {
-      key:'settings', n:'05', t:'Print settings', tab:'settings', mandatory:false,
+      key:'settings', n:'05', t:'Print settings', tab:'material', mandatory:false,
       status: hasFile ? 'done' : 'todo',
       sub: hasFile ? `${matLabel || 'material set'} · defaults applied — adjust if needed.`
                    : 'Defaults applied once a part loads.',
@@ -5183,10 +5185,10 @@ function computeWorkflowState() {
 // or runs analysis if all steps are complete.
 
 function nextStepFromTab(fromTab) {
-  const sequence = ['setup', 'orient', 'constraints', 'settings', 'results'];
+  const sequence = ['setup', 'orient', 'loads', 'material', 'results'];
   const { canAnalyse } = computeWorkflowState();
 
-  if (fromTab === 'settings' && canAnalyse) {
+  if (fromTab === 'material' && canAnalyse) {
     runAnalysis();
     return;
   }
@@ -5211,7 +5213,7 @@ function updateNextButtons() {
     ob.disabled = !orientReady;
     ob.style.opacity = orientReady ? '1' : '0.4';
     ob.style.cursor  = orientReady ? 'pointer' : 'default';
-    ob.textContent   = 'Continue to Constraints ->';
+    ob.textContent   = 'Continue to Loads ->';
     if (oht) oht.textContent = !hasFile
       ? 'Upload a part first.'
       : !orientSet
@@ -5219,15 +5221,15 @@ function updateNextButtons() {
       : '';
   }
 
-  // Constraints tab button
-  const cb  = document.getElementById('next-constraints');
-  const cht = document.getElementById('next-constraints-hint');
+  // Loads tab button
+  const cb  = document.getElementById('next-loads');
+  const cht = document.getElementById('next-loads-hint');
   if (cb) {
-    const constraintsReady = nBolts > 0 && nForces > 0;
-    cb.disabled = !constraintsReady;
-    cb.style.opacity = constraintsReady ? '1' : '0.4';
-    cb.style.cursor  = constraintsReady ? 'pointer' : 'default';
-    cb.textContent   = 'Continue to Settings ->';
+    const loadsReady = nBolts > 0 && nForces > 0;
+    cb.disabled = !loadsReady;
+    cb.style.opacity = loadsReady ? '1' : '0.4';
+    cb.style.cursor  = loadsReady ? 'pointer' : 'default';
+    cb.textContent   = 'Continue to Material ->';
     if (cht) cht.textContent = !hasFile ? 'Upload a part first.'
       : nBolts === 0 && nForces === 0 ? 'Place at least one bolt and one force.'
       : nBolts === 0 ? 'Place at least one bolt constraint.'
@@ -5251,9 +5253,9 @@ function updateNextButtons() {
     fill.style.background = pct === 100 ? 'var(--gold)' : 'var(--gold-dim)';
   }
 
-  // Settings tab button — becomes "Run Analysis" when ready
-  const sb  = document.getElementById('next-settings');
-  const sht = document.getElementById('next-settings-hint');
+  // Material tab button — becomes "Run Analysis" when ready
+  const sb  = document.getElementById('next-material');
+  const sht = document.getElementById('next-material-hint');
   if (sb) {
     sb.disabled = !canAnalyse;
     sb.style.opacity = canAnalyse ? '1' : '0.4';
@@ -9152,9 +9154,13 @@ document.addEventListener('keydown', (e) => {
       break;
     case '1': switchTab('setup'); break;
     case '2': switchTab('orient'); break;
-    case '3': switchTab('constraints'); break;
-    case '4': switchTab('settings'); break;
+    case '3': switchTab('loads'); break;
+    case '4': switchTab('material'); break;
     case '5': switchTab('results'); break;
+    case '6': switchTab('prefs'); break;
+    case '7': switchTab('calibrate'); break;
+    case '8': switchTab('sources'); break;
+    case '9': switchTab('debug'); break;
     case 'o': case 'O': setMode('view'); break;
     case 'b': case 'B': if (mesh3d) setMode('bed'); break;
     case 'f': case 'F': if (mesh3d) setMode('force'); break;
