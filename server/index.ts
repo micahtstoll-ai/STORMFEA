@@ -238,7 +238,7 @@ app.post("/api/analyse", async (req, res) => {
 
     console.log(`[analyse] done in ${result.solverMs}ms: maxVM=${result.maxVonMisesMPa.toFixed(2)}MPa SF=${result.safetyFactor.toFixed(2)} converged=${result.converged}`);
 
-    // Send back summary + per-vertex stress as base64
+    // Send back summary + per-vertex stress and displacement as base64
     res.json({
       summary: {
         maxVonMisesMPa:       +result.maxVonMisesMPa.toFixed(4),
@@ -270,6 +270,7 @@ app.post("/api/analyse", async (req, res) => {
       },
       vertexStressB64:          Buffer.from(result.vertexStress.buffer).toString("base64"),
       vertexPrincipalStressB64: Buffer.from(result.vertexPrincipalStress.buffer).toString("base64"),
+      vertexDisplacementB64:    Buffer.from(result.vertexDisplacement.buffer).toString("base64"),
     });
 
   } catch (err) {

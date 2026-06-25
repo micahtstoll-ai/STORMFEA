@@ -1701,6 +1701,7 @@ const S = {
   pendingDir:    [0,0,-1],
   results:       null,
   stressColors:  null,
+  displacements: null,
   // Orientation state
   bedNormal:     [0, 0, -1],  // which direction is currently facing down (into bed)
   bedFaceName:   null,        // human-readable face name
@@ -2466,6 +2467,12 @@ function validateStressArray(stressArray, expectedLength, label) {
     );
   }
   return true;
+}
+
+function decodeDisplacementB64(b64String) {
+  if (!b64String) return null;
+  const buf = Uint8Array.from(atob(b64String), c => c.charCodeAt(0));
+  return new Float32Array(buf.buffer);
 }
 
 function applyStressColors(stressB64, maxStress, principalStressB64) {
@@ -4316,6 +4323,22 @@ async function runAnalysis() {
     S.results = dataStd;
     syncResultsUI();
 
+    // Decode and store nodal displacements
+    if (dataStd.vertexDisplacementB64) {
+      S.displacements = decodeDisplacementB64(dataStd.vertexDisplacementB64);
+      if (S.displacements) {
+        const expectedLength = dataStd.summary.surfaceTriangleCount * 3 * 3;
+        if (S.displacements.length !== expectedLength) {
+          console.warn(
+            `[displacement] array size mismatch: got ${S.displacements.length} ` +
+            `elements but expected ${expectedLength} (${dataStd.summary.surfaceTriangleCount} vertices * 3 DOFs)`
+          );
+        } else {
+          console.log(`Loaded displacement field: ${S.displacements.length / 3} vertices`);
+        }
+      }
+    }
+
     applyStressColors(dataStd.vertexStressB64, dataStd.summary.maxVonMisesMPa, dataStd.vertexPrincipalStressB64);
     showResults(dataStd.summary);
     showOrientComparison(dataStd.summary);
@@ -4449,6 +4472,12 @@ async function runAnalysis() {
       // Not converged — update results with fine mesh data and warn
       S.results = dataFine;
       syncResultsUI();
+
+      // Decode and store fine mesh displacements
+      if (dataFine.vertexDisplacementB64) {
+        S.displacements = decodeDisplacementB64(dataFine.vertexDisplacementB64);
+      }
+
       applyStressColors(dataFine.vertexStressB64, dataFine.summary.maxVonMisesMPa, dataFine.vertexPrincipalStressB64);
       showResults(dataFine.summary);
       showOrientComparison(dataFine.summary);
