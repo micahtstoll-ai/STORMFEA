@@ -39,8 +39,22 @@ jobs:
           git checkout -b "$BRANCH"
           echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
 
+      # ── Validate secrets ──────────────────────────────────────────────────
+      - name: Validate required secrets
+        run: |
+          if [ -z "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+            echo "ERROR: ANTHROPIC_API_KEY secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.GITHUB_TOKEN }}" ]; then
+            echo "ERROR: GITHUB_TOKEN secret is not set"
+            exit 1
+          fi
+          echo "✓ All required secrets are available"
+
       # ── Research ──────────────────────────────────────────────────────────
       - name: Run research agent
+        timeout-minutes: 10
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
@@ -48,6 +62,7 @@ jobs:
 
       # ── Implement ─────────────────────────────────────────────────────────
       - name: Run implementation agent
+        timeout-minutes: 10
         id: impl
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
