@@ -2225,6 +2225,8 @@ function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverrid
   const groupStressCnt = new Int32Array(nVerts);
   let nGroups = 0;
   const weldMap = new Map();
+  const debugMode = new URLSearchParams(window.location.search).has('debugWeld');
+  const debugVertices = new Set();
 
   for (let i = 0; i < nVerts; i++) {
     const px = posArr[i*3], py = posArr[i*3+1], pz = posArr[i*3+2];
@@ -2232,17 +2234,19 @@ function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverrid
     const cj = Math.round(py / WELD_CELL);
     const ck = Math.round(pz / WELD_CELL);
     let foundGroup = -1;
+    let foundAt = null;
     outer: for (let di = -1; di <= 1; di++) {
       for (let dj = -1; dj <= 1; dj++) {
         for (let dk = -1; dk <= 1; dk++) {
           const key = `${ci+di},${cj+dj},${ck+dk}`;
           const existing = weldMap.get(key);
-          if (existing !== undefined) { foundGroup = existing; break outer; }
+          if (existing !== undefined) { foundGroup = existing; foundAt = key; break outer; }
         }
       }
     }
     if (foundGroup === -1) {
       foundGroup = nGroups++;
+      if (debugMode) debugVertices.add(i);
     }
     weldMap.set(`${ci},${cj},${ck}`, foundGroup);
     weldGroup[i] = foundGroup;
@@ -2256,6 +2260,36 @@ function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverrid
   for (let i = 0; i < nVerts; i++) {
     const g = weldGroup[i];
     smoothed[i] = groupStressCnt[g] > 0 ? groupStressSum[g] / groupStressCnt[g] : 0;
+  }
+
+  // Detect discontinuities: find vertices that are spatially very close but
+  // have different smoothed stress values (indicates welding failure or mesh crack).
+  if (debugMode) {
+    const discontinuities = [];
+    const indexData = geo.index?.array;
+    if (indexData) {
+      for (let t = 0; t < indexData.length; t += 3) {
+        const v0 = indexData[t], v1 = indexData[t+1], v2 = indexData[t+2];
+        const s0 = smoothed[v0], s1 = smoothed[v1], s2 = smoothed[v2];
+        const maxDelta = Math.max(Math.abs(s0-s1), Math.abs(s1-s2), Math.abs(s2-s0));
+        if (maxDelta > 10) { // 10 MPa discontinuity within a single triangle
+          discontinuities.push({ triangle: t/3, v0, v1, v2, s0, s1, s2, maxDelta });
+        }
+      }
+    }
+    const groups = new Map();
+    for (let i = 0; i < nVerts; i++) {
+      const g = weldGroup[i];
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(i);
+    }
+    console.log(`[DEBUG WELD] ${nVerts} vertices, ${nGroups} groups, largest group ${Math.max(...Array.from(groups.values()).map(g => g.length))} verts`);
+    if (discontinuities.length > 0) {
+      console.log(`[DEBUG WELD] Found ${discontinuities.length} high-delta triangles (ΔS > 10 MPa):`);
+      discontinuities.slice(0, 10).forEach(d => {
+        console.log(`  Triangle ${d.triangle}: v${d.v0}(${d.s0.toFixed(1)} MPa, group ${weldGroup[d.v0]}) v${d.v1}(${d.s1.toFixed(1)} MPa, group ${weldGroup[d.v1]}) v${d.v2}(${d.s2.toFixed(1)} MPa, group ${weldGroup[d.v2]}) Δ=${d.maxDelta.toFixed(1)}`);
+      });
+    }
   }
 
   // Percentile range on smoothed values — clips outliers at both ends so a
@@ -2277,7 +2311,8 @@ function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverrid
   // Gamma curve so mid-range detail is visible: gamma < 1 expands the
   // low-stress end, compresses the peak — hotspots stay visible as warm
   // colors but don't flood the whole model.
-  const GAMMA = 0.55;
+  const disableGamma = new URLSearchParams(window.location.search).has('disableGamma');
+  const GAMMA = disableGamma ? 1.0 : 0.55;
   const colors = new Float32Array(nVerts * 3);
   for (let i = 0; i < nVerts; i++) {
     const linear = range > 0 ? Math.max(0, Math.min(1, (smoothed[i] - effectiveMin) / range)) : 0;
@@ -2286,7 +2321,11 @@ function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverrid
     colors[i*3] = r; colors[i*3+1] = g; colors[i*3+2] = b;
   }
 
-  return { colors, effectiveMin, effectiveMax, range, rawMin: minV, rawMax: maxV };
+  if (debugMode) {
+    console.log(`[DEBUG COLOR] gamma=${GAMMA}, range=[${effectiveMin.toFixed(2)}, ${effectiveMax.toFixed(2)}], effectiveRange=${range.toFixed(2)}`);
+  }
+
+  return { colors, effectiveMin, effectiveMax, range, rawMin: minV, rawMax: maxV, debugMode };
 }
 
 function applyStressColors(stressB64, maxStress, principalStressB64) {
