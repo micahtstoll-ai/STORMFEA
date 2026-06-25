@@ -1332,6 +1332,30 @@ body:not(.has-results) #btn-stress { display: none !important; }
         </div>
       </div>
 
+      <!-- Audio Feedback Settings -->
+      <div style="margin-top:20px;padding-top:14px;border-top:1px solid var(--border)">
+        <h2 class="section-title" style="margin-bottom:14px">AUDIO FEEDBACK</h2>
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+          <input type="checkbox" id="audio-enabled-toggle"
+            style="width:16px;height:16px;cursor:pointer"
+            onchange="AudioManager.setEnabled(this.checked)">
+          <label for="audio-enabled-toggle" style="cursor:pointer;flex:1">
+            <div style="font-size:11px;color:var(--text-hi);margin-bottom:2px">Analysis progress tones</div>
+            <div style="font-size:10px;color:var(--text-lo)">Upload, mesh generation, solve, and completion notifications</div>
+          </label>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px">
+          <label for="audio-volume" style="font-size:11px;color:var(--text-label);min-width:40px">Volume</label>
+          <input type="range" id="audio-volume" min="0" max="100" value="60"
+            style="flex:1;cursor:pointer"
+            oninput="AudioManager.setVolume(this.value / 100)">
+          <span id="audio-volume-display" style="font-size:10px;color:var(--text-lo);min-width:25px;text-align:right">60%</span>
+        </div>
+        <div style="font-size:10px;color:var(--text-lo);margin-top:8px;line-height:1.5">
+          Tones help identify each analysis stage — especially useful in loud lab environments. Disable if using hearing aids or in quiet settings where visual feedback is preferred.
+        </div>
+      </div>
+
       <!-- Next step CTA — updated by updateNextButtons() -->
       <div id="next-settings-wrap" class="tab-cta">
         <button id="next-settings" class="btn primary"
@@ -2615,6 +2639,7 @@ async function handleFile(file) {
     // tab close / server restart without requiring re-upload.
     idbSaveGeometry(file).catch(e => console.warn('[idb] save skipped:', e));
 
+    AudioManager.playUploadStart();
     const resp = await fetch('/api/upload', { method: 'POST', body: form });
     if (!resp.ok) throw new Error(await resp.text());
     const data = await resp.json();
@@ -2644,6 +2669,7 @@ async function handleFile(file) {
     }
 
     loadMeshFromPositions(data.positionsB64);
+    AudioManager.playMeshStart();
 
     // If this was a session re-upload, restore bolts/forces and rebuild 3D markers.
     // Contained: a failure drawing cosmetic 3D markers must never abort an
@@ -4277,6 +4303,7 @@ async function runAnalysis() {
 
   try {
     document.getElementById('analyse-status').textContent = 'Solving...';
+    AudioManager.playSolveStart();
     const resp = await fetch('/api/analyse', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(bodyStd),
@@ -4325,7 +4352,7 @@ async function runAnalysis() {
     }
 
     hideOverlay();
-    playAnalysisTone(true);
+    AudioManager.playSuccess();
     updateHintBar();
     updateAnalyseButton();
   } catch (e) {
@@ -4376,7 +4403,7 @@ async function runAnalysis() {
           <code style="font-family:'DM Mono',monospace;font-size:10px;color:var(--text-lo);line-height:1.5;display:block;white-space:pre-wrap;word-break:break-all">${errMsg.slice(0,400)}</code>
         </details>
       </div>`;
-    playAnalysisTone(false);
+    AudioManager.playFailure();
     return;
   }
 
@@ -6352,62 +6379,146 @@ function setPalette(name) {
   document.documentElement.setAttribute('data-palette', saved);
 })();
 
-// ─── Startup tone ─────────────────────────────────────────────────────────────
-// A short two-note chord on first interaction — subtle, professional
-let _startupTonePlayed = false;
-function playStartupTone() {
-  if (_startupTonePlayed) return;
-  _startupTonePlayed = true;
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const play = (freq, start, dur, gain=0.06) => {
-      const osc = ctx.createOscillator();
-      const g   = ctx.createGain();
-      osc.type = 'triangle';
-      osc.frequency.value = freq;
-      g.gain.setValueAtTime(0, ctx.currentTime + start);
-      g.gain.linearRampToValueAtTime(gain, ctx.currentTime + start + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + start + dur);
-      osc.connect(g); g.connect(ctx.destination);
-      osc.start(ctx.currentTime + start);
-      osc.stop(ctx.currentTime + start + dur + 0.05);
-    };
-    // Gold chord: E4 + B4 — clean, resolving, not harsh
-    play(329.6, 0,    0.35, 0.05);
-    play(493.9, 0.05, 0.30, 0.04);
-    play(659.3, 0.12, 0.25, 0.03);
-  } catch(e) { /* audio not available */ }
-}
-document.addEventListener('click', playStartupTone, { once: true });
+// ─── Audio Manager ────────────────────────────────────────────────────────────
+// Persistent global AudioContext with accessibility controls and per-stage tones
+const AudioManager = (() => {
+  let ctx = null;
+  let enabled = localStorage.getItem('sf-audio-enabled') !== 'false';
+  let volume = parseFloat(localStorage.getItem('sf-audio-volume')) || 0.6;
+  let startupTonePlayed = false;
 
-// ─── Analysis completion tone ─────────────────────────────────────────────────
-function playAnalysisTone(success) {
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    if (success) {
-      // Clean ascending resolution
-      [[261.6, 0], [329.6, 0.08], [392, 0.16], [523.3, 0.24]].forEach(([f, t]) => {
-        const o = ctx.createOscillator(), g = ctx.createGain();
-        o.type = 'sine'; o.frequency.value = f;
-        g.gain.setValueAtTime(0, ctx.currentTime + t);
-        g.gain.linearRampToValueAtTime(0.04, ctx.currentTime + t + 0.02);
-        g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + t + 0.3);
-        o.connect(g); g.connect(ctx.destination);
-        o.start(ctx.currentTime + t); o.stop(ctx.currentTime + t + 0.35);
-      });
-    } else {
-      // Dissonant descending — analysis failed
-      [[440, 0], [415.3, 0.1]].forEach(([f, t]) => {
-        const o = ctx.createOscillator(), g = ctx.createGain();
-        o.type = 'triangle'; o.frequency.value = f;
-        g.gain.setValueAtTime(0.04, ctx.currentTime + t);
-        g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + t + 0.25);
-        o.connect(g); g.connect(ctx.destination);
-        o.start(ctx.currentTime + t); o.stop(ctx.currentTime + t + 0.3);
-      });
+  const initContext = () => {
+    if (ctx) return ctx;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      return ctx;
+    } catch (e) {
+      console.debug('[audio] context unavailable');
+      return null;
     }
-  } catch(e) {}
+  };
+
+  const playTone = (frequencies, timings, type = 'sine') => {
+    if (!enabled) return;
+    const context = initContext();
+    if (!context) return;
+
+    frequencies.forEach(([freq, startTime, duration, gain = 0.04]) => {
+      try {
+        const osc = context.createOscillator();
+        const g = context.createGain();
+        osc.type = type;
+        osc.frequency.value = freq;
+        g.gain.setValueAtTime(0, context.currentTime + startTime);
+        g.gain.linearRampToValueAtTime(gain * volume, context.currentTime + startTime + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + startTime + duration);
+        osc.connect(g);
+        g.connect(context.destination);
+        osc.start(context.currentTime + startTime);
+        osc.stop(context.currentTime + startTime + duration + 0.05);
+      } catch (e) {
+        // Silently ignore individual tone failures
+      }
+    });
+  };
+
+  return {
+    setEnabled: (isEnabled) => {
+      enabled = isEnabled;
+      localStorage.setItem('sf-audio-enabled', isEnabled ? 'true' : 'false');
+    },
+    isEnabled: () => enabled,
+    setVolume: (v) => {
+      volume = Math.max(0, Math.min(1, v));
+      localStorage.setItem('sf-audio-volume', volume);
+    },
+    getVolume: () => volume,
+
+    playStartup: () => {
+      if (startupTonePlayed) return;
+      startupTonePlayed = true;
+      // E4 + B4 + E5 chord: clean, resolving, not harsh
+      playTone([
+        [329.6, 0,    0.35, 0.05],
+        [493.9, 0.05, 0.30, 0.04],
+        [659.3, 0.12, 0.25, 0.03],
+      ], [], 'triangle');
+    },
+
+    playUploadStart: () => {
+      // Soft E4 pulse: calm, recognition
+      playTone([[329.6, 0, 0.2, 0.03]], [], 'sine');
+    },
+
+    playMeshStart: () => {
+      // Mid-range A4 notification
+      playTone([[440, 0, 0.2, 0.03]], [], 'sine');
+    },
+
+    playSolveStart: () => {
+      // Ascending minor third: computation signal
+      playTone([
+        [392, 0, 0.25, 0.03],
+        [466.2, 0.1, 0.25, 0.03],
+      ], [], 'sine');
+    },
+
+    playSuccess: () => {
+      // Ascending 4-note fanfare: clean, musical
+      playTone([
+        [261.6, 0,    0.3, 0.04],
+        [329.6, 0.08, 0.3, 0.04],
+        [392,   0.16, 0.3, 0.04],
+        [523.3, 0.24, 0.3, 0.04],
+      ], [], 'sine');
+    },
+
+    playFailure: () => {
+      // Dissonant descending: analysis failed
+      playTone([
+        [440,   0,   0.25, 0.04],
+        [415.3, 0.1, 0.25, 0.04],
+      ], [], 'triangle');
+    },
+  };
+})();
+
+// Startup tone on first interaction
+document.addEventListener('click', () => AudioManager.playStartup(), { once: true });
+
+// Legacy function for compatibility
+function playAnalysisTone(success) {
+  if (success) {
+    AudioManager.playSuccess();
+  } else {
+    AudioManager.playFailure();
+  }
 }
+
+// ─── Audio UI Initialization ─────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  const enableToggle = document.getElementById('audio-enabled-toggle');
+  const volumeSlider = document.getElementById('audio-volume');
+  const volumeDisplay = document.getElementById('audio-volume-display');
+
+  if (enableToggle) {
+    enableToggle.checked = AudioManager.isEnabled();
+    enableToggle.addEventListener('change', (e) => {
+      AudioManager.setEnabled(e.target.checked);
+    });
+  }
+
+  if (volumeSlider) {
+    volumeSlider.value = Math.round(AudioManager.getVolume() * 100);
+    volumeSlider.addEventListener('input', (e) => {
+      const vol = parseInt(e.target.value);
+      AudioManager.setVolume(vol / 100);
+      if (volumeDisplay) {
+        volumeDisplay.textContent = vol + '%';
+      }
+    });
+  }
+});
 
 
 
