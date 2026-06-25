@@ -73,11 +73,61 @@ export interface OrthotropicMaterial {
   readonly label:         string;
 }
 
+/**
+ * Gyroid infill material with density-based constitutive matrix scaling.
+ *
+ * Gyroid is a space-filling cubic lattice structure optimized for FDM printing.
+ * Elastic properties degrade non-linearly with relative density ρ (0=empty, 1=solid).
+ *
+ * Power-law degradation model:
+ *   E_xy(ρ) = 3500 × ρ^1.75 × (1 − 0.12(1 − ρ))  [in-plane modulus]
+ *   E_z(ρ)  = 2275 × ρ^2.1  × (1 − 0.18(1 − ρ))  [through-thickness modulus]
+ *   G_xz(ρ) = 1143 × ρ^2.3  × (1 − 0.22(1 − ρ))  [shear modulus]
+ *   G_xy(ρ) = E_xy(ρ) / (2(1 + ν_xy))              [derived]
+ *   ν_xy and ν_xz are constant across densities
+ *
+ * Reference: Birosz et al. (2022), Hikmat et al. (2023), Gibson-Ashby (1997).
+ */
+export interface GyroidOrthotropic {
+  readonly kind:          "gyroid-orthotropic";
+  readonly density:       number;           // [0, 1] relative infill density
+  readonly E_xy:          number;           // MPa — in-plane modulus (computed from density)
+  readonly E_z:           number;           // MPa — through-thickness modulus (computed from density)
+  readonly nu_xy:         number;           // in-plane Poisson's ratio (constant)
+  readonly nu_xz:         number;           // out-of-plane Poisson's ratio (constant)
+  readonly G_xz:          number;           // MPa — out-of-plane shear modulus (computed from density)
+  readonly yieldXY:       number;           // MPa — yield strength in XY
+  readonly yieldZ:        number;           // MPa — yield strength in Z
+  readonly label:         string;
+}
+
 /** Union type accepted by the solver. */
-export type AnyMaterial = IsotropicMaterial | OrthotropicMaterial;
+export type AnyMaterial = IsotropicMaterial | OrthotropicMaterial | GyroidOrthotropic;
 
 export function isOrthotropic(m: AnyMaterial): m is OrthotropicMaterial {
   return (m as OrthotropicMaterial).kind === "orthotropic";
+}
+
+export function isGyroidOrthotropic(m: AnyMaterial): m is GyroidOrthotropic {
+  return (m as GyroidOrthotropic).kind === "gyroid-orthotropic";
+}
+
+export function isOrthotropicLike(m: AnyMaterial): m is OrthotropicMaterial | GyroidOrthotropic {
+  return isOrthotropic(m) || isGyroidOrthotropic(m);
+}
+
+export function validateGyroidOrthotropic(mat: GyroidOrthotropic): void {
+  if (mat.density < 0 || mat.density > 1.0) {
+    throw new Error(`Density must be in [0, 1.0], got ${mat.density}`);
+  }
+  if (mat.E_xy <= 0) throw new Error(`E_xy must be > 0, got ${mat.E_xy}`);
+  if (mat.E_z <= 0) throw new Error(`E_z must be > 0, got ${mat.E_z}`);
+  if (mat.G_xz <= 0) throw new Error(`G_xz must be > 0, got ${mat.G_xz}`);
+  if (mat.nu_xy < 0 || mat.nu_xy >= 0.5) throw new Error(`nu_xy invalid: ${mat.nu_xy}`);
+  if (mat.nu_xz < 0 || mat.nu_xz >= 0.5) throw new Error(`nu_xz invalid: ${mat.nu_xz}`);
+  if (mat.yieldXY <= 0) throw new Error(`yieldXY must be > 0, got ${mat.yieldXY}`);
+  if (mat.yieldZ <= 0) throw new Error(`yieldZ must be > 0, got ${mat.yieldZ}`);
+  if (!mat.label || mat.label.trim() === "") throw new Error("Label cannot be empty");
 }
 
 // ─── Boundary conditions ─────────────────────────────────────────────────────
