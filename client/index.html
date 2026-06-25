@@ -880,6 +880,14 @@ body:not(.has-results) #btn-displacement-wire { display: none !important; }
              to the actual heatmap coloring, not an approximation. -->
         <div id="legend-gradient" style="width:14px;border-radius:2px;min-height:84px"></div>
       </div>
+      <!-- Displacement scale factor slider — shown only when displacement wireframe is available -->
+      <div id="displacement-scale-panel" style="display:none;margin-top:6px;padding-top:6px;border-top:1px solid var(--border);width:100%;font-size:9px;color:var(--text-lo);letter-spacing:.06em">
+        <div style="text-align:right;margin-bottom:4px">DISP SCALE</div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <input type="range" id="displacement-scale-slider" min="1" max="20" value="5" style="flex:1;height:3px;cursor:pointer">
+          <span id="displacement-scale-value" style="min-width:24px;text-align:right">5.0x</span>
+        </div>
+      </div>
     </div>
 
     <!-- Stress hover readout — fixed panel, shown while hovering the heatmap in view mode -->
@@ -1699,6 +1707,7 @@ const S = {
   mode:          'view', // 'view'|'bolt'|'force'|'bed'
   showStress:    false,
   showDisplacementWire: false,
+  displacementScale: 5.0,
   debugMode:     false,
   pendingForce:  null,
   pendingDir:    [0,0,-1],
@@ -3879,6 +3888,28 @@ function toggleDisplacementWire() {
   }
 }
 
+// ─── Displacement scale factor control ──────────────────────────────────────
+function setDisplacementScale(factor) {
+  S.displacementScale = factor;
+  const valueDisplay = document.getElementById('displacement-scale-value');
+  if (valueDisplay) {
+    valueDisplay.textContent = factor.toFixed(1) + 'x';
+  }
+
+  // Regenerate wireframe with new scale factor
+  if (S.displacements && mesh3d) {
+    if (displacementWireframe) {
+      scene.remove(displacementWireframe);
+    }
+    displacementWireframe = createDisplacementWireframe(mesh3d.geometry, S.displacements, factor);
+    if (displacementWireframe) {
+      displacementWireframe.visible = S.showDisplacementWire;
+      scene.add(displacementWireframe);
+      console.log(`[wireframe] displacement scale updated to ${factor.toFixed(1)}x`);
+    }
+  }
+}
+
 // ─── UI list updates ──────────────────────────────────────────────────────────
 function updateBoltList() {
   const el = document.getElementById('bolt-list');
@@ -4452,6 +4483,8 @@ async function runAnalysis() {
         console.log('[wireframe] displacement wireframe created and added to scene');
         // Show the displacement toggle button now that wireframe is available
         document.getElementById('btn-displacement-wire').style.display = 'block';
+        // Show the displacement scale control panel
+        document.getElementById('displacement-scale-panel').style.display = 'block';
       } else {
         console.warn('[wireframe] failed to create displacement wireframe');
       }
@@ -4608,6 +4641,7 @@ async function runAnalysis() {
           scene.add(displacementWireframe);
           console.log('[wireframe] displacement wireframe updated with fine mesh data');
           document.getElementById('btn-displacement-wire').style.display = 'block';
+          document.getElementById('displacement-scale-panel').style.display = 'block';
         }
       }
 
@@ -6683,7 +6717,15 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
-
+document.addEventListener('DOMContentLoaded', () => {
+  const displacementScaleSlider = document.getElementById('displacement-scale-slider');
+  if (displacementScaleSlider) {
+    displacementScaleSlider.addEventListener('input', (e) => {
+      const scale = parseFloat(e.target.value);
+      setDisplacementScale(scale);
+    });
+  }
+});
 
 // ── Solver validation suite ───────────────────────────────────────────────────
 async function runSolverValidation() {
