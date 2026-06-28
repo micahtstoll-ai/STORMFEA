@@ -117,6 +117,7 @@ export function runLinearStatic(input: SolverInput): SolverResult {
     cg.iterations,
     cg.converged,
     solverMs,
+    cg.residualCheckpoints,
   );
 
   _snap("after buildSolverResult");
@@ -194,7 +195,7 @@ export function runLinearStaticWithK(input: SolverInput): StaticSolveIntermediat
   }
 
   const solverMs = Date.now() - t0;
-  const result = buildSolverResult(mesh, cg.u, material, cg.iterations, cg.converged, solverMs);
+  const result = buildSolverResult(mesh, cg.u, material, cg.iterations, cg.converged, solverMs, cg.residualCheckpoints);
   validateResult(result, mesh);
 
   const boltReactions = computeBoltReactions(K, cg.u, f_ext, constraints);
