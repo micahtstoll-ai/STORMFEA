@@ -229,6 +229,25 @@ export interface SolverResult {
    * Array of { iteration, relativeResidual } points.
    */
   readonly residualCheckpoints?: readonly { iteration: number; relativeResidual: number }[];
+
+  /**
+   * Zienkiewicz-Zhu error estimates η_e at each element centroid (0–1 fraction).
+   * Computed from ‖σ_SPR − σ_centroid‖_energy,e / ‖σ_global‖_energy.
+   * High values indicate under-resolved elements. Length = elementCount.
+   */
+  readonly errorEstimate?: Float32Array;
+
+  /**
+   * Global relative error η = sqrt(Σ η_e²) / sqrt(Σ ‖σ_e‖²) as a fraction 0–1.
+   * Values < 0.05 indicate acceptable mesh quality; 0.05–0.10 suggest refinement.
+   */
+  readonly globalRelativeError?: number;
+
+  /**
+   * Top-20 element centroids of highest error estimates for refinement guidance.
+   * Array of { x, y, z (mm), errorEstimate (0–1) }. Present only if errorEstimate is computed.
+   */
+  readonly topErrorElements?: readonly { x: number; y: number; z: number; errorEstimate: number }[];
 }
 
 // ─── Modal analysis types ─────────────────────────────────────────────────────
