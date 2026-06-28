@@ -632,6 +632,7 @@ export function buildSolverResult(
   cgIterations: number,
   converged:    boolean,
   solverMs:     number,
+  residualCheckpoints?: readonly { iteration: number; relativeResidual: number }[],
 ): SolverResult {
   const { vonMises, safetyFactor, elemPrincipal, maxVonMises, minSF } =
     recoverElementStress(mesh, displacement, mat);
@@ -647,6 +648,7 @@ export function buildSolverResult(
     converged,
     solverMs,
     nodePrincipalStress: nodeAveragedPrincipalStress(mesh, elemPrincipal),
+    residualCheckpoints,
   };
 }
 

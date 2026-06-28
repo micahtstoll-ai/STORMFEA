@@ -241,12 +241,18 @@ function backwardSolve(
 
 // ─── PCG solver ──────────────────────────────────────────────────────────────
 
+export interface CGCheckpoint {
+  readonly iteration: number;
+  readonly relativeResidual: number;
+}
+
 export interface CGResult {
   readonly u:          Float64Array; // solution vector
   readonly iterations: number;
   readonly converged:  boolean;
   readonly finalRelativeResidual: number;
   readonly preconditionerUsed: 'ic0' | 'jacobi';
+  readonly residualCheckpoints: readonly CGCheckpoint[];
 }
 
 /**
@@ -338,6 +344,7 @@ export function solvePCG(
       converged: true,
       finalRelativeResidual: 0,
       preconditionerUsed: preconditioner === 'ic0' ? 'ic0' : 'jacobi',
+      residualCheckpoints: [],
     };
   }
 
@@ -381,6 +388,7 @@ export function solvePCG(
   // actually chasing a non-convergence/timeout in the field.
   let nextLogIter = 1;
   const initialRelRes = relRes;
+  const residualCheckpoints: CGCheckpoint[] = [];
 
   // Benchmark timing for the solve loop
   const tSolveStart = Date.now();
@@ -389,8 +397,11 @@ export function solvePCG(
     // Check convergence at start of iteration (initial r may already satisfy tol)
     if (relRes < tol) break;
 
-    if (debugCG && iter === nextLogIter) {
-      console.log(`[cg] iter ${iter}: relRes=${relRes.toExponential(3)} (initial=${initialRelRes.toExponential(3)})`);
+    if (iter === nextLogIter) {
+      residualCheckpoints.push({ iteration: iter, relativeResidual: relRes });
+      if (debugCG) {
+        console.log(`[cg] iter ${iter}: relRes=${relRes.toExponential(3)} (initial=${initialRelRes.toExponential(3)})`);
+      }
       nextLogIter = iter < 256 ? iter * 2 : iter + 256;
     }
 
@@ -464,5 +475,6 @@ export function solvePCG(
     converged:              relRes < tol,
     finalRelativeResidual:  relRes,
     preconditionerUsed:     useIC0 ? 'ic0' as const : 'jacobi' as const,
+    residualCheckpoints:    residualCheckpoints,
   };
 }

@@ -4888,6 +4888,13 @@ function showResults(s) {
       Solver: ${s.cgIterations} CG iterations · ${s.solverMs}ms · converged=${s.converged ? 'yes' : '<span style="color:var(--warn)">no</span>'}
     </div>
 
+    ${s.residualCheckpoints && s.residualCheckpoints.length > 0 ? `
+    <div style="margin-bottom:16px">
+      <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:8px">CG SOLVER CONVERGENCE</div>
+      <canvas id="convergence-graph" style="width:100%;height:200px;background:var(--bg-card);border:1px solid var(--border);border-radius:3px;display:block;margin-bottom:6px"></canvas>
+      <div style="font-size:10px;color:var(--text-lo);padding:0 2px">Relative residual ‖r‖/‖f‖ at geometric iteration intervals (log scale). ${s.converged ? 'Converged to target tolerance.' : 'Did not reach tolerance.'}</div>
+    </div>` : ''}
+
     ${s.singularity?.detected ? `
     <div style="padding:10px 12px;background:var(--bg-card);border:2px solid var(--gold-glow);border-radius:4px;margin-bottom:12px">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
@@ -5044,6 +5051,130 @@ function showResults(s) {
   <!-- Bolt load table -->
   ${renderBoltLoadTable(s)}
   `;
+
+  // Render convergence graph if checkpoints available
+  if (s.residualCheckpoints && s.residualCheckpoints.length > 0) {
+    setTimeout(() => renderConvergenceGraph(s.residualCheckpoints), 0);
+  }
+}
+
+// ── Convergence graph rendering ──────────────────────────────────────────────
+function renderConvergenceGraph(checkpoints) {
+  const canvas = document.getElementById('convergence-graph');
+  if (!canvas) return;
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+
+  const width = rect.width;
+  const height = rect.height;
+  const padding = { left: 40, right: 10, top: 10, bottom: 30 };
+  const plotW = width - padding.left - padding.right;
+  const plotH = height - padding.top - padding.bottom;
+
+  // Get CSS variables for colors
+  const style = getComputedStyle(document.documentElement);
+  const textColor = style.getPropertyValue('--text-mid').trim() || '#827668';
+  const lineColor = style.getPropertyValue('--gold').trim() || '#F5A623';
+  const gridColor = style.getPropertyValue('--border').trim() || '#e4ddd0';
+
+  // Clear canvas
+  ctx.fillStyle = 'transparent';
+  ctx.fillRect(0, 0, width, height);
+
+  if (checkpoints.length === 0) return;
+
+  // Find min/max for both axes
+  const maxIter = Math.max(...checkpoints.map(cp => cp.iteration));
+  const resValues = checkpoints.map(cp => cp.relativeResidual).filter(r => r > 0);
+  const minRes = Math.min(...resValues);
+  const maxRes = Math.max(...resValues);
+
+  // Log scale for Y-axis
+  const logMin = Math.log10(Math.max(minRes, 1e-10));
+  const logMax = Math.log10(Math.max(maxRes, 1e-8));
+
+  // Draw grid lines
+  ctx.strokeStyle = gridColor;
+  ctx.lineWidth = 0.5;
+  ctx.font = '10px system-ui, sans-serif';
+  ctx.fillStyle = textColor;
+  ctx.textAlign = 'right';
+
+  // Y-axis log scale labels (powers of 10)
+  for (let exp = Math.floor(logMin); exp <= Math.ceil(logMax); exp++) {
+    const val = Math.pow(10, exp);
+    const y = padding.top + plotH - ((exp - logMin) / (logMax - logMin)) * plotH;
+    ctx.beginPath();
+    ctx.moveTo(padding.left - 3, y);
+    ctx.lineTo(width - padding.right, y);
+    ctx.stroke();
+    ctx.fillText('10' + (exp !== 0 ? '^' + exp : ''), padding.left - 8, y + 3);
+  }
+
+  // X-axis labels
+  ctx.textAlign = 'center';
+  const xSteps = Math.min(5, Math.ceil(maxIter / 100));
+  for (let i = 0; i <= xSteps; i++) {
+    const iter = (maxIter / xSteps) * i;
+    const x = padding.left + (iter / maxIter) * plotW;
+    ctx.fillText(Math.round(iter), x, height - 10);
+  }
+
+  // Draw axes
+  ctx.strokeStyle = textColor;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(padding.left, padding.top);
+  ctx.lineTo(padding.left, padding.top + plotH);
+  ctx.lineTo(width - padding.right, padding.top + plotH);
+  ctx.stroke();
+
+  // Draw convergence line
+  ctx.strokeStyle = lineColor;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+
+  let first = true;
+  for (const cp of checkpoints) {
+    const x = padding.left + (cp.iteration / maxIter) * plotW;
+    const logVal = Math.log10(Math.max(cp.relativeResidual, 1e-10));
+    const y = padding.top + plotH - ((logVal - logMin) / (logMax - logMin)) * plotH;
+
+    if (first) {
+      ctx.moveTo(x, y);
+      first = false;
+    } else {
+      ctx.lineTo(x, y);
+    }
+  }
+  ctx.stroke();
+
+  // Draw points
+  ctx.fillStyle = lineColor;
+  for (const cp of checkpoints) {
+    const x = padding.left + (cp.iteration / maxIter) * plotW;
+    const logVal = Math.log10(Math.max(cp.relativeResidual, 1e-10));
+    const y = padding.top + plotH - ((logVal - logMin) / (logMax - logMin)) * plotH;
+
+    ctx.beginPath();
+    ctx.arc(x, y, 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Labels
+  ctx.save();
+  ctx.font = '10px system-ui, sans-serif';
+  ctx.fillStyle = textColor;
+  ctx.textAlign = 'center';
+  ctx.fillText('Iteration', width / 2, height - 2);
+  ctx.restore();
 }
 
 // ── Bolt load table ─────────────────────────────────────────────────────────────

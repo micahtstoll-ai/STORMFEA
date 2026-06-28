@@ -268,6 +268,7 @@ app.post("/api/analyse", async (req, res) => {
         fatigue:              result.fatigue,
         isotropicComparison:  result.isotropicComparison,
         boltReactions:        (result as any).boltReactions ?? [],
+        residualCheckpoints:  result.residualCheckpoints ?? [],
       },
       vertexStressB64:          Buffer.from(result.vertexStress.buffer).toString("base64"),
       vertexPrincipalStressB64: Buffer.from(result.vertexPrincipalStress.buffer).toString("base64"),

@@ -957,6 +957,8 @@ export interface AnalysisResult {
   vertexModeShapesB64?:   string[];
   /** Present when analysisType === 'modal'. Undefined for static-only runs. */
   modalResult?:           ModalAnalysisResult;
+  /** CG solver residual checkpoints for convergence visualization */
+  residualCheckpoints?:   readonly { iteration: number; relativeResidual: number }[];
 }
 
 // ─── Stress singularity detection ────────────────────────────────────────────
@@ -2421,5 +2423,6 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     isotropicComparison,
     vertexModeShapesB64,
     modalResult,
+    residualCheckpoints: result.residualCheckpoints,
   };
 }

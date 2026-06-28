@@ -222,6 +222,13 @@ export interface SolverResult {
    * Undefined for a pure static run.
    */
   readonly modalResult?: ModalAnalysisResult;
+
+  /**
+   * CG solver residual checkpoints at geometric iteration intervals,
+   * for convergence monitoring and visualization.
+   * Array of { iteration, relativeResidual } points.
+   */
+  readonly residualCheckpoints?: readonly { iteration: number; relativeResidual: number }[];
 }
 
 // ─── Modal analysis types ─────────────────────────────────────────────────────
