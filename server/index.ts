@@ -232,6 +232,7 @@ app.post("/api/analyse", async (req, res) => {
         forces:        body.forces,
         print:         body.print,
         meshQuality:   body.meshQuality,
+        analysisType:  (body as any).analysisType ?? 'linear_static',
       }),
       timeoutPromise,
     ]);
@@ -271,6 +272,19 @@ app.post("/api/analyse", async (req, res) => {
       vertexStressB64:          Buffer.from(result.vertexStress.buffer).toString("base64"),
       vertexPrincipalStressB64: Buffer.from(result.vertexPrincipalStress.buffer).toString("base64"),
       vertexDisplacementB64:    Buffer.from(result.vertexDisplacement.buffer).toString("base64"),
+      vertexModeShapesB64:      result.vertexModeShapesB64 ?? null,
+      modalResult:              result.modalResult ? {
+        modalMs:            result.modalResult.modalMs,
+        converged:          result.modalResult.converged,
+        iterations:         result.modalResult.iterations,
+        rigidBodyModeCount: result.modalResult.rigidBodyModeCount,
+        modes: result.modalResult.modes.map(m => ({
+          frequencyHz:         m.frequencyHz,
+          omega2:              m.omega2,
+          participationFactor: m.participationFactor,
+          // modeShape excluded — transmitted via vertexModeShapesB64
+        })),
+      } : null,
     });
 
   } catch (err) {

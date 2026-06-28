@@ -16,7 +16,9 @@
  */
 
 import { generateBoxMesh }                  from "./solver/meshgen.js";
-import { runLinearStatic }                  from "./solver/pipeline.js";
+import { runLinearStatic, runLinearStaticWithK } from "./solver/pipeline.js";
+import { runModalAnalysis }                from "./solver/modal.js";
+import type { ModalAnalysisResult }        from "./solver/types.js";
 
 // ─── Memory profiling snap helper ────────────────────────────────────────────
 // Activated by STORMFEA_PROFILE_MEMORY=1. Mirrors the helper in pipeline.ts.
@@ -729,6 +731,8 @@ export interface AnalysisRequest {
   calibration?:  CalibrationProfile | null;
   /** User-specified bolt type overrides per hole id, e.g. {0: 'M3_clearance', 1: 'M3_tapped'} */
   holeTypeOverrides?: Record<number, string> | null;
+  /** Default: 'linear_static'. Set to 'modal' to also compute natural frequencies. */
+  analysisType?: 'linear_static' | 'modal';
 }
 
 export interface PrintRecommendation {
@@ -943,6 +947,10 @@ export interface AnalysisResult {
   topologySuggestions:    TopologySuggestion[];
   fatigue:                FatigueEstimate;
   isotropicComparison:    IsotropicComparison;
+  /** Mode shapes projected to surface vertices, one per mode. Base64-encoded Float32Array. */
+  vertexModeShapesB64?:   string[];
+  /** Present when analysisType === 'modal'. Undefined for static-only runs. */
+  modalResult?:           ModalAnalysisResult;
 }
 
 // ─── Stress singularity detection ────────────────────────────────────────────
@@ -1686,7 +1694,35 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     forces: effectiveForces,
   };
 
-  const result = runLinearStatic(input);
+  let result: import("./solver/types.js").SolverResult;
+  let modalResult: ModalAnalysisResult | undefined;
+
+  if (req.analysisType === 'modal') {
+    // Run static + keep K for modal reuse
+    const intermediate = runLinearStaticWithK(input);
+    result = intermediate.result;
+
+    // Collect fixed node indices from constraints
+    const fixedNodes: number[] = [];
+    for (const cs of constraints) {
+      for (const ni of cs.nodeIndices) fixedNodes.push(ni);
+    }
+
+    try {
+      modalResult = runModalAnalysis({
+        mesh,
+        material,
+        fixedNodes,
+        nModes: 10,
+      });
+      console.log(`[analyse] modal: ${modalResult.modes.length} modes, f1=${modalResult.modes.find(m => m.frequencyHz > 1)?.frequencyHz.toFixed(1) ?? '?'}Hz`);
+    } catch (err) {
+      console.warn(`[analyse] modal solve failed (static result preserved): ${err}`);
+      modalResult = undefined;
+    }
+  } else {
+    result = runLinearStatic(input);
+  }
 
   // ── SPR-smoothed nodal stress ──────────────────────────────────────────────
   // Use Superconvergent Patch Recovery for more accurate nodal stress values,
@@ -1890,6 +1926,52 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     vertexDisplacement[v*3]   = ux;
     vertexDisplacement[v*3+1] = uy;
     vertexDisplacement[v*3+2] = uz;
+  }
+
+  // ── Modal mode shape projection to surface vertices ─────────────────────────
+  // Reuse the same nearestNode spatial grid to map each mode shape to surface vertices.
+  let vertexModeShapesB64: string[] | undefined;
+  if (modalResult && modalResult.modes.length > 0) {
+    vertexModeShapesB64 = [];
+    for (const mode of modalResult.modes) {
+      const modeShape = mode.modeShape;
+      const vertMode = new Float32Array(vertCount * 3);
+      for (let v = 0; v < vertCount; v++) {
+        const vx = req.positions[v*3] ?? 0;
+        const vy = req.positions[v*3+1] ?? 0;
+        const vz = req.positions[v*3+2] ?? 0;
+        // Find nearest node using the same grid as displacement
+        const ci = Math.floor((vx-nxMin)/CELL3);
+        const cj = Math.floor((vy-nyMin)/CELL3);
+        const ck = Math.floor((vz-nzMin)/CELL3);
+        let bestDist2 = Infinity, bestN = -1;
+        const R2 = R3D * R3D;
+        for (let di=-1;di<=1;di++) for (let dj=-1;dj<=1;dj++) for (let dk=-1;dk<=1;dk++) {
+          const ni2=ci+di, nj2=cj+dj, nk2=ck+dk;
+          if (ni2<0||ni2>=gW3||nj2<0||nj2>=gH3||nk2<0||nk2>=gD3) continue;
+          const cell = grid3.get(ni2*gH3*gD3+nj2*gD3+nk2);
+          if (!cell) continue;
+          for (const n of cell) {
+            const ddx=(mesh.nodes[n*3]??0)-vx, ddy=(mesh.nodes[n*3+1]??0)-vy, ddz=(mesh.nodes[n*3+2]??0)-vz;
+            const d2=ddx*ddx+ddy*ddy+ddz*ddz;
+            if (d2<R2 && d2<bestDist2) { bestDist2=d2; bestN=n; }
+          }
+        }
+        if (bestN < 0) {
+          for (let n=0; n<mesh.nodeCount; n++) {
+            const ddx=(mesh.nodes[n*3]??0)-vx, ddy=(mesh.nodes[n*3+1]??0)-vy, ddz=(mesh.nodes[n*3+2]??0)-vz;
+            const d2=ddx*ddx+ddy*ddy+ddz*ddz;
+            if (d2<bestDist2) { bestDist2=d2; bestN=n; }
+          }
+        }
+        if (bestN >= 0) {
+          vertMode[v*3]   = modeShape[bestN*3] ?? 0;
+          vertMode[v*3+1] = modeShape[bestN*3+1] ?? 0;
+          vertMode[v*3+2] = modeShape[bestN*3+2] ?? 0;
+        }
+      }
+      vertexModeShapesB64.push(Buffer.from(vertMode.buffer).toString("base64"));
+    }
   }
 
   // ── Summary ────────────────────────────────────────────────────────────────
@@ -2263,5 +2345,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     topologySuggestions,
     fatigue,
     isotropicComparison,
+    vertexModeShapesB64,
+    modalResult,
   };
 }
