@@ -49,6 +49,8 @@ if (typeof globalThis.gc !== "function") {
 }
 console.log();
 
+(async () => {
+
 for (const [nx, ny, nz] of GRID_SIZES) {
   const label = `${nx}×${ny}×${nz}`;
   console.log(`Grid ${label}:`);
@@ -78,7 +80,7 @@ for (const [nx, ny, nz] of GRID_SIZES) {
 
   // Note: pipeline.ts also calls _snap internally when STORMFEA_PROFILE_MEMORY=1
   const t2 = snap("before runLinearStatic");
-  const result = runLinearStatic(input);
+  const result = await runLinearStatic(input);
   const t3 = snap("after runLinearStatic");
 
   printDelta(t1, t2);
@@ -86,5 +88,7 @@ for (const [nx, ny, nz] of GRID_SIZES) {
   console.log(`  converged=${result.converged} cgIter=${result.cgIterations} maxVM=${result.maxVonMisesMPa.toFixed(2)} MPa`);
   console.log();
 }
+
+})();  // End async IIFE
 
 console.log("Profile complete.");

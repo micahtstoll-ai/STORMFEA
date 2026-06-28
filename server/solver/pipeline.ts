@@ -66,7 +66,7 @@ function _snap(label: string): void {
   _lastHeapMB = heapMB;
 }
 
-export function runLinearStatic(input: SolverInput): SolverResult {
+export async function runLinearStatic(input: SolverInput): Promise<SolverResult> {
   const t0 = Date.now();
 
   const { mesh, material, constraints, forces } = input;
@@ -77,7 +77,7 @@ export function runLinearStatic(input: SolverInput): SolverResult {
   _snap("before assembleK");
 
   // ── 1. Assemble global stiffness matrix ────────────────────────────────────
-  const { K, diagIdx } = assembleK(mesh, material);
+  const { K, diagIdx } = await assembleK(mesh, material);
 
   _snap("after assembleK");
 
@@ -176,7 +176,7 @@ export interface StaticSolveIntermediate {
  * Like runLinearStatic, but also returns K and diagIdx for downstream reuse
  * (e.g. modal analysis). K has Dirichlet BCs already applied via the penalty method.
  */
-export function runLinearStaticWithK(input: SolverInput): StaticSolveIntermediate {
+export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSolveIntermediate> {
   const t0 = Date.now();
 
   const { mesh, material, constraints, forces } = input;
@@ -184,7 +184,7 @@ export function runLinearStaticWithK(input: SolverInput): StaticSolveIntermediat
   const maxIter        = input.cgMaxIter;
   const preconditioner = input.preconditioner ?? 'ic0';
 
-  const { K, diagIdx } = assembleK(mesh, material);
+  const { K, diagIdx } = await assembleK(mesh, material);
   const f = assembleForceVector(mesh.nodeCount, forces);
   const f_ext = new Float64Array(f);
   applyDirichletBC(K, f, diagIdx, constraints);
