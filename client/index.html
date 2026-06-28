@@ -1765,6 +1765,66 @@ const S = {
   holeTypeOverrides: {},
 };
 
+// ─── Web Worker for solver communication ──────────────────────────────────────
+let solverWorker = null;
+const pendingRequests = new Map(); // id -> { resolve, reject, timeout }
+
+function getSolverWorker() {
+  if (!solverWorker) {
+    solverWorker = new Worker('solver.worker.js');
+    solverWorker.onmessage = (event) => {
+      const { type, id, ...rest } = event.data;
+      const req = pendingRequests.get(id);
+      if (!req) return;
+
+      if (type === 'result') {
+        clearTimeout(req.timeout);
+        pendingRequests.delete(id);
+        req.resolve(rest.data);
+      } else if (type === 'error') {
+        clearTimeout(req.timeout);
+        pendingRequests.delete(id);
+        req.reject(new Error(rest.message));
+      }
+    };
+    solverWorker.onerror = (error) => {
+      console.error('[solver-worker] error:', error);
+      // Clean up all pending requests
+      for (const [id, req] of pendingRequests.entries()) {
+        clearTimeout(req.timeout);
+        req.reject(new Error(`Worker error: ${error.message}`));
+        pendingRequests.delete(id);
+      }
+    };
+  }
+  return solverWorker;
+}
+
+function analyzeWithWorker(body) {
+  return new Promise((resolve, reject) => {
+    const id = `analyse-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const worker = getSolverWorker();
+
+    // 120s timeout matching server-side ANALYSE_TIMEOUT_MS
+    const timeout = setTimeout(() => {
+      pendingRequests.delete(id);
+      reject(new Error('Solver timed out after 120s. Server may be unresponsive.'));
+    }, 120_000);
+
+    pendingRequests.set(id, { resolve, reject, timeout });
+    worker.postMessage({ type: 'analyzeRequest', payload: body, id });
+  });
+}
+
+// Terminate worker on page unload to free resources
+window.addEventListener('beforeunload', () => {
+  if (solverWorker) {
+    solverWorker.terminate();
+    solverWorker = null;
+    pendingRequests.clear();
+  }
+});
+
 // ─── Three.js setup ───────────────────────────────────────────────────────────
 let scene, camera, renderer, mesh3d, animId;
 const overlays = []; // overlay 3D objects on the mesh
@@ -4479,13 +4539,8 @@ async function runAnalysis() {
   try {
     document.getElementById('analyse-status').textContent = 'Solving...';
     AudioManager.playSolveStart();
-    const resp = await fetch('/api/analyse', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(bodyStd),
-    });
-    if (!resp.ok) throw new Error(await resp.text());
     setOverlayPhase('Mapping stress...', 'Projecting onto render mesh and smoothing', 97);
-    dataStd = await resp.json();
+    dataStd = await analyzeWithWorker(bodyStd);
     S.results = dataStd;
     syncResultsUI();
 
@@ -4619,12 +4674,7 @@ async function runAnalysis() {
     const bodyFine = buildAnalyseBody('fine');
     if (!bodyFine) return;
 
-    const respFine = await fetch('/api/analyse', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(bodyFine),
-    });
-    if (!respFine.ok) return;
-    const dataFine = await respFine.json();
+    const dataFine = await analyzeWithWorker(bodyFine);
 
     const vmStd   = dataStd.summary.maxVonMisesMPa;
     const vmFine  = dataFine.summary.maxVonMisesMPa;
@@ -6320,11 +6370,7 @@ async function runConvergenceStudy() {
     try {
       const body = buildAnalyseBody(q);
       if (!body) continue;
-      const resp = await fetch('/api/analyse', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify(body),
-      });
-      const data = await resp.json();
+      const data = await analyzeWithWorker(body);
       results.push({
         quality:  q,
         nodes:    data.summary.nodeCount,
@@ -8776,11 +8822,7 @@ async function runABComparison() {
     const body = buildAnalyseBody('standard');
     if (!body) { hideOverlay(); btn.disabled=false; return; }
 
-    const resp = await fetch('/api/analyse', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(body),
-    });
-    const data = await resp.json();
+    const data = await analyzeWithWorker(body);
 
     AB.comparison = {
       fileName:  S.fileData?.fileName || 'Design B',
