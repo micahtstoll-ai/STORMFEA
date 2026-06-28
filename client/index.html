@@ -4954,6 +4954,27 @@ function showResults(s) {
       Solver: ${s.cgIterations} CG iterations · ${s.solverMs}ms · converged=${s.converged ? 'yes' : '<span style="color:var(--warn)">no</span>'}
     </div>
 
+    ${s.meshQualityReport ? (() => {
+      const mqr = s.meshQualityReport;
+      const qualityColor = mqr.qualityScore > 0.8 ? 'var(--success)' : mqr.qualityScore > 0.5 ? 'var(--warn)' : 'var(--danger)';
+      const qualityBg = mqr.qualityScore > 0.8 ? 'var(--gold-faint)' : mqr.qualityScore > 0.5 ? 'var(--bg-card)' : 'var(--bg-card)';
+      const qualityBorder = mqr.qualityScore > 0.8 ? 'var(--gold-glow)' : mqr.qualityScore > 0.5 ? 'var(--gold-glow)' : 'var(--gold)33';
+      return \`
+      <details style="margin-bottom:12px">
+        <summary style="cursor:pointer;font-size:11px;font-weight:600;color:var(--text-mid);padding:10px 12px;background:\${qualityBg};border:1px solid \${qualityBorder};border-radius:4px;user-select:none">
+          <span style="color:\${qualityColor}\${mqr.degenerateCount > 0 ? ';font-weight:700' : ''}">⚙ Mesh Quality — \${(mqr.qualityScore*100).toFixed(0)}%</span>
+          \${mqr.degenerateCount > 0 ? \` <span style="color:var(--danger);font-weight:700">\${mqr.degenerateCount} degenerate</span>\` : ''}
+          \${mqr.poorQualityCount > 0 ? \` <span style="color:var(--warn)">\${mqr.poorQualityCount} poor</span>\` : ''}
+        </summary>
+        <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px;font-size:10px;color:var(--text-lo);line-height:1.8">
+          Elements: <b style="color:var(--text-hi)">\${mqr.normalCount}</b> normal ·
+          \${mqr.poorQualityCount > 0 ? \`<b style="color:var(--warn)">\${mqr.poorQualityCount}</b> poor · \` : ''}
+          \${mqr.degenerateCount > 0 ? \`<b style="color:var(--danger)">\${mqr.degenerateCount}</b> degenerate\` : 'none degenerate'}<br>
+          Worst: J<sub>min</sub>=\${mqr.worstJacobianMin.toFixed(6)} · AR=\${mqr.worstAspectRatio.toFixed(1)}× · dihedral=\${mqr.worstMinDihedralDeg.toFixed(1)}°
+        </div>
+      </details>\`;
+    })() : ''}
+
     ${s.residualCheckpoints && s.residualCheckpoints.length > 0 ? `
     <div style="margin-bottom:16px">
       <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:8px">CG SOLVER CONVERGENCE</div>

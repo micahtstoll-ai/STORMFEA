@@ -28,6 +28,7 @@ import { applyDirichletBC }    from "./boundary.js";
 import { assembleForceVector } from "./load.js";
 import { solvePCG }            from "./cg.js";
 import { buildSolverResult }   from "./stress.js";
+import { computeMeshQuality }  from "./meshQuality.js";
 
 export interface SolverInput {
   readonly mesh:        TetMesh;
@@ -73,6 +74,32 @@ export async function runLinearStatic(input: SolverInput): Promise<SolverResult>
   const tol            = input.cgTolerance ?? 1e-8;
   const maxIter        = input.cgMaxIter;
   const preconditioner = input.preconditioner ?? 'ic0';
+
+  _snap("before mesh quality check");
+
+  // ── 0. Compute mesh quality metrics ────────────────────────────────────────
+  const meshQualityReport = computeMeshQuality(mesh);
+  const degeneratePercent = (meshQualityReport.degenerateCount / mesh.elementCount) * 100;
+  const poorQualityPercent = (meshQualityReport.poorQualityCount / mesh.elementCount) * 100;
+
+  if (degeneratePercent > 5) {
+    throw new Error(
+      `Mesh quality error: ${meshQualityReport.degenerateCount} elements (${degeneratePercent.toFixed(1)}%) ` +
+      `are degenerate (inverted or zero-volume). ` +
+      `Worst Jacobian: ${meshQualityReport.worstJacobianMin.toFixed(6)}. ` +
+      `Please re-mesh with higher quality settings or verify element connectivity.`
+    );
+  }
+
+  if (poorQualityPercent > 1) {
+    console.warn(
+      `[Mesh quality] ${meshQualityReport.poorQualityCount} elements (${poorQualityPercent.toFixed(1)}%) ` +
+      `have poor quality. Stress recovery may be less accurate. ` +
+      `Worst J_min: ${meshQualityReport.worstJacobianMin.toFixed(6)}, ` +
+      `worst AR: ${meshQualityReport.worstAspectRatio.toFixed(1)}, ` +
+      `worst dihedral: ${meshQualityReport.worstMinDihedralDeg.toFixed(1)}°.`
+    );
+  }
 
   _snap("before assembleK");
 
@@ -160,8 +187,8 @@ export async function runLinearStatic(input: SolverInput): Promise<SolverResult>
     boltReactions.push({ nodeCount: cs.nodeIndices.length, Fx, Fy, Fz });
   }
 
-  // Attach reactions to result (type allows optional field)
-  return { ...result, boltReactions };
+  // Attach reactions and mesh quality report to result (type allows optional fields)
+  return { ...result, boltReactions, meshQualityReport };
 }
 
 // ─── StaticSolveIntermediate ──────────────────────────────────────────────────
@@ -184,6 +211,30 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
   const maxIter        = input.cgMaxIter;
   const preconditioner = input.preconditioner ?? 'ic0';
 
+  // Compute mesh quality metrics before assembly
+  const meshQualityReport = computeMeshQuality(mesh);
+  const degeneratePercent = (meshQualityReport.degenerateCount / mesh.elementCount) * 100;
+  const poorQualityPercent = (meshQualityReport.poorQualityCount / mesh.elementCount) * 100;
+
+  if (degeneratePercent > 5) {
+    throw new Error(
+      `Mesh quality error: ${meshQualityReport.degenerateCount} elements (${degeneratePercent.toFixed(1)}%) ` +
+      `are degenerate (inverted or zero-volume). ` +
+      `Worst Jacobian: ${meshQualityReport.worstJacobianMin.toFixed(6)}. ` +
+      `Please re-mesh with higher quality settings or verify element connectivity.`
+    );
+  }
+
+  if (poorQualityPercent > 1) {
+    console.warn(
+      `[Mesh quality] ${meshQualityReport.poorQualityCount} elements (${poorQualityPercent.toFixed(1)}%) ` +
+      `have poor quality. Stress recovery may be less accurate. ` +
+      `Worst J_min: ${meshQualityReport.worstJacobianMin.toFixed(6)}, ` +
+      `worst AR: ${meshQualityReport.worstAspectRatio.toFixed(1)}, ` +
+      `worst dihedral: ${meshQualityReport.worstMinDihedralDeg.toFixed(1)}°.`
+    );
+  }
+
   const { K, diagIdx } = await assembleK(mesh, material);
   const f = assembleForceVector(mesh.nodeCount, forces);
   const f_ext = new Float64Array(f);
@@ -201,7 +252,7 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
   const boltReactions = computeBoltReactions(K, cg.u, f_ext, constraints);
 
   return {
-    result: { ...result, boltReactions },
+    result: { ...result, boltReactions, meshQualityReport },
     K,
     diagIdx,
   };
