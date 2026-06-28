@@ -875,6 +875,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <button class="btn active" id="btn-vm"  onclick="setStressMode('vm')"  style="font-size:10px;padding:4px 8px" title="von Mises stress — overall combined stress magnitude">VM</button>
         <button class="btn"        id="btn-s1"  onclick="setStressMode('s1')"  style="font-size:10px;padding:4px 8px" title="Maximum principal stress — peak tensile stress in any direction">σ₁</button>
         <button class="btn"        id="btn-dmg" onclick="setStressMode('dmg')" style="font-size:10px;padding:4px 8px" title="Damage ratio — stress as a fraction of material yield strength (1.0 = at yield)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="3" y1="3" x2="7" y2="7"/><line x1="7" y1="3" x2="3" y2="7"/></svg></button>
+        <button class="btn"        id="btn-error" onclick="setStressMode('error')" style="font-size:10px;padding:4px 8px;display:none" title="Error estimate η — Zienkiewicz-Zhu mesh quality metric (0–1), identifies under-resolved elements">η</button>
       </div>
     </div>
 
@@ -2585,7 +2586,7 @@ function decodeDisplacementB64(b64String) {
   return new Float32Array(buf.buffer);
 }
 
-function applyStressColors(stressB64, maxStress, principalStressB64) {
+function applyStressColors(stressB64, maxStress, principalStressB64, errorEstimateB64) {
   if (!mesh3d) return;
   const buf = Uint8Array.from(atob(stressB64), c => c.charCodeAt(0));
   const vertexStress = new Float32Array(buf.buffer);
@@ -2659,12 +2660,27 @@ function applyStressColors(stressB64, maxStress, principalStressB64) {
     } catch(e) { /* ignore decode errors — use fallback */ }
   }
 
+  // Decode error estimate if available
+  let errorEstimate = null;
+  if (errorEstimateB64) {
+    try {
+      const eb = Uint8Array.from(atob(errorEstimateB64), c => c.charCodeAt(0));
+      errorEstimate = new Float32Array(eb.buffer);
+    } catch(e) { /* ignore decode errors */ }
+  }
+
   for (let i=0; i<vertexStress.length; i++) {
     const vm = vertexStress[i] ?? 0;
     s1Array[i]  = (principalVerts && principalVerts.length > i) ? (principalVerts[i] ?? vm * 1.15) : vm * 1.15;
     dmgArray[i] = vm / effYield;
   }
-  S._stressArrays = { vm: vertexStress, s1: s1Array, dmg: dmgArray };
+  S._stressArrays = { vm: vertexStress, s1: s1Array, dmg: dmgArray, error: errorEstimate };
+
+  // Show error estimate button if error estimate is available
+  if (errorEstimate && errorEstimate.length > 0) {
+    const btnError = document.getElementById('btn-error');
+    if (btnError) btnError.style.display = 'block';
+  }
 }
 
 function markPeakStressLocation(vertexStress, maxStress) {
@@ -3888,7 +3904,7 @@ function toggleStress() {
   btn.innerHTML = S.showStress ? '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="currentColor"><rect x="1" y="1" width="8" height="8" rx="1"/><rect x="3" y="3" width="4" height="4" fill="var(--bg-base)"/></svg> STRESS' : '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="3.5"/></svg> DEFAULT';
   btn.className = 'btn' + (S.showStress ? ' active' : '');
   if (S.showStress && S.results) {
-    applyStressColors(S.results.vertexStressB64, S.results.summary.maxVonMisesMPa, S.results.vertexPrincipalStressB64);
+    applyStressColors(S.results.vertexStressB64, S.results.summary.maxVonMisesMPa, S.results.vertexPrincipalStressB64, S.results.vertexErrorEstimateB64);
   } else {
     resetColors();
     document.getElementById('legend').style.display = 'none';
@@ -9377,7 +9393,7 @@ setTimeout(initOnshapeStatus, 200);
 // ── Stress visualization modes ────────────────────────────────────────────────
 function setStressMode(mode) {
   S.stressMode = mode;
-  ['vm','s1','dmg'].forEach(m => {
+  ['vm','s1','dmg','error'].forEach(m => {
     const btn = document.getElementById('btn-'+m);
     if (btn) btn.className = 'btn' + (m===mode?' active':'');
   });
@@ -9404,6 +9420,18 @@ function applyStressColorsFromArrays(arrays) {
       stressArr = arrays.dmg;
       maxValOverride = 2.0;
       minValOverride = 0;
+      break;
+    case 'error':
+      // Error estimate η: 0–1 fraction. 0 = well-refined, 1 = highly under-refined.
+      // Pin to [0, 1] — this is a normalized metric.
+      if (arrays.error) {
+        stressArr = arrays.error;
+        maxValOverride = 1.0;
+        minValOverride = 0;
+      } else {
+        // Fallback if error estimate not available
+        stressArr = arrays.vm;
+      }
       break;
     default:
       stressArr = arrays.vm;
@@ -9435,16 +9463,23 @@ function applyStressColorsFromArrays(arrays) {
   const labels = document.getElementById('legend-val-stack');
   if (labels) {
     const steps = labels.children.length;
-    const unit = S.stressMode === 'dmg' ? '' : (' ' + U.stressLabel());
+    const unit = (S.stressMode === 'dmg' || S.stressMode === 'error') ? '' : (' ' + U.stressLabel());
     Array.from(labels.children).forEach((el,i) => {
       const v = maxVal - (i/(steps-1)) * range;
-      const valText = S.stressMode === 'dmg' ? v.toFixed(2) + '×' : v.toFixed(1);
+      let valText;
+      if (S.stressMode === 'dmg') {
+        valText = v.toFixed(2) + '×';
+      } else if (S.stressMode === 'error') {
+        valText = v.toFixed(3);
+      } else {
+        valText = v.toFixed(1);
+      }
       const isEdge = (i === 0 || i === steps - 1);
       el.textContent = valText + (isEdge ? unit : '');
     });
   }
   // Update legend title
-  const modeLabels = { vm:'von Mises (' + U.stressLabel() + ')', s1:'Max Principal σ₁ (' + U.stressLabel() + ')', dmg:'Damage Ratio (XY/Z)' };
+  const modeLabels = { vm:'von Mises (' + U.stressLabel() + ')', s1:'Max Principal σ₁ (' + U.stressLabel() + ')', dmg:'Damage Ratio (XY/Z)', error:'Error Estimate η (0–1)' };
   document.getElementById('legend-title') && (document.getElementById('legend-title').textContent = modeLabels[S.stressMode] || '');
 }
 

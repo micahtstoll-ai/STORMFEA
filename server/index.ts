@@ -273,6 +273,9 @@ app.post("/api/analyse", async (req, res) => {
       vertexStressB64:          Buffer.from(result.vertexStress.buffer).toString("base64"),
       vertexPrincipalStressB64: Buffer.from(result.vertexPrincipalStress.buffer).toString("base64"),
       vertexDisplacementB64:    Buffer.from(result.vertexDisplacement.buffer).toString("base64"),
+      vertexErrorEstimateB64:   result.vertexErrorEstimateB64 ?? null,
+      globalRelativeError:      result.globalRelativeError ?? null,
+      topErrorElements:         result.topErrorElements ?? null,
       vertexModeShapesB64:      result.vertexModeShapesB64 ?? null,
       modalResult:              result.modalResult ? {
         modalMs:            result.modalResult.modalMs,
