@@ -205,10 +205,12 @@ export function checkFailureModes(params: {
   orientation:      string;
   layerHeightMm:    number;
   calibratedBearingStrMPa?: number | null;
+  bearingStressMult?: number;
 }): FailureModeResult[] {
   const { holeClass, plateThicknessMm, edgeDistMm, holeSeparationMm,
           appliedForceN, effectiveYieldMPa, bulkSF, orientation,
           layerHeightMm, calibratedBearingStrMPa } = params;
+  const bearingStressMult = params.bearingStressMult ?? 1.0;
 
   const results: FailureModeResult[] = [];
   const bolt = holeClass.bolt;
@@ -310,23 +312,25 @@ export function checkFailureModes(params: {
   // σ_bearing = F / (d × t)  — bolt shaft bearing on projected hole area
   // Bearing strength ≈ 1.5–2× compressive yield for metals, ~1.0–1.2× for plastics
   // For FDM: conservative estimate 1.0× effective yield (no data for higher)
+  // Peak bearing stress is higher with cosine-bearing distribution (≈π/2× uniform)
   if (bolt) {
     const boltD        = bolt.nominalMm;
     const bearingArea  = boltD * t;
-    const sigmaBear    = F / bearingArea;
+    const sigmaBear    = (F * bearingStressMult) / bearingArea;
     // Use calibrated bearing strength if available — otherwise conservative estimate
     const bearingStr   = calibratedBearingStrMPa ?? Sy * 1.0;
     const sf_bearing   = bearingStr / sigmaBear;
     const isCalibrated = calibratedBearingStrMPa != null;
+    const distLabel    = bearingStressMult > 1.1 ? ` (peak from cosine-bearing distribution)` : ``;
     results.push({
       mode:       "Bearing (hole wall)",
       sf:          +sf_bearing.toFixed(3),
-      failForceN:  +(F * sf_bearing).toFixed(0),
+      failForceN:  +(F * sf_bearing / bearingStressMult).toFixed(0),
       checked:     true,
       confidence:  isCalibrated ? "medium" : "low",
       note: isCalibrated
-        ? `Bolt shaft (${boltD}mm) bears on hole wall (${t.toFixed(1)}mm). Using CALIBRATED bearing strength ${bearingStr.toFixed(0)} MPa from physical test.`
-        : `Bolt shaft (${boltD}mm) bears on hole wall (${t.toFixed(1)}mm). Bearing strength assumed = yield strength — no FDM data. Run bearing coupon to improve confidence.`,
+        ? `Bolt shaft (${boltD}mm) bears on hole wall (${t.toFixed(1)}mm). Using CALIBRATED bearing strength ${bearingStr.toFixed(0)} MPa from physical test.${distLabel}`
+        : `Bolt shaft (${boltD}mm) bears on hole wall (${t.toFixed(1)}mm). Bearing strength assumed = yield strength — no FDM data. Run bearing coupon to improve confidence.${distLabel}`,
     });
   } else {
     results.push({
@@ -645,6 +649,8 @@ export interface ForceSpec {
   direction: [number, number, number];
   /** Point of application in STL file space (mm) */
   position:  [number, number, number];
+  /** Load distribution mode: 'uniform' = equal across face, 'cosine_bearing' = concentrated at bearing point (default: 'uniform') */
+  loadDistribution?: 'uniform' | 'cosine_bearing';
 }
 
 export interface PrintSettings {
@@ -1575,8 +1581,11 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
 
   // ── Forces ─────────────────────────────────────────────────────────────────
   const solverForces: { nodeIndex: number; forceN: [number,number,number] }[] = [];
+  // Track peak nodal force per force spec for bearing stress calculation
+  const peakNodalForcesPerForce = new Map<number, number>();
 
-  for (const f of req.forces) {
+  for (let forceIdx = 0; forceIdx < req.forces.length; forceIdx++) {
+    const f = req.forces[forceIdx]!;
     const [dx, dy, dz] = f.direction;
     const len = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
     const fx = dx/len * f.magnitude;
@@ -1620,23 +1629,69 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       }
     }
 
-    console.log(`[analysis] force ${f.magnitude}N in (${dx},${dy},${dz}): ${faceNodes.length} face nodes`);
+    console.log(`[analysis] force ${f.magnitude}N in (${dx},${dy},${dz}): ${faceNodes.length} face nodes, distribution=${f.loadDistribution ?? 'uniform'}`);
     const k = faceNodes.length || 1;
 
-    // Non-uniform force distribution: nodes closer to the bolt hole edge
-    // receive proportionally higher load, matching the physical stress concentration
-    // that occurs at the hole-face junction under pull-through loading.
-    //
-    // Weight function: w(r) = 1 + (R - r) / R for r < R (linear taper from hole edge)
-    // where r = distance from hole centre XY projection, R = influence radius (2× hole radius)
-    // Nodes far from any hole get uniform weight = 1.0.
-    //
-    // This is a simple approximation — true distribution depends on geometry.
-    // For axial pull-through the stress concentration at the bearing zone is ~1.5-2×.
-
     const holeList = req.holes.filter(h => req.boltHoleIds.includes(h.id));
-    if (holeList.length > 0 && faceNodes.length > 4) {
-      // Compute weights
+    const isCosineBearing = f.loadDistribution === 'cosine_bearing' && holeList.length > 0 && faceNodes.length > 4;
+
+    if (isCosineBearing) {
+      // Cosine-bearing distribution: concentrated at bearing point, tapers to zero at 90°
+      // Weight function: w(θ) = max(0, cos(θ))
+      // where θ is the angle between node position (relative to hole center) and force direction
+
+      // Find hole center on the loading face
+      let holeCenterX = 0, holeCenterY = 0, holeCenterZ = 0;
+      let holeWeight = 0;
+      for (const hole of holeList) {
+        holeCenterX += hole.centre[0];
+        holeCenterY += hole.centre[1];
+        holeCenterZ += hole.centre[2];
+        holeWeight += 1;
+      }
+      holeCenterX /= holeWeight;
+      holeCenterY /= holeWeight;
+      holeCenterZ /= holeWeight;
+
+      // Compute cosine weights
+      const weights = new Float64Array(faceNodes.length);
+      let maxWeight = 0;
+      for (let ni = 0; ni < faceNodes.length; ni++) {
+        const n = faceNodes[ni]!;
+        const nx = mesh.nodes[n*3]   ?? 0;
+        const ny = mesh.nodes[n*3+1] ?? 0;
+        const nz = mesh.nodes[n*3+2] ?? 0;
+
+        // Vector from hole center to node
+        const rx = nx - holeCenterX;
+        const ry = ny - holeCenterY;
+        const rz = nz - holeCenterZ;
+
+        // cos(θ) = (r · d) / (|r| × |d|)
+        // d is already normalized (from f.direction / len)
+        const dotProduct = rx * (dx/len) + ry * (dy/len) + rz * (dz/len);
+        const rMag = Math.sqrt(rx*rx + ry*ry + rz*rz) || 1e-6;
+        const cosTheta = dotProduct / rMag;
+
+        weights[ni] = Math.max(0, cosTheta);
+        maxWeight = Math.max(maxWeight, weights[ni]!);
+      }
+
+      // Normalize weights so total force is preserved
+      const wSum = Array.from(weights).reduce((a,b)=>a+b, 0);
+      const wScale = k / wSum;  // scale so Σ w_i = k
+      let peakNodalForce = 0;
+      for (let ni = 0; ni < faceNodes.length; ni++) {
+        const n = faceNodes[ni]!;
+        const w = (weights[ni]! * wScale) / k;
+        const forceMag = Math.sqrt((fx*w)*(fx*w) + (fy*w)*(fy*w) + (fz*w)*(fz*w));
+        peakNodalForce = Math.max(peakNodalForce, forceMag);
+        solverForces.push({ nodeIndex: n, forceN: [fx*w, fy*w, fz*w] });
+      }
+      peakNodalForcesPerForce.set(forceIdx, peakNodalForce);
+    } else if (holeList.length > 0 && faceNodes.length > 4) {
+      // Linear-taper distribution (default for bolted holes without explicit cosine_bearing)
+      // Nodes closer to the bolt hole edge receive proportionally higher load.
       const weights = new Float64Array(faceNodes.length).fill(1.0);
       for (let ni = 0; ni < faceNodes.length; ni++) {
         const n = faceNodes[ni]!;
@@ -1654,13 +1709,12 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         const minDist = Math.sqrt(minDistSq);
         const R = nearRadius * 3.0;  // influence radius = 3× hole radius
         if (minDist < R) {
-          // Linear taper: higher weight near hole
           weights[ni] = 1.0 + 0.6 * (1.0 - minDist / R);
         }
       }
       // Normalize weights so total force is preserved
       const wSum = Array.from(weights).reduce((a,b)=>a+b, 0);
-      const wScale = k / wSum;  // scale so Σ w_i = k (equiv. to equal distribution total)
+      const wScale = k / wSum;
       for (let ni = 0; ni < faceNodes.length; ni++) {
         const n = faceNodes[ni]!;
         const w = (weights[ni]! * wScale) / k;
@@ -2067,6 +2121,25 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     }
     if (!isFinite(holeSepMm)) holeSepMm = 0;
 
+    // Calculate bearing stress multiplier for cosine-bearing distribution
+    // If forces with cosine_bearing affect this hole, peak stress is higher than uniform
+    let bearingStressMult = 1.0;
+    let hasCosineBearing = false;
+    for (let fi = 0; fi < req.forces.length; fi++) {
+      const f = req.forces[fi]!;
+      if (f.loadDistribution === 'cosine_bearing' && peakNodalForcesPerForce.has(fi)) {
+        // For cosine-bearing, the peak nodal force is significantly higher than uniform average
+        // Calculate the ratio of peak to average for this force
+        const peakF = peakNodalForcesPerForce.get(fi)!;
+        const avgF = f.magnitude / Math.max(1, holesForClassification.length);
+        if (peakF > avgF * 1.1) {
+          // This force has meaningful cosine-bearing concentration
+          hasCosineBearing = true;
+          bearingStressMult = Math.max(bearingStressMult, peakF / avgF);
+        }
+      }
+    }
+
     const modes = checkFailureModes({
       holeClass:         cls,
       plateThicknessMm:  plateThickness,
@@ -2078,6 +2151,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       orientation:       req.print.orientation,
       layerHeightMm:     req.print.layerHeightMm ?? 0.2,
       calibratedBearingStrMPa: req.calibration?.bearingStr_MPa ?? null,
+      ...(bearingStressMult > 1.0 ? { bearingStressMult } : {}),
     });
 
     // Merge — keep lowest SF per mode across all holes
