@@ -1054,6 +1054,15 @@ body:not(.has-results) #btn-stress { display: none !important; }
         </div>
       </div>
       <div id="fp-dir-display" style="font-size:11px;color:var(--text-label);margin-bottom:10px">Direction: +Z (top face)</div>
+      <!-- Bearing distribution toggle -->
+      <div style="margin-bottom:10px">
+        <label for="fp-bearing-dist" style="font-size:11px">Load distribution</label>
+        <select id="fp-bearing-dist" style="width:100%;font-size:11px;margin-top:4px">
+          <option value="uniform">Uniform across face</option>
+          <option value="cosine_bearing">Cosine (bearing point)</option>
+        </select>
+        <div style="font-size:9px;color:var(--text-lo);margin-top:4px">Cosine: concentrated at bolt bearing point, realistic for bolt pull-through.</div>
+      </div>
       <div style="display:flex;gap:6px">
         <button class="btn primary" style="flex:1" onclick="confirmForce()">Add Force</button>
         <button class="btn" onclick="cancelForce()" aria-label="Cancel force placement"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg></button>
@@ -3714,6 +3723,7 @@ function confirmForce() {
   dispatchStateChange();
   if (!S.pendingForce) return;
   const mag = +document.getElementById('fp-mag').value || 500;
+  const dist = document.getElementById('fp-bearing-dist').value || 'uniform';
 
   // If editing an existing force, replace it
   if (S.pendingForce.editIndex !== undefined) {
@@ -3722,6 +3732,7 @@ function confirmForce() {
       direction: S.pendingDir.slice(),
       magnitude: mag,
       label:     S.forces[S.pendingForce.editIndex].label,
+      loadDistribution: dist !== 'uniform' ? dist : undefined,
     };
   } else {
     const force = {
@@ -3729,6 +3740,7 @@ function confirmForce() {
       direction: S.pendingDir.slice(),
       magnitude: mag,
       label:     `F${S.forces.length + 1}`,
+      loadDistribution: dist !== 'uniform' ? dist : undefined,
     };
     pushUndoSnapshot();
     S.forces.push(force);
@@ -3983,6 +3995,7 @@ function editForce(i) {
   S.pendingForce = { position: f.position, editIndex: i };
   S.pendingDir   = f.direction.slice();  // restore saved direction
   document.getElementById('fp-mag').value = f.magnitude;
+  document.getElementById('fp-bearing-dist').value = f.loadDistribution || 'uniform';
   // Update direction display
   const labels = {'1,0,0':'+X','-1,0,0':'-X','0,1,0':'+Y','0,-1,0':'-Y','0,0,1':'+Z','0,0,-1':'-Z'};
   const dirStr = labels[f.direction.join(',')] || `(${f.direction})`;
@@ -4047,6 +4060,7 @@ function _cloneConstraints() {
       direction: [...f.direction],
       magnitude: f.magnitude,
       label:     f.label,
+      loadDistribution: f.loadDistribution,
     })),
   };
 }
@@ -6438,7 +6452,12 @@ function buildAnalyseBody(quality) {
       washerOD:     b.washerOD     || null,
     })),
     holeTypeOverrides: S.holeTypeOverrides,
-    forces:        S.forces.map(f => ({ magnitude:f.magnitude, direction:f.direction, position:f.position })),
+    forces:        S.forces.map(f => ({
+      magnitude:f.magnitude,
+      direction:f.direction,
+      position:f.position,
+      ...(f.loadDistribution ? { loadDistribution: f.loadDistribution } : {}),
+    })),
     print: {
       materialId:    document.getElementById('s-material').value,
       infillPct:     +document.getElementById('s-infill').value,
