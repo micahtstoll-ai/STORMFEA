@@ -595,7 +595,7 @@ export function c3d10ElementStiffness(
 
   for (const gp of C3D10_GAUSS) {
     const { B, detJ } = buildB_c3d10(nodes, gp.xi, gp.eta, gp.zeta);
-    const vol = detJ * gp.w;
+    const vol = Math.abs(detJ) * gp.w;
 
     // Ke += Bᵀ C B × vol
     // CB = C × B (6×30) — reuse module-level scratch; zero it first (accumulator)

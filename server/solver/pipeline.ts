@@ -19,6 +19,7 @@ import type {
   AnyMaterial,
   PointForce,
   SolverResult,
+  CSRMatrix,
 } from "./types.js";
 
 import type { FixedNodeSet } from "./boundary.js";
@@ -160,6 +161,83 @@ export function runLinearStatic(input: SolverInput): SolverResult {
 
   // Attach reactions to result (type allows optional field)
   return { ...result, boltReactions };
+}
+
+// ─── StaticSolveIntermediate ──────────────────────────────────────────────────
+
+export interface StaticSolveIntermediate {
+  result:  SolverResult;
+  K:       CSRMatrix;
+  diagIdx: Int32Array;
+}
+
+/**
+ * Like runLinearStatic, but also returns K and diagIdx for downstream reuse
+ * (e.g. modal analysis). K has Dirichlet BCs already applied via the penalty method.
+ */
+export function runLinearStaticWithK(input: SolverInput): StaticSolveIntermediate {
+  const t0 = Date.now();
+
+  const { mesh, material, constraints, forces } = input;
+  const tol            = input.cgTolerance ?? 1e-8;
+  const maxIter        = input.cgMaxIter;
+  const preconditioner = input.preconditioner ?? 'ic0';
+
+  const { K, diagIdx } = assembleK(mesh, material);
+  const f = assembleForceVector(mesh.nodeCount, forces);
+  const f_ext = new Float64Array(f);
+  applyDirichletBC(K, f, diagIdx, constraints);
+  const cg = solvePCG(K, f, diagIdx, tol, maxIter, preconditioner);
+
+  if (!cg.converged) {
+    console.warn(`[runLinearStaticWithK] CG did not converge after ${cg.iterations} iterations.`);
+  }
+
+  const solverMs = Date.now() - t0;
+  const result = buildSolverResult(mesh, cg.u, material, cg.iterations, cg.converged, solverMs);
+  validateResult(result, mesh);
+
+  const boltReactions = computeBoltReactions(K, cg.u, f_ext, constraints);
+
+  return {
+    result: { ...result, boltReactions },
+    K,
+    diagIdx,
+  };
+}
+
+function computeBoltReactions(
+  K: CSRMatrix,
+  u: Float64Array,
+  f_ext: Float64Array,
+  constraints: readonly import("./boundary.js").FixedNodeSet[],
+): { nodeCount: number; Fx: number; Fy: number; Fz: number }[] {
+  const boltReactions: { nodeCount: number; Fx: number; Fy: number; Fz: number }[] = [];
+  const { data, colIdx, rowPtr } = K;
+
+  for (const cs of constraints) {
+    let Fx = 0, Fy = 0, Fz = 0;
+    for (const nodeIdx of cs.nodeIndices) {
+      for (let dof = 0; dof < 3; dof++) {
+        const globalDof = nodeIdx * 3 + dof;
+        if (globalDof >= K.n) continue;
+        let Ku_i = 0;
+        const rStart = rowPtr[globalDof]   ?? 0;
+        const rEnd   = rowPtr[globalDof+1] ?? 0;
+        for (let k = rStart; k < rEnd; k++) {
+          const col = colIdx[k];
+          if (col === undefined) continue;
+          Ku_i += (data[k] ?? 0) * (u[col] ?? 0);
+        }
+        const reaction = Ku_i - (f_ext[globalDof] ?? 0);
+        if (dof === 0) Fx += reaction;
+        else if (dof === 1) Fy += reaction;
+        else Fz += reaction;
+      }
+    }
+    boltReactions.push({ nodeCount: cs.nodeIndices.length, Fx, Fy, Fz });
+  }
+  return boltReactions;
 }
 
 function validateResult(result: SolverResult, mesh: TetMesh): void {

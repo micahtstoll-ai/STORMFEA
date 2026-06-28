@@ -41,7 +41,7 @@ function i32(arr: Int32Array, i: number): number {
  * Determine the CSR sparsity pattern for the global stiffness matrix.
  * Works for both C3D4 (4 nodes, 12 DOF) and C3D10 (10 nodes, 30 DOF).
  */
-function buildSparsityPattern(mesh: TetMesh): {
+export function buildSparsityPattern(mesh: TetMesh): {
   rowPtr: Int32Array;
   colIdx: Int32Array;
   diagIdx: Int32Array;

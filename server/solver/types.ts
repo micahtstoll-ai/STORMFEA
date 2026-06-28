@@ -216,4 +216,36 @@ export interface SolverResult {
    * Flat layout: [σ1₀, σ2₀, σ3₀, σ1₁, σ2₁, σ3₁, ...]. Length = nodeCount × 3.
    */
   readonly nodePrincipalStress?: Float64Array;
+
+  /**
+   * Present when modal analysis was requested alongside the linear static solve.
+   * Undefined for a pure static run.
+   */
+  readonly modalResult?: ModalAnalysisResult;
+}
+
+// ─── Modal analysis types ─────────────────────────────────────────────────────
+
+/**
+ * A single natural frequency mode.
+ * modeShape length = nodeCount * 3 (same DOF ordering as displacement).
+ * Mass-normalised: φᵀ·M·φ = 1.
+ */
+export interface ModeResult {
+  readonly frequencyHz:          number;        // Hz = sqrt(omega2) / (2π)
+  readonly omega2:               number;        // rad²/s² (eigenvalue of K·φ = ω²·M·φ)
+  readonly modeShape:            Float64Array;  // length = nodeCount * 3
+  readonly participationFactor:  number;        // φᵀ·M·r, r = X-direction unit excitation
+}
+
+/**
+ * Full result from a modal analysis run.
+ * Returned by runModalAnalysis; embedded in SolverResult when analysisType === 'modal'.
+ */
+export interface ModalAnalysisResult {
+  readonly modes:               ModeResult[];    // sorted ascending by frequencyHz
+  readonly converged:           boolean;
+  readonly iterations:          number;
+  readonly rigidBodyModeCount:  number;
+  readonly modalMs:             number;          // wall-clock ms for eigensolver only
 }
