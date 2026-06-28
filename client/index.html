@@ -422,6 +422,87 @@ label {
 /* Reset browser h1/h2 defaults */
 h1, h2, h3 { font-weight: inherit; font-size: inherit; margin: 0; }
 
+/* ── Motor Excitation Risk panel ──────────────────────────────────────────── */
+#motor-risk-panel {
+  margin-top: 16px;
+  margin-bottom: 16px;
+}
+.motor-risk-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  color: var(--text-mid);
+}
+.motor-risk-table th {
+  font-size: 9px;
+  letter-spacing: .08em;
+  color: var(--text-label);
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.motor-risk-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.motor-risk-table tr:last-child td { border-bottom: none; }
+.motor-risk-row-risk    { background: var(--danger-faint); }
+.motor-risk-row-caution { background: var(--warn-faint); }
+.motor-risk-row-safe    { background: transparent; }
+.motor-status-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 2px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .06em;
+}
+.motor-status-risk    { background: var(--danger-faint); border: 1px solid var(--danger);    color: var(--danger); }
+.motor-status-caution { background: var(--warn-faint);   border: 1px solid var(--warn-glow); color: var(--warn); }
+.motor-status-safe    { background: transparent;         border: 1px solid var(--border);    color: var(--text-lo); }
+.motor-risk-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 3px;
+  margin-bottom: 8px;
+  font-size: 10px;
+}
+.motor-risk-summary.has-risk    { background: var(--danger-faint); border: 1px solid var(--danger);    color: var(--danger); }
+.motor-risk-summary.has-caution { background: var(--warn-faint);   border: 1px solid var(--warn-glow); color: var(--warn); }
+.motor-risk-summary.all-safe    { background: var(--gold-faint);   border: 1px solid var(--gold-glow); color: var(--success); }
+.excitation-band-display {
+  font-size: 10px;
+  color: var(--text-lo);
+  padding: 4px 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  margin-bottom: 8px;
+}
+.excitation-band-display b { color: var(--text-mid); }
+.motor-risk-inputs {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.motor-risk-inputs label {
+  font-size: 9px;
+  color: var(--text-label);
+  letter-spacing: .06em;
+  display: block;
+  margin-bottom: 2px;
+}
+.motor-risk-inputs input[type=number] {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  font-size: 11px;
+}
+
 /* ── Gold divider line ──────────────────────────────────────────────────────── */
 .gold-rule {
   height: 1px;
@@ -1395,6 +1476,106 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <div id="results-placeholder" style="font-size:11px;color:var(--text-mid);text-align:center;padding:40px 0">No analysis run yet.<br>Place constraints and forces, then click Analyse.</div>
         <div id="results-content" aria-live="polite" aria-atomic="false" style="display:none"></div>
 
+        <!-- Modal Analysis Panel — shown only when modal data is present -->
+        <div id="modal-panel" style="display:none;margin-top:16px;padding:14px;border-top:1px solid var(--border)">
+          <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--text-label);margin-bottom:10px">
+            MODAL ANALYSIS
+          </div>
+          <!-- Mode selector row -->
+          <div style="margin-bottom:12px">
+            <label style="font-size:11px;color:var(--text-label);display:block;margin-bottom:5px">Mode</label>
+            <select id="modal-mode-select"
+                    style="font-size:11px;padding:4px 6px;width:100%;background:var(--bg-input);color:var(--text-hi);border:1px solid var(--border-mid);border-radius:3px;font-family:inherit;outline:none"
+                    onchange="onModalModeChange(+this.value)">
+            </select>
+          </div>
+          <!-- Frequency readout -->
+          <div style="margin-bottom:12px;padding:8px 10px;background:var(--bg-card);border:1px solid var(--border);border-radius:3px;font-size:11px;color:var(--text-mid)">
+            <span style="color:var(--text-label);letter-spacing:.04em">FREQ:</span>
+            &nbsp;
+            <span id="modal-freq-display" style="color:var(--gold);font-family:'DM Mono',monospace">—</span>
+            &nbsp;Hz
+            <span style="margin-left:12px;color:var(--text-label);letter-spacing:.04em">PART. FACTOR:</span>
+            &nbsp;
+            <span id="modal-pf-display" style="font-family:'DM Mono',monospace;color:var(--text-mid)">—</span>
+          </div>
+          <!-- Amplitude slider -->
+          <div style="margin-bottom:12px">
+            <label style="font-size:11px;color:var(--text-label);display:flex;justify-content:space-between;margin-bottom:5px">
+              <span>Amplitude</span>
+              <span id="modal-amp-val" style="font-family:'DM Mono',monospace;color:var(--text-hi)">0.00</span>
+            </label>
+            <input type="range" id="modal-amp-slider" min="-100" max="100" value="0" step="1"
+                   style="width:100%;accent-color:var(--gold)"
+                   oninput="onModalAmplitudeChange(this.value / 100)">
+            <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-lo);margin-top:2px">
+              <span>-1</span><span>0</span><span>+1</span>
+            </div>
+          </div>
+          <!-- Loop toggle + reset row -->
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+            <button id="modal-loop-btn" class="btn" style="flex:1;font-size:11px" onclick="toggleModalLoop()">
+              ANIMATE
+            </button>
+            <button class="btn" style="font-size:11px;padding:4px 10px" onclick="resetModalDeformation()" title="Reset amplitude to 0 and stop animation">
+              Reset
+            </button>
+          </div>
+          <!-- Return to stress view button -->
+          <button class="btn" style="width:100%;font-size:10px;color:var(--text-lo);margin-top:4px" onclick="exitModalView()">
+            Back to Stress View
+          </button>
+        </div>
+        <!-- End Modal Analysis Panel -->
+
+        <!-- Motor Excitation Risk panel — shown only when modal data is present -->
+        <div id="motor-risk-panel" style="display:none">
+          <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:8px">
+            MOTOR EXCITATION RISK
+          </div>
+          <!-- Input row: min RPM, max RPM, gear ratio -->
+          <div class="motor-risk-inputs">
+            <div>
+              <label for="motor-min-rpm">MIN RPM</label>
+              <input type="number" id="motor-min-rpm" value="600" min="0" step="100" oninput="onMotorRiskInput()">
+            </div>
+            <div>
+              <label for="motor-max-rpm">MAX RPM</label>
+              <input type="number" id="motor-max-rpm" value="6000" min="0" step="100" oninput="onMotorRiskInput()">
+            </div>
+            <div>
+              <label for="motor-gear-ratio">GEAR RATIO</label>
+              <input type="number" id="motor-gear-ratio" value="5.0" min="0.1" step="0.1" oninput="onMotorRiskInput()">
+            </div>
+          </div>
+          <!-- Derived excitation band display -->
+          <div class="excitation-band-display" id="motor-excitation-band">
+            Excitation band: <b id="motor-band-hz">—</b>
+          </div>
+          <!-- Summary badge -->
+          <div class="motor-risk-summary all-safe" id="motor-risk-summary">
+            All modes safe
+          </div>
+          <!-- Risk table -->
+          <div id="motor-risk-table-wrap" style="background:var(--bg-card);border:1px solid var(--border);border-radius:4px;overflow:hidden">
+            <table class="motor-risk-table">
+              <thead>
+                <tr>
+                  <th>MODE</th>
+                  <th>FREQ (Hz)</th>
+                  <th>RATIO TO BAND</th>
+                  <th>STATUS</th>
+                </tr>
+              </thead>
+              <tbody id="motor-risk-tbody"></tbody>
+            </table>
+          </div>
+          <div style="font-size:9px;color:var(--text-lo);margin-top:6px;line-height:1.6">
+            Risk: within band or 20% of edges. Caution: within 40% of edges. Safe: outside.
+          </div>
+        </div>
+        <!-- End Motor Excitation Risk panel -->
+
       <!-- A vs B comparison panel -->
       <div id="ab-panel" style="display:none;margin-top:16px;padding:14px;border-top:1px solid var(--border)">
         <div style="font-family:'Outfit',system-ui,sans-serif;font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--text-label);margin-bottom:10px">DESIGN COMPARISON</div>
@@ -1754,6 +1935,17 @@ const S = {
   _convergenceData: null,
   // Hole bolt-type overrides: holeId -> string key
   holeTypeOverrides: {},
+  // Modal analysis state
+  modalModes:       null,   // array of decoded mode objects (set after analysis)
+  modalResult:      null,   // raw modalResult from server response
+  modalModeIndex:   0,      // currently selected mode (0-based)
+  modalAmplitude:   0,      // current display amplitude [-1, +1]
+  modalLooping:     false,  // whether animation loop is running
+  _modalAnimId:     null,   // requestAnimationFrame handle for loop
+  _modalOrigPos:    null,   // Float32Array snapshot of base mesh positions
+  _inModalView:     false,  // whether modal view is active (stress hidden)
+  _stressWasShown:  false,  // cached stress visibility for restore
+  motorRiskState: { minRpm: 600, maxRpm: 6000, gearRatio: 5.0 },
 };
 
 // ─── Three.js setup ───────────────────────────────────────────────────────────
@@ -2235,6 +2427,8 @@ function loadMeshFromPositions(posB64) {
   rotX = 0; rotY = 0;
   mesh3d.rotation.set(0, 0, 0);
   scene.add(mesh3d);
+  // Invalidate modal snapshot — new geometry, must re-snapshot on first applyModeShape
+  S._modalOrigPos = null;
 
   // Fit camera to part: orbit center at part mid-height, zoom to fit
   const partSize = Math.max(sz.x, sz.y, sz.z) * scale;
@@ -2706,6 +2900,14 @@ async function handleFile(file) {
     S.forces = [];
     S.results = null;
     S._convergenceData = null;
+    S.modalModes = null;
+    S.modalResult = null;
+    S._modalOrigPos = null;
+    S._inModalView = false;
+    const _mpReset = document.getElementById('modal-panel');
+    if (_mpReset) _mpReset.style.display = 'none';
+    const _mrpReset = document.getElementById('motor-risk-panel');
+    if (_mrpReset) _mrpReset.style.display = 'none';
     showTopologyMarkers([]);
     if (data.stepB64) S.fileData.stepB64 = data.stepB64;
 
@@ -3811,6 +4013,7 @@ function toggleDebug() {
 
 // ─── Stress toggle ────────────────────────────────────────────────────────────
 function toggleStress() {
+  if (S._inModalView) { exitModalView(); return; }
   S.showStress = !S.showStress;
   const btn = document.getElementById('btn-stress');
   btn.innerHTML = S.showStress ? '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="currentColor"><rect x="1" y="1" width="8" height="8" rx="1"/><rect x="3" y="3" width="4" height="4" fill="var(--bg-base)"/></svg> STRESS' : '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="3.5"/></svg> DEFAULT';
@@ -4493,6 +4696,16 @@ async function runAnalysis() {
 
     applyStressColors(dataStd.vertexStressB64, dataStd.summary.maxVonMisesMPa, dataStd.vertexPrincipalStressB64);
     showResults(dataStd.summary);
+    // Decode and display modal results if server returned them
+    S.modalResult = dataStd.modalResult || null;
+    S.modalModes = decodeModalModes(dataStd);
+    if (S.modalModes) {
+      populateModalPanel(S.modalModes);
+    } else {
+      const _mp = document.getElementById('modal-panel');
+      if (_mp) _mp.style.display = 'none';
+    }
+    renderMotorRiskPanel();
     showOrientComparison(dataStd.summary);
     storeAsBaseline(dataStd.summary, S.fileData?.fileName);
     // One-time nudge toward A/B comparison after first ever analysis
@@ -4630,8 +4843,20 @@ async function runAnalysis() {
         S.displacements = decodeDisplacementB64(dataFine.vertexDisplacementB64);
       }
 
+      // Fine mesh replaces geometry — invalidate modal position snapshot
+      S._modalOrigPos = null;
       applyStressColors(dataFine.vertexStressB64, dataFine.summary.maxVonMisesMPa, dataFine.vertexPrincipalStressB64);
       showResults(dataFine.summary);
+      // Update modal results from fine mesh (fall back to std mesh result if absent)
+      S.modalResult = dataFine.modalResult || S.modalResult;
+      S.modalModes = decodeModalModes(dataFine) || S.modalModes;
+      if (S.modalModes) {
+        populateModalPanel(S.modalModes);
+      } else {
+        const _mp2 = document.getElementById('modal-panel');
+        if (_mp2) _mp2.style.display = 'none';
+      }
+      renderMotorRiskPanel();
       showOrientComparison(dataFine.summary);
       storeAsBaseline(dataFine.summary, S.fileData?.fileName);
       showTopologyMarkers(dataFine.summary.topologySuggestions);
@@ -10193,6 +10418,319 @@ fetch('/api/health').catch(() => {
     input.value = '';
   });
 })();
+
+// ─── Modal Shape Visualization ────────────────────────────────────────────────
+
+/**
+ * Decode server response into in-memory mode structures.
+ * Returns array of decoded mode objects, or null if no modal data.
+ */
+function decodeModalModes(result) {
+  if (!result || !result.modalResult || !result.modalResult.modes) return null;
+  const modes = result.modalResult.modes;
+  if (!modes.length) return null;
+  return modes.map((m, i) => {
+    const b64 = result.vertexModeShapesB64 ? result.vertexModeShapesB64[i] : null;
+    const verts = b64 ? decodeDisplacementB64(b64) : null;
+    return {
+      frequencyHz:         m.frequencyHz,
+      participationFactor: m.participationFactor != null ? m.participationFactor : 0,
+      vertexDisp:          verts,  // Float32Array [dx0,dy0,dz0, ...]
+    };
+  });
+}
+
+/**
+ * Build the mode selector and show the modal panel.
+ */
+function populateModalPanel(modes) {
+  const panel = document.getElementById('modal-panel');
+  if (!panel || !modes || modes.length === 0) return;
+  const sel = document.getElementById('modal-mode-select');
+  if (sel) {
+    sel.innerHTML = modes.map((m, i) =>
+      '<option value="' + i + '">Mode ' + (i + 1) + ' — ' + m.frequencyHz.toFixed(2) + ' Hz</option>'
+    ).join('');
+  }
+  panel.style.display = 'block';
+  S.modalModeIndex = 0;
+  updateModalInfoDisplay(0, modes);
+}
+
+function updateModalInfoDisplay(modeIndex, modes) {
+  const m = modes[modeIndex];
+  if (!m) return;
+  const freqEl = document.getElementById('modal-freq-display');
+  const pfEl   = document.getElementById('modal-pf-display');
+  if (freqEl) freqEl.textContent = m.frequencyHz.toFixed(3);
+  if (pfEl)   pfEl.textContent   = m.participationFactor.toFixed(4);
+}
+
+/**
+ * Save current mesh positions as the undeformed baseline.
+ */
+function snapshotBasePositions() {
+  if (!mesh3d) return;
+  const pos = mesh3d.geometry.attributes.position.array;
+  S._modalOrigPos = new Float32Array(pos);
+}
+
+/**
+ * Apply mode shape deformation to the display mesh.
+ * amplitude: scale in [-1, +1], normalized so max disp = ~5% of part size.
+ */
+function applyModeShape(modeIndex, amplitude) {
+  if (!mesh3d || !S.modalModes) return;
+  const mode = S.modalModes[modeIndex];
+  if (!mode || !mode.vertexDisp) return;
+
+  // Lazily snapshot base positions on first call
+  if (!S._modalOrigPos) snapshotBasePositions();
+
+  const orig   = S._modalOrigPos;
+  const disp   = mode.vertexDisp;
+  const posArr = mesh3d.geometry.attributes.position.array;
+
+  if (disp.length !== orig.length) {
+    console.warn('[applyModeShape] mode ' + modeIndex + ': disp length ' + disp.length +
+                 ' != position length ' + orig.length + '. Skipping.');
+    return;
+  }
+
+  const nVerts = posArr.length / 3;
+
+  // Compute max displacement magnitude for normalization
+  let maxDisp = 0;
+  for (let i = 0; i < nVerts; i++) {
+    const dx = disp[i*3], dy = disp[i*3+1], dz = disp[i*3+2];
+    const mag = Math.sqrt(dx*dx + dy*dy + dz*dz);
+    if (mag > maxDisp) maxDisp = mag;
+  }
+  if (maxDisp < 1e-12) return; // zero mode shape
+
+  const DEFORM_FRAC = 0.05;  // 5% of part size at amplitude=1
+  const meshScale   = (mesh3d.userData && mesh3d.userData.scale) ? mesh3d.userData.scale : 1;
+  const targetDisp  = (S._partSize || 1) * DEFORM_FRAC;
+  const normScale   = (targetDisp / maxDisp) / meshScale;
+  const totalScale  = normScale * amplitude;
+
+  for (let i = 0; i < nVerts; i++) {
+    posArr[i*3]     = orig[i*3]     + disp[i*3]     * totalScale;
+    posArr[i*3 + 1] = orig[i*3 + 1] + disp[i*3 + 1] * totalScale;
+    posArr[i*3 + 2] = orig[i*3 + 2] + disp[i*3 + 2] * totalScale;
+  }
+
+  mesh3d.geometry.attributes.position.needsUpdate = true;
+  mesh3d.geometry.computeVertexNormals();
+}
+
+/**
+ * Stop animation and restore undeformed geometry.
+ */
+function resetModalDeformation() {
+  stopModalLoop();
+  if (mesh3d && S._modalOrigPos) {
+    const posArr = mesh3d.geometry.attributes.position.array;
+    posArr.set(S._modalOrigPos);
+    mesh3d.geometry.attributes.position.needsUpdate = true;
+    mesh3d.geometry.computeVertexNormals();
+  }
+  S.modalAmplitude = 0;
+  const slider = document.getElementById('modal-amp-slider');
+  const valEl  = document.getElementById('modal-amp-val');
+  if (slider) slider.value = '0';
+  if (valEl)  valEl.textContent = '0.00';
+}
+
+function onModalModeChange(index) {
+  S.modalModeIndex = index;
+  if (S.modalModes) updateModalInfoDisplay(index, S.modalModes);
+  if (S.modalAmplitude !== 0) applyModeShape(index, S.modalAmplitude);
+}
+
+function onModalAmplitudeChange(amplitude) {
+  S.modalAmplitude = amplitude;
+  const valEl = document.getElementById('modal-amp-val');
+  if (valEl) valEl.textContent = parseFloat(amplitude).toFixed(2);
+  if (S.modalLooping) stopModalLoop();
+  applyModeShape(S.modalModeIndex, amplitude);
+}
+
+function toggleModalLoop() {
+  if (S.modalLooping) { stopModalLoop(); } else { startModalLoop(); }
+}
+
+function startModalLoop() {
+  if (S.modalLooping) return;
+  S.modalLooping = true;
+  const btn = document.getElementById('modal-loop-btn');
+  if (btn) { btn.textContent = 'STOP'; btn.classList.add('active'); }
+  enterModalView();
+  let t0 = null;
+  const FREQ_HZ = 1.0;
+  function frame(ts) {
+    if (!S.modalLooping) return;
+    S._modalAnimId = requestAnimationFrame(frame);
+    if (t0 === null) t0 = ts;
+    const amp = Math.sin(2 * Math.PI * FREQ_HZ * (ts - t0) / 1000);
+    S.modalAmplitude = amp;
+    const slider = document.getElementById('modal-amp-slider');
+    const valEl  = document.getElementById('modal-amp-val');
+    if (slider) slider.value = String(Math.round(amp * 100));
+    if (valEl)  valEl.textContent = amp.toFixed(2);
+    applyModeShape(S.modalModeIndex, amp);
+  }
+  S._modalAnimId = requestAnimationFrame(frame);
+}
+
+function stopModalLoop() {
+  S.modalLooping = false;
+  if (S._modalAnimId !== null) {
+    cancelAnimationFrame(S._modalAnimId);
+    S._modalAnimId = null;
+  }
+  const btn = document.getElementById('modal-loop-btn');
+  if (btn) { btn.textContent = 'ANIMATE'; btn.classList.remove('active'); }
+}
+
+/**
+ * Hide stress colors while showing modal deformation.
+ */
+function enterModalView() {
+  if (S._inModalView) return;
+  S._inModalView = true;
+  S._stressWasShown = S.showStress;
+  if (S.showStress) {
+    resetColors();
+    const legend = document.getElementById('legend');
+    if (legend) legend.style.display = 'none';
+    const legendTitle = document.getElementById('legend-title');
+    if (legendTitle) legendTitle.style.display = 'none';
+    const smWrap = document.getElementById('stress-mode-wrap');
+    if (smWrap) smWrap.style.display = 'none';
+  }
+  const stressBtn = document.getElementById('btn-stress');
+  if (stressBtn) stressBtn.style.opacity = '0.3';
+}
+
+/**
+ * Restore stress view after modal deformation.
+ */
+function exitModalView() {
+  stopModalLoop();
+  resetModalDeformation();
+  S._inModalView = false;
+  if (S._stressWasShown && S.results) {
+    applyStressColors(
+      S.results.vertexStressB64,
+      S.results.summary.maxVonMisesMPa,
+      S.results.vertexPrincipalStressB64
+    );
+  }
+  const stressBtn = document.getElementById('btn-stress');
+  if (stressBtn) stressBtn.style.opacity = '';
+}
+
+// ─── Motor Excitation Risk ────────────────────────────────────────────────────
+
+/**
+ * Classify each natural frequency against a motor excitation band.
+ */
+function computeMotorRisk(modes, minRpm, maxRpm, gearRatio) {
+  const ratio = Math.max(gearRatio, 0.0001);
+  const excMinHz = minRpm / 60 / ratio;
+  const excMaxHz = maxRpm / 60 / ratio;
+
+  return modes.map(function(m, i) {
+    const f = m.frequencyHz;
+    let excitationRatio;
+    if (f < excMinHz) {
+      excitationRatio = f / Math.max(excMinHz, 1e-9);
+    } else if (f > excMaxHz) {
+      excitationRatio = f / Math.max(excMaxHz, 1e-9);
+    } else {
+      excitationRatio = 1.0;
+    }
+    let status;
+    if (f >= excMinHz * 0.8 && f <= excMaxHz * 1.2) {
+      status = 'RISK';
+    } else if (f >= excMinHz * 0.6 && f <= excMaxHz * 1.4) {
+      status = 'CAUTION';
+    } else {
+      status = 'SAFE';
+    }
+    return { modeIndex: i, frequencyHz: f, status: status, excitationRatio: excitationRatio };
+  });
+}
+
+/**
+ * Read current inputs, compute risk, and repaint the motor risk panel.
+ */
+function renderMotorRiskPanel() {
+  const panel = document.getElementById('motor-risk-panel');
+  if (!S.modalResult || !S.modalResult.modes || !S.modalResult.modes.length) {
+    if (panel) panel.style.display = 'none';
+    return;
+  }
+  if (panel) panel.style.display = 'block';
+
+  const minRpm    = Math.max(0, parseFloat(document.getElementById('motor-min-rpm').value)    || 0);
+  const maxRpm    = Math.max(0, parseFloat(document.getElementById('motor-max-rpm').value)    || 0);
+  const gearRatio = Math.max(0.01, parseFloat(document.getElementById('motor-gear-ratio').value) || 1);
+
+  S.motorRiskState.minRpm    = minRpm;
+  S.motorRiskState.maxRpm    = maxRpm;
+  S.motorRiskState.gearRatio = gearRatio;
+
+  const excMinHz = minRpm    / 60 / gearRatio;
+  const excMaxHz = maxRpm    / 60 / gearRatio;
+
+  const bandEl = document.getElementById('motor-band-hz');
+  if (bandEl) bandEl.textContent = excMinHz.toFixed(1) + ' – ' + excMaxHz.toFixed(1) + ' Hz';
+
+  const classified = computeMotorRisk(S.modalResult.modes, minRpm, maxRpm, gearRatio);
+  const riskCount    = classified.filter(function(c) { return c.status === 'RISK'; }).length;
+  const cautionCount = classified.filter(function(c) { return c.status === 'CAUTION'; }).length;
+
+  const summaryEl = document.getElementById('motor-risk-summary');
+  if (summaryEl) {
+    summaryEl.className = 'motor-risk-summary';
+    if (riskCount > 0) {
+      summaryEl.classList.add('has-risk');
+      summaryEl.textContent = riskCount + ' mode' + (riskCount > 1 ? 's' : '') + ' at risk';
+    } else if (cautionCount > 0) {
+      summaryEl.classList.add('has-caution');
+      summaryEl.textContent = cautionCount + ' mode' + (cautionCount > 1 ? 's' : '') + ' at caution';
+    } else {
+      summaryEl.classList.add('all-safe');
+      summaryEl.textContent = 'All modes safe';
+    }
+  }
+
+  const tbody = document.getElementById('motor-risk-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = classified.map(function(c) {
+    const rowClass   = c.status === 'RISK'    ? 'motor-risk-row-risk'
+                     : c.status === 'CAUTION' ? 'motor-risk-row-caution'
+                     : 'motor-risk-row-safe';
+    const badgeClass = c.status === 'RISK'    ? 'motor-status-badge motor-status-risk'
+                     : c.status === 'CAUTION' ? 'motor-status-badge motor-status-caution'
+                     : 'motor-status-badge motor-status-safe';
+    const ratioStr = (c.excitationRatio === 1.0)
+      ? 'in band'
+      : (c.excitationRatio * 100).toFixed(0) + '%';
+    return '<tr class="' + rowClass + '">' +
+      '<td style="color:var(--text-lo)">' + (c.modeIndex + 1) + '</td>' +
+      '<td style="color:var(--text-hi);font-weight:500">' + c.frequencyHz.toFixed(2) + '</td>' +
+      '<td style="color:var(--text-lo)">' + ratioStr + '</td>' +
+      '<td><span class="' + badgeClass + '">' + c.status + '</span></td>' +
+      '</tr>';
+  }).join('');
+}
+
+function onMotorRiskInput() {
+  renderMotorRiskPanel();
+}
 </script>
 
 <!-- Keyboard shortcut reference overlay -->
