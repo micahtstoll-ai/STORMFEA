@@ -31,6 +31,12 @@ export interface FixedNodeSet {
    * If provided, length must equal nodeIndices.length.
    */
   readonly prescribedDisplacement?: readonly [number, number, number][];
+  /**
+   * Which axes to constrain: [constrainX, constrainY, constrainZ].
+   * If omitted, all three DOF are constrained (default behaviour).
+   * Use this to implement rollers (e.g. [false, false, true] constrains z only).
+   */
+  readonly fixedAxes?: readonly [boolean, boolean, boolean];
 }
 
 /**
@@ -64,6 +70,7 @@ export function applyDirichletBC(
       const prescribed = constraint.prescribedDisplacement?.[ni] ?? [0, 0, 0];
 
       for (let dof = 0; dof < 3; dof++) {
+        if (constraint.fixedAxes && !constraint.fixedAxes[dof]) continue;
         const globalDOF = nodeIdx * 3 + dof;
         if (globalDOF >= K.n) {
           throw new RangeError(

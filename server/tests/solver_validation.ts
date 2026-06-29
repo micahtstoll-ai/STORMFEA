@@ -90,12 +90,15 @@ console.log("\n[2] Cantilever beam — tip deflection consistency");
   // δ = PL³ / (3EI), I = WH³/12
   const I  = W * H * H * H / 12;
   const dEB = P * L * L * L / (3 * mat.E * I);
-  // C3D4 shear locking: FEM gives 30–60% of E-B — expected, not an error.
+  // C3D4 shear locking at L/H=20, 20×2×2 mesh: measured ratio ≈ 0.43 (43% of E-B).
+  // Tolerance band 0.30–0.70×: ~30% margin below/above the measured value.
+  // Shear locking this severe is expected and accepted for C3D4; it is not a bug.
+  // For tighter accuracy, use C3D10 quadratic elements (test groups 5–6).
   test("Deflection positive",            r.maxDisplacementMm > 0);
-  test("Deflection < 2× E-B",           r.maxDisplacementMm < dEB * 2,
-    `FEM=${r.maxDisplacementMm.toFixed(4)}, E-B=${dEB.toFixed(4)}`);
-  test("Deflection > 0.2× E-B",         r.maxDisplacementMm > dEB * 0.2,
-    `ratio=${(r.maxDisplacementMm/dEB).toFixed(2)}`);
+  test("Deflection < 0.7× E-B",         r.maxDisplacementMm < dEB * 0.70,
+    `FEM=${r.maxDisplacementMm.toFixed(4)}, E-B=${dEB.toFixed(4)}, ratio=${(r.maxDisplacementMm/dEB).toFixed(3)}`);
+  test("Deflection > 0.3× E-B",         r.maxDisplacementMm > dEB * 0.30,
+    `ratio=${(r.maxDisplacementMm/dEB).toFixed(3)}`);
   test("Converged",                      r.converged);
   const r2 = await runLinearStatic({
     mesh, material: mat,
@@ -922,6 +925,87 @@ console.log("\n[16] Linear buckling — Euler column (clamped-free cantilever)")
     test("[16.3] Not tensile-dominated", false);
     test("[16.4] BLF within 15% of Euler", false);
   }
+}
+
+// ── Test group 17: Simply-supported beam ─────────────────────────────────────
+console.log("\n[17] Simply-supported beam — center deflection (δ = PL³/48EI)");
+{
+  // Beam: 80×4×4 mm, 20×2×2 elements (same geometry as cantilever test group 2).
+  //
+  // BC formulation for a true simply-supported (pin-roller) beam:
+  //   Left face (x=0): z-constrained for ALL nodes (prevents transverse translation);
+  //                    x+y constrained for ONE pivot node (prevents rigid body sliding
+  //                    and rotation about the beam axis). The cross-section remains
+  //                    free to rotate about the y-axis — this is the pin.
+  //   Right face (x=L): z-constrained for ALL nodes, x+y free — the roller.
+  //
+  // This is distinct from the cantilever (group 2) where the full end-face has all
+  // DOF constrained (clamped, not pinned). Clamping would give PL³/192EI, not PL³/48EI.
+  //
+  // Analytical: δ = PL³/(48EI), I = WH³/12
+  // C3D4 shear locking: expect 30–80% of E-B at this slenderness (L/H = 20).
+  // Tolerance band: 0.2×–2× E-B (same rationale as cantilever test group 2).
+  const L = 80, W = 4, H = 4;
+  const mesh = generateBoxMesh(0, 0, 0, L, W, H, 20, 2, 2);
+  const mat  = { E: 3500, nu: 0.36, yieldStrength: 50, label: "pla" };
+
+  const leftFace: number[] = [], rightFace: number[] = [], midspan: number[] = [];
+  let pivotNode = -1;  // Single node at left face used to pin x+y (prevents rigid body sliding)
+  for (let n = 0; n < mesh.nodeCount; n++) {
+    const x = mesh.nodes[n * 3]     ?? 0;
+    const y = mesh.nodes[n * 3 + 1] ?? 0;
+    const z = mesh.nodes[n * 3 + 2] ?? 0;
+    if (x < 0.01) {
+      leftFace.push(n);
+      // Pick center-bottom node (y≈W/2, z≈0) as the pivot for x+y constraints.
+      if (Math.abs(y - W / 2) < 0.01 && z < 0.01) pivotNode = n;
+    }
+    if (x > L - 0.01) rightFace.push(n);
+    if (Math.abs(x - L / 2) < 0.01) midspan.push(n);
+  }
+
+  // Fallback in case exact pivot node wasn't found (shouldn't happen with regular mesh)
+  if (pivotNode < 0) pivotNode = leftFace[0]!;
+
+  const P = 1.0;
+  const makeConstraints = () => [
+    // Pin at x=0: all nodes constrained in z; one pivot node also constrained in x+y
+    { nodeIndices: leftFace, fixedAxes: [false, false, true] as [boolean, boolean, boolean] },
+    { nodeIndices: [pivotNode], fixedAxes: [true, true, false] as [boolean, boolean, boolean] },
+    // Roller at x=L: z only
+    { nodeIndices: rightFace, fixedAxes: [false, false, true] as [boolean, boolean, boolean] },
+  ];
+
+  const r = await runLinearStatic({
+    mesh, material: mat,
+    constraints: makeConstraints(),
+    forces: midspan.map(n => ({ nodeIndex: n, forceN: [0, 0, -P / midspan.length] as [number, number, number] })),
+  });
+
+  // δ_EB = PL³/(48EI), I = WH³/12
+  const I_beam = W * H * H * H / 12;
+  const dEB = P * L * L * L / (48 * mat.E * I_beam);
+
+  test("[17.1] Midspan nodes found",    midspan.length > 0,      `found=${midspan.length}`);
+  test("[17.2] Converged",              r.converged);
+  test("[17.3] Deflection positive",    r.maxDisplacementMm > 0);
+  // C3D4 at L/H=20, 20×2×2 mesh: measured ratio ≈ 0.456 (45.6% of E-B).
+  // Tolerance band 0.30–0.70×: ~30% margin below/above the measured value.
+  // Consistent with cantilever shear-locking ratio of ~0.43 (test group 2).
+  test("[17.4] Deflection < 0.7× E-B", r.maxDisplacementMm < dEB * 0.70,
+    `FEM=${r.maxDisplacementMm.toFixed(4)}, E-B=${dEB.toFixed(4)}, ratio=${(r.maxDisplacementMm/dEB).toFixed(3)}`);
+  test("[17.5] Deflection > 0.3× E-B", r.maxDisplacementMm > dEB * 0.30,
+    `FEM=${r.maxDisplacementMm.toFixed(4)}, E-B=${dEB.toFixed(4)}, ratio=${(r.maxDisplacementMm/dEB).toFixed(3)}`);
+
+  // 2× load → 2× deflection (linearity check)
+  const r2 = await runLinearStatic({
+    mesh, material: mat,
+    constraints: makeConstraints(),
+    forces: midspan.map(n => ({ nodeIndex: n, forceN: [0, 0, -2 * P / midspan.length] as [number, number, number] })),
+  });
+  test("[17.6] Linear scaling: 2× load → 2× deflection",
+    near(r2.maxDisplacementMm, r.maxDisplacementMm * 2, 0.005),
+    `ratio=${(r2.maxDisplacementMm / r.maxDisplacementMm).toFixed(4)}`);
 }
 
 })();  // End async IIFE
