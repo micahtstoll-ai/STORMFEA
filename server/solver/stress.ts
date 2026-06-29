@@ -620,6 +620,154 @@ export function nodeAveragedPrincipalStress(
   return nodePrincipal;
 }
 
+// ─── Zienkiewicz-Zhu error estimation ──────────────────────────────────────
+/**
+ * Compute per-element Zienkiewicz-Zhu error estimates from SPR-smoothed stress.
+ *
+ * For each element, the energy-norm error is estimated as:
+ *   η_e = ‖σ_SPR − σ_centroid‖_energy,e / ‖σ_global‖_energy
+ *
+ * where σ_SPR is interpolated from nodal values (result of sprSmoothedStress)
+ * to the element centroid, and σ_centroid is the recovered stress at the centroid.
+ *
+ * The energy norm at an element is:
+ *   ‖σ‖²_energy,e = σᵀ · C⁻¹ · σ
+ *
+ * where C is the constitutive matrix. For isotropic material:
+ *   C⁻¹[i,j] = ((1+ν)/E) · δ_ij − (ν/(1+ν)) · I_1 (trace term)
+ *
+ * Reference: Zienkiewicz OC, Zhu JZ. The superconvergent patch recovery
+ * and a posteriori error estimates. Int J Numer Methods Eng. 1992;33(7):1331–64.
+ */
+export function computeZZErrorEstimate(
+  mesh:           TetMesh,
+  vonMises:       Float64Array,
+  sprStress:      Float64Array | null,  // per-node von Mises from SPR (or null for fallback)
+  mat:            AnyMaterial,
+): {
+  errorEstimate:      Float32Array;
+  globalRelativeError: number;
+  topErrorElements:   Array<{ x: number; y: number; z: number; errorEstimate: number }>;
+} {
+  const errorEstimate = new Float32Array(mesh.elementCount);
+  let errorSum2 = 0;      // Σ η_e²
+  let stressNormSum2 = 0; // Σ ‖σ_e‖²_energy
+
+  // Get material properties for energy-norm calculation
+  const E = 'kind' in mat ? (mat as import("./types.js").OrthotropicMaterial).E_xy
+                          : (mat as IsotropicMaterial).E;
+  const nu = 'kind' in mat ? (mat as import("./types.js").OrthotropicMaterial).nu_xy
+                           : (mat as IsotropicMaterial).nu;
+
+  // Energy-norm normalization constants
+  const invE = 1.0 / E;
+  const factor1 = (1 + nu) * invE;
+  const factor2 = -nu * invE / (1 + nu);
+
+  // Compute element centroid coordinates (reuse from sprSmoothedStress pattern)
+  const elemCentX = new Float64Array(mesh.elementCount);
+  const elemCentY = new Float64Array(mesh.elementCount);
+  const elemCentZ = new Float64Array(mesh.elementCount);
+  for (let e = 0; e < mesh.elementCount; e++) {
+    const base = e * 4;
+    let cx = 0, cy = 0, cz = 0;
+    for (let ni = 0; ni < 4; ni++) {
+      const n = mesh.elements[base + ni] ?? 0;
+      cx += mesh.nodes[n * 3]     ?? 0;
+      cy += mesh.nodes[n * 3 + 1] ?? 0;
+      cz += mesh.nodes[n * 3 + 2] ?? 0;
+    }
+    elemCentX[e] = cx / 4;
+    elemCentY[e] = cy / 4;
+    elemCentZ[e] = cz / 4;
+  }
+
+  // Build node → element connectivity (same pattern as SPR)
+  const npe = mesh.nodesPerElem ?? 4;
+  const nodeElements: number[][] = Array.from({ length: mesh.nodeCount }, () => []);
+  for (let e = 0; e < mesh.elementCount; e++) {
+    const base = e * npe;
+    for (let ni = 0; ni < npe; ni++) {
+      const nodeIdx = mesh.elements[base + ni] ?? 0;
+      nodeElements[nodeIdx]!.push(e);
+    }
+  }
+
+  // If SPR stress not provided, fall back to direct averaging (lower accuracy)
+  const nodeSprStress = sprStress ?? nodeAveragedStress(mesh, vonMises);
+
+  // Interpolate SPR stress to element centroids using patch-weighted average
+  for (let e = 0; e < mesh.elementCount; e++) {
+    const npe4 = mesh.nodesPerElem ?? 4;
+    const base = e * npe4;
+
+    // Get element nodes
+    const elemNodes: number[] = [];
+    for (let ni = 0; ni < Math.min(4, npe4); ni++) {
+      elemNodes.push(mesh.elements[base + ni] ?? 0);
+    }
+
+    // Interpolate nodal SPR stress to centroid using distance-weighted average
+    let sprAtCentroid = 0;
+    let totalWeight = 0;
+    const cx = elemCentX[e]!;
+    const cy = elemCentY[e]!;
+    const cz = elemCentZ[e]!;
+
+    for (const n of elemNodes) {
+      const nx = mesh.nodes[n * 3]     ?? 0;
+      const ny = mesh.nodes[n * 3 + 1] ?? 0;
+      const nz = mesh.nodes[n * 3 + 2] ?? 0;
+      const dist2 = (cx - nx) * (cx - nx) + (cy - ny) * (cy - ny) + (cz - nz) * (cz - nz);
+      const weight = dist2 < 1e-12 ? 1e6 : 1.0 / (1.0 + dist2); // Nodes very close → higher weight
+      sprAtCentroid += (nodeSprStress[n] ?? 0) * weight;
+      totalWeight += weight;
+    }
+    sprAtCentroid = totalWeight > 0 ? sprAtCentroid / totalWeight : (vonMises[e] ?? 0);
+
+    // Energy norm of error: ‖σ_SPR − σ_centroid‖²_energy
+    const errStress = sprAtCentroid - (vonMises[e] ?? 0);
+    // Von Mises is scalar, but energy norm uses full tensor. Approximate with von Mises magnitude:
+    const errEnergy2 = errStress * errStress * factor1;
+
+    // Energy norm of element centroid stress for normalization
+    const vm = vonMises[e] ?? 0;
+    const stressEnergy2 = vm * vm * factor1;
+
+    errorSum2 += errEnergy2;
+    stressNormSum2 += stressEnergy2;
+
+    // Per-element error estimate (0–1): relative to global norm
+    // For now, store as magnitude; will normalize after global norm is known
+    errorEstimate[e] = Math.sqrt(Math.max(0, errEnergy2));
+  }
+
+  // Global normalization
+  const globalEnergyNorm = Math.sqrt(Math.max(1e-12, stressNormSum2));
+  const globalRelativeError = globalEnergyNorm > 1e-12 ? Math.sqrt(errorSum2) / globalEnergyNorm : 0;
+
+  // Normalize per-element estimates by global norm
+  for (let e = 0; e < mesh.elementCount; e++) {
+    errorEstimate[e] = globalEnergyNorm > 1e-12 ? (errorEstimate[e]! / globalEnergyNorm) : 0;
+  }
+
+  // Find top-20 elements by error estimate
+  const indexedErrors = Array.from({ length: mesh.elementCount }, (_, i) => ({
+    index: i,
+    error: errorEstimate[i] ?? 0,
+  }));
+  indexedErrors.sort((a, b) => b.error - a.error);
+
+  const topErrorElements = indexedErrors.slice(0, 20).map(({ index }) => ({
+    x: elemCentX[index]!,
+    y: elemCentY[index]!,
+    z: elemCentZ[index]!,
+    errorEstimate: errorEstimate[index]!,
+  }));
+
+  return { errorEstimate, globalRelativeError, topErrorElements };
+}
+
 // ─── Package stress results ───────────────────────────────────────────────────
 
 /**
@@ -633,9 +781,24 @@ export function buildSolverResult(
   converged:    boolean,
   solverMs:     number,
   residualCheckpoints?: readonly { iteration: number; relativeResidual: number }[],
+  computeErrorEstimate: boolean = true,
 ): SolverResult {
   const { vonMises, safetyFactor, elemPrincipal, maxVonMises, minSF } =
     recoverElementStress(mesh, displacement, mat);
+
+  // Compute Zienkiewicz-Zhu error estimates if requested
+  let errorEstimate: Float32Array | undefined;
+  let globalRelativeError: number | undefined;
+  let topErrorElements: Array<{ x: number; y: number; z: number; errorEstimate: number }> | undefined;
+
+  if (computeErrorEstimate) {
+    const sprStress = sprSmoothedStress(mesh, vonMises);
+    const { errorEstimate: ee, globalRelativeError: gre, topErrorElements: tee } =
+      computeZZErrorEstimate(mesh, vonMises, sprStress, mat);
+    errorEstimate = ee;
+    globalRelativeError = gre;
+    topErrorElements = tee;
+  }
 
   return {
     displacement,
@@ -649,6 +812,9 @@ export function buildSolverResult(
     solverMs,
     nodePrincipalStress: nodeAveragedPrincipalStress(mesh, elemPrincipal),
     residualCheckpoints,
+    errorEstimate,
+    globalRelativeError,
+    topErrorElements,
   };
 }
 

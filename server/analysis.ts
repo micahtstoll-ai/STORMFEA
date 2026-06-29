@@ -959,6 +959,12 @@ export interface AnalysisResult {
   modalResult?:           ModalAnalysisResult;
   /** CG solver residual checkpoints for convergence visualization */
   residualCheckpoints?:   readonly { iteration: number; relativeResidual: number }[];
+  /** Zienkiewicz-Zhu error estimate η_e at each vertex, projected from elements */
+  vertexErrorEstimateB64?: string;
+  /** Global relative error η for mesh quality assessment */
+  globalRelativeError?:    number;
+  /** Top-20 elements with highest error estimates, for refinement guidance */
+  topErrorElements?:       Array<{ x: number; y: number; z: number; errorEstimate: number }>;
 }
 
 // ─── Stress singularity detection ────────────────────────────────────────────
@@ -1936,6 +1942,93 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     }
   }
 
+  // ── Error estimate vertex mapping ────────────────────────────────────────────
+  // Map element-level error estimates to surface vertices using the same
+  // nearest-node grid. For each surface vertex, find the nearest element and
+  // use its error estimate (interpolated from element centroid).
+  const vertexErrorEstimate = result.errorEstimate ? new Float32Array(vertCount) : undefined;
+  if (vertexErrorEstimate && result.errorEstimate) {
+    // Build element → node connectivity for error mapping
+    // For each surface vertex, find the nearest FEA element and use its error
+    function nearestElementError(vx: number, vy: number, vz: number): number {
+      let bestDist2 = Infinity, bestError = 0;
+      const R2 = R3D * R3D;
+      // Check nearby nodes for their adjacent elements
+      const ci = Math.floor((vx - nxMin) / CELL3);
+      const cj = Math.floor((vy - nyMin) / CELL3);
+      const ck = Math.floor((vz - nzMin) / CELL3);
+
+      const checkedElems = new Set<number>();
+      for (let di = -1; di <= 1; di++) {
+        for (let dj = -1; dj <= 1; dj++) {
+          for (let dk = -1; dk <= 1; dk++) {
+            const ni2 = ci + di, nj2 = cj + dj, nk2 = ck + dk;
+            if (ni2 < 0 || ni2 >= gW3 || nj2 < 0 || nj2 >= gH3 || nk2 < 0 || nk2 >= gD3) continue;
+            const cell = grid3.get(ni2 * gH3 * gD3 + nj2 * gD3 + nk2);
+            if (!cell) continue;
+            for (const n of cell) {
+              // Find elements containing this node
+              const npe = mesh.nodesPerElem ?? 4;
+              for (let e = 0; e < mesh.elementCount; e++) {
+                if (checkedElems.has(e)) continue;
+                const base = e * npe;
+                let hasNode = false;
+                for (let ni = 0; ni < Math.min(4, npe); ni++) {
+                  if ((mesh.elements[base + ni] ?? 0) === n) { hasNode = true; break; }
+                }
+                if (!hasNode) continue;
+                checkedElems.add(e);
+
+                // Compute element centroid distance
+                let cx = 0, cy = 0, cz = 0;
+                for (let ni = 0; ni < 4; ni++) {
+                  const nodeIdx = mesh.elements[base + ni] ?? 0;
+                  cx += mesh.nodes[nodeIdx * 3] ?? 0;
+                  cy += mesh.nodes[nodeIdx * 3 + 1] ?? 0;
+                  cz += mesh.nodes[nodeIdx * 3 + 2] ?? 0;
+                }
+                cx /= 4; cy /= 4; cz /= 4;
+                const dx = cx - vx, dy = cy - vy, dz = cz - vz;
+                const d2 = dx * dx + dy * dy + dz * dz;
+                if (d2 < R2 && d2 < bestDist2) {
+                  bestDist2 = d2;
+                  bestError = (result.errorEstimate![e] ?? 0);
+                }
+              }
+            }
+          }
+        }
+      }
+      // Fallback: global scan if none found within R3D
+      if (bestDist2 === Infinity) {
+        for (let e = 0; e < mesh.elementCount; e++) {
+          const npe = mesh.nodesPerElem ?? 4;
+          const base = e * npe;
+          let cx = 0, cy = 0, cz = 0;
+          for (let ni = 0; ni < 4; ni++) {
+            const nodeIdx = mesh.elements[base + ni] ?? 0;
+            cx += mesh.nodes[nodeIdx * 3] ?? 0;
+            cy += mesh.nodes[nodeIdx * 3 + 1] ?? 0;
+            cz += mesh.nodes[nodeIdx * 3 + 2] ?? 0;
+          }
+          cx /= 4; cy /= 4; cz /= 4;
+          const dx = cx - vx, dy = cy - vy, dz = cz - vz;
+          const d2 = dx * dx + dy * dy + dz * dz;
+          if (d2 < bestDist2) {
+            bestDist2 = d2;
+            bestError = (result.errorEstimate![e] ?? 0);
+          }
+        }
+      }
+      return bestError;
+    }
+    for (let v = 0; v < vertCount; v++) {
+      vertexErrorEstimate[v] = nearestElementError(
+        req.positions[v * 3] ?? 0, req.positions[v * 3 + 1] ?? 0, req.positions[v * 3 + 2] ?? 0
+      );
+    }
+  }
+
   // ── Nodal displacement vertex mapping ───────────────────────────────────────
   // Map nodal displacements (ux, uy, uz) to surface vertices.
   // Each surface vertex gets the displacement of its nearest FEA node.
@@ -2424,5 +2517,8 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     vertexModeShapesB64,
     modalResult,
     residualCheckpoints: result.residualCheckpoints,
+    vertexErrorEstimateB64: vertexErrorEstimate ? Buffer.from(vertexErrorEstimate.buffer).toString("base64") : undefined,
+    globalRelativeError: result.globalRelativeError,
+    topErrorElements: result.topErrorElements ? [...result.topErrorElements] : undefined,
   };
 }

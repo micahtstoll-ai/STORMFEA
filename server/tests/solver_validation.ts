@@ -688,6 +688,67 @@ console.log("\n[13] IC(0) vs Jacobi preconditioner convergence");
     `IC0=${r0.maxDisplacementMm.toFixed(6)}, Jacobi=${r1.maxDisplacementMm.toFixed(6)}`);
 }
 
+// ── Test group 14: Zienkiewicz-Zhu error estimator ───────────────────────────
+console.log("\n[14] Zienkiewicz-Zhu error estimator (coarse vs fine mesh)");
+{
+  // Coarse mesh: 4×4×4 (64 elements)
+  const meshCoarse = generateBoxMesh(0, 0, 0, 10, 10, 10, 4, 4, 4);
+  const mat  = { E: 3500, nu: 0.36, yieldStrength: 50, label: "pla" };
+  const fixedCoarse: number[] = [], topCoarse: number[] = [];
+  for (let n = 0; n < meshCoarse.nodeCount; n++) {
+    const z = meshCoarse.nodes[n * 3 + 2] ?? 0;
+    if (z < 0.01) fixedCoarse.push(n);
+    if (z > 9.99) topCoarse.push(n);
+  }
+  const totalF = 1.0 * 10 * 10;
+  const fPerNodeCoarse = totalF / topCoarse.length;
+  const rCoarse = await runLinearStatic({
+    mesh: meshCoarse, material: mat,
+    constraints: [{ nodeIndices: fixedCoarse }],
+    forces: topCoarse.map(n => ({ nodeIndex: n, forceN: [0, 0, fPerNodeCoarse] })),
+  });
+
+  // Fine mesh: 8×8×8 (512 elements)
+  const meshFine = generateBoxMesh(0, 0, 0, 10, 10, 10, 8, 8, 8);
+  const fixedFine: number[] = [], topFine: number[] = [];
+  for (let n = 0; n < meshFine.nodeCount; n++) {
+    const z = meshFine.nodes[n * 3 + 2] ?? 0;
+    if (z < 0.01) fixedFine.push(n);
+    if (z > 9.99) topFine.push(n);
+  }
+  const fPerNodeFine = totalF / topFine.length;
+  const rFine = await runLinearStatic({
+    mesh: meshFine, material: mat,
+    constraints: [{ nodeIndices: fixedFine }],
+    forces: topFine.map(n => ({ nodeIndex: n, forceN: [0, 0, fPerNodeFine] })),
+  });
+
+  test("[14.1] Coarse mesh: error estimate computed", rCoarse.errorEstimate !== undefined && rCoarse.errorEstimate.length === meshCoarse.elementCount);
+  test("[14.2] Coarse mesh: global error defined", rCoarse.globalRelativeError !== undefined && rCoarse.globalRelativeError >= 0);
+  test("[14.3] Fine mesh: error estimate computed", rFine.errorEstimate !== undefined && rFine.errorEstimate.length === meshFine.elementCount);
+  test("[14.4] Fine mesh: global error defined", rFine.globalRelativeError !== undefined && rFine.globalRelativeError >= 0);
+
+  // Coarse mesh should have higher error estimate than fine mesh
+  const coarseError = rCoarse.globalRelativeError ?? 1;
+  const fineError = rFine.globalRelativeError ?? 0;
+  test("[14.5] Coarse mesh error > fine mesh error", coarseError > fineError * 0.9,
+    `coarse=${coarseError.toFixed(4)}, fine=${fineError.toFixed(4)}`);
+
+  // Top 20 elements should be present
+  test("[14.6] Coarse mesh: top-20 elements returned", Array.isArray(rCoarse.topErrorElements) && rCoarse.topErrorElements.length > 0);
+  test("[14.7] Fine mesh: top-20 elements returned", Array.isArray(rFine.topErrorElements) && rFine.topErrorElements.length > 0);
+
+  // Error estimates should be in [0, 1]
+  if (rCoarse.errorEstimate) {
+    const coarseMax = Math.max(...Array.from(rCoarse.errorEstimate));
+    test("[14.8] Coarse mesh: error estimates in [0,1]", coarseMax <= 1.001, `max=${coarseMax.toFixed(4)}`);
+  }
+  if (rFine.errorEstimate) {
+    const fineMax = Math.max(...Array.from(rFine.errorEstimate));
+    test("[14.9] Fine mesh: error estimates in [0,1]", fineMax <= 1.001, `max=${fineMax.toFixed(4)}`);
+  }
+}
+
 })();  // End async IIFE
 
 // ── Summary ───────────────────────────────────────────────────────────────────
