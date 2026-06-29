@@ -24,7 +24,7 @@
  */
 
 import type { TetMesh, AnyMaterial, CSRMatrix } from "./types.js";
-import { elementStiffness, buildAnyConstitutiveMatrix, c3d10ElementStiffness } from "./element.js";
+import { elementStiffness, buildAnyConstitutiveMatrix, c3d10ElementStiffness, elementGeometricStiffness } from "./element.js";
 import { Worker } from "worker_threads";
 import { fileURLToPath } from "url";
 import path from "path";
@@ -367,6 +367,64 @@ export async function assembleK(
     K: { n, data, colIdx, rowPtr },
     diagIdx,
   };
+}
+
+/**
+ * Assemble the global geometric stiffness matrix Kσ for linear buckling analysis.
+ *
+ * Uses the same sparsity pattern (rowPtr, colIdx) as K so both matrices share the
+ * same CSR structure. Element contributions are computed from centroid Cauchy stresses.
+ *
+ * Currently supports C3D4 only (C3D10 geometric stiffness is not yet implemented).
+ *
+ * @param mesh         Tetrahedral mesh
+ * @param elemStress   Flat array of element centroid stresses, shape [elementCount × 6].
+ *                     Each group of 6: [σxx, σyy, σzz, τxy, τyz, τxz] in MPa.
+ * @param rowPtr       CSR row pointer (from buildSparsityPattern)
+ * @param colIdx       CSR column indices (from buildSparsityPattern)
+ * @returns            CSRMatrix with same sparsity as K but geometric stiffness values
+ */
+export function assembleKsigma(
+  mesh:       TetMesh,
+  elemStress: Float64Array,  // elementCount × 6
+  rowPtr:     Int32Array,
+  colIdx:     Int32Array,
+): CSRMatrix {
+  const n   = mesh.nodeCount * 3;
+  const nnz = rowPtr[n] ?? 0;
+  const data = new Float64Array(nnz);
+
+  const sig = new Float64Array(6);
+
+  for (let e = 0; e < mesh.elementCount; e++) {
+    const base = e * mesh.nodesPerElem;
+    // Extract element stress tensor
+    for (let k = 0; k < 6; k++) sig[k] = elemStress[e*6+k] ?? 0;
+
+    if (mesh.nodesPerElem !== 4) {
+      // Kσ for C3D10 not yet implemented — skip; buckling result will be approximate
+      continue;
+    }
+
+    const n0 = i32(mesh.elements, base),
+          n1 = i32(mesh.elements, base+1),
+          n2 = i32(mesh.elements, base+2),
+          n3 = i32(mesh.elements, base+3);
+
+    const ksg = elementGeometricStiffness(mesh.nodes, n0, n1, n2, n3, sig);
+    const elemNodes = [n0, n1, n2, n3];
+
+    for (let lr = 0; lr < 12; lr++) {
+      const globalR = (elemNodes[Math.floor(lr/3)] ?? 0)*3 + (lr%3);
+      for (let lc = 0; lc < 12; lc++) {
+        const globalC = (elemNodes[Math.floor(lc/3)] ?? 0)*3 + (lc%3);
+        const pos = findEntry(colIdx, rowPtr, globalR, globalC);
+        data[pos] = (data[pos] ?? 0) + (ksg[lr*12+lc] ?? 0);
+      }
+    }
+  }
+
+  return { n, data, colIdx, rowPtr };
 }
 
 /**

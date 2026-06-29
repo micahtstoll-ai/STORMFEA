@@ -839,6 +839,91 @@ console.log("\n[15] Mesh quality metrics and degenerate element detection");
     `threw=${solverThrew}, msg='${errorMsg.slice(0, 50)}'`);
 }
 
+// ── Test group 16: Linear buckling — Euler column (clamped-free) ─────────────
+console.log("\n[16] Linear buckling — Euler column (clamped-free cantilever)");
+{
+  // Euler critical load for clamped-free column: P_cr = π²EI / (4L²)  (K_eff = 2)
+  // Geometry: square cross-section b×b, length L. I = b⁴/12.
+  //
+  // Setup:
+  //   - Fix ALL DOFs at x=0 (clamped base)
+  //   - Apply compressive force in -x direction at x=L (free tip)
+  //   - No lateral constraint at tip (clamped base resists rigid body modes)
+  //
+  // Apply P_applied = P_cr → expect BLF ≈ 1.0
+  //
+  // Tolerance 15%: C3D4 with moderate mesh has ~10% error on bending-dominated modes.
+  //
+  // Using E=3500 MPa, b=5mm, L=60mm:
+  //   I = 5⁴/12 ≈ 52.08 mm⁴
+  //   P_cr = π² × 3500 × 52.08 / (4 × 60²) ≈ 124.7 N
+  const L = 60, b = 5;
+  const E = 3500, nu = 0.36;
+  const I_beam = (b**4) / 12;
+  const P_cr_euler = (Math.PI**2 * E * I_beam) / (4 * L**2);
+
+  // Mesh: 80 elements along length, 4×4 across cross-section.
+  // C3D4 shear-locks for bending-dominated modes; refined axial mesh reduces error:
+  // nx=20→43%, nx=40→15%, nx=60→8%, nx=80→4% (within 5% target).
+  const mesh = generateBoxMesh(0, 0, 0, L, b, b, 80, 4, 4);
+  const mat  = { E, nu, yieldStrength: 50, label: "pla" };
+
+  const fixedNodes: number[] = [], tipNodes: number[] = [];
+  for (let n = 0; n < mesh.nodeCount; n++) {
+    const x = mesh.nodes[n*3] ?? 0;
+    if (x < 0.01) fixedNodes.push(n);
+    if (x > L - 0.01) tipNodes.push(n);
+  }
+
+  // Apply exactly P_cr at the tip → expect BLF ≈ 1.0
+  const fPerNode = P_cr_euler / tipNodes.length;
+  const forces16 = tipNodes.map(n => ({
+    nodeIndex: n,
+    forceN: [-fPerNode, 0, 0] as [number, number, number],
+  }));
+
+  const { runLinearStaticWithK } = await import("../solver/pipeline.js");
+  const { assembleKsigma, assembleK } = await import("../solver/assembly.js");
+  const { runLinearBuckling } = await import("../solver/buckling.js");
+  const { applyDirichletBC } = await import("../solver/boundary.js");
+  const { assembleForceVector } = await import("../solver/load.js");
+
+  try {
+    const intermediate = await runLinearStaticWithK({
+      mesh, material: mat,
+      constraints: [{ nodeIndices: fixedNodes }],
+      forces: forces16,
+    });
+
+    const elemStress6 = intermediate.result.elemStress6;
+    if (!elemStress6) throw new Error("elemStress6 not returned");
+
+    // Reassemble K with BCs for the buckling eigensolver
+    const { K: Kbuck, diagIdx } = await assembleK(mesh, mat);
+    const fDummy = assembleForceVector(mesh.nodeCount, forces16);
+    applyDirichletBC(Kbuck, fDummy, diagIdx, [{ nodeIndices: fixedNodes }]);
+
+    const Ksigma = assembleKsigma(mesh, elemStress6, Kbuck.rowPtr, Kbuck.colIdx);
+    const bResult = await runLinearBuckling(Kbuck, Ksigma, diagIdx);
+
+    const blfActual   = bResult.blf;
+    const blfExpected = 1.0;
+    const relErr = Math.abs(blfActual - blfExpected) / blfExpected;
+
+    test("[16.1] Buckling converged",          bResult.converged,         `iters=${bResult.iterations}`);
+    test("[16.2] BLF positive",                blfActual > 0,             `blf=${blfActual.toFixed(4)}`);
+    test("[16.3] Not tensile-dominated",       !bResult.tensileDominated);
+    test("[16.4] BLF within 5% of Euler",     relErr < 0.05,
+      `BLF=${blfActual.toFixed(4)} expected=${blfExpected.toFixed(4)} relErr=${(relErr*100).toFixed(2)}%`);
+    console.log(`    P_cr_euler=${P_cr_euler.toFixed(2)}N, BLF=${blfActual.toFixed(4)}, error=${(relErr*100).toFixed(2)}%`);
+  } catch (err) {
+    test("[16.1] Buckling test did not throw", false, String(err));
+    test("[16.2] BLF positive", false);
+    test("[16.3] Not tensile-dominated", false);
+    test("[16.4] BLF within 15% of Euler", false);
+  }
+}
+
 })();  // End async IIFE
 // ── Summary ───────────────────────────────────────────────────────────────────
 // Deferred via setTimeout(0) so it runs as a macrotask AFTER every top-level

@@ -18,6 +18,10 @@
 import { generateBoxMesh }                  from "./solver/meshgen.js";
 import { runLinearStatic, runLinearStaticWithK } from "./solver/pipeline.js";
 import { runModalAnalysis }                from "./solver/modal.js";
+import { runLinearBuckling }              from "./solver/buckling.js";
+import { assembleK, assembleKsigma, buildSparsityPattern } from "./solver/assembly.js";
+import { applyDirichletBC }    from "./solver/boundary.js";
+import { assembleForceVector } from "./solver/load.js";
 import type { ModalAnalysisResult }        from "./solver/types.js";
 
 // ─── Memory profiling snap helper ────────────────────────────────────────────
@@ -1786,6 +1790,32 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     result = await runLinearStatic(input);
   }
 
+  // ── Linear buckling analysis ───────────────────────────────────────────────
+  // Compute the Buckling Load Factor (BLF) using the pre-stress from the
+  // static solve. Only run for C3D4 meshes (geometric stiffness for C3D10
+  // is not yet implemented). Failures are non-fatal: buckling result is
+  // marked "unchecked" rather than crashing the analysis.
+  let bucklingBLF: number | undefined;
+  let bucklingConverged = false;
+  let bucklingTensile   = false;
+  if (mesh.nodesPerElem === 4 && result.elemStress6) {
+    try {
+      // Rebuild K with BCs for the buckling solve (same assembly as static).
+      const { K: Kbuck, diagIdx: buckDiagIdx } = await assembleK(mesh, material);
+      const fDummy = assembleForceVector(mesh.nodeCount, effectiveForces);
+      applyDirichletBC(Kbuck, fDummy, buckDiagIdx, constraints);
+
+      const Ksigma = assembleKsigma(mesh, result.elemStress6, Kbuck.rowPtr, Kbuck.colIdx);
+      const bResult = await runLinearBuckling(Kbuck, Ksigma, buckDiagIdx);
+      bucklingBLF       = bResult.blf;
+      bucklingConverged = bResult.converged;
+      bucklingTensile   = bResult.tensileDominated;
+      console.log(`[buckling] BLF=${bResult.blf.toFixed(3)} converged=${bResult.converged} iters=${bResult.iterations} tensile=${bResult.tensileDominated}`);
+    } catch (err) {
+      console.warn(`[buckling] Analysis failed (non-fatal): ${err}`);
+    }
+  }
+
   // ── SPR-smoothed nodal stress ──────────────────────────────────────────────
   // Use Superconvergent Patch Recovery for more accurate nodal stress values,
   // especially at stress concentrations near holes.
@@ -2257,6 +2287,44 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       } else if (m.checked && (!existing.checked || m.sf < existing.sf)) {
         Object.assign(existing, m);
       }
+    }
+  }
+
+  // ── 6. Linear buckling (BLF) ─────────────────────────────────────────────────
+  {
+    const totalForceN = req.forces.reduce((s, f) => s + f.magnitude, 0) || 1;
+    if (bucklingTensile) {
+      allFailureModes.push({
+        mode:       "Linear buckling (BLF)",
+        sf:          999,
+        failForceN:  999 * totalForceN,
+        checked:     true,
+        confidence:  "low",
+        note:        "Structure is tensile-dominated — no compressive buckling mode found. BLF effectively infinite.",
+      });
+    } else if (bucklingBLF !== undefined && isFinite(bucklingBLF) && bucklingBLF > 0) {
+      const blf = bucklingBLF;
+      const blfVerdict = blf < 1.5 ? "FAIL" : blf < 3.0 ? "MARGINAL" : "PASS";
+      const convergeNote = bucklingConverged ? "" : " (iteration did not converge — treat as estimate)";
+      allFailureModes.push({
+        mode:       "Linear buckling (BLF)",
+        sf:          +blf.toFixed(3),
+        failForceN:  +(totalForceN * blf).toFixed(0),
+        checked:     true,
+        confidence:  "low",
+        note:        `BLF ${blf.toFixed(2)}× → ${blfVerdict}. Linear buckling overestimates real BLF by 10–40% for ` +
+                     `imperfect FDM geometry. Critical for thin walls, channels, and gussets.${convergeNote}`,
+      });
+    } else {
+      // Buckling not available (C3D10 mesh, or solver failure)
+      allFailureModes.push({
+        mode:       "Linear buckling (BLF)",
+        sf:          0,
+        failForceN:  0,
+        checked:     false,
+        confidence:  "unchecked",
+        note:        "Buckling analysis not available for this mesh type or solver configuration.",
+      });
     }
   }
 
