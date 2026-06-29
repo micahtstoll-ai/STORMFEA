@@ -398,11 +398,11 @@ export async function meshStepWithGmsh(
     clMin?:         number;  // min element size (mm), default 0.3
     clMax?:         number;  // max element size (mm), default 3.0
     clCurv?:        number;  // curvature samples per 2π, default 20
-    elementOrder?:  1 | 2;  // 1 = C3D4 linear (default), 2 = C3D10 quadratic
+    elementOrder?:  1 | 2;  // 1 = C3D4 linear, 2 = C3D10 quadratic (default)
   } = {}
 ): Promise<GmshMeshResult> {
 
-  const { clMin = 0.3, clMax = 3.0, clCurv = 20, elementOrder = 1 } = options;
+  const { clMin = 0.3, clMax = 3.0, clCurv = 20, elementOrder = 2 } = options;
 
   const tmpBase = path.join(tmpdir(), `sf_${Date.now()}`);
   const stepPath = `${tmpBase}.step`;

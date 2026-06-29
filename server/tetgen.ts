@@ -126,38 +126,50 @@ function parseNodeFile(text: string): Float64Array {
 
 // ─── Parse TetGen .ele file ───────────────────────────────────────────────────
 // Format: first line = "elemCount nodesPerElem attrs"
-// Then elemCount lines: "index n0 n1 n2 n3 [attrs]"
-// TetGen uses 1-based indices by default — subtract 1 if the first index is 1
-function parseEleFile(text: string): Int32Array {
+// Then elemCount lines: "index n0..nN [attrs]"
+// nodesPerElem = 4 for C3D4 (linear), 10 for C3D10 (second-order via -o2).
+// TetGen uses 1-based indices by default — subtract 1 if the first index is 1.
+//
+// TetGen's C3D10 edge-midpoint ordering (nodes 4–9):
+//   TetGen: mid(0,1), mid(0,2), mid(0,3), mid(1,2), mid(1,3), mid(2,3)
+//   STORMFEA element.ts: mid(0,1), mid(1,2), mid(0,2), mid(0,3), mid(1,3), mid(2,3)
+// Positions 5–7 differ → apply C3D10_REORDER permutation after parsing.
+// NOTE: This permutation is derived from TetGen documentation and has NOT been
+// empirically verified with a TetGen binary. Must be confirmed before
+// production use of C3D10 on STL meshes.
+const C3D10_REORDER = [0, 1, 2, 3, 4, 7, 5, 6, 8, 9]; // tetgen idx → stormfea idx
+
+function parseEleFile(text: string): { elements: Int32Array; nodesPerElem: number } {
   const lines = text.trim().split("\n").filter(l => l.trim() && !l.trim().startsWith("#"));
   const header = lines[0]!.trim().split(/\s+/);
-  const elemCount = parseInt(header[0]!, 10);
-  const elements = new Int32Array(elemCount * 4);
+  const elemCount   = parseInt(header[0]!, 10);
+  const nodesPerElem = parseInt(header[1]!, 10);  // 4 for C3D4, 10 for C3D10
 
-  // TetGen defaults to 1-based node indices but can emit 0-based depending on
-  // build/flags. Detect the base by scanning the minimum node index referenced
-  // across all elements: if the smallest index seen is 1 (and none is 0), the
-  // file is 1-based and every index must be shifted down by 1. Scanning the
-  // whole file (not just element 0) is robust to node 0 simply not appearing
-  // in the first element.
+  const elements = new Int32Array(elemCount * nodesPerElem);
+
+  // Detect 0-based vs 1-based node indices by scanning all elements.
   let minNodeIdx = Infinity;
   for (let i = 0; i < elemCount; i++) {
     const parts = lines[i + 1]!.trim().split(/\s+/);
-    for (let k = 1; k <= 4; k++) {
+    for (let k = 1; k <= nodesPerElem; k++) {
       const v = parseInt(parts[k]!, 10);
       if (v < minNodeIdx) minNodeIdx = v;
     }
   }
-  const offset = minNodeIdx === 0 ? 0 : 1;   // 0-based → 0, 1-based → 1
+  const offset = minNodeIdx === 0 ? 0 : 1;
 
   for (let i = 0; i < elemCount; i++) {
     const parts = lines[i + 1]!.trim().split(/\s+/);
-    elements[i * 4]     = parseInt(parts[1]!, 10) - offset;
-    elements[i * 4 + 1] = parseInt(parts[2]!, 10) - offset;
-    elements[i * 4 + 2] = parseInt(parts[3]!, 10) - offset;
-    elements[i * 4 + 3] = parseInt(parts[4]!, 10) - offset;
+    if (nodesPerElem === 10) {
+      // Read into a temp buffer, then reorder from TetGen ordering to STORMFEA ordering.
+      const raw = new Int32Array(10);
+      for (let k = 0; k < 10; k++) raw[k] = parseInt(parts[k + 1]!, 10) - offset;
+      for (let k = 0; k < 10; k++) elements[i * 10 + k] = raw[C3D10_REORDER[k]!]!;
+    } else {
+      for (let k = 0; k < 4; k++) elements[i * 4 + k] = parseInt(parts[k + 1]!, 10) - offset;
+    }
   }
-  return elements;
+  return { elements, nodesPerElem };
 }
 
 // ─── Main entry point ─────────────────────────────────────────────────────────
@@ -172,6 +184,7 @@ export interface TetGenResult {
 export async function meshWithTetGen(
   stlPositions:  Float32Array,
   triangleCount: number,
+  elementOrder:  1 | 2 = 1,
 ): Promise<TetGenResult> {
 
   // ── 1. Weld + write OFF ───────────────────────────────────────────────────
@@ -186,23 +199,24 @@ export async function meshWithTetGen(
   // ── 2. Run TetGen ─────────────────────────────────────────────────────────
   // -p      tetrahedralise the PLC
   // -q1.4   quality constraint (radius-edge ratio ≤ 1.4)
-  // -a10    max element volume 10 mm³ (forces refinement in large flat regions)
+  // -a10    max element volume 10 mm³
   // -Q      quiet
+  // -o2     second-order elements (C3D10); only added when elementOrder=2
   //
-  // Note: we intentionally omit -Y (surface vertex preservation) because:
-  //   - With -Y the mesh is too coarse in flat plate regions (only 585 nodes)
-  //   - Without -Y TetGen inserts Steiner points freely, giving 20k+ nodes
-  //   - We recover the surface mapping via spatial search (O(V×N), fast enough)
+  // Note: C3D10_REORDER in parseEleFile remaps TetGen's midnode ordering to
+  // STORMFEA's element.ts ordering. This permutation must be verified
+  // empirically once a TetGen binary is available.
   //
   // Fallback chain: try quality+volume, then volume only, then basic.
   const nodePath = tmpBase + ".1.node";
   const elePath  = tmpBase + ".1.ele";
 
+  const o2 = elementOrder === 2 ? ["-o2"] : [];
   const switchSets = [
-    ["-pq1.4a10Q"],   // quality + volume (best)
-    ["-pa10Q"],        // volume only
-    ["-pa50Q"],        // coarser
-    ["-pQ"],           // basic
+    ["-pq1.4a10Q", ...o2],
+    ["-pa10Q",     ...o2],
+    ["-pa50Q",     ...o2],
+    ["-pQ",        ...o2],
   ];
 
   let meshed = false;
@@ -226,27 +240,25 @@ export async function meshWithTetGen(
     readFile(elePath,  "utf8"),
   ]);
 
-  const nodes    = parseNodeFile(nodeText);
-  const elements = parseEleFile(eleText);
+  const nodes                          = parseNodeFile(nodeText);
+  const { elements, nodesPerElem }     = parseEleFile(eleText);
 
   const nodeCount    = nodes.length / 3;
-  const elementCount = elements.length / 4;
+  const elementCount = elements.length / nodesPerElem;
 
-
-  // ── 5. Build surface→node map ──────────────────────────────────────────────
+  // ── 4. Build surface→node map ──────────────────────────────────────────────
   // TetGen always outputs input vertices as the first N nodes in the same order,
   // regardless of whether -Y is used. Verified empirically: weld[i] = node[i]
   // with zero distance for all i in [0, weld.vertCount).
-  // Use identity map for O(1) lookup — no spatial search needed.
   const surfaceToNode = new Int32Array(weld.vertCount);
   for (let i = 0; i < weld.vertCount; i++) surfaceToNode[i] = i;
 
-  // ── 6. Clean up temp files ─────────────────────────────────────────────────
+  // ── 5. Clean up temp files ─────────────────────────────────────────────────
   const toDelete = [offPath, nodePath, elePath,
     tmpBase + ".1.face", tmpBase + ".1.edge", tmpBase + ".1.smesh"];
   await Promise.allSettled(toDelete.map(f => unlink(f)));
 
-  console.log(`[tetgen] mesh: ${nodeCount} nodes, ${elementCount} elements, building surface map...`);
+  console.log(`[tetgen] mesh: ${nodeCount} nodes, ${elementCount} elements (${nodesPerElem}-node)`);
 
   return {
     mesh: {
@@ -254,7 +266,7 @@ export async function meshWithTetGen(
       elements,
       nodeCount,
       elementCount,
-      nodesPerElem: 4,  // TetGen only produces C3D4 linear elements
+      nodesPerElem,
     },
     surfaceToNode,
     steinerCount: nodeCount - weld.vertCount,
