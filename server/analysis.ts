@@ -2020,17 +2020,19 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   }
 
   // ── Principal stress vertex mapping ───────────────────────────────────────
-  // Map σ1 (max principal) per node to the display mesh using the same
-  // nearest-node grid already built above.
+  // Map σ1, σ2, σ3 (all three principal stresses) per node to the display mesh.
   const nodePrincipal = result.nodePrincipalStress;
-  const vertexPrincipalStress = new Float32Array(vertCount);
+  const vertexPrincipalStress  = new Float32Array(vertCount);
+  const vertexPrincipalStress2 = new Float32Array(vertCount);
+  const vertexPrincipalStress3 = new Float32Array(vertCount);
   if (nodePrincipal) {
     const np: Float64Array = nodePrincipal;
-    function nearestNodePrincipal(vx: number, vy: number, vz: number): number {
+    // Returns [bestN] index of nearest node, or -1 if not found within grid radius
+    function nearestNodeIdx(vx: number, vy: number, vz: number): number {
       const ci=Math.floor((vx-nxMin)/CELL3);
       const cj=Math.floor((vy-nyMin)/CELL3);
       const ck=Math.floor((vz-nzMin)/CELL3);
-      let bestDist2=Infinity, bestS=0;
+      let bestDist2=Infinity, bestN=-1;
       const R2=R3D*R3D;
       for(let di=-1;di<=1;di++) for(let dj=-1;dj<=1;dj++) for(let dk=-1;dk<=1;dk++){
         const ni2=ci+di,nj2=cj+dj,nk2=ck+dk;
@@ -2040,22 +2042,25 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         for(const n of cell){
           const dx=(mesh.nodes[n*3]??0)-vx,dy=(mesh.nodes[n*3+1]??0)-vy,dz=(mesh.nodes[n*3+2]??0)-vz;
           const d2=dx*dx+dy*dy+dz*dz;
-          if(d2<R2 && d2<bestDist2){bestDist2=d2; bestS=np[n*3]??0;}
+          if(d2<R2 && d2<bestDist2){bestDist2=d2; bestN=n;}
         }
       }
-      if(bestDist2===Infinity){
+      if(bestN<0){
         for(let n=0;n<mesh.nodeCount;n++){
           const dx=(mesh.nodes[n*3]??0)-vx,dy=(mesh.nodes[n*3+1]??0)-vy,dz=(mesh.nodes[n*3+2]??0)-vz;
           const d2=dx*dx+dy*dy+dz*dz;
-          if(d2<bestDist2){bestDist2=d2; bestS=np[n*3]??0;}
+          if(d2<bestDist2){bestDist2=d2; bestN=n;}
         }
       }
-      return bestS;
+      return bestN;
     }
     for (let v = 0; v < vertCount; v++) {
-      vertexPrincipalStress[v] = nearestNodePrincipal(
-        req.positions[v*3] ?? 0, req.positions[v*3+1] ?? 0, req.positions[v*3+2] ?? 0
-      );
+      const n = nearestNodeIdx(req.positions[v*3] ?? 0, req.positions[v*3+1] ?? 0, req.positions[v*3+2] ?? 0);
+      if (n >= 0) {
+        vertexPrincipalStress[v]  = np[n*3]   ?? 0;
+        vertexPrincipalStress2[v] = np[n*3+1] ?? 0;
+        vertexPrincipalStress3[v] = np[n*3+2] ?? 0;
+      }
     }
   }
 
@@ -2643,6 +2648,8 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   return {
     vertexStress,
     vertexPrincipalStress,
+    vertexPrincipalStress2,
+    vertexPrincipalStress3,
     vertexDisplacement,
     surfaceTriangleCount: vertCount / 3,
     maxVonMisesMPa:     maxVM,
