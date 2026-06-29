@@ -151,6 +151,8 @@ export function validateGyroidOrthotropic(mat: GyroidOrthotropic): void {
 export interface FixedNodeSet {
   readonly nodeIndices: readonly number[];
   readonly prescribedDisplacement?: readonly [number, number, number][];
+  /** Which axes to constrain [x,y,z]. Omit to constrain all three. */
+  readonly fixedAxes?: readonly [boolean, boolean, boolean];
 }
 
 /**

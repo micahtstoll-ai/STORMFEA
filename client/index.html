@@ -1370,13 +1370,13 @@ body:not(.has-results) #btn-stress { display: none !important; }
       </div>
 
       <div style="margin-bottom:16px">
-        <label for="s-mesh-order">Element order <span style="color:var(--text-lo)">(STEP files only)</span></label>
+        <label for="s-mesh-order">Element order</label>
         <select id="s-mesh-order">
-          <option value="1" selected>C3D4 — Linear (default, fast)</option>
-          <option value="2">C3D10 — Quadratic (more accurate, ~3× slower)</option>
+          <option value="1">C3D4 — Linear (fast, shear-locking in bending)</option>
+          <option value="2" id="s-mesh-order-c3d10" selected>C3D10 — Quadratic (accurate bending, ~3× slower)</option>
         </select>
-        <div style="font-size:10px;color:var(--text-lo);margin-top:4px;line-height:1.6">
-          C3D10 uses 10-node quadratic tetrahedra — eliminates shear locking for more accurate stress concentrations near holes. STEP files only.
+        <div id="s-mesh-order-hint" style="font-size:10px;color:var(--text-lo);margin-top:4px;line-height:1.6">
+          C3D10 uses 10-node quadratic tetrahedra — eliminates shear locking for more accurate bending and stress concentrations near holes.
         </div>
       </div>
 
@@ -2210,6 +2210,29 @@ function refreshPresetLabels() {
   });
 }
 
+function updateMeshOrderSelector() {
+  const sel    = document.getElementById('s-mesh-order');
+  const opt2   = document.getElementById('s-mesh-order-c3d10');
+  const hint   = document.getElementById('s-mesh-order-hint');
+  if (!sel || !opt2 || !hint) return;
+
+  const isStl = S.fileData?.fileType === 'stl' || (!S.fileData?.stepB64 && !!S.fileData);
+
+  if (isStl) {
+    opt2.disabled = true;
+    // Force back to C3D4 if C3D10 was previously selected
+    if (sel.value === '2') sel.value = '1';
+    hint.innerHTML =
+      'C3D10 requires a STEP file — STL meshing (TetGen) does not support quadratic elements. ' +
+      'Export your CAD as STEP to enable C3D10. ' +
+      '<b style="color:var(--warn)">C3D4 linear elements underpredict bending stress by ~55% due to shear locking.</b>';
+  } else {
+    opt2.disabled = false;
+    hint.innerHTML =
+      'C3D10 uses 10-node quadratic tetrahedra — eliminates shear locking for more accurate bending and stress concentrations near holes.';
+  }
+}
+
 function updateFileInfo() {
   const fd = S.fileData;
   if (!fd) return;
@@ -2940,6 +2963,7 @@ async function handleFile(file) {
     const di = document.getElementById('file-info');
     di.style.display = 'block';
     updateFileInfo();
+    updateMeshOrderSelector();
     const startNewBtn = document.getElementById('btn-start-new');
     if (startNewBtn) startNewBtn.style.display = 'block';
 
@@ -4690,9 +4714,10 @@ async function runAnalysis() {
     document.getElementById('print-date').textContent = new Date().toLocaleDateString(
       'en-US', {year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
 
-    // Show element order badge or checking badge
-    const meshOrder = +(document.getElementById('s-mesh-order')?.value ?? 1);
-    if (meshOrder === 2 && S.fileData?.fileType === 'step') {
+    // Show element order badge or checking badge.
+    // Check actual nodesPerElem from server response — not the UI selector —
+    // so the badge reflects the mesh that ran, not what was requested.
+    if (dataStd.summary.nodesPerElem === 10) {
       showConvergenceBadge('c3d10', 0, dataStd.summary.nodeCount, 0);
       S._convergenceData = {
         standard: { nodes: dataStd.summary.nodeCount, maxVM: dataStd.summary.maxVonMisesMPa, sf: dataStd.summary.safetyFactor },
@@ -4762,13 +4787,14 @@ async function runAnalysis() {
   // Skip for C3D10 (quadratic elements are already accurate — no shear locking)
   // Skip if SF > 3.0 (clearly safe)
   const stdSF = dataStd.summary.safetyFactor;
-  const isCurr = +(document.getElementById('s-mesh-order')?.value ?? 1);
-  if (isCurr === 2) {
+  // Check actual nodesPerElem from the standard-run response, not the selector.
+  if (dataStd.summary.nodesPerElem === 10) {
     // C3D10 already converged — no auto-upgrade needed
     return;
   }
   if (stdSF > 3.0) {
-    showConvergenceBadge('skipped', 0, dataStd.summary.nodeCount, 0);
+    // C3D4 with high SF: fine mesh not run, but C3D4 may still underpredict bending stress.
+    showConvergenceBadge('c3d4_skipped', 0, dataStd.summary.nodeCount, 0);
     S._convergenceData = {
       standard: { nodes: dataStd.summary.nodeCount, maxVM: dataStd.summary.maxVonMisesMPa, sf: stdSF },
       fine: null, changePct: 0, converged: true, skipped: true,
@@ -4787,8 +4813,8 @@ async function runAnalysis() {
     const converged = changePct < 5.0;
 
     if (converged) {
-      // Standard mesh was good enough — just show the badge
-      showConvergenceBadge('converged', changePct, dataStd.summary.nodeCount, dataFine.summary.nodeCount);
+      // Both C3D4 meshes agree — but agreement between two locked meshes is not convergence.
+      showConvergenceBadge('c3d4_stable', changePct, dataStd.summary.nodeCount, dataFine.summary.nodeCount);
     } else {
       // Not converged — update results with fine mesh data and warn
       S.results = dataFine;
@@ -4859,6 +4885,18 @@ function showConvergenceBadge(state, changePct, nodesStd, nodesFine) {
       icon: '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg>',
       text: `<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> Mesh check skipped — SF > 3.0 (clearly safe, fine mesh not needed)`,
       sub: 'Fine mesh convergence check only runs when SF < 3.0. Results are reliable.',
+    },
+    c3d4_skipped: {
+      color: 'var(--warn)', bg: 'var(--bg-card)', border: 'var(--gold)33',
+      icon: '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="currentColor"><polygon points="5,1 9.5,9 0.5,9"/><rect x="4.4" y="4.2" width="1.2" height="2.8" fill="var(--bg-base)"/><rect x="4.4" y="7.5" width="1.2" height="1.2" fill="var(--bg-base)"/></svg>',
+      text: `C3D4 mesh, SF > 3.0 — fine mesh skipped, but C3D4 may underpredict bending stress`,
+      sub: `Linear C3D4 tetrahedra underpredict bending deflection and stress by ~55% at practical mesh densities due to shear locking. The reported SF may be higher than the true value for bending-loaded geometry. Use C3D10 (STEP files, Settings → Element order) for accurate bending analysis.`,
+    },
+    c3d4_stable: {
+      color: 'var(--warn)', bg: 'var(--bg-card)', border: 'var(--gold)33',
+      icon: '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="currentColor"><polygon points="5,1 9.5,9 0.5,9"/><rect x="4.4" y="4.2" width="1.2" height="2.8" fill="var(--bg-base)"/><rect x="4.4" y="7.5" width="1.2" height="1.2" fill="var(--bg-base)"/></svg>',
+      text: `C3D4 mesh stable within ${changePct?.toFixed(1)}% — but this is not convergence`,
+      sub: `Standard and fine C3D4 meshes agree because both are equally locked, not because they are correct. C3D4 underpredicts bending stress by ~55% at practical mesh densities. Switch to C3D10 in Settings → Element order (STEP files) for bending-loaded geometry.`,
     },
     converged: {
       color: 'var(--success)', bg: 'var(--gold-faint)', border: 'var(--gold-glow)',
@@ -6797,7 +6835,7 @@ function buildAnalyseBody(quality) {
       pattern:       document.getElementById('s-pattern').value,
       orientation:   deriveOrientString(),
       layerHeightMm: +(document.getElementById('s-lh')?.value ?? 20) / 100,
-      meshOrder:     +(document.getElementById('s-mesh-order')?.value ?? 1),
+      meshOrder:     +(document.getElementById('s-mesh-order')?.value ?? 2),
       useCLT:        !!(document.getElementById('clt-toggle')?.checked),
     },
     meshQuality:  quality || document.getElementById('s-mesh')?.value || 'standard',
@@ -8764,7 +8802,7 @@ async function saveSession() {
       pattern:       document.getElementById('s-pattern')?.value,
       orientation:   document.getElementById('s-orient')?.value,
       layerHeightMm: +(document.getElementById('s-lh')?.value ?? 20) / 100,
-      meshOrder:     +(document.getElementById('s-mesh-order')?.value ?? 1),
+      meshOrder:     +(document.getElementById('s-mesh-order')?.value ?? 2),
     },
     calibrationId:     activeProfileId,
     holeTypeOverrides: S.holeTypeOverrides,
@@ -9096,7 +9134,7 @@ function storeAsBaseline(summary, fileName) {
       pattern:     document.getElementById('s-pattern')?.value,
       orientation: document.getElementById('s-orient')?.value,
       layerHeightMm: +(document.getElementById('s-lh')?.value ?? 20) / 100,
-      meshOrder:     +(document.getElementById('s-mesh-order')?.value ?? 1),
+      meshOrder:     +(document.getElementById('s-mesh-order')?.value ?? 2),
     },
   };
   document.getElementById('ab-baseline-name').textContent = AB.baseline.fileName;
@@ -9150,7 +9188,7 @@ async function runABComparison() {
         pattern:     document.getElementById('s-pattern')?.value,
         orientation: document.getElementById('s-orient')?.value,
         layerHeightMm: +(document.getElementById('s-lh')?.value ?? 20) / 100,
-        meshOrder:     +(document.getElementById('s-mesh-order')?.value ?? 1),
+        meshOrder:     +(document.getElementById('s-mesh-order')?.value ?? 2),
       },
     };
 

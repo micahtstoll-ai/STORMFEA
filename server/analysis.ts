@@ -729,7 +729,7 @@ export interface PrintSettings {
   pattern:       string;
   orientation:   string;
   layerHeightMm: number;
-  /** Element order: 1 = C3D4 linear (default), 2 = C3D10 quadratic (STEP only) */
+  /** Element order: 1 = C3D4 linear, 2 = C3D10 quadratic (default). */
   meshOrder?:    1 | 2;
   /**
    * When true, use Classical Laminate Theory (CLT) to compute effective in-plane
@@ -1032,6 +1032,7 @@ export interface AnalysisResult {
   solverMs:               number;
   nodeCount:              number;
   elementCount:           number;
+  nodesPerElem:           number;
   recommendations:        PrintRecommendation[];
   failureModes:           FailureModeResult[];
   holeClassifications:    HoleClassification[];
@@ -1614,7 +1615,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       fine:     { clMin: 0.2, clMax: 2.0, clCurv: 30 },
     };
     const opts = clOpts[req.meshQuality as keyof typeof clOpts] ?? clOpts.standard;
-    const elementOrder = req.print.meshOrder ?? 1;
+    const elementOrder = req.print.meshOrder ?? 2;
     _snapAnalysis("before Gmsh mesh");
     console.log("[analysis] meshing STEP with Gmsh...");
     gmshResult = await meshStepWithGmsh(req.stepBuffer, { ...opts, elementOrder });
@@ -1629,14 +1630,15 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     // ── STL path: TetGen ─────────────────────────────────────────────────────
     try {
       _snapAnalysis("before TetGen mesh");
-      console.log("[analysis] meshing with TetGen...");
-      const tetResult = await meshWithTetGen(req.positions, req.triangleCount);
+      const tetOrder = (req.print.meshOrder ?? 2) as 1 | 2;
+      console.log(`[analysis] meshing with TetGen (order=${tetOrder})...`);
+      const tetResult = await meshWithTetGen(req.positions, req.triangleCount, tetOrder);
       mesh          = tetResult.mesh;
       surfaceToNode = tetResult.surfaceToNode;
-      console.log(`[analysis] TetGen mesh: ${mesh.nodeCount} nodes, ${mesh.elementCount} elements`);
+      console.log(`[analysis] TetGen mesh: ${mesh.nodeCount} nodes, ${mesh.elementCount} elements (${mesh.nodesPerElem}-node)`);
       _snapAnalysis("after TetGen mesh");
     } catch (err) {
-      console.warn("[analysis] TetGen failed, falling back to box mesh:", err);
+      console.warn("[analysis] TetGen failed, falling back to C3D4 box mesh (C3D10 not available in fallback):", err);
       meshFallback = true;
       const { minX, maxX, minY, maxY, minZ, maxZ } = req.bounds;
       const spanX = maxX - minX, spanY = maxY - minY, spanZ = maxZ - minZ;
@@ -2804,6 +2806,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     solverMs,
     nodeCount:          mesh.nodeCount,
     elementCount:       mesh.elementCount,
+    nodesPerElem:       mesh.nodesPerElem,
     recommendations,
     failureModes:       allFailureModes,
     holeClassifications,
