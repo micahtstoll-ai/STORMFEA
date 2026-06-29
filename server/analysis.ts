@@ -46,7 +46,7 @@ import type { SolverInput }                 from "./solver/pipeline.js";
 import type { IsotropicMaterial, AnyMaterial, OrthotropicMaterial } from "./solver/types.js";
 import { isOrthotropic } from "./solver/types.js";
 import { recoverElementStressComponents }   from "./solver/stress_detail.js";
-import { sprSmoothedStress, recoverElementStress, nodeAveragedPrincipalStress } from "./solver/stress.js";
+import { sprSmoothedStress, sprSmoothedStress6, recoverElementStress, nodeAveragedPrincipalStress } from "./solver/stress.js";
 import type { HoleFeature }                 from "./holes.js";
 import { meshWithTetGen }                   from "./tetgen.js";
 import { meshStepWithGmsh }                 from "./gmsh_mesh.js";
@@ -1047,6 +1047,16 @@ export interface AnalysisResult {
   globalRelativeError?:    number;
   /** Top-20 elements with highest error estimates, for refinement guidance */
   topErrorElements?:       Array<{ x: number; y: number; z: number; errorEstimate: number }>;
+  /** XY in-plane utilization per surface vertex (null if unavailable) */
+  vertexXyUtil:            Float32Array | null;
+  /** Z inter-layer utilization per surface vertex (null if unavailable) */
+  vertexZUtil:             Float32Array | null;
+  /** Which direction governs at the critical node: 'xy' or 'z' */
+  governingDirection:      'xy' | 'z' | null;
+  /** Peak U_XY across all nodes */
+  peakUtilXY:              number;
+  /** Peak U_Z across all nodes */
+  peakUtilZ:               number;
 }
 
 // ─── Stress singularity detection ────────────────────────────────────────────
@@ -1914,6 +1924,37 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   const nodeStress = sprSmoothedStress(mesh, result.vonMises);
   _snapAnalysis("after sprSmoothedStress");
 
+  // ── SPR-smoothed nodal stress tensor + anisotropic utilization ratios ────────
+  // U_XY = sqrt(σxx²+σyy²-σxx·σyy+3·σxy²) / yieldXY  (in-plane von Mises / yieldXY)
+  // U_Z  = max(|σzz|, sqrt(3)·sqrt(σyz²+σxz²)) / yieldZ  (out-of-plane / yieldZ)
+  // G_ratio=1/sqrt(3) from Hill L=M=3/(2Z²) → shear yield in Z-planes = yieldZ/sqrt(3)
+  const orthoMatU = isOrthotropic(material)
+    ? (material as import("./solver/types.js").OrthotropicMaterial)
+    : null;
+  const utilYieldXY = orthoMatU ? orthoMatU.yieldXY : effectiveYield;
+  const utilYieldZ  = orthoMatU ? orthoMatU.yieldZ  : effectiveYield;
+
+  const nodeStress6 = result.elemStress6
+    ? sprSmoothedStress6(mesh, result.elemStress6)
+    : null;
+
+  const nodeUtilXY = nodeStress6 ? new Float64Array(mesh.nodeCount) : null;
+  const nodeUtilZ  = nodeStress6 ? new Float64Array(mesh.nodeCount) : null;
+  if (nodeStress6 && nodeUtilXY && nodeUtilZ) {
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      const sxx = nodeStress6[n*6]   ?? 0;
+      const syy = nodeStress6[n*6+1] ?? 0;
+      const szz = nodeStress6[n*6+2] ?? 0;
+      const txy = nodeStress6[n*6+3] ?? 0;
+      const tyz = nodeStress6[n*6+4] ?? 0;
+      const txz = nodeStress6[n*6+5] ?? 0;
+      nodeUtilXY[n] = Math.sqrt(Math.max(0, sxx*sxx + syy*syy - sxx*syy + 3*txy*txy)) / utilYieldXY;
+      const normalZ = Math.abs(szz);
+      const shearZ  = Math.sqrt(3) * Math.sqrt(tyz*tyz + txz*txz);
+      nodeUtilZ[n]  = Math.max(normalZ, shearZ) / utilYieldZ;
+    }
+  }
+
   // ── Map stress back to surface vertices ────────────────────────────────────
   // Vertex count must match the CLIENT's display mesh (req.positions /
   // req.triangleCount), not the server's internal analysis mesh — the
@@ -1926,7 +1967,9 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // whenever the two meshes' vertex counts didn't happen to match.
   const vertCount = req.triangleCount * 3;
 
-  const vertexStress = new Float32Array(vertCount);
+  const vertexStress  = new Float32Array(vertCount);
+  const vertexXyUtil  = nodeUtilXY ? new Float32Array(vertCount) : null;
+  const vertexZUtil   = nodeUtilZ  ? new Float32Array(vertCount) : null;
 
   // ── Shared 3D nearest-neighbour stress mapping ───────────────────────────────
   // Both STL and STEP paths use the same algorithm:
@@ -1999,6 +2042,34 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     return bestS;
   }
 
+  // Helper: find nearest node index (reused for utilization lookups)
+  function nearestNodeIdx2(vx:number, vy:number, vz:number): number {
+    const ci=Math.floor((vx-nxMin)/CELL3);
+    const cj=Math.floor((vy-nyMin)/CELL3);
+    const ck=Math.floor((vz-nzMin)/CELL3);
+    let bestDist2=Infinity, bestN=0;
+    const R2=R3D*R3D;
+    for(let di=-1;di<=1;di++) for(let dj=-1;dj<=1;dj++) for(let dk=-1;dk<=1;dk++){
+      const ni2=ci+di,nj2=cj+dj,nk2=ck+dk;
+      if(ni2<0||ni2>=gW3||nj2<0||nj2>=gH3||nk2<0||nk2>=gD3) continue;
+      const cell=grid3.get(ni2*gH3*gD3+nj2*gD3+nk2);
+      if(!cell) continue;
+      for(const n of cell){
+        const dx=(mesh.nodes[n*3]??0)-vx,dy=(mesh.nodes[n*3+1]??0)-vy,dz=(mesh.nodes[n*3+2]??0)-vz;
+        const d2=dx*dx+dy*dy+dz*dz;
+        if(d2<R2 && d2<bestDist2){bestDist2=d2; bestN=n;}
+      }
+    }
+    if(bestDist2===Infinity){
+      for(let n=0;n<mesh.nodeCount;n++){
+        const dx=(mesh.nodes[n*3]??0)-vx,dy=(mesh.nodes[n*3+1]??0)-vy,dz=(mesh.nodes[n*3+2]??0)-vz;
+        const d2=dx*dx+dy*dy+dz*dz;
+        if(d2<bestDist2){bestDist2=d2; bestN=n;}
+      }
+    }
+    return bestN;
+  }
+
   // Map every display-mesh surface vertex (req.positions — the same
   // geometry the client's mesh3d was built from) to its nearest FEA node's
   // stress. This is correct for both STL and STEP: nearestNodeStress() is a
@@ -2010,6 +2081,11 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     const vy = req.positions[v*3+1] ?? 0;
     const vz = req.positions[v*3+2] ?? 0;
     vertexStress[v] = nearestNodeStress(vx, vy, vz);
+    if (vertexXyUtil && vertexZUtil) {
+      const n = nearestNodeIdx2(vx, vy, vz);
+      vertexXyUtil[v] = nodeUtilXY![n] ?? 0;
+      vertexZUtil[v]  = nodeUtilZ![n]  ?? 0;
+    }
   }
 
   // Validate vertex stress array (catch regressions in mesh-vertex count mismatch)
@@ -2647,8 +2723,21 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   const sfLow  = +(sf * yieldMul_low).toFixed(2);
   const sfHigh = +(sf * yieldMul_high).toFixed(2);
 
+  // ── Governing utilization direction ──────────────────────────────────────
+  let governingDirection: 'xy' | 'z' | null = null;
+  let peakUtilXY = 0, peakUtilZ = 0;
+  if (nodeUtilXY && nodeUtilZ) {
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      if ((nodeUtilXY[n] ?? 0) > peakUtilXY) peakUtilXY = nodeUtilXY[n] ?? 0;
+      if ((nodeUtilZ[n]  ?? 0) > peakUtilZ)  peakUtilZ  = nodeUtilZ[n]  ?? 0;
+    }
+    governingDirection = peakUtilXY >= peakUtilZ ? 'xy' : 'z';
+  }
+
   return {
     vertexStress,
+    vertexXyUtil,
+    vertexZUtil,
     vertexPrincipalStress,
     vertexPrincipalStress2,
     vertexPrincipalStress3,
@@ -2678,6 +2767,9 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     topologySuggestions,
     fatigue,
     isotropicComparison,
+    governingDirection,
+    peakUtilXY: +peakUtilXY.toFixed(3),
+    peakUtilZ:  +peakUtilZ.toFixed(3),
     vertexModeShapesB64,
     modalResult,
     residualCheckpoints: result.residualCheckpoints,

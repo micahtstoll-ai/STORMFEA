@@ -545,6 +545,138 @@ export function sprSmoothedStress(
 }
 
 /**
+ * SPR-smooth all 6 stress tensor components [σxx,σyy,σzz,τxy,τyz,τxz] per element
+ * independently and return nodeStress6: Float64Array(nodeCount * 6).
+ * Uses the same patch/fallback logic as sprSmoothedStress.
+ */
+export function sprSmoothedStress6(
+  mesh:       TetMesh,
+  elemStress6: Float64Array,
+): Float64Array {
+  const NC = mesh.nodeCount;
+  const nodeStress6 = new Float64Array(NC * 6);
+
+  // Build node → element connectivity (all nodes, same as sprSmoothedStress)
+  const npe = mesh.nodesPerElem ?? 4;
+  const nodeElements: number[][] = Array.from({ length: NC }, () => []);
+  for (let e = 0; e < mesh.elementCount; e++) {
+    const base = e * npe;
+    for (let ni = 0; ni < npe; ni++) {
+      const nodeIdx = mesh.elements[base + ni] ?? 0;
+      nodeElements[nodeIdx]!.push(e);
+    }
+  }
+
+  // Compute element centroids
+  const elemCentX = new Float64Array(mesh.elementCount);
+  const elemCentY = new Float64Array(mesh.elementCount);
+  const elemCentZ = new Float64Array(mesh.elementCount);
+  for (let e = 0; e < mesh.elementCount; e++) {
+    const base = e * 4;
+    let cx = 0, cy = 0, cz = 0;
+    for (let ni = 0; ni < 4; ni++) {
+      const n = mesh.elements[base + ni] ?? 0;
+      cx += mesh.nodes[n * 3]     ?? 0;
+      cy += mesh.nodes[n * 3 + 1] ?? 0;
+      cz += mesh.nodes[n * 3 + 2] ?? 0;
+    }
+    elemCentX[e] = cx / 4;
+    elemCentY[e] = cy / 4;
+    elemCentZ[e] = cz / 4;
+  }
+
+  const _sprM: [Float64Array, Float64Array, Float64Array, Float64Array] = [
+    new Float64Array(5), new Float64Array(5), new Float64Array(5), new Float64Array(5),
+  ];
+  const _sprA = new Float64Array(4);
+
+  for (let n = 0; n < NC; n++) {
+    const patch = nodeElements[n]!;
+    if (patch.length === 0) continue;
+
+    const nx = mesh.nodes[n * 3]     ?? 0;
+    const ny = mesh.nodes[n * 3 + 1] ?? 0;
+    const nz = mesh.nodes[n * 3 + 2] ?? 0;
+
+    if (patch.length < 4) {
+      // Direct average
+      for (let c = 0; c < 6; c++) {
+        let sum = 0;
+        for (const e of patch) sum += elemStress6[e * 6 + c] ?? 0;
+        nodeStress6[n * 6 + c] = sum / patch.length;
+      }
+      continue;
+    }
+
+    // Build normal equations (same structure as sprSmoothedStress, reused per component)
+    let AtA00=0, AtA01=0, AtA02=0, AtA03=0;
+    let AtA11=0, AtA12=0, AtA13=0;
+    let AtA22=0, AtA23=0, AtA33=0;
+
+    for (const e of patch) {
+      const cx = elemCentX[e] ?? 0;
+      const cy = elemCentY[e] ?? 0;
+      const cz = elemCentZ[e] ?? 0;
+      AtA00 += 1;      AtA01 += cx;     AtA02 += cy;     AtA03 += cz;
+      AtA11 += cx*cx;  AtA12 += cx*cy;  AtA13 += cx*cz;
+      AtA22 += cy*cy;  AtA23 += cy*cz;
+      AtA33 += cz*cz;
+    }
+
+    for (let c = 0; c < 6; c++) {
+      let Atb0=0, Atb1=0, Atb2=0, Atb3=0;
+      for (const e of patch) {
+        const cx = elemCentX[e] ?? 0;
+        const cy = elemCentY[e] ?? 0;
+        const cz = elemCentZ[e] ?? 0;
+        const sv = elemStress6[e * 6 + c] ?? 0;
+        Atb0 += sv; Atb1 += sv*cx; Atb2 += sv*cy; Atb3 += sv*cz;
+      }
+
+      const M = _sprM;
+      M[0][0]=AtA00; M[0][1]=AtA01; M[0][2]=AtA02; M[0][3]=AtA03; M[0][4]=Atb0;
+      M[1][0]=AtA01; M[1][1]=AtA11; M[1][2]=AtA12; M[1][3]=AtA13; M[1][4]=Atb1;
+      M[2][0]=AtA02; M[2][1]=AtA12; M[2][2]=AtA22; M[2][3]=AtA23; M[2][4]=Atb2;
+      M[3][0]=AtA03; M[3][1]=AtA13; M[3][2]=AtA23; M[3][3]=AtA33; M[3][4]=Atb3;
+
+      let solveFailed = false;
+      for (let col = 0; col < 4; col++) {
+        let maxRow = col, maxVal = Math.abs(M[col]![col]!);
+        for (let row = col + 1; row < 4; row++) {
+          if (Math.abs(M[row]![col]!) > maxVal) {
+            maxVal = Math.abs(M[row]![col]!); maxRow = row;
+          }
+        }
+        if (maxVal < 1e-12) { solveFailed = true; break; }
+        [M[col], M[maxRow]] = [M[maxRow]!, M[col]!];
+        const pivot = M[col]![col]!;
+        for (let row = col + 1; row < 4; row++) {
+          const factor = M[row]![col]! / pivot;
+          for (let k = col; k <= 4; k++) M[row]![k]! -= factor * M[col]![k]!;
+        }
+      }
+
+      if (solveFailed) {
+        let sum = 0;
+        for (const e of patch) sum += elemStress6[e * 6 + c] ?? 0;
+        nodeStress6[n * 6 + c] = sum / patch.length;
+        continue;
+      }
+
+      const a = _sprA;
+      for (let row = 3; row >= 0; row--) {
+        let sum = M[row]![4]!;
+        for (let col = row + 1; col < 4; col++) sum -= M[row]![col]! * a[col]!;
+        a[row] = sum / M[row]![row]!;
+      }
+      nodeStress6[n * 6 + c] = a[0]! + a[1]! * nx + a[2]! * ny + a[3]! * nz;
+    }
+  }
+
+  return nodeStress6;
+}
+
+/**
  * Average element von Mises stresses at nodes (direct averaging — fallback).
  * Used when SPR is not appropriate (e.g. very coarse meshes).
  */
