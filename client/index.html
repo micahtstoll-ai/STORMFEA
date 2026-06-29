@@ -7239,7 +7239,7 @@ const SOURCES_DB = [
         url: "",
         usedFor: "Conservative and optimistic SF bands shown in Results panel range bar",
         confidence: "medium",
-        note: `Uncertainty table used in SF range calculation:\n  Constant         Central   Conservative  Optimistic\n  E_z/E_xy         0.65      0.55          0.75       (Perez 2021, Cojocaru 2019)\n  yieldZ/yieldXY   0.58      0.48          0.68       (Cojocaru 2019, Rodriguez 2001)\n  G_xz/G_xy        0.40      0.33          0.47       (Casavola 2016)\n  LH slope         −1.0/mm   −1.3/mm       −0.7/mm    (Farashi 2022)\n\n  Fast-path: only yieldZ ratio and LH slope are perturbed (K unchanged). Amber caution shown when conservative SF < 1.5 ≤ central SF.`,
+        note: `Uncertainty table used in SF range calculation:\n  Constant         Central   Conservative  Optimistic\n  E_z/E_xy         0.65      0.55          0.75       (Perez 2021, Cojocaru 2019)\n  yieldZ/yieldXY   0.58      0.48          0.68       (central 0.58 from Cojocaru 2019 / Rodriguez 2001;\n                                                        ±0.10 band is an engineering margin, not a value\n                                                        reported by either paper)\n  G_xz/G_xy        0.40      0.33          0.47       (Casavola 2016)\n  LH slope         −1.0/mm   −1.3/mm       −0.7/mm    (central −1.0/mm from Farashi 2022 meta-analysis;\n                                                        ±30% bound width is an engineering margin, not a\n                                                        value reported by Farashi 2022)\n\n  Fast-path: only yieldZ ratio and LH slope are perturbed (K unchanged). Amber caution shown when conservative SF < 1.5 ≤ central SF.`,
       },
     ]
   },
