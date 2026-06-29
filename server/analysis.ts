@@ -23,6 +23,12 @@ import { assembleK, assembleKsigma, buildSparsityPattern } from "./solver/assemb
 import { applyDirichletBC }    from "./solver/boundary.js";
 import { assembleForceVector } from "./solver/load.js";
 import type { ModalAnalysisResult }        from "./solver/types.js";
+import {
+  buildLaminateCMatrix,
+  DEFAULT_BEAD_PROPS,
+  PATTERN_PLY_ANGLES,
+  type BeadProperties,
+} from "./solver/laminate.js";
 
 // ─── Memory profiling snap helper ────────────────────────────────────────────
 // Activated by STORMFEA_PROFILE_MEMORY=1. Mirrors the helper in pipeline.ts.
@@ -518,6 +524,65 @@ const FDM_ORTHO_RATIOS = {
 };
 
 
+function buildOrthotropicMaterialCLT(
+  baseMatId:       string,
+  infillPct:       number,
+  pattern:         string,
+  orientation:     string,
+  layerHeightMm:   number,
+  strengthMul:     number,
+  calibration?:    CalibrationProfile | null,
+  beadPropsOverride?: BeadProperties,
+): OrthotropicMaterial {
+  const base = MATERIALS[baseMatId] ?? MATERIALS["pla"]!;
+  const lhf  = layerHeightFactor(layerHeightMm);
+
+  const yieldXY_base = calibration?.yieldXY_MPa ?? base.yieldMPa;
+  const E_z_ratio    = calibration?.E_z_over_E_xy    ?? FDM_ORTHO_RATIOS.E_z_over_E_xy;
+  const yZ_ratio     = calibration?.yieldZ_over_yieldXY ?? FDM_ORTHO_RATIOS.yieldZ_over_yieldXY;
+  const Gxz_ratio    = calibration?.G_xz_over_G_xy  ?? FDM_ORTHO_RATIOS.G_xz_over_G_xy;
+
+  const bead = beadPropsOverride ?? DEFAULT_BEAD_PROPS[baseMatId] ?? DEFAULT_BEAD_PROPS["pla"]!;
+  const plyStack = PATTERN_PLY_ANGLES[pattern] ?? PATTERN_PLY_ANGLES["grid"]!;
+
+  const yieldXY = yieldXY_base * strengthMul;
+  const yieldZ  = yieldXY * yZ_ratio * lhf;
+
+  // Derive Z-direction properties from the empirical bond model
+  // (CLT only replaces in-plane stiffness; Z is still bond-dominated)
+  const E_xy_empirical = (calibration?.E_xy_MPa ?? base.E) * Math.min(1.0, strengthMul / 0.55);
+  const E_z    = E_xy_empirical * E_z_ratio * lhf;
+  const G_xy   = E_xy_empirical / (2 * (1 + base.nu));
+  const G_xz   = G_xy * Gxz_ratio * lhf;
+  const nu_xz  = FDM_ORTHO_RATIOS.nu_xz;
+
+  const src = calibration ? `CLT:calibrated:${calibration.id}` : "CLT:literature";
+
+  const mat = buildLaminateCMatrix(
+    bead,
+    plyStack.angles,
+    plyStack.fracs,
+    infillPct / 100,
+    E_z,
+    nu_xz,
+    G_xz,
+    yieldXY,
+    yieldZ,
+    `${base.label} (CLT, ${pattern}, ${orientation}, lh=${layerHeightMm}mm, ${src})`,
+  );
+
+  if (orientation === "upright") {
+    return {
+      kind: "orthotropic",
+      E_xy: mat.E_z, E_z: mat.E_xy,
+      nu_xy: mat.nu_xy, nu_xz: mat.nu_xz, G_xz: mat.G_xz,
+      yieldXY: mat.yieldZ, yieldZ: mat.yieldXY,
+      label: mat.label.replace(`, ${orientation}`, ", upright"),
+    };
+  }
+  return mat;
+}
+
 function buildOrthotropicMaterial(
   baseMatId:       string,
   strengthMul:     number,
@@ -666,6 +731,17 @@ export interface PrintSettings {
   layerHeightMm: number;
   /** Element order: 1 = C3D4 linear (default), 2 = C3D10 quadratic (STEP only) */
   meshOrder?:    1 | 2;
+  /**
+   * When true, use Classical Laminate Theory (CLT) to compute effective in-plane
+   * stiffness from first principles (ply stack + rotation + A-matrix inversion).
+   * When false (default), use the empirical scalar multiplier model.
+   */
+  useCLT?:       boolean;
+  /**
+   * Optional override for single-bead properties used by the CLT model.
+   * If omitted, DEFAULT_BEAD_PROPS[materialId] is used.
+   */
+  beadProps?:    BeadProperties;
 }
 
 /**
@@ -1481,13 +1557,24 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // Use orthotropic material model — accurately captures the anisotropy of FDM parts.
   // For flat prints: E_z ≈ 0.45 × E_xy, G_xz ≈ 0.40 × G_xy (Ahn et al. 2002)
   // For upright prints: axes are swapped — the strong direction faces the load
-  const material: AnyMaterial = buildOrthotropicMaterial(
-    req.print.materialId,
-    strengthMul,
-    req.print.orientation,
-    req.print.layerHeightMm ?? 0.2,
-    req.calibration ?? null,
-  );
+  const material: AnyMaterial = req.print.useCLT
+    ? buildOrthotropicMaterialCLT(
+        req.print.materialId,
+        req.print.infillPct,
+        req.print.pattern ?? "grid",
+        req.print.orientation,
+        req.print.layerHeightMm ?? 0.2,
+        strengthMul,
+        req.calibration ?? null,
+        req.print.beadProps,
+      )
+    : buildOrthotropicMaterial(
+        req.print.materialId,
+        strengthMul,
+        req.print.orientation,
+        req.print.layerHeightMm ?? 0.2,
+        req.calibration ?? null,
+      );
 
   // ── Build volume mesh ──────────────────────────────────────────────────────
   let mesh: import("./solver/types.js").TetMesh;
