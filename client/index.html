@@ -876,8 +876,10 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <button class="btn"        id="btn-s1"  onclick="setStressMode('s1')"  style="font-size:10px;padding:4px 8px" title="Maximum principal stress σ₁ — most tensile direction (red=tensile, blue=compressive)">σ₁</button>
         <button class="btn"        id="btn-s2"  onclick="setStressMode('s2')"  style="font-size:10px;padding:4px 8px" title="Intermediate principal stress σ₂ (red=tensile, blue=compressive)">σ₂</button>
         <button class="btn"        id="btn-s3"  onclick="setStressMode('s3')"  style="font-size:10px;padding:4px 8px" title="Minimum principal stress σ₃ — most compressive direction (red=tensile, blue=compressive)">σ₃</button>
-        <button class="btn"        id="btn-dmg" onclick="setStressMode('dmg')" style="font-size:10px;padding:4px 8px" title="Damage ratio — stress as a fraction of material yield strength (1.0 = at yield)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="3" y1="3" x2="7" y2="7"/><line x1="7" y1="3" x2="3" y2="7"/></svg></button>
-        <button class="btn"        id="btn-error" onclick="setStressMode('error')" style="font-size:10px;padding:4px 8px;display:none" title="Error estimate η — Zienkiewicz-Zhu mesh quality metric (0–1), identifies under-resolved elements">η</button>
+        <button class="btn"        id="btn-dmg"    onclick="setStressMode('dmg')"    style="font-size:10px;padding:4px 8px" title="Damage ratio — stress as a fraction of material yield strength (1.0 = at yield)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="3" y1="3" x2="7" y2="7"/><line x1="7" y1="3" x2="3" y2="7"/></svg></button>
+        <button class="btn"        id="btn-xyutil" onclick="setStressMode('xyutil')" style="font-size:10px;padding:4px 8px;display:none" title="XY in-plane utilization — sqrt(σxx²+σyy²-σxx·σyy+3·σxy²) / yieldXY. Red at 1.0 = at in-plane yield. High → add infill.">U<sub>XY</sub></button>
+        <button class="btn"        id="btn-zutil"  onclick="setStressMode('zutil')"  style="font-size:10px;padding:4px 8px;display:none" title="Z out-of-plane utilization — max(|σzz|, √3·√(σyz²+σxz²)) / yieldZ. Red at 1.0 = at inter-layer yield. High → reorient or add walls.">U<sub>Z</sub></button>
+        <button class="btn"        id="btn-error"  onclick="setStressMode('error')"  style="font-size:10px;padding:4px 8px;display:none" title="Error estimate η — Zienkiewicz-Zhu mesh quality metric (0–1), identifies under-resolved elements">η</button>
       </div>
     </div>
 
@@ -2652,7 +2654,7 @@ function decodeDisplacementB64(b64String) {
   return new Float32Array(buf.buffer);
 }
 
-function applyStressColors(stressB64, maxStress, principalStressB64, errorEstimateB64, principalStress2B64, principalStress3B64) {
+function applyStressColors(stressB64, maxStress, principalStressB64, errorEstimateB64, principalStress2B64, principalStress3B64, xyUtilB64, zUtilB64) {
   if (!mesh3d) return;
   const buf = Uint8Array.from(atob(stressB64), c => c.charCodeAt(0));
   const vertexStress = new Float32Array(buf.buffer);
@@ -2738,12 +2740,21 @@ function applyStressColors(stressB64, maxStress, principalStressB64, errorEstima
     s3Array[i]  = (principalVerts3 && principalVerts3.length > i) ? (principalVerts3[i] ?? 0) : 0;
     dmgArray[i] = vm / effYield;
   }
-  S._stressArrays = { vm: vertexStress, s1: s1Array, s2: s2Array, s3: s3Array, dmg: dmgArray, error: errorEstimate };
+  const xyUtilArray = decodeF32(xyUtilB64);
+  const zUtilArray  = decodeF32(zUtilB64);
+  S._stressArrays = { vm: vertexStress, s1: s1Array, s2: s2Array, s3: s3Array, dmg: dmgArray, error: errorEstimate, xyutil: xyUtilArray, zutil: zUtilArray };
 
   // Show error estimate button if error estimate is available
   if (errorEstimate && errorEstimate.length > 0) {
     const btnError = document.getElementById('btn-error');
     if (btnError) btnError.style.display = 'block';
+  }
+  // Show utilization buttons if arrays are available
+  if (xyUtilArray && xyUtilArray.length > 0) {
+    const btnXy = document.getElementById('btn-xyutil');
+    const btnZ  = document.getElementById('btn-zutil');
+    if (btnXy) btnXy.style.display = 'block';
+    if (btnZ)  btnZ.style.display  = 'block';
   }
 }
 
@@ -4640,7 +4651,7 @@ async function runAnalysis() {
       }
     }
 
-    applyStressColors(dataStd.vertexStressB64, dataStd.summary.maxVonMisesMPa, dataStd.vertexPrincipalStressB64, null, dataStd.vertexPrincipalStress2B64, dataStd.vertexPrincipalStress3B64);
+    applyStressColors(dataStd.vertexStressB64, dataStd.summary.maxVonMisesMPa, dataStd.vertexPrincipalStressB64, null, dataStd.vertexPrincipalStress2B64, dataStd.vertexPrincipalStress3B64, dataStd.vertexXyUtilB64, dataStd.vertexZUtilB64);
     showResults(dataStd.summary);
     showOrientComparison(dataStd.summary);
     storeAsBaseline(dataStd.summary, S.fileData?.fileName);
@@ -5016,6 +5027,7 @@ function showResults(s) {
       Effective yield: ${s.effectiveYieldMPa.toFixed(1)} MPa (print settings applied)<br>
       Mesh: <b style="color:var(--text-hi)">${s.nodeCount.toLocaleString()} nodes</b> · <b style="color:var(--text-hi)">${s.elementCount.toLocaleString()} elements</b> · C3D10 quadratic tet<br>
       Solver: ${s.cgIterations} CG iterations · ${s.solverMs}ms · converged=${s.converged ? 'yes' : '<span style="color:var(--warn)">no</span>'}
+      ${s.governingDirection != null ? `<br>Governing direction: <b style="color:var(--text-hi)">${s.governingDirection === 'xy' ? 'XY in-plane' : 'Z inter-layer'}</b> · U<sub>XY</sub>=${(s.peakUtilXY??0).toFixed(3)} · U<sub>Z</sub>=${(s.peakUtilZ??0).toFixed(3)} ${s.governingDirection === 'xy' ? '<span style="color:var(--text-lo);font-size:10px">→ increase infill to resist</span>' : '<span style="color:var(--text-lo);font-size:10px">→ reorient or add perimeters</span>'}` : ''}
     </div>
 
     ${s.meshQualityReport ? (() => {
@@ -9484,7 +9496,7 @@ setTimeout(initOnshapeStatus, 200);
 // ── Stress visualization modes ────────────────────────────────────────────────
 function setStressMode(mode) {
   S.stressMode = mode;
-  ['vm','s1','s2','s3','dmg','error'].forEach(m => {
+  ['vm','s1','s2','s3','dmg','xyutil','zutil','error'].forEach(m => {
     const btn = document.getElementById('btn-'+m);
     if (btn) btn.className = 'btn' + (m===mode?' active':'');
   });
@@ -9516,6 +9528,16 @@ function applyStressColorsFromArrays(arrays) {
         maxValOverride = 1.0;
         minValOverride = 0;
         break;
+      case 'xyutil':
+        stressArr = arrays.xyutil ?? arrays.vm;
+        maxValOverride = 2.0;
+        minValOverride = 0;
+        break;
+      case 'zutil':
+        stressArr = arrays.zutil ?? arrays.vm;
+        maxValOverride = 2.0;
+        minValOverride = 0;
+        break;
       default:
         stressArr = arrays.vm;
     }
@@ -9543,7 +9565,7 @@ function applyStressColorsFromArrays(arrays) {
   const labels = document.getElementById('legend-val-stack');
   if (labels) {
     const steps = labels.children.length;
-    const unit = (S.stressMode === 'dmg' || S.stressMode === 'error') ? '' : (' ' + U.stressLabel());
+    const unit = (S.stressMode === 'dmg' || S.stressMode === 'error' || S.stressMode === 'xyutil' || S.stressMode === 'zutil') ? '' : (' ' + U.stressLabel());
     Array.from(labels.children).forEach((el,i) => {
       const v = effectiveMax - (i/(steps-1)) * range;
       let valText;
@@ -9551,6 +9573,8 @@ function applyStressColorsFromArrays(arrays) {
         valText = v.toFixed(2) + '×';
       } else if (S.stressMode === 'error') {
         valText = v.toFixed(3);
+      } else if (S.stressMode === 'xyutil' || S.stressMode === 'zutil') {
+        valText = v.toFixed(2);
       } else {
         valText = v.toFixed(1);
       }
@@ -9583,8 +9607,10 @@ function applyStressColorsFromArrays(arrays) {
     s1:   'Max Principal σ₁ (' + U.stressLabel() + ')',
     s2:   'Mid Principal σ₂ (' + U.stressLabel() + ')',
     s3:   'Min Principal σ₃ (' + U.stressLabel() + ')',
-    dmg:  'Damage Ratio (XY/Z)',
-    error:'Error Estimate η (0–1)',
+    dmg:    'Damage Ratio (XY/Z)',
+    xyutil: 'XY In-Plane Utilization (0–2)',
+    zutil:  'Z Inter-Layer Utilization (0–2)',
+    error:  'Error Estimate η (0–1)',
   };
   document.getElementById('legend-title') && (document.getElementById('legend-title').textContent = modeLabels[S.stressMode] || '');
 }
