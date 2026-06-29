@@ -819,6 +819,12 @@ export interface AnalysisRequest {
   holeTypeOverrides?: Record<number, string> | null;
   /** Default: 'linear_static'. Set to 'modal' to also compute natural frequencies. */
   analysisType?: 'linear_static' | 'modal';
+  /**
+   * Material uncertainty mode. When 'central' (default) the solver uses the literature
+   * central estimates. The server always computes sfConservative and sfOptimistic alongside
+   * the central SF regardless of this field — it is reserved for future single-mode runs.
+   */
+  uncertaintyMode?: 'central' | 'conservative' | 'optimistic';
 }
 
 export interface PrintRecommendation {
@@ -2728,16 +2734,32 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   }
 
   // ── Material uncertainty bands ────────────────────────────────────────────
-  // Literature ranges for Z-direction yield (most uncertain parameter):
-  //   Low bound:  yieldZ/yieldXY = 0.50 (Rodriguez et al. 2001)
-  //   Central:    yieldZ/yieldXY = 0.58 (Cojocaru et al. 2019) — used in model
-  //   High bound: yieldZ/yieldXY = 0.65 (best-case from literature range)
-  // SF scales linearly with yield — uncertainty in yield → uncertainty in SF.
-  // Only meaningful for flat-printed parts where Z-direction governs.
-  const yieldMul_low  = 0.50 / FDM_ORTHO_RATIOS.yieldZ_over_yieldXY;
-  const yieldMul_high = 0.65 / FDM_ORTHO_RATIOS.yieldZ_over_yieldXY;
-  const sfLow  = +(sf * yieldMul_low).toFixed(2);
-  const sfHigh = +(sf * yieldMul_high).toFixed(2);
+  // Literature uncertainty ranges (from SOURCES tab):
+  //   Constant           Central   Conservative  Optimistic
+  //   E_z/E_xy           0.65      0.55          0.75       (stiffness — affects K, not fast-path)
+  //   yieldZ/yieldXY     0.58      0.48          0.68       (Cojocaru 2019, Rodriguez 2001)
+  //   G_xz/G_xy          0.40      0.33          0.47       (Casavola 2016)
+  //   Layer height slope −1.0/mm  −1.3/mm       −0.7/mm    (Farashi 2022 meta-analysis)
+  //
+  // Fast-path: reuse displacement field, only re-evaluate Hill yield criterion with
+  // perturbed yield strengths. E_z and G_xz affect K (not fast to perturb).
+  // Layer height effect is captured via the lhf slope uncertainty below.
+  //
+  // Conservative SF: lower yield (yieldZ/yieldXY=0.48) + steeper lhf slope (−1.3/mm)
+  // Optimistic SF:   higher yield (yieldZ/yieldXY=0.68) + shallower lhf slope (−0.7/mm)
+  const centralYzRatio = req.calibration?.yieldZ_over_yieldXY ?? FDM_ORTHO_RATIOS.yieldZ_over_yieldXY;
+  const yieldMul_low  = 0.48 / centralYzRatio;
+  const yieldMul_high = 0.68 / centralYzRatio;
+  // Layer height factor uncertainty: slope −1.3/mm (conservative) vs −0.7/mm (optimistic)
+  // vs −1.0/mm (central). We derive multipliers relative to the central lhf at actual lh.
+  const lhMm = req.print.layerHeightMm ?? 0.2;
+  const lhfCentral      = Math.max(0.85, Math.min(1.10, 1.00 + (0.2 - lhMm) * 1.0));
+  const lhfConservative = Math.max(0.85, Math.min(1.10, 1.00 + (0.2 - lhMm) * 1.3));
+  const lhfOptimistic   = Math.max(0.85, Math.min(1.10, 1.00 + (0.2 - lhMm) * 0.7));
+  const lhMul_low  = lhfCentral > 0 ? lhfConservative / lhfCentral : 1;
+  const lhMul_high = lhfCentral > 0 ? lhfOptimistic   / lhfCentral : 1;
+  const sfLow  = +(sf * yieldMul_low  * lhMul_low).toFixed(2);
+  const sfHigh = +(sf * yieldMul_high * lhMul_high).toFixed(2);
 
   // ── Governing utilization direction ──────────────────────────────────────
   let governingDirection: 'xy' | 'z' | null = null;
