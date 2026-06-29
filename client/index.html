@@ -1490,6 +1490,35 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <div id="calib-import-status" style="font-size:10px;color:var(--text-lo);margin-top:4px;min-height:14px"></div>
       </div>
 
+      <!-- Advanced Infill Model toggle -->
+      <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;margin-bottom:16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <b style="color:var(--text-hi);font-size:11px">Advanced Infill Model (CLT)</b>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:10px;color:var(--text-mid)">
+            <input type="checkbox" id="clt-toggle" onchange="onCLTToggle(this.checked)" style="accent-color:var(--gold);width:13px;height:13px">
+            Enable
+          </label>
+        </div>
+        <div style="font-size:10px;color:var(--text-lo);line-height:1.7;margin-bottom:8px">
+          Uses <b style="color:var(--text-mid)">Classical Laminate Theory</b> to compute effective stiffness from bead properties + ply angles — replacing the empirical pattern multipliers with a physically derived model. Stiffness now scales correctly with infill density and deposition angle.
+        </div>
+        <div id="clt-details" style="display:none">
+          <div style="font-size:10px;color:var(--text-lo);line-height:1.8;margin-bottom:8px">
+            <b style="color:var(--text-mid)">Ply angle stacks by pattern:</b><br>
+            Grid → [0°, 90°] equal share &nbsp;·&nbsp; Lines → [0°] only &nbsp;·&nbsp; Gyroid/Cubic/Honeycomb → [0°, 60°, −60°] quasi-isotropic &nbsp;·&nbsp; Concentric → [0°]
+          </div>
+          <div style="font-size:10px;color:var(--text-lo);line-height:1.8;margin-bottom:8px">
+            <b style="color:var(--text-mid)">Validation targets (from Ahn et al. 2002):</b><br>
+            100% infill, 0° only → should recover single-bead E ≈ 3700 MPa (PLA)<br>
+            ±45° at 100% → lower E, higher G than 0° only<br>
+            E* vs density (10–100%) should match Ahn Fig. 5 within 15%
+          </div>
+          <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:3px;padding:8px;font-size:10px;color:var(--text-lo)">
+            <b style="color:var(--warn)">Note:</b> CLT uses bead-level E₁, E₂, G₁₂ from literature defaults. For best accuracy, calibrate these by printing 0° and 90° dog-bone tensile coupons and entering the results above.
+          </div>
+        </div>
+      </div>
+
       <!-- Coupon tabs -->
       <div style="display:flex;gap:4px;margin-bottom:16px">
         <button class="btn active" id="ctab-tensile"  onclick="switchCoupon('tensile')">TENSILE</button>
@@ -6680,6 +6709,7 @@ function buildAnalyseBody(quality) {
       orientation:   deriveOrientString(),
       layerHeightMm: +(document.getElementById('s-lh')?.value ?? 20) / 100,
       meshOrder:     +(document.getElementById('s-mesh-order')?.value ?? 1),
+      useCLT:        !!(document.getElementById('clt-toggle')?.checked),
     },
     meshQuality:  quality || document.getElementById('s-mesh')?.value || 'standard',
     calibration:  getActiveProfile(),
@@ -7343,6 +7373,11 @@ function updateCalibProfileSelect() {
   }
   sel.value = prev || activeProfileId || '';
   updateCalibBadge();
+}
+
+function onCLTToggle(enabled) {
+  const details = document.getElementById('clt-details');
+  if (details) details.style.display = enabled ? 'block' : 'none';
 }
 
 function onCalibProfileChange(id) {
