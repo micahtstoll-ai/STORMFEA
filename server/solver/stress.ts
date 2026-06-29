@@ -177,6 +177,8 @@ export function recoverElementStress(
   elemPrincipal: Float64Array;
   maxVonMises:   number;
   minSF:         number;
+  /** Cauchy stress tensor per element: [σxx,σyy,σzz,τxy,τyz,τxz] × elementCount. */
+  elemStress6:   Float64Array;
 } {
   const C = buildAnyConstitutiveMatrix(mat);
   const yieldStr = 'kind' in mat ? (mat as import("./types.js").OrthotropicMaterial).yieldXY
@@ -184,6 +186,7 @@ export function recoverElementStress(
   const vonMises     = new Float64Array(mesh.elementCount);
   const safetyFactor = new Float64Array(mesh.elementCount);
   const elemPrincipal = new Float64Array(mesh.elementCount * 3);
+  const elemStress6   = new Float64Array(mesh.elementCount * 6);
 
   let maxVM = 0;
   let minSF = 999;
@@ -283,6 +286,9 @@ export function recoverElementStress(
       const sxx=sigAvg[0]??0, syy=sigAvg[1]??0, szz=sigAvg[2]??0;
       const txy=sigAvg[3]??0, tyz=sigAvg[4]??0, txz=sigAvg[5]??0;
 
+      elemStress6[e*6]   = sxx; elemStress6[e*6+1] = syy; elemStress6[e*6+2] = szz;
+      elemStress6[e*6+3] = txy; elemStress6[e*6+4] = tyz; elemStress6[e*6+5] = txz;
+
       _lastSig = computePrincipalStresses(sxx, syy, szz, txy, tyz, txz);
       vm = Math.sqrt(0.5*((sxx-syy)**2+(syy-szz)**2+(szz-sxx)**2+6*(txy**2+tyz**2+txz**2)));
 
@@ -331,6 +337,9 @@ export function recoverElementStress(
       const sxx=sig[0]??0, syy=sig[1]??0, szz=sig[2]??0;
       const txy=sig[3]??0, tyz=sig[4]??0, txz=sig[5]??0;
 
+      elemStress6[e*6]   = sxx; elemStress6[e*6+1] = syy; elemStress6[e*6+2] = szz;
+      elemStress6[e*6+3] = txy; elemStress6[e*6+4] = tyz; elemStress6[e*6+5] = txz;
+
       _lastSig = computePrincipalStresses(sxx, syy, szz, txy, tyz, txz);
       vm = Math.sqrt(0.5*((sxx-syy)**2+(syy-szz)**2+(szz-sxx)**2+6*(txy**2+tyz**2+txz**2)));
 
@@ -363,7 +372,7 @@ export function recoverElementStress(
     elemPrincipal[e*3+2] = ps3;
   }
 
-  return { vonMises, safetyFactor, elemPrincipal, maxVonMises: maxVM, minSF };
+  return { vonMises, safetyFactor, elemPrincipal, maxVonMises: maxVM, minSF, elemStress6 };
 }
 
 // ─── SPR (Superconvergent Patch Recovery) stress smoothing ───────────────────
@@ -783,7 +792,7 @@ export function buildSolverResult(
   residualCheckpoints?: readonly { iteration: number; relativeResidual: number }[],
   computeErrorEstimate: boolean = true,
 ): SolverResult {
-  const { vonMises, safetyFactor, elemPrincipal, maxVonMises, minSF } =
+  const { vonMises, safetyFactor, elemPrincipal, maxVonMises, minSF, elemStress6 } =
     recoverElementStress(mesh, displacement, mat);
 
   // Compute Zienkiewicz-Zhu error estimates if requested
@@ -815,6 +824,7 @@ export function buildSolverResult(
     errorEstimate,
     globalRelativeError,
     topErrorElements,
+    elemStress6,
   };
 }
 

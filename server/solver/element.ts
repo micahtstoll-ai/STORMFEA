@@ -413,6 +413,73 @@ export function elementStiffness(
 }
 
 
+// ─── Geometric stiffness matrix (for linear buckling) ────────────────────────
+
+/**
+ * Compute the 12×12 element geometric stiffness matrix Kσ_e for a C3D4 element.
+ *
+ * Kσ_e = V · Gᵀ · S · G
+ *
+ * where G (9×12) is the displacement-gradient matrix and S (9×9) is the
+ * block-diagonal initial-stress matrix (Cauchy stress tensor repeated 3×).
+ *
+ * For C3D4, ∂Ni/∂x = βi/(6V), so the (i,j) 3×3 block of Kσ_e simplifies to:
+ *   scalar_ij = (1/(36V)) · [βi,γi,δi] · σ · [βj,γj,δj]ᵀ
+ *   Kσ_e[3i+k, 3j+k] = scalar_ij   for k = 0,1,2
+ *
+ * Reference: Zienkiewicz & Taylor Vol. 2 §7.3.
+ *
+ * @param nodes  Flat node coordinate array [x0,y0,z0, ...]
+ * @param n0..n3 Node indices for this element
+ * @param sig    Cauchy stress [σxx, σyy, σzz, τxy, τyz, τxz] in MPa (Voigt)
+ * @returns      12×12 symmetric geometric stiffness (flat, row-major)
+ */
+export function elementGeometricStiffness(
+  nodes: Float64Array,
+  n0: number, n1: number, n2: number, n3: number,
+  sig: Float64Array,  // length 6: [σxx, σyy, σzz, τxy, τyz, τxz]
+): Float64Array {
+  const geom = computeGeometry(nodes, n0, n1, n2, n3);
+  const V = geom.V;
+  const [β0,β1,β2,β3] = geom.beta;
+  const [γ0,γ1,γ2,γ3] = geom.gamma;
+  const [δ0,δ1,δ2,δ3] = geom.delta;
+
+  const sxx = sig[0]??0, syy = sig[1]??0, szz = sig[2]??0;
+  const txy = sig[3]??0, tyz = sig[4]??0, txz = sig[5]??0;
+
+  // ∇Ni vectors (before 1/(6V) factor): [βi, γi, δi]
+  const grads = [
+    [β0, γ0, δ0],
+    [β1, γ1, δ1],
+    [β2, γ2, δ2],
+    [β3, γ3, δ3],
+  ] as const;
+
+  const scale = 1.0 / (36.0 * V);
+  const ksg = new Float64Array(144); // 12×12
+
+  for (let i = 0; i < 4; i++) {
+    const [bxi, byi, bzi] = grads[i]!;
+    // σ · ∇Ni  (stress tensor applied to gradient of node i)
+    const sGi_x = sxx*bxi + txy*byi + txz*bzi;
+    const sGi_y = txy*bxi + syy*byi + tyz*bzi;
+    const sGi_z = txz*bxi + tyz*byi + szz*bzi;
+
+    for (let j = 0; j < 4; j++) {
+      const [bxj, byj, bzj] = grads[j]!;
+      // scalar = (∇Nj)ᵀ · σ · ∇Ni  (note: scalar_ij = scalar_ji since σ is symmetric)
+      const s = scale * (bxj*sGi_x + byj*sGi_y + bzj*sGi_z);
+      // Place s on the diagonal of the 3×3 block (i,j): Kσ[3i+k, 3j+k] = s for k=0,1,2
+      ksg[(3*i)  *12 + (3*j)]   = (ksg[(3*i)  *12 + (3*j)]   ?? 0) + s;
+      ksg[(3*i+1)*12 + (3*j+1)] = (ksg[(3*i+1)*12 + (3*j+1)] ?? 0) + s;
+      ksg[(3*i+2)*12 + (3*j+2)] = (ksg[(3*i+2)*12 + (3*j+2)] ?? 0) + s;
+    }
+  }
+
+  return ksg;
+}
+
 // ─── C3D10 Second-order tetrahedral element ───────────────────────────────────
 /**
  * 10-node quadratic tetrahedral element (C3D10 in Abaqus notation).

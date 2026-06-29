@@ -266,6 +266,14 @@ export interface SolverResult {
    * Computed before assembling K; may inform UI warnings.
    */
   readonly meshQualityReport?: MeshQualityReport;
+
+  /**
+   * Element centroid Cauchy stress tensors [σxx,σyy,σzz,τxy,τyz,τxz] per element.
+   * Flat array, length = elementCount × 6. Used by the linear buckling solver
+   * to assemble the geometric stiffness matrix Kσ.
+   * Not serialised to the client — internal to the solver pipeline.
+   */
+  readonly elemStress6?: Float64Array;
 }
 
 // ─── Modal analysis types ─────────────────────────────────────────────────────
