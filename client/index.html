@@ -5023,7 +5023,23 @@ function showResults(s) {
         <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">SAFETY FACTOR</div>
         <div style="font-size:18px;font-weight:500;color:${sfColor}">${s.safetyFactor.toFixed(2)}×</div>
         <div style="font-size:10px;color:var(--text-lo);margin-top:2px">yield / peak</div>
-        ${s.safetyfactorLow !== undefined ? `<div style="font-size:9px;color:var(--text-lo);margin-top:1px" title="Range based on literature uncertainty in Z-direction yield ratio (0.50–0.65)">${s.safetyfactorLow.toFixed(2)}–${s.safetyFactorHigh.toFixed(2)} range</div>` : ''}
+        ${s.safetyfactorLow !== undefined ? (() => {
+          const lo = s.safetyfactorLow, hi = s.safetyFactorHigh ?? s.safetyfactorLow, mid = s.safetyFactor;
+          const span = Math.max(hi - lo, 0.01);
+          const pctMid = Math.round(((mid - lo) / span) * 100);
+          const loColor = lo < 1.0 ? '#c01717' : lo < 1.5 ? '#d97a00' : '#3a8a3a';
+          const hiColor = hi < 1.5 ? '#d97a00' : '#3a8a3a';
+          return `<div style="margin-top:5px" title="Material uncertainty range (yieldZ/yieldXY: 0.48–0.68, layer height slope: −1.3 to −0.7 /mm). Conservative=${lo.toFixed(2)}×, Central=${mid.toFixed(2)}×, Optimistic=${hi.toFixed(2)}×">
+            <div style="font-size:8px;color:var(--text-lo);margin-bottom:2px;letter-spacing:.03em">MATERIAL UNCERTAINTY</div>
+            <div style="position:relative;height:6px;background:linear-gradient(to right,${loColor},${hiColor});border-radius:3px;width:100%">
+              <div style="position:absolute;top:-2px;left:${pctMid}%;transform:translateX(-50%);width:3px;height:10px;background:var(--text-hi);border-radius:1px"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:8px;color:var(--text-lo);margin-top:1px">
+              <span style="color:${loColor}">${lo.toFixed(2)}×</span>
+              <span style="color:${hiColor}">${hi.toFixed(2)}×</span>
+            </div>
+          </div>`;
+        })() : ''}
       </div>
       <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
         <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">MAX DISPLACEMENT</div>
@@ -5039,6 +5055,15 @@ function showResults(s) {
       <div style="font-size:10px;margin-bottom:4px">${yieldNote}</div>
       <div style="font-size:11px;color:var(--text-mid)">${s.verdict}</div>
     </div>
+
+    ${(s.safetyfactorLow !== undefined && s.safetyfactorLow < 1.5 && s.safetyFactor >= 1.5) ? `
+    <div style="padding:10px 12px;background:#fdf3e0;border:1px solid #d97a00;border-radius:4px;margin-bottom:12px;display:flex;gap:8px;align-items:flex-start">
+      <span style="font-size:16px;line-height:1">&#9888;</span>
+      <div>
+        <div style="font-size:10px;font-weight:600;color:#8a5000;letter-spacing:.04em;margin-bottom:2px">MATERIAL UNCERTAINTY CAUTION</div>
+        <div style="font-size:11px;color:#6b3e00;line-height:1.5">Central SF ${s.safetyFactor.toFixed(2)}× passes the 1.5 threshold, but conservative material properties (yieldZ/yieldXY=0.48, steeper layer height penalty) give SF ${s.safetyfactorLow.toFixed(2)}× — below 1.5×. Consider another design iteration or physical coupon testing to confirm margin.</div>
+      </div>
+    </div>` : ''}
 
     <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;margin-bottom:12px;font-size:11px;color:var(--text-label);line-height:1.8">
       Effective yield: ${s.effectiveYieldMPa.toFixed(1)} MPa (print settings applied)<br>
@@ -7163,6 +7188,20 @@ const SOURCES_DB = [
         usedFor: "Validation that Hill48 yield criterion (not von Mises) is correct for FDM PLA",
         confidence: "high",
         note: '"Strength of FDM printed PLA was accurately predicted by Hill48 yield criterion." Confirms our Hill approximation is the right approach.',
+      },
+    ]
+  },
+  {
+    category: "MATERIAL UNCERTAINTY RANGES",
+    color: "#d97a00",
+    entries: [
+      {
+        id: "uncertainty_table",
+        citation: "Literature-derived uncertainty ranges for FDM orthotropic constants. See individual source entries for primary citations.",
+        url: "",
+        usedFor: "Conservative and optimistic SF bands shown in Results panel range bar",
+        confidence: "medium",
+        note: `Uncertainty table used in SF range calculation:\n  Constant         Central   Conservative  Optimistic\n  E_z/E_xy         0.65      0.55          0.75       (Perez 2021, Cojocaru 2019)\n  yieldZ/yieldXY   0.58      0.48          0.68       (Cojocaru 2019, Rodriguez 2001)\n  G_xz/G_xy        0.40      0.33          0.47       (Casavola 2016)\n  LH slope         −1.0/mm   −1.3/mm       −0.7/mm    (Farashi 2022)\n\n  Fast-path: only yieldZ ratio and LH slope are perturbed (K unchanged). Amber caution shown when conservative SF < 1.5 ≤ central SF.`,
       },
     ]
   },
