@@ -40,6 +40,13 @@ export interface IsotropicMaterial {
   readonly nu:            number;
   readonly yieldStrength: number;
   readonly label:         string;
+  /**
+   * Mass density in kg/m³ (SI). Default: 1240 (PLA).
+   * Solver converts to t/mm³ via ×1e-12: 1 kg/m³ = 1e-12 t/mm³.
+   * In the N·mm system (force N, mass tonne): 1 N = 1 t·mm/s², so
+   * eigenvalues ω² have units rad²/s² directly.
+   */
+  readonly massRho?:      number;   // kg/m³; default 1240
 }
 
 /**
@@ -71,6 +78,11 @@ export interface OrthotropicMaterial {
   /** Yield strength in Z (inter-layer). ~50-60% of yieldXY for FDM. */
   readonly yieldZ:        number;   // MPa
   readonly label:         string;
+  /**
+   * Mass density in kg/m³ (SI). Default: 1240 (PLA).
+   * Solver converts to t/mm³ via ×1e-12: 1 kg/m³ = 1e-12 t/mm³.
+   */
+  readonly massRho?:      number;   // kg/m³; default 1240
 }
 
 /**
