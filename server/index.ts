@@ -258,6 +258,7 @@ app.post("/api/analyse", async (req, res) => {
         solverMs:             result.solverMs,
         nodeCount:            result.nodeCount,
         elementCount:         result.elementCount,
+        nodesPerElem:         result.nodesPerElem,
         recommendations:      result.recommendations,
         failureModes:         result.failureModes,
         holeClassifications:  result.holeClassifications,

@@ -1032,6 +1032,7 @@ export interface AnalysisResult {
   solverMs:               number;
   nodeCount:              number;
   elementCount:           number;
+  nodesPerElem:           number;
   recommendations:        PrintRecommendation[];
   failureModes:           FailureModeResult[];
   holeClassifications:    HoleClassification[];
@@ -2805,6 +2806,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     solverMs,
     nodeCount:          mesh.nodeCount,
     elementCount:       mesh.elementCount,
+    nodesPerElem:       mesh.nodesPerElem,
     recommendations,
     failureModes:       allFailureModes,
     holeClassifications,

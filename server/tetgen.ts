@@ -184,7 +184,7 @@ export interface TetGenResult {
 export async function meshWithTetGen(
   stlPositions:  Float32Array,
   triangleCount: number,
-  elementOrder:  1 | 2 = 1,
+  elementOrder:  1 | 2 = 2,
 ): Promise<TetGenResult> {
 
   // ── 1. Weld + write OFF ───────────────────────────────────────────────────
