@@ -9,8 +9,14 @@
  *   directly and f_Hz = sqrt(ω²) / (2π) with no conversion factor.
  */
 
-import type { TetMesh, CSRMatrix } from "./types.js";
+import type { TetMesh, CSRMatrix, AnyMaterial } from "./types.js";
 import { buildSparsityPattern } from "./assembly.js";
+
+// Default mass density for PLA in kg/m³
+const DEFAULT_MASS_RHO_KG_M3 = 1240;
+
+// Conversion: 1 kg/m³ = 1e-12 t/mm³  (in N·mm system where 1 N = 1 t·mm/s²)
+const KG_M3_TO_T_MM3 = 1e-12;
 
 // ─── Internal helper: compute 4-node tet volume ────────────────────────────────
 
@@ -200,4 +206,43 @@ export function assembleM(
     M: { n, data, colIdx, rowPtr },
     diagIdx,
   };
+}
+
+/**
+ * High-level mass assembly entry point.
+ *
+ * @param mesh     - tetrahedral mesh (C3D4 or C3D10)
+ * @param material - any solver material; massRho (kg/m³) is read if present, else 1240 kg/m³
+ * @param type     - 'consistent' → full CSR matrix; 'lumped' → diagonal Float64Array (row-sum)
+ *
+ * Density conversion: rho_solver = massRho × 1e-12  (kg/m³ → t/mm³)
+ * This gives ω² in rad²/s² directly in the N·mm·tonne unit system.
+ */
+export function assembleMass(
+  mesh:     TetMesh,
+  material: AnyMaterial,
+  type:     'consistent' | 'lumped',
+): { M: CSRMatrix; diagIdx: Int32Array } | Float64Array {
+  const massRhoKg = (material as { massRho?: number }).massRho ?? DEFAULT_MASS_RHO_KG_M3;
+  const rho = massRhoKg * KG_M3_TO_T_MM3;
+
+  const { M, diagIdx } = assembleM(mesh, rho);
+
+  if (type === 'consistent') {
+    return { M, diagIdx };
+  }
+
+  // Lumped: row-sum of consistent mass matrix
+  const n = M.n;
+  const lumped = new Float64Array(n);
+  for (let row = 0; row < n; row++) {
+    let rowSum = 0;
+    const start = M.rowPtr[row] ?? 0;
+    const end   = M.rowPtr[row + 1] ?? M.data.length;
+    for (let k = start; k < end; k++) {
+      rowSum += M.data[k] ?? 0;
+    }
+    lumped[row] = rowSum;
+  }
+  return lumped;
 }
