@@ -1057,6 +1057,12 @@ export interface AnalysisResult {
   peakUtilXY:              number;
   /** Peak U_Z across all nodes */
   peakUtilZ:               number;
+  /** Signed von Mises: sign(σxx+σyy+σzz) × σ_VM per surface vertex */
+  vertexSignedVonMises:    Float32Array;
+  /** Most compressive signed VM value (negative) across all nodes */
+  minSignedVonMisesMPa:    number;
+  /** Most tensile signed VM value (positive) across all nodes */
+  maxSignedVonMisesMPa:    number;
 }
 
 // ─── Stress singularity detection ────────────────────────────────────────────
@@ -1940,6 +1946,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
 
   const nodeUtilXY = nodeStress6 ? new Float64Array(mesh.nodeCount) : null;
   const nodeUtilZ  = nodeStress6 ? new Float64Array(mesh.nodeCount) : null;
+  const nodeSignedStress = new Float64Array(mesh.nodeCount);
   if (nodeStress6 && nodeUtilXY && nodeUtilZ) {
     for (let n = 0; n < mesh.nodeCount; n++) {
       const sxx = nodeStress6[n*6]   ?? 0;
@@ -1952,6 +1959,13 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       const normalZ = Math.abs(szz);
       const shearZ  = Math.sqrt(3) * Math.sqrt(tyz*tyz + txz*txz);
       nodeUtilZ[n]  = Math.max(normalZ, shearZ) / utilYieldZ;
+      const hydro = sxx + syy + szz;
+      nodeSignedStress[n] = (hydro >= 0 ? 1 : -1) * (nodeStress[n] ?? 0);
+    }
+  } else {
+    // No tensor available: fall back to unsigned VM
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      nodeSignedStress[n] = nodeStress[n] ?? 0;
     }
   }
 
@@ -1967,7 +1981,8 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // whenever the two meshes' vertex counts didn't happen to match.
   const vertCount = req.triangleCount * 3;
 
-  const vertexStress  = new Float32Array(vertCount);
+  const vertexStress        = new Float32Array(vertCount);
+  const vertexSignedVonMises = new Float32Array(vertCount);
   const vertexXyUtil  = nodeUtilXY ? new Float32Array(vertCount) : null;
   const vertexZUtil   = nodeUtilZ  ? new Float32Array(vertCount) : null;
 
@@ -2081,10 +2096,11 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     const vy = req.positions[v*3+1] ?? 0;
     const vz = req.positions[v*3+2] ?? 0;
     vertexStress[v] = nearestNodeStress(vx, vy, vz);
+    const nIdx = nearestNodeIdx2(vx, vy, vz);
+    vertexSignedVonMises[v] = nodeSignedStress[nIdx] ?? 0;
     if (vertexXyUtil && vertexZUtil) {
-      const n = nearestNodeIdx2(vx, vy, vz);
-      vertexXyUtil[v] = nodeUtilXY![n] ?? 0;
-      vertexZUtil[v]  = nodeUtilZ![n]  ?? 0;
+      vertexXyUtil[v] = nodeUtilXY![nIdx] ?? 0;
+      vertexZUtil[v]  = nodeUtilZ![nIdx]  ?? 0;
     }
   }
 
@@ -2734,8 +2750,16 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     governingDirection = peakUtilXY >= peakUtilZ ? 'xy' : 'z';
   }
 
+  let minSignedVM = 0, maxSignedVM = 0;
+  for (let n = 0; n < mesh.nodeCount; n++) {
+    const sv = nodeSignedStress[n] ?? 0;
+    if (sv < minSignedVM) minSignedVM = sv;
+    if (sv > maxSignedVM) maxSignedVM = sv;
+  }
+
   return {
     vertexStress,
+    vertexSignedVonMises,
     vertexXyUtil,
     vertexZUtil,
     vertexPrincipalStress,
@@ -2770,6 +2794,8 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     governingDirection,
     peakUtilXY: +peakUtilXY.toFixed(3),
     peakUtilZ:  +peakUtilZ.toFixed(3),
+    minSignedVonMisesMPa: +minSignedVM.toFixed(3),
+    maxSignedVonMisesMPa: +maxSignedVM.toFixed(3),
     vertexModeShapesB64,
     modalResult,
     residualCheckpoints: result.residualCheckpoints,

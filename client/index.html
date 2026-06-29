@@ -873,6 +873,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <div id="stress-mode-wrap" style="display:none;border-left:1px solid var(--border);margin-left:2px;padding-left:6px;gap:3px;align-items:center">
         <span style="font-size:9px;color:var(--text-lo);letter-spacing:.04em;margin-right:2px" title="Choose what the heatmap colors represent">VIEW:</span>
         <button class="btn active" id="btn-vm"  onclick="setStressMode('vm')"  style="font-size:10px;padding:4px 8px" title="von Mises stress — overall combined stress magnitude">VM</button>
+        <button class="btn"        id="btn-svm" onclick="setStressMode('svm')" style="font-size:10px;padding:4px 8px;display:none" title="Signed von Mises — blue=compression, white=zero, red=tension. Sign = sign of hydrostatic stress (trace of σ). Useful for distinguishing delamination risk (tension) from compressive crush.">±VM</button>
         <button class="btn"        id="btn-s1"  onclick="setStressMode('s1')"  style="font-size:10px;padding:4px 8px" title="Maximum principal stress σ₁ — most tensile direction (red=tensile, blue=compressive)">σ₁</button>
         <button class="btn"        id="btn-s2"  onclick="setStressMode('s2')"  style="font-size:10px;padding:4px 8px" title="Intermediate principal stress σ₂ (red=tensile, blue=compressive)">σ₂</button>
         <button class="btn"        id="btn-s3"  onclick="setStressMode('s3')"  style="font-size:10px;padding:4px 8px" title="Minimum principal stress σ₃ — most compressive direction (red=tensile, blue=compressive)">σ₃</button>
@@ -2061,14 +2062,19 @@ function divergingColor(t) {
   return c[i].map((v, j) => v + f * (c[i+1][j] - v));
 }
 
-// Compute diverging colors for a principal stress array.
-// The scale is symmetric around 0: absMax = max(|min|, |max|) at p98.
-function computeDivergingColors(stressArr) {
+// Compute diverging colors for a signed stress array.
+// The scale is symmetric around 0: absMax = max(|min|, |max|) at p98, or absMaxOverride if provided.
+function computeDivergingColors(stressArr, absMaxOverride) {
   const n = stressArr.length;
-  const sorted = Array.from(stressArr).sort((a, b) => a - b);
-  const p02 = sorted[Math.floor(n * 0.02)] ?? 0;
-  const p98 = sorted[Math.floor(n * 0.98)] ?? 0;
-  const absMax = Math.max(Math.abs(p02), Math.abs(p98), 1e-6);
+  let absMax;
+  if (absMaxOverride != null && absMaxOverride > 0) {
+    absMax = absMaxOverride;
+  } else {
+    const sorted = Array.from(stressArr).sort((a, b) => a - b);
+    const p02 = sorted[Math.floor(n * 0.02)] ?? 0;
+    const p98 = sorted[Math.floor(n * 0.98)] ?? 0;
+    absMax = Math.max(Math.abs(p02), Math.abs(p98), 1e-6);
+  }
 
   const colors = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
@@ -2223,6 +2229,7 @@ function refreshUnitsDisplay() {
   if (lt && lt.style.display !== 'none') {
     const modeLabels = {
       vm:  'von Mises (' + U.stressLabel() + ')',
+      svm: 'Signed von Mises (' + U.stressLabel() + ')',
       s1:  'Max Principal σ₁ (' + U.stressLabel() + ')',
       dmg: 'Damage Ratio (XY/Z)'
     };
@@ -2654,7 +2661,7 @@ function decodeDisplacementB64(b64String) {
   return new Float32Array(buf.buffer);
 }
 
-function applyStressColors(stressB64, maxStress, principalStressB64, errorEstimateB64, principalStress2B64, principalStress3B64, xyUtilB64, zUtilB64) {
+function applyStressColors(stressB64, maxStress, principalStressB64, errorEstimateB64, principalStress2B64, principalStress3B64, xyUtilB64, zUtilB64, signedVonMisesB64) {
   if (!mesh3d) return;
   const buf = Uint8Array.from(atob(stressB64), c => c.charCodeAt(0));
   const vertexStress = new Float32Array(buf.buffer);
@@ -2740,9 +2747,16 @@ function applyStressColors(stressB64, maxStress, principalStressB64, errorEstima
     s3Array[i]  = (principalVerts3 && principalVerts3.length > i) ? (principalVerts3[i] ?? 0) : 0;
     dmgArray[i] = vm / effYield;
   }
-  const xyUtilArray = decodeF32(xyUtilB64);
-  const zUtilArray  = decodeF32(zUtilB64);
-  S._stressArrays = { vm: vertexStress, s1: s1Array, s2: s2Array, s3: s3Array, dmg: dmgArray, error: errorEstimate, xyutil: xyUtilArray, zutil: zUtilArray };
+  const xyUtilArray     = decodeF32(xyUtilB64);
+  const zUtilArray      = decodeF32(zUtilB64);
+  const svmArray        = decodeF32(signedVonMisesB64);
+  S._stressArrays = { vm: vertexStress, svm: svmArray, s1: s1Array, s2: s2Array, s3: s3Array, dmg: dmgArray, error: errorEstimate, xyutil: xyUtilArray, zutil: zUtilArray };
+
+  // Show signed VM button if array is available
+  if (svmArray && svmArray.length > 0) {
+    const btnSvm = document.getElementById('btn-svm');
+    if (btnSvm) btnSvm.style.display = 'block';
+  }
 
   // Show error estimate button if error estimate is available
   if (errorEstimate && errorEstimate.length > 0) {
@@ -3403,9 +3417,9 @@ function handleStressHover(e) {
   const arr  = targetStressArrays[mode];
   const val  = arr ? (arr[bestVi] ?? 0) : 0;
 
-  const labels = { vm: 'von Mises', s1: 'Principal σ₁', dmg: 'Damage ratio' };
-  const units  = { vm: 'MPa', s1: 'MPa', dmg: '×' };
-  const text = `${labels[mode]}: ${val.toFixed(mode==='dmg' ? 2 : 1)} ${units[mode]}`;
+  const labels = { vm: 'von Mises', svm: 'Signed VM', s1: 'Principal σ₁', dmg: 'Damage ratio' };
+  const units  = { vm: 'MPa', svm: 'MPa', s1: 'MPa', dmg: '×' };
+  const text = `${labels[mode] ?? mode}: ${val.toFixed(mode==='dmg' ? 2 : 1)} ${units[mode] ?? ''}`;
 
   const panel = document.getElementById('stress-readout');
   const panelText = document.getElementById('stress-readout-text');
@@ -3979,7 +3993,7 @@ function toggleStress() {
   btn.innerHTML = S.showStress ? '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="currentColor"><rect x="1" y="1" width="8" height="8" rx="1"/><rect x="3" y="3" width="4" height="4" fill="var(--bg-base)"/></svg> STRESS' : '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="3.5"/></svg> DEFAULT';
   btn.className = 'btn' + (S.showStress ? ' active' : '');
   if (S.showStress && S.results) {
-    applyStressColors(S.results.vertexStressB64, S.results.summary.maxVonMisesMPa, S.results.vertexPrincipalStressB64, S.results.vertexErrorEstimateB64, S.results.vertexPrincipalStress2B64, S.results.vertexPrincipalStress3B64);
+    applyStressColors(S.results.vertexStressB64, S.results.summary.maxVonMisesMPa, S.results.vertexPrincipalStressB64, S.results.vertexErrorEstimateB64, S.results.vertexPrincipalStress2B64, S.results.vertexPrincipalStress3B64, null, null, S.results.vertexSignedVonMisesB64);
   } else {
     resetColors();
     document.getElementById('legend').style.display = 'none';
@@ -4651,7 +4665,7 @@ async function runAnalysis() {
       }
     }
 
-    applyStressColors(dataStd.vertexStressB64, dataStd.summary.maxVonMisesMPa, dataStd.vertexPrincipalStressB64, null, dataStd.vertexPrincipalStress2B64, dataStd.vertexPrincipalStress3B64, dataStd.vertexXyUtilB64, dataStd.vertexZUtilB64);
+    applyStressColors(dataStd.vertexStressB64, dataStd.summary.maxVonMisesMPa, dataStd.vertexPrincipalStressB64, null, dataStd.vertexPrincipalStress2B64, dataStd.vertexPrincipalStress3B64, dataStd.vertexXyUtilB64, dataStd.vertexZUtilB64, dataStd.vertexSignedVonMisesB64);
     showResults(dataStd.summary);
     showOrientComparison(dataStd.summary);
     storeAsBaseline(dataStd.summary, S.fileData?.fileName);
@@ -4785,7 +4799,7 @@ async function runAnalysis() {
         S.displacements = decodeDisplacementB64(dataFine.vertexDisplacementB64);
       }
 
-      applyStressColors(dataFine.vertexStressB64, dataFine.summary.maxVonMisesMPa, dataFine.vertexPrincipalStressB64, null, dataFine.vertexPrincipalStress2B64, dataFine.vertexPrincipalStress3B64);
+      applyStressColors(dataFine.vertexStressB64, dataFine.summary.maxVonMisesMPa, dataFine.vertexPrincipalStressB64, null, dataFine.vertexPrincipalStress2B64, dataFine.vertexPrincipalStress3B64, null, null, dataFine.vertexSignedVonMisesB64);
       showResults(dataFine.summary);
       showOrientComparison(dataFine.summary);
       storeAsBaseline(dataFine.summary, S.fileData?.fileName);
@@ -5001,6 +5015,9 @@ function showResults(s) {
         <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">MAX STRESS</div>
         <div style="font-size:18px;font-weight:500;color:var(--text-hi)">${s.maxVonMisesMPa.toFixed(2)} <span style="font-size:10px;color:var(--text-label)">MPa</span></div>
         <div style="font-size:10px;color:var(--text-lo);margin-top:2px">von Mises</div>
+        ${(s.minSignedVonMisesMPa != null || s.maxSignedVonMisesMPa != null) ? `<div style="font-size:9px;color:var(--text-lo);margin-top:3px;line-height:1.4" title="Signed von Mises: sign(σxx+σyy+σzz)×σ_VM. Negative=compression, positive=tension.">
+          <span style="color:#1650d8">${(s.minSignedVonMisesMPa ?? 0).toFixed(1)} MPa</span> comp · <span style="color:#c01717">${(s.maxSignedVonMisesMPa ?? 0).toFixed(1)} MPa</span> tens
+        </div>` : ''}
       </div>
       <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
         <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">SAFETY FACTOR</div>
@@ -6162,7 +6179,7 @@ function closeSplitView() {
     if (camera) { camera.aspect = w / h; camera.updateProjectionMatrix(); }
   }
   // Reapply current result stress
-  if (S.results) applyStressColors(S.results.vertexStressB64, S.results.summary.maxVonMisesMPa, S.results.vertexPrincipalStressB64, null, S.results.vertexPrincipalStress2B64, S.results.vertexPrincipalStress3B64);
+  if (S.results) applyStressColors(S.results.vertexStressB64, S.results.summary.maxVonMisesMPa, S.results.vertexPrincipalStressB64, null, S.results.vertexPrincipalStress2B64, S.results.vertexPrincipalStress3B64, null, null, S.results.vertexSignedVonMisesB64);
 }
 
 function renderSplitFrame() {
@@ -9496,7 +9513,7 @@ setTimeout(initOnshapeStatus, 200);
 // ── Stress visualization modes ────────────────────────────────────────────────
 function setStressMode(mode) {
   S.stressMode = mode;
-  ['vm','s1','s2','s3','dmg','xyutil','zutil','error'].forEach(m => {
+  ['vm','svm','s1','s2','s3','dmg','xyutil','zutil','error'].forEach(m => {
     const btn = document.getElementById('btn-'+m);
     if (btn) btn.className = 'btn' + (m===mode?' active':'');
   });
@@ -9510,11 +9527,16 @@ function applyStressColorsFromArrays(arrays) {
   if (!mesh3d || !arrays) return;
 
   const isPrincipal = S.stressMode === 's1' || S.stressMode === 's2' || S.stressMode === 's3';
+  const isSignedVM  = S.stressMode === 'svm';
   let colors, effectiveMin, effectiveMax, range;
 
   if (isPrincipal) {
     const arr = S.stressMode === 's1' ? arrays.s1 : S.stressMode === 's2' ? arrays.s2 : arrays.s3;
     ({ colors, effectiveMin, effectiveMax, range } = computeDivergingColors(arr));
+  } else if (isSignedVM) {
+    const svmArr = arrays.svm ?? arrays.vm;
+    const yieldMPa = S.results?.summary?.effectiveYieldMPa ?? 1;
+    ({ colors, effectiveMin, effectiveMax, range } = computeDivergingColors(svmArr, yieldMPa));
   } else {
     let stressArr, maxValOverride, minValOverride;
     switch (S.stressMode) {
@@ -9586,7 +9608,7 @@ function applyStressColorsFromArrays(arrays) {
   // Update legend gradient bar
   const bar = document.getElementById('legend-gradient');
   if (bar) {
-    if (isPrincipal) {
+    if (isPrincipal || isSignedVM) {
       const STOPS = 12;
       const stops = [];
       for (let i = 0; i <= STOPS; i++) {
@@ -9604,6 +9626,7 @@ function applyStressColorsFromArrays(arrays) {
   // Update legend title
   const modeLabels = {
     vm:   'von Mises (' + U.stressLabel() + ')',
+    svm:  'Signed von Mises (' + U.stressLabel() + ')',
     s1:   'Max Principal σ₁ (' + U.stressLabel() + ')',
     s2:   'Mid Principal σ₂ (' + U.stressLabel() + ')',
     s3:   'Min Principal σ₃ (' + U.stressLabel() + ')',
