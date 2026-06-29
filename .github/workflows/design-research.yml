@@ -1,0 +1,118 @@
+name: Weekly Design Research & Improvement
+
+# Runs every Monday at 8:03am UTC.
+# Also triggerable manually from the Actions tab (no inputs required).
+on:
+  schedule:
+    - cron: '3 8 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  design-weekly:
+    name: Research + improve UI
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── Checkout ──────────────────────────────────────────────────────────
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Python ────────────────────────────────────────────────────────────
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python deps
+        run: pip install anthropic requests
+
+      # ── Create weekly branch ──────────────────────────────────────────────
+      - name: Setup git + branch
+        run: |
+          git config user.name  'STORMFEA Design Bot'
+          git config user.email 'design-bot@users.noreply.github.com'
+          BRANCH="design/weekly-$(date +%Y-%m-%d)-${{ github.run_number }}"
+          git checkout -b "$BRANCH"
+          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
+
+      # ── Validate secrets ──────────────────────────────────────────────────
+      - name: Validate required secrets
+        run: |
+          if [ -z "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+            echo "ERROR: ANTHROPIC_API_KEY secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.GITHUB_TOKEN }}" ]; then
+            echo "ERROR: GITHUB_TOKEN secret is not set"
+            exit 1
+          fi
+          echo "✓ All required secrets are available"
+
+      # ── Research ──────────────────────────────────────────────────────────
+      - name: Run research agent
+        timeout-minutes: 10
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/design_research.py research
+
+      # ── Implement ─────────────────────────────────────────────────────────
+      - name: Run implementation agent
+        timeout-minutes: 10
+        id: impl
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python scripts/design_research.py implement
+
+      # ── Sync dist/ ────────────────────────────────────────────────────────
+      - name: Sync client to dist
+        run: npm run copy:client 2>/dev/null || true
+
+      # ── Commit ────────────────────────────────────────────────────────────
+      - name: Commit changes
+        id: commit
+        run: |
+          git add DESIGN_RESEARCH.md client/index.html dist/ 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "Nothing changed — skipping PR."
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            IMPL_NOTE="${{ steps.impl.outputs.description }}"
+            [ -z "$IMPL_NOTE" ] && IMPL_NOTE="research only"
+            git commit -m "design: weekly update — $IMPL_NOTE ($(date +%Y-%m-%d))"
+            git push origin "$BRANCH"
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Open PR ───────────────────────────────────────────────────────────
+      - name: Open PR to main
+        if: steps.commit.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          IMPL_NOTE="${{ steps.impl.outputs.description }}"
+          if [ "${{ steps.impl.outputs.skip }}" = "true" ] || [ -z "$IMPL_NOTE" ]; then
+            IMPL_LINE="No CSS change this week — research digest only."
+          else
+            IMPL_LINE="**CSS change applied:** $IMPL_NOTE"
+          fi
+
+          gh pr create \
+            --title "Weekly Design: $(date +%Y-%m-%d)" \
+            --body "## Automated Weekly UI Research & Improvement
+
+$IMPL_LINE
+
+Research findings are in \`DESIGN_RESEARCH.md\`. Any CSS change was selected automatically from this week's findings and validated against \`DESIGN.md\` rules.
+
+**To merge:** review the diff, open the preview at \`localhost:3000\` after \`npm run dev\`, then merge.
+**To reject:** close the PR — no harm done.
+
+---
+🤖 [STORMFEA Design Bot](../../blob/main/scripts/design_research.py) · runs every Monday" \
+            --base main \
+            --head "$BRANCH"

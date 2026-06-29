@@ -1,0 +1,48 @@
+name: Test Suite
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  run-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository code
+      uses: actions/checkout@v4
+
+    - name: Validate package-lock.json exists
+      run: |
+        if [ ! -f package-lock.json ]; then
+          echo "ERROR: package-lock.json is missing!"
+          echo "This file is required for npm ci to work correctly."
+          exit 1
+        fi
+        echo "✓ package-lock.json found"
+
+    - name: Set up Node.js environment
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: 'npm'
+        cache-dependency-files: 'package-lock.json'
+
+    - name: Verify lock file integrity
+      run: npm ci --dry-run --verbose
+
+    - name: Install project dependencies
+      run: npm ci --verbose
+
+    - name: Compile TypeScript and run solver validation suite
+      run: npm run test -- --verbose
+
+    - name: Upload dist directory on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: dist-directory
+        path: dist/
+        if-no-files-found: ignore
