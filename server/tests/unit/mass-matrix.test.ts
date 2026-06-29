@@ -65,7 +65,7 @@ function csrRowSums(M: CSRMatrix): Float64Array {
   for (let r = 0; r < M.n; r++) {
     const s = M.rowPtr[r] ?? 0;
     const e = M.rowPtr[r + 1] ?? M.data.length;
-    for (let k = s; k < e; k++) rs[r] += M.data[k] ?? 0;
+    for (let k = s; k < e; k++) rs[r] = (rs[r] ?? 0) + (M.data[k] ?? 0);
   }
   return rs;
 }
