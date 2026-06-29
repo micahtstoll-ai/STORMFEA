@@ -143,13 +143,13 @@ describe("Modal solver — C3D4 cantilever beam (40×5×5)", () => {
   let allFreqs: number[];
   let nearZeroCount: number;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     // Use 40×5×5 mesh: C3D4 converges to within 5% of E-B at this refinement.
     // Coarser meshes (e.g. 20×3×3) suffer from shear locking (~15% error).
     const mesh = generateBoxMesh(0, 0, 0, L, W, H, 40, 5, 5);
     const fixedNodes = getNodesOnFace(mesh, "x", 0);
 
-    const modalResult = runModalAnalysis({
+    const modalResult = await runModalAnalysis({
       mesh,
       material: STEEL,
       fixedNodes,
@@ -182,12 +182,12 @@ describe("Modal solver — C3D4 cantilever beam (40×5×5)", () => {
 describe("Modal solver — C3D10 cantilever beam (20×3×3 upgraded)", () => {
   let f1_fem_c3d10: number;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     const meshC3D4 = generateBoxMesh(0, 0, 0, L, W, H, 20, 3, 3);
     const mesh = upgradeToC3D10(meshC3D4);
     const fixedNodes = getNodesOnFace(mesh, "x", 0);
 
-    const modalResult = runModalAnalysis({
+    const modalResult = await runModalAnalysis({
       mesh,
       material: STEEL,
       fixedNodes,

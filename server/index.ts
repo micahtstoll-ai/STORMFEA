@@ -669,14 +669,14 @@ app.post("/api/calibration/kt", async (req, res) => {
 
     // Lap-shear coupon: 20×20mm overlap, 2mm thick
     const lapBox = buildGaugeBoxMesh(20, 2, 20);
-    const ktLap = solveCouponKt(lapBox, mat, {
+    const ktLap = await solveCouponKt(lapBox, mat, {
       totalForceN: 1000, axis: 0, nominalAreaMm2: 20 * 2,
       gripFraction: 0.35, shear: true,
     });
 
     // Bearing coupon: 20×3mm plate, 3mm hole → approximate as uniform bar
     const bearBox = buildGaugeBoxMesh(20, 3, 20);
-    const ktBear = solveCouponKt(bearBox, mat, {
+    const ktBear = await solveCouponKt(bearBox, mat, {
       totalForceN: 1000, axis: 1, nominalAreaMm2: 3 * 3,
       gripFraction: 0.35, shear: false,
     });

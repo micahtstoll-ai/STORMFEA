@@ -163,15 +163,15 @@ export interface KtResult {
  * Compute the stress-concentration factor Kt for a coupon mesh under an axial
  * load case, using the production solver. Kt = peak / nominal (von Mises).
  */
-export function solveCouponKt(
+export async function solveCouponKt(
   mesh: TetMesh,
   material: AnyMaterial,
   lc: AxialLoadCase,
-): KtResult {
+): Promise<KtResult> {
   const { constraints, forces, loMin, loMax } =
     buildAxialConstraintsAndForces(mesh, lc.axis, lc.totalForceN);
 
-  const result = runLinearStatic({ mesh, material, constraints, forces });
+  const result = await runLinearStatic({ mesh, material, constraints, forces });
 
   const span = loMax - loMin;
   const gaugeLo = loMin + span * lc.gripFraction;

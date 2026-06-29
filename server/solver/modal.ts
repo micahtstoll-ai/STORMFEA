@@ -557,7 +557,7 @@ function computeParticipationFactor(modeShape: Float64Array, M: CSRMatrix, n: nu
  * Solve K·φ = ω²·M·φ for the lowest nModes natural frequencies.
  * Assembles K and M internally; applies Dirichlet BCs via penalty method.
  */
-export function runModalAnalysis(input: ModalInput): ModalAnalysisResult {
+export async function runModalAnalysis(input: ModalInput): Promise<ModalAnalysisResult> {
   const t0 = Date.now();
 
   const nModes  = input.nModes  ?? 10;
@@ -579,7 +579,7 @@ export function runModalAnalysis(input: ModalInput): ModalAnalysisResult {
   const rho = getDensityFromLabel(material.label);
 
   // Assemble K and M
-  const { K, diagIdx: kDiagIdx } = assembleK(mesh, material);
+  const { K, diagIdx: kDiagIdx } = await assembleK(mesh, material);
   const { M, diagIdx: mDiagIdx } = assembleM(mesh, rho);
 
   // Apply penalty to constrained DOFs in K only.

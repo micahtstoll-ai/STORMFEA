@@ -25,6 +25,10 @@
 
 import type { TetMesh, AnyMaterial, CSRMatrix } from "./types.js";
 import { elementStiffness, buildAnyConstitutiveMatrix, c3d10ElementStiffness } from "./element.js";
+import { Worker } from "worker_threads";
+import { fileURLToPath } from "url";
+import path from "path";
+import os from "os";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -125,7 +129,203 @@ function findEntry(colIdx: Int32Array, rowPtr: Int32Array, row: number, col: num
   throw new Error(`CSR entry not found: row=${row} col=${col} — sparsity pattern incomplete`);
 }
 
-// ─── Global assembly ──────────────────────────────────────────────────────────
+// ─── Serial assembly (extracted from original) ────────────────────────────────
+
+/**
+ * Serial element-by-element assembly (original implementation).
+ * Used as fallback when workers are unavailable or mesh is small.
+ */
+function assembleK_serial(
+  mesh: TetMesh,
+  C: Float64Array,
+  rowPtr: Int32Array,
+  colIdx: Int32Array,
+  data: Float64Array,
+): void {
+  const npe = mesh.nodesPerElem;
+  const dpe = npe * 3;  // DOF per element
+
+  const elemNodes = new Int32Array(npe);
+  const scratchCoords = new Float64Array(30);
+
+  for (let e = 0; e < mesh.elementCount; e++) {
+    const base = e * npe;
+    for (let ni = 0; ni < npe; ni++) elemNodes[ni] = i32(mesh.elements, base + ni);
+
+    let ke: Float64Array;
+    if (npe === 10) {
+      const nodeCoords = scratchCoords;
+      for (let ni = 0; ni < 10; ni++) {
+        const n = elemNodes[ni]!;
+        nodeCoords[ni*3]   = mesh.nodes[n*3]   ?? 0;
+        nodeCoords[ni*3+1] = mesh.nodes[n*3+1] ?? 0;
+        nodeCoords[ni*3+2] = mesh.nodes[n*3+2] ?? 0;
+      }
+      ke = c3d10ElementStiffness(nodeCoords, C);
+    } else {
+      const na = elemNodes[0]!, nb = elemNodes[1]!, nc = elemNodes[2]!, nd = elemNodes[3]!;
+      ke = elementStiffness(mesh.nodes, na, nb, nc, nd, C);
+    }
+
+    for (let lr = 0; lr < dpe; lr++) {
+      const globalR = (elemNodes[Math.floor(lr / 3)] ?? 0) * 3 + (lr % 3);
+      for (let lc = 0; lc < dpe; lc++) {
+        const globalC = (elemNodes[Math.floor(lc / 3)] ?? 0) * 3 + (lc % 3);
+        const pos = findEntry(colIdx, rowPtr, globalR, globalC);
+        data[pos] = (data[pos] ?? 0) + (ke[lr * dpe + lc] ?? 0);
+      }
+    }
+  }
+}
+
+// ─── COO triplet interface and merging ────────────────────────────────────────
+
+interface CoOTriplet {
+  readonly row: number;
+  readonly col: number;
+  readonly val: number;
+}
+
+/**
+ * Merge COO triplets into CSR data array.
+ * COO triplets are sorted by (row, col), accumulated for duplicates,
+ * then scattered into the CSR data array via findEntry.
+ */
+function mergeCoOIntoCSR(
+  triplets: CoOTriplet[],
+  rowPtr: Int32Array,
+  colIdx: Int32Array,
+  data: Float64Array,
+): void {
+  if (triplets.length === 0) return;
+
+  // Sort COO by (row, col)
+  triplets.sort((a, b) => {
+    if (a.row !== b.row) return a.row - b.row;
+    return a.col - b.col;
+  });
+
+  // Accumulate duplicates
+  const merged: CoOTriplet[] = [];
+  let current = triplets[0]!;
+  for (let i = 1; i < triplets.length; i++) {
+    const t = triplets[i]!;
+    if (t.row === current.row && t.col === current.col) {
+      current = { row: current.row, col: current.col, val: current.val + t.val };
+    } else {
+      merged.push(current);
+      current = t;
+    }
+  }
+  merged.push(current);
+
+  // Scatter into CSR data array
+  for (const { row, col, val } of merged) {
+    const pos = findEntry(colIdx, rowPtr, row, col);
+    data[pos] = (data[pos] ?? 0) + val;
+  }
+}
+
+// ─── Parallel assembly via worker_threads ─────────────────────────────────────
+
+/**
+ * Check if worker_threads module is available (not in Electron or restricted env).
+ */
+function areWorkersAvailable(): boolean {
+  try {
+    require.resolve("worker_threads");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Assemble stiffness matrix using worker_threads for element chunk parallelization.
+ * Falls back to serial if workers unavailable or on error.
+ */
+async function assembleK_parallel(
+  mesh: TetMesh,
+  C: Float64Array,
+  rowPtr: Int32Array,
+  colIdx: Int32Array,
+  data: Float64Array,
+): Promise<boolean> {
+  // Check if workers available and mesh is large enough for parallelization overhead
+  if (!areWorkersAvailable() || mesh.elementCount < 1000) {
+    return false;  // Use serial path
+  }
+
+  try {
+    const cpuCount = os.cpus().length;
+    const chunkSize = Math.ceil(mesh.elementCount / cpuCount);
+    const chunks: { start: number; end: number }[] = [];
+
+    for (let i = 0; i < cpuCount; i++) {
+      const start = i * chunkSize;
+      const end = Math.min(start + chunkSize, mesh.elementCount);
+      if (start < mesh.elementCount) {
+        chunks.push({ start, end });
+      }
+    }
+
+    // Get worker script path
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = path.dirname(__filename);
+    const workerScript = path.join(__dirname, "assembly-worker.js");
+
+    // Spawn workers and collect results
+    const workerPromises = chunks.map((chunk) => {
+      return new Promise<CoOTriplet[]>((resolve, reject) => {
+        const worker = new Worker(workerScript);
+        const timeout = setTimeout(() => {
+          worker.terminate();
+          reject(new Error(`Worker timeout for elements ${chunk.start}–${chunk.end}`));
+        }, 60000);  // 60 second timeout
+
+        worker.on("message", (msg: any) => {
+          clearTimeout(timeout);
+          worker.terminate();
+          if (msg.success) {
+            resolve(msg.triplets);
+          } else {
+            reject(new Error(`Worker error: ${msg.error}`));
+          }
+        });
+
+        worker.on("error", reject);
+        worker.on("exit", (code) => {
+          clearTimeout(timeout);
+          if (code !== 0) {
+            reject(new Error(`Worker exited with code ${code}`));
+          }
+        });
+
+        // Send work to worker
+        worker.postMessage({
+          elementStart: chunk.start,
+          elementEnd: chunk.end,
+          nodesPerElem: mesh.nodesPerElem,
+          nodes: mesh.nodes,
+          elements: mesh.elements,
+          C,
+        });
+      });
+    });
+
+    const results = await Promise.all(workerPromises);
+    const allTriplets: CoOTriplet[] = results.flat();
+
+    // Merge all triplets into CSR
+    mergeCoOIntoCSR(allTriplets, rowPtr, colIdx, data);
+    return true;  // Parallel succeeded
+  } catch (err) {
+    console.warn(`Parallel assembly failed, falling back to serial: ${(err as Error).message}`);
+    return false;  // Fall back to serial
+  }
+}
+
+// ─── Global assembly (public API) ──────────────────────────────────────────────
 
 /**
  * Assemble the global stiffness matrix K and return it as a CSRMatrix.
@@ -136,61 +336,31 @@ function findEntry(colIdx: Int32Array, rowPtr: Int32Array, row: number, col: num
  * Algorithm:
  *   1. Build sparsity pattern (determines non-zero structure).
  *   2. Allocate data array (zeros).
- *   3. For each element: compute k_e, scatter into global K via findEntry.
+ *   3. Attempt parallel assembly via worker_threads:
+ *      - Partition elements into N_cpu chunks
+ *      - Each worker computes element stiffness, collects COO triplets
+ *      - Main thread merges COO into CSR
+ *   4. Fall back to serial if workers unavailable or on error.
  */
-export function assembleK(
+export async function assembleK(
   mesh: TetMesh,
   mat:  AnyMaterial,
-): {
+): Promise<{
   K:       CSRMatrix;
   diagIdx: Int32Array;
-} {
+}> {
   const n   = mesh.nodeCount * 3;
   const npe = mesh.nodesPerElem;
-  const dpe = npe * 3;  // DOF per element: 12 for C3D4, 30 for C3D10
   const C   = buildAnyConstitutiveMatrix(mat);
 
   const { rowPtr, colIdx, diagIdx } = buildSparsityPattern(mesh);
   const nnz = rowPtr[n] ?? 0;
   const data = new Float64Array(nnz);
 
-  // Pre-allocate scratch arrays outside the element loop — avoids per-element allocation.
-  const elemNodes = new Int32Array(npe);        // node indices for this element
-  const scratchCoords = new Float64Array(30);   // node coordinates for C3D10 elements (10×3)
-
-  for (let e = 0; e < mesh.elementCount; e++) {
-    const base = e * npe;
-
-    // Extract node indices for this element (into pre-allocated scratch)
-    for (let ni = 0; ni < npe; ni++) elemNodes[ni] = i32(mesh.elements, base + ni);
-
-    // Compute element stiffness matrix
-    let ke: Float64Array;
-    if (npe === 10) {
-      // C3D10: extract 10×3 node coordinates into pre-allocated scratch
-      const nodeCoords = scratchCoords;
-      for (let ni = 0; ni < 10; ni++) {
-        const n = elemNodes[ni]!;
-        nodeCoords[ni*3]   = mesh.nodes[n*3]   ?? 0;
-        nodeCoords[ni*3+1] = mesh.nodes[n*3+1] ?? 0;
-        nodeCoords[ni*3+2] = mesh.nodes[n*3+2] ?? 0;
-      }
-      ke = c3d10ElementStiffness(nodeCoords, C);
-    } else {
-      // C3D4: use existing function
-      const na = elemNodes[0]!, nb = elemNodes[1]!, nc = elemNodes[2]!, nd = elemNodes[3]!;
-      ke = elementStiffness(mesh.nodes, na, nb, nc, nd, C);
-    }
-
-    // Scatter k_e into global K
-    for (let lr = 0; lr < dpe; lr++) {
-      const globalR = (elemNodes[Math.floor(lr / 3)] ?? 0) * 3 + (lr % 3);
-      for (let lc = 0; lc < dpe; lc++) {
-        const globalC = (elemNodes[Math.floor(lc / 3)] ?? 0) * 3 + (lc % 3);
-        const pos = findEntry(colIdx, rowPtr, globalR, globalC);
-        data[pos] = (data[pos] ?? 0) + (ke[lr * dpe + lc] ?? 0);
-      }
-    }
+  // Try parallel assembly; fall back to serial if it fails or is not available
+  const parallelSucceeded = await assembleK_parallel(mesh, C, rowPtr, colIdx, data).catch(() => false);
+  if (!parallelSucceeded) {
+    assembleK_serial(mesh, C, rowPtr, colIdx, data);
   }
 
   return {

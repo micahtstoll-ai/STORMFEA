@@ -1761,7 +1761,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
 
   if (req.analysisType === 'modal') {
     // Run static + keep K for modal reuse
-    const intermediate = runLinearStaticWithK(input);
+    const intermediate = await runLinearStaticWithK(input);
     result = intermediate.result;
 
     // Collect fixed node indices from constraints
@@ -1771,7 +1771,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     }
 
     try {
-      modalResult = runModalAnalysis({
+      modalResult = await runModalAnalysis({
         mesh,
         material,
         fixedNodes,
@@ -1783,7 +1783,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       modalResult = undefined;
     }
   } else {
-    result = runLinearStatic(input);
+    result = await runLinearStatic(input);
   }
 
   // ── SPR-smoothed nodal stress ──────────────────────────────────────────────

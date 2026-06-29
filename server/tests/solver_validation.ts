@@ -34,6 +34,9 @@ function near(a: number, b: number, tol = 0.01): boolean {
   return Math.abs(a - b) / Math.max(1, Math.abs(b)) < tol;
 }
 
+// Wrap all tests in async IIFE to allow awaiting runLinearStatic
+(async () => {
+
 // ── Test group 1: Patch test ──────────────────────────────────────────────────
 console.log("\n[1] Patch test — uniform body force");
 {
@@ -47,7 +50,7 @@ console.log("\n[1] Patch test — uniform body force");
   }
   const totalF = 1.0 * 10 * 10;
   const fPerNode = totalF / top.length;
-  const r = runLinearStatic({
+  const r = await runLinearStatic({
     mesh, material: mat,
     constraints: [{ nodeIndices: bottom }],
     forces: top.map(n => ({ nodeIndex: n, forceN: [0, 0, fPerNode] })),
@@ -78,7 +81,7 @@ console.log("\n[2] Cantilever beam — tip deflection consistency");
   }
 
   const P = 1.0;
-  const r = runLinearStatic({
+  const r = await runLinearStatic({
     mesh, material: mat,
     constraints: [{ nodeIndices: fixed }],
     forces: tip.map(n => ({ nodeIndex: n, forceN: [0, 0, -P / tip.length] })),
@@ -94,7 +97,7 @@ console.log("\n[2] Cantilever beam — tip deflection consistency");
   test("Deflection > 0.2× E-B",         r.maxDisplacementMm > dEB * 0.2,
     `ratio=${(r.maxDisplacementMm/dEB).toFixed(2)}`);
   test("Converged",                      r.converged);
-  const r2 = runLinearStatic({
+  const r2 = await runLinearStatic({
     mesh, material: mat,
     constraints: [{ nodeIndices: fixed }],
     forces: tip.map(n => ({ nodeIndex: n, forceN: [0, 0, -2*P / tip.length] })),
@@ -220,7 +223,7 @@ console.log("\n[6] C3D10 assembly integration — nodesPerElem propagation");
   let keSize = 0;
   try {
     const { assembleK } = await import("../solver/assembly.js");
-    const { K } = assembleK(mesh10, mat);
+    const { K } = await assembleK(mesh10, mat);
     assemblyOk = K.n === 30; // 10 nodes × 3 DOF
     keSize = K.n;
   } catch(e) {
@@ -289,7 +292,7 @@ console.log("\n[8] FEA-in-the-loop calibration — Kt extraction + conversion");
   // 8a. A uniform prismatic gauge bar must return Kt ≈ 1 through the real solver.
   //     This validates the entire chain: mesh → BCs → solve → regional peak → Kt.
   const box = buildGaugeBoxMesh(10, 4, 50);
-  const kt = solveCouponKt(box, mat, {
+  const kt = await solveCouponKt(box, mat, {
     totalForceN: 1000, axis: 2, nominalAreaMm2: 10 * 4,
     gripFraction: 0.35, shear: false,
   });
@@ -602,7 +605,7 @@ console.log("\n[12] Pure axial tension bar — exact textbook comparison (sigma 
   }
 
   const F = 100; // N, pure +X axial load at the free end
-  const r = runLinearStatic({
+  const r = await runLinearStatic({
     mesh, material: mat,
     constraints: [{ nodeIndices: fixed }],
     forces: tip.map(n => ({ nodeIndex: n, forceN: [F / tip.length, 0, 0] })),
@@ -643,7 +646,7 @@ console.log("\n[12] Pure axial tension bar — exact textbook comparison (sigma 
   // Doubling the load should exactly double both stress and displacement —
   // confirms linearity, catches any accidental nonlinear term or unit error
   // that a single-point comparison could miss.
-  const r2 = runLinearStatic({
+  const r2 = await runLinearStatic({
     mesh, material: mat,
     constraints: [{ nodeIndices: fixed }],
     forces: tip.map(n => ({ nodeIndex: n, forceN: [2 * F / tip.length, 0, 0] })),
@@ -669,8 +672,8 @@ console.log("\n[13] IC(0) vs Jacobi preconditioner convergence");
   const forces = loaded.map(n => ({ nodeIndex: n, forceN: [100 / loaded.length, 0, 0] as [number, number, number] }));
   const baseInput = { mesh, material: mat, constraints: [{ nodeIndices: fixed }], forces };
 
-  const r0 = runLinearStatic({ ...baseInput, preconditioner: 'ic0' as const });
-  const r1 = runLinearStatic({ ...baseInput, preconditioner: 'jacobi' as const });
+  const r0 = await runLinearStatic({ ...baseInput, preconditioner: 'ic0' as const });
+  const r1 = await runLinearStatic({ ...baseInput, preconditioner: 'jacobi' as const });
 
   const ratio = r1.cgIterations / Math.max(r0.cgIterations, 1);
   console.log(`[bench] IC(0): ${r0.cgIterations} iters vs Jacobi: ${r1.cgIterations} iters (${ratio.toFixed(2)}x speedup)`);
@@ -699,7 +702,7 @@ console.log("\n[14] Zienkiewicz-Zhu error estimator (coarse vs fine mesh)");
   }
   const totalF = 1.0 * 10 * 10;
   const fPerNodeCoarse = totalF / topCoarse.length;
-  const rCoarse = runLinearStatic({
+  const rCoarse = await runLinearStatic({
     mesh: meshCoarse, material: mat,
     constraints: [{ nodeIndices: fixedCoarse }],
     forces: topCoarse.map(n => ({ nodeIndex: n, forceN: [0, 0, fPerNodeCoarse] })),
@@ -714,7 +717,7 @@ console.log("\n[14] Zienkiewicz-Zhu error estimator (coarse vs fine mesh)");
     if (z > 9.99) topFine.push(n);
   }
   const fPerNodeFine = totalF / topFine.length;
-  const rFine = runLinearStatic({
+  const rFine = await runLinearStatic({
     mesh: meshFine, material: mat,
     constraints: [{ nodeIndices: fixedFine }],
     forces: topFine.map(n => ({ nodeIndex: n, forceN: [0, 0, fPerNodeFine] })),
@@ -745,6 +748,8 @@ console.log("\n[14] Zienkiewicz-Zhu error estimator (coarse vs fine mesh)");
     test("[14.9] Fine mesh: error estimates in [0,1]", fineMax <= 1.001, `max=${fineMax.toFixed(4)}`);
   }
 }
+
+})();  // End async IIFE
 
 // ── Summary ───────────────────────────────────────────────────────────────────
 // Deferred via setTimeout(0) so it runs as a macrotask AFTER every top-level
