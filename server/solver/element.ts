@@ -507,22 +507,6 @@ export function elementGeometricStiffness(
  * Integration: 4-point Gauss quadrature on tetrahedron
  */
 
-// ─── Module-level scratch arrays for C3D10 ────────────────────────────────────
-/**
- * These scratch arrays are reused across every Gauss-point evaluation to avoid
- * per-call heap allocations in the inner assembly/stress loops.
- *
- * WARNING: NOT reentrant. Safe because the server is single-threaded Node.js
- * and all FEM operations are synchronous within a single request.
- * Do not use these in concurrent/async contexts.
- */
-const _C3D10_SCRATCH = {
-  dNdxi:   new Float64Array(10),
-  dNdeta:  new Float64Array(10),
-  dNdzeta: new Float64Array(10),
-  B:       new Float64Array(6 * 30),   // 6×30 strain-displacement matrix
-  CB:      new Float64Array(6 * 30),   // 6×30 C·B product
-};
 
 /** 4-point Gauss quadrature points and weights for tetrahedron */
 const C3D10_GAUSS = [
@@ -558,15 +542,12 @@ export function c3d10ShapeFunctions(xi: number, eta: number, zeta: number): Floa
 /**
  * Evaluate C3D10 shape function derivatives dN/dξ, dN/dη, dN/dζ.
  * Returns [dNdxi[10], dNdeta[10], dNdzeta[10]].
- *
- * Uses module-level scratch buffers (_C3D10_SCRATCH) to avoid heap allocation.
- * NOT reentrant — see scratch-array warning above.
  */
 export function c3d10ShapeDerivatives(xi: number, eta: number, zeta: number): [Float64Array, Float64Array, Float64Array] {
   const delta = 1 - xi - eta - zeta;
-  const dNdxi   = _C3D10_SCRATCH.dNdxi;
-  const dNdeta  = _C3D10_SCRATCH.dNdeta;
-  const dNdzeta = _C3D10_SCRATCH.dNdzeta;
+  const dNdxi   = new Float64Array(10);
+  const dNdeta  = new Float64Array(10);
+  const dNdzeta = new Float64Array(10);
 
   // Corner nodes — dN/dξ
   dNdxi[0] = 4*xi - 1;     dNdxi[1] = 0;         dNdxi[2] = 0;        dNdxi[3] = -(4*delta-1);
@@ -618,9 +599,7 @@ export function buildB_c3d10(
     (J10*J21-J11*J20)*invDetJ, -(J00*J21-J01*J20)*invDetJ,  (J00*J11-J01*J10)*invDetJ,
   ];
 
-  // B matrix: 6×30 — reuse module-level scratch; zero it first (sparsely written)
-  const B = _C3D10_SCRATCH.B;
-  B.fill(0);
+  const B = new Float64Array(6 * 30);
   for (let i=0; i<10; i++) {
     // dN/dx = Jinv·[dN/dξ, dN/dη, dN/dζ]ᵀ
     const dNdx = (Jinv[0]??0)*(dNdxi[i]??0) + (Jinv[1]??0)*(dNdeta[i]??0) + (Jinv[2]??0)*(dNdzeta[i]??0);
@@ -659,14 +638,13 @@ export function c3d10ElementStiffness(
   C:     Float64Array,  // 6×6 constitutive matrix
 ): Float64Array {
   const Ke = new Float64Array(30*30);
+  const CB = new Float64Array(6 * 30);
 
   for (const gp of C3D10_GAUSS) {
     const { B, detJ } = buildB_c3d10(nodes, gp.xi, gp.eta, gp.zeta);
     const vol = Math.abs(detJ) * gp.w;
 
     // Ke += Bᵀ C B × vol
-    // CB = C × B (6×30) — reuse module-level scratch; zero it first (accumulator)
-    const CB = _C3D10_SCRATCH.CB;
     CB.fill(0);
     for (let row=0; row<6; row++) {
       for (let col=0; col<30; col++) {
