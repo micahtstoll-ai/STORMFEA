@@ -101,18 +101,22 @@ jobs:
             IMPL_LINE="**CSS change applied:** $IMPL_NOTE"
           fi
 
+          {
+            echo "## Automated Weekly UI Research & Improvement"
+            echo ""
+            echo "$IMPL_LINE"
+            echo ""
+            echo "Research findings are in \`DESIGN_RESEARCH.md\`. Any CSS change was selected automatically from this week's findings and validated against \`DESIGN.md\` rules."
+            echo ""
+            echo "**To merge:** review the diff, open the preview at \`localhost:3000\` after \`npm run dev\`, then merge."
+            echo "**To reject:** close the PR — no harm done."
+            echo ""
+            echo "---"
+            echo "🤖 [STORMFEA Design Bot](../../blob/main/scripts/design_research.py) · runs every Monday"
+          } > /tmp/pr_body.md
+
           gh pr create \
             --title "Weekly Design: $(date +%Y-%m-%d)" \
-            --body "## Automated Weekly UI Research & Improvement
-
-$IMPL_LINE
-
-Research findings are in \`DESIGN_RESEARCH.md\`. Any CSS change was selected automatically from this week's findings and validated against \`DESIGN.md\` rules.
-
-**To merge:** review the diff, open the preview at \`localhost:3000\` after \`npm run dev\`, then merge.
-**To reject:** close the PR — no harm done.
-
----
-🤖 [STORMFEA Design Bot](../../blob/main/scripts/design_research.py) · runs every Monday" \
+            --body-file /tmp/pr_body.md \
             --base main \
             --head "$BRANCH"
