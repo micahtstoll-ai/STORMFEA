@@ -997,9 +997,11 @@ export interface IsotropicComparison {
 }
 
 export interface AnalysisResult {
-  vertexStress:           Float32Array;
-  vertexPrincipalStress:  Float32Array;
-  vertexDisplacement:     Float32Array;
+  vertexStress:            Float32Array;
+  vertexPrincipalStress:   Float32Array;
+  vertexPrincipalStress2:  Float32Array;
+  vertexPrincipalStress3:  Float32Array;
+  vertexDisplacement:      Float32Array;
   surfaceTriangleCount:   number;
   maxVonMisesMPa:         number;
   maxDisplacementMm:      number;
