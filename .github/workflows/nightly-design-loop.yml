@@ -1,0 +1,42 @@
+name: Nightly Design Loop
+
+on:
+  schedule:
+    - cron: '0 8 * * *'  # 2:00 AM CST (UTC-6)
+  workflow_dispatch:      # allow manual trigger from GitHub Actions tab
+
+jobs:
+  design-loop:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        run: |
+          if [ -z "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+            echo "ERROR: ANTHROPIC_API_KEY secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.GITHUB_TOKEN }}" ]; then
+            echo "ERROR: GITHUB_TOKEN secret is not set"
+            exit 1
+          fi
+          echo "✓ All required secrets are available"
+
+      - name: Set today's date
+        run: echo "TODAY=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
+
+      - uses: anthropics/claude-code-action@beta
+        timeout-minutes: 30
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            Run the /start-design-loop command as defined in .claude/commands/start-design-loop.md.
+            Today's date is ${{ env.TODAY }}.
+            Research YouTube, GitHub, and Anthropic docs for UI improvement ideas for STORMFEA,
+            then open a GitHub issue in micahtstoll-ai/stormfea with your ranked findings.

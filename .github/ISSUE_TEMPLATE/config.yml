@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question / Discussion
+    url: https://github.com/micahtstoll-ai/stormfea/discussions
+    about: Ask questions, share results, or discuss FDM material models here rather than in Issues.
