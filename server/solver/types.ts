@@ -248,6 +248,12 @@ export interface SolverResult {
    * Array of { x, y, z (mm), errorEstimate (0–1) }. Present only if errorEstimate is computed.
    */
   readonly topErrorElements?: readonly { x: number; y: number; z: number; errorEstimate: number }[];
+
+  /**
+   * Mesh quality report: element counts by severity, worst-case values, global score.
+   * Computed before assembling K; may inform UI warnings.
+   */
+  readonly meshQualityReport?: MeshQualityReport;
 }
 
 // ─── Modal analysis types ─────────────────────────────────────────────────────
@@ -274,4 +280,38 @@ export interface ModalAnalysisResult {
   readonly iterations:          number;
   readonly rigidBodyModeCount:  number;
   readonly modalMs:             number;          // wall-clock ms for eigensolver only
+}
+
+// ─── Mesh Quality Types ───────────────────────────────────────────────────────
+
+/**
+ * Quality severity: degenerate (J < 0), poor (J < 0.01 or AR > 20 or dihedral < 5°), normal.
+ */
+export type ElementQualitySeverity = "degenerate" | "poor" | "normal";
+
+/**
+ * Per-element quality metrics.
+ */
+export interface ElementQualityMetrics {
+  readonly elementIdx:       number;
+  readonly jacobianMin:      number;        // minimum determinant (J_min)
+  readonly aspectRatio:      number;        // longest edge / shortest altitude
+  readonly minDihedralDeg:   number;        // minimum dihedral angle in degrees
+  readonly severity:         ElementQualitySeverity;
+}
+
+/**
+ * Aggregated mesh quality report.
+ * Computed before assembly; attached to SolverResult.
+ */
+export interface MeshQualityReport {
+  readonly totalElements:           number;
+  readonly degenerateCount:         number;   // J_min < 0 (inverted)
+  readonly poorQualityCount:        number;   // J_min < 0.01 or AR > 20 or dihedral < 5°
+  readonly normalCount:             number;
+  readonly qualityScore:            number;   // [0, 1] where 1 = all elements perfect
+  readonly worstJacobianMin:        number;
+  readonly worstAspectRatio:        number;
+  readonly worstMinDihedralDeg:     number;
+  readonly worstElement:            ElementQualityMetrics | null;
 }

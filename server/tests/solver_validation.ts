@@ -749,8 +749,97 @@ console.log("\n[14] Zienkiewicz-Zhu error estimator (coarse vs fine mesh)");
   }
 }
 
-})();  // End async IIFE
+// ── Test group 15: Mesh quality checking ──────────────────────────────────────
+console.log("\n[15] Mesh quality metrics and degenerate element detection");
+{
+  const { computeMeshQuality } = await import("../solver/meshQuality.js");
 
+  // Good mesh: regular box
+  const goodMesh = generateBoxMesh(0, 0, 0, 10, 10, 10, 3, 3, 3);
+  const goodQuality = computeMeshQuality(goodMesh);
+  test("[15.1] Good mesh has zero degenerate elements", goodQuality.degenerateCount === 0,
+    `got ${goodQuality.degenerateCount}`);
+  test("[15.2] Good mesh quality score > 0.8", goodQuality.qualityScore > 0.8,
+    `got ${goodQuality.qualityScore.toFixed(3)}`);
+  test("[15.3] Good mesh positive Jacobian", goodQuality.worstJacobianMin > 0,
+    `got ${goodQuality.worstJacobianMin.toFixed(6)}`);
+
+  // Skewed mesh: manually create nodes with bad aspect ratio
+  const skewedMesh = {
+    nodeCount: 4,
+    elementCount: 1,
+    nodesPerElem: 4,
+    nodes: new Float64Array([
+      0, 0, 0,   // node 0
+      10, 0, 0,  // node 1
+      5, 0.1, 0, // node 2 (very close to edge 0-1, creates high aspect ratio)
+      5, 5, 5,   // node 3
+    ]),
+    elements: new Int32Array([0, 1, 2, 3]),
+  };
+  const skewedQuality = computeMeshQuality(skewedMesh);
+  test("[15.4] Skewed mesh detected as poor quality",
+    skewedQuality.poorQualityCount > 0 || skewedQuality.worstAspectRatio > 10,
+    `degenerates=${skewedQuality.degenerateCount}, poor=${skewedQuality.poorQualityCount}, AR=${skewedQuality.worstAspectRatio.toFixed(1)}`);
+
+  // Inverted mesh: nodes in wrong order (negative Jacobian)
+  const invertedMesh = {
+    nodeCount: 4,
+    elementCount: 1,
+    nodesPerElem: 4,
+    nodes: new Float64Array([
+      0, 0, 0,
+      10, 0, 0,
+      5, 5, 0,
+      5, 5, 5,
+    ]),
+    elements: new Int32Array([0, 2, 1, 3]), // Inverted node order
+  };
+  const invertedQuality = computeMeshQuality(invertedMesh);
+  test("[15.5] Inverted mesh detected as degenerate or poor",
+    invertedQuality.degenerateCount > 0 || invertedQuality.worstJacobianMin < 0.01,
+    `jacobian=${invertedQuality.worstJacobianMin.toFixed(6)}`);
+
+  // Solver should throw on >5% degenerate elements
+  const allInvertedMesh = generateBoxMesh(0, 0, 0, 10, 10, 10, 2, 2, 2);
+  // Corrupt all elements to have inverted node order
+  for (let e = 0; e < allInvertedMesh.elementCount; e++) {
+    const idx = e * 4;
+    const tmp = allInvertedMesh.elements[idx + 1];
+    const val2 = allInvertedMesh.elements[idx + 2];
+    if (tmp !== undefined && val2 !== undefined) {
+      allInvertedMesh.elements[idx + 1] = val2;
+      allInvertedMesh.elements[idx + 2] = tmp;
+    }
+  }
+
+  const mat = { E: 3500, nu: 0.36, yieldStrength: 50, label: "pla" };
+  const bottom: number[] = [], top: number[] = [];
+  for (let n = 0; n < allInvertedMesh.nodeCount; n++) {
+    const z = allInvertedMesh.nodes[n * 3 + 2] ?? 0;
+    if (z < 0.01) bottom.push(n);
+    if (z > 9.99) top.push(n);
+  }
+
+  let solverThrew = false;
+  let errorMsg = "";
+  try {
+    await runLinearStatic({
+      mesh: allInvertedMesh,
+      material: mat,
+      constraints: [{ nodeIndices: bottom }],
+      forces: top.map(n => ({ nodeIndex: n, forceN: [0, 0, 1] })),
+    });
+  } catch (e) {
+    solverThrew = true;
+    errorMsg = (e as Error).message || String(e);
+  }
+
+  test("[15.6] Solver throws on >5% degenerate elements", solverThrew && errorMsg.includes("Mesh quality"),
+    `threw=${solverThrew}, msg='${errorMsg.slice(0, 50)}'`);
+}
+
+})();  // End async IIFE
 // ── Summary ───────────────────────────────────────────────────────────────────
 // Deferred via setTimeout(0) so it runs as a macrotask AFTER every top-level
 // await (groups 6–8 use `await import`) has settled — and after any future
