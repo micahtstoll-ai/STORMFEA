@@ -4714,9 +4714,10 @@ async function runAnalysis() {
     document.getElementById('print-date').textContent = new Date().toLocaleDateString(
       'en-US', {year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
 
-    // Show element order badge or checking badge
-    const meshOrder = +(document.getElementById('s-mesh-order')?.value ?? 2);
-    if (meshOrder === 2 && S.fileData?.fileType === 'step') {
+    // Show element order badge or checking badge.
+    // Check actual nodesPerElem from server response — not the UI selector —
+    // so the badge reflects the mesh that ran, not what was requested.
+    if (dataStd.summary.nodesPerElem === 10) {
       showConvergenceBadge('c3d10', 0, dataStd.summary.nodeCount, 0);
       S._convergenceData = {
         standard: { nodes: dataStd.summary.nodeCount, maxVM: dataStd.summary.maxVonMisesMPa, sf: dataStd.summary.safetyFactor },
@@ -4786,8 +4787,8 @@ async function runAnalysis() {
   // Skip for C3D10 (quadratic elements are already accurate — no shear locking)
   // Skip if SF > 3.0 (clearly safe)
   const stdSF = dataStd.summary.safetyFactor;
-  const isCurr = +(document.getElementById('s-mesh-order')?.value ?? 2);
-  if (isCurr === 2) {
+  // Check actual nodesPerElem from the standard-run response, not the selector.
+  if (dataStd.summary.nodesPerElem === 10) {
     // C3D10 already converged — no auto-upgrade needed
     return;
   }
