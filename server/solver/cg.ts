@@ -94,7 +94,7 @@ function axpby(alpha: number, x: Float64Array, beta: number, y: Float64Array): F
 
 // ─── IC(0) incomplete Cholesky factorization ─────────────────────────────────
 
-interface IC0Factor {
+export interface IC0Factor {
   readonly Ldata:   Float64Array;
   readonly LcolIdx: Int32Array;
   readonly LrowPtr: Int32Array;
@@ -113,7 +113,7 @@ interface IC0Factor {
  * @throws Error with message containing "IC0_NONPOSDEF" if a negative or
  *         near-zero pivot is encountered (system not SPD).
  */
-function buildIC0(K: CSRMatrix, diagIdx: Int32Array): IC0Factor {
+export function buildIC0(K: CSRMatrix, diagIdx: Int32Array): IC0Factor {
   const n = K.n;
   // Copy K.data — we modify Ldata in-place while computing the factorization.
   const Ldata   = K.data.slice();
@@ -188,7 +188,7 @@ function buildIC0(K: CSRMatrix, diagIdx: Int32Array): IC0Factor {
  * L is lower-triangular in CSR format (same sparsity as lower triangle of K).
  * Result is written into x in-place.
  */
-function forwardSolve(
+export function forwardSolve(
   Ldata:   Float64Array,
   LcolIdx: Int32Array,
   LrowPtr: Int32Array,
@@ -214,7 +214,7 @@ function forwardSolve(
  * Uses scatter approach: initializes x = b, then processes rows in reverse,
  * scattering contributions to already-computed x values.
  */
-function backwardSolve(
+export function backwardSolve(
   Ldata:   Float64Array,
   LcolIdx: Int32Array,
   LrowPtr: Int32Array,
