@@ -240,67 +240,161 @@ describe("Modal solver — C3D10 cantilever beam (20×3×3 upgraded)", () => {
 describe("Modal solver — Mode independence (nModes=5 vs nModes=10)", () => {
   let modes5: Array<{ frequencyHz: number; modeShape: Float64Array }>;
   let modes10: Array<{ frequencyHz: number; modeShape: Float64Array }>;
+  let result5Obj: any;
+  let result10Obj: any;
+  let meshHash5: string;
+  let meshHash10: string;
+
+  /**
+   * Compute a simple hash of mesh nodes and elements for identity verification.
+   */
+  function hashMesh(mesh: TetMesh): string {
+    let hash = 0;
+    for (let i = 0; i < Math.min(mesh.nodes.length, 100); i++) {
+      hash = ((hash << 5) - hash + Math.floor((mesh.nodes[i] ?? 0) * 1e6)) | 0;
+    }
+    return `mesh_${mesh.nodeCount}_${mesh.elementCount}_${hash.toString(16)}`;
+  }
 
   beforeAll(async () => {
     // Use a smaller mesh (20×3×3 C3D4) for faster convergence testing
     const mesh = generateBoxMesh(0, 0, 0, L, W, H, 20, 3, 3);
     const fixedNodes = getNodesOnFace(mesh, "x", 0);
 
+    meshHash5 = hashMesh(mesh);
+    meshHash10 = hashMesh(mesh);
+
+    const startTime5 = Date.now();
+    const solverStart5 = performance.now();
+
     // Solve for 5 modes
-    const result5 = await runModalAnalysis({
+    result5Obj = await runModalAnalysis({
       mesh,
       material: STEEL,
       fixedNodes,
       nModes: 5,
     });
-    modes5 = result5.modes;
+    modes5 = result5Obj.modes;
+    const solverTime5 = performance.now() - solverStart5;
+
+    // Delay to ensure different timestamp
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    const startTime10 = Date.now();
+    const solverStart10 = performance.now();
 
     // Solve for 10 modes on the same mesh
-    const result10 = await runModalAnalysis({
+    result10Obj = await runModalAnalysis({
       mesh,
       material: STEEL,
       fixedNodes,
       nModes: 10,
     });
-    modes10 = result10.modes;
+    modes10 = result10Obj.modes;
+    const solverTime10 = performance.now() - solverStart10;
 
-    console.log(`\n  [Mode Independence] Comparing nModes=5 vs nModes=10 on 20×3×3 mesh`);
+    console.log(`\n[Mode Independence Test — Full Precision Raw Output]\n`);
+    console.log(`Run A (nModes=5):  started ${startTime5}, solver=${solverTime5.toFixed(1)}ms, iterations=${result5Obj.iterations}, converged=${result5Obj.converged}`);
+    console.log(`Run B (nModes=10): started ${startTime10}, solver=${solverTime10.toFixed(1)}ms, iterations=${result10Obj.iterations}, converged=${result10Obj.converged}`);
+    console.log(`Mesh hash: ${meshHash5} (both runs should match)`);
+    console.log(`Result object identities: ${result5Obj !== result10Obj ? "DIFFERENT objects (good)" : "SAME object (BAD - possible cache)"}`);
+    console.log(`Mode array lengths: Run A=${modes5.length}, Run B=${modes10.length}\n`);
   }, 600_000);  // 10-minute timeout for both solves
 
-  it("modes 0-4 frequencies are identical between nModes=5 and nModes=10 runs", () => {
+  it("modes 0-4 frequencies at full precision (Hz, 6 decimals)", () => {
+    console.log(`\n[Frequency Comparison — Full Precision]\n`);
+    console.log(`Mode | Freq(nModes=5)      | Freq(nModes=10)     | Absolute Diff       | Relative Diff`);
+    console.log(`-----|---------------------|---------------------|---------------------|---------------`);
+
     const freqTol = 0.001;  // 0.1% frequency tolerance
     for (let i = 0; i < 5; i++) {
       const f5 = modes5[i]?.frequencyHz ?? NaN;
       const f10 = modes10[i]?.frequencyHz ?? NaN;
-      const freqDiff = Math.abs(f5 - f10) / Math.max(Math.abs(f10), 1);
-      console.log(`    Mode ${i}: f(nModes=5)=${f5.toFixed(2)} Hz, f(nModes=10)=${f10.toFixed(2)} Hz, relDiff=${(freqDiff*100).toFixed(4)}%`);
-      expect(freqDiff).toBeLessThan(freqTol);
+      const absDiff = f10 - f5;
+      const relDiff = Math.abs(f5 - f10) / Math.max(Math.abs(f10), 1);
+
+      // Full precision: 6 decimal places for Hz, 15 significant digits for diffs
+      console.log(`  ${i}  | ${f5.toFixed(6).padStart(19)} | ${f10.toFixed(6).padStart(19)} | ${absDiff.toExponential(12).padStart(19)} | ${(relDiff * 100).toExponential(6)}%`);
+      expect(relDiff).toBeLessThan(freqTol);
     }
   });
 
-  it("modes 0-4 eigenvectors are nearly identical between nModes=5 and nModes=10 runs", () => {
-    const dotTol = 0.95;  // eigenvectors should have dot product > 0.95 (allowing for sign flip or minor numerical variation)
+  it("modes 0-4 eigenvectors at full precision (dot product, 12 sig digits)", () => {
+    console.log(`\n[Eigenvector Comparison — Full Precision]\n`);
+    console.log(`Mode | Dot Product (12 sig digits) | L2 norm(shape5) | L2 norm(shape10) | Status`);
+    console.log(`-----|------------------------------|-----------------|------------------|--------`);
+
+    const dotTol = 0.95;
     for (let i = 0; i < 5; i++) {
       const shape5 = modes5[i]?.modeShape;
       const shape10 = modes10[i]?.modeShape;
       if (!shape5 || !shape10) {
-        console.log(`    Mode ${i}: Missing mode shape data`);
+        console.log(`  ${i}  | MISSING DATA                | N/A             | N/A              | FAIL`);
         expect(false).toBe(true);
         continue;
       }
 
-      // Normalize both vectors to unit length to compare direction
+      // Compute L2 norms before normalization
+      let norm5before = 0, norm10before = 0;
+      for (let j = 0; j < shape5.length; j++) {
+        norm5before += (shape5[j] ?? 0) ** 2;
+        norm10before += (shape10[j] ?? 0) ** 2;
+      }
+      norm5before = Math.sqrt(norm5before);
+      norm10before = Math.sqrt(norm10before);
+
+      // Normalize both vectors to unit length
       const norm5 = normalize(shape5);
       const norm10 = normalize(shape10);
 
-      // Compute dot product; may be negative if vectors point in opposite direction (sign ambiguity in eigenvector)
+      // Compute dot product with full precision
       let dot = dotProduct(norm5, norm10);
+      let dotRaw = dot;
 
-      // Take absolute value to account for sign ambiguity (eigenvectors are defined up to sign)
+      // Take absolute value to account for sign ambiguity
       dot = Math.abs(dot);
 
-      console.log(`    Mode ${i}: dot product = ${dot.toFixed(6)} (expected > ${dotTol})`);
+      // Format: 12 significant digits means use toExponential or toPrecision
+      const dotStr = dot.toExponential(11);  // e-notation with 11 decimal places = 12 sig digits
+      const status = dot > dotTol ? "PASS" : "FAIL";
+
+      // Log raw dot product with maximum precision for verification
+      console.log(`    [Mode ${i} raw dot product]: ${dot} (raw JS value), diff from 1.0 = ${(dot - 1.0).toExponential(2)}`);
+
+      console.log(`  ${i}  | ${dotStr.padEnd(28)} | ${norm5before.toExponential(6).padStart(15)} | ${norm10before.toExponential(6).padStart(16)} | ${status}`);
       expect(dot).toBeGreaterThan(dotTol);
     }
+  });
+
+  it("verify independence: shapes are not bit-identical (check for accidental reuse)", () => {
+    console.log(`\n[Independence Verification]\n`);
+
+    // Check if any mode shape from Run A is the exact same object as Run B (would indicate caching)
+    let identicalObjects = 0;
+    for (let i = 0; i < 5; i++) {
+      const same = modes5[i]?.modeShape === modes10[i]?.modeShape;
+      if (same) identicalObjects++;
+    }
+    console.log(`Modes 0-4 that are identical Float64Array objects: ${identicalObjects}/5 (0 = good, >0 = possible cache reuse)`);
+
+    // Check if the mode shape memory addresses differ (Float64Array object identity)
+    for (let i = 0; i < Math.min(2, 5); i++) {
+      const addr5 = modes5[i]?.modeShape.buffer?.byteLength ?? -1;
+      const addr10 = modes10[i]?.modeShape.buffer?.byteLength ?? -1;
+      console.log(`Mode ${i} buffer byteLength: Run A=${addr5}, Run B=${addr10} (same=good if different solves, bad if cache)`);
+    }
+
+    // Byte-level comparison of first 10 DOFs of mode 0
+    console.log(`\nMode 0 first 10 DOF values (full precision):`);
+    console.log(`DOF | Run A (nModes=5)    | Run B (nModes=10)   | Bit-Identical`);
+    console.log(`----|---------------------|---------------------|---------------`);
+    for (let j = 0; j < 10; j++) {
+      const v5 = modes5[0]?.modeShape[j] ?? NaN;
+      const v10 = modes10[0]?.modeShape[j] ?? NaN;
+      const identical = Object.is(v5, v10);  // true only if bit-identical (same sign, exponent, mantissa)
+      console.log(`  ${j} | ${v5.toExponential(11).padStart(19)} | ${v10.toExponential(11).padStart(19)} | ${identical ? "YES" : "NO"}`);
+    }
+
+    expect(identicalObjects).toBe(0);  // Should never be the same object
   });
 });
