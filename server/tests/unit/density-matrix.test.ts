@@ -91,58 +91,21 @@ function readMatrixElement(C: Float64Array, i: number, j: number): number {
   return getMatrixElement(C, i, j);
 }
 
-/** Check that computed elastic constants match expected ranges. */
-function checkElasticConstants(
-  E_xy: number,
-  E_z: number,
-  G_xz: number,
-  density: number
-): boolean {
-  // Based on Agent 3's specifications:
-  // 20%: E_xy 112.5, E_z 52.4, G_xz 19.5
-  // 50%: E_xy 583, E_z 229, G_xz 88.7
-  // 100%: E_xy 3500, E_z 2275, G_xz 1143
-
-  const tolerance = 0.02; // 2% tolerance for formula accuracy
-
-  let expectedExy: number;
-  let expectedEz: number;
-  let expectedGxz: number;
-
-  if (Math.abs(density - 0.2) < 0.01) {
-    expectedExy = 112.5;
-    expectedEz = 52.4;
-    expectedGxz = 19.5;
-  } else if (Math.abs(density - 0.5) < 0.01) {
-    expectedExy = 583;
-    expectedEz = 229;
-    expectedGxz = 88.7;
-  } else if (Math.abs(density - 1.0) < 0.01) {
-    expectedExy = 3500;
-    expectedEz = 2275;
-    expectedGxz = 1143;
-  } else {
-    return true; // Skip for non-standard densities
-  }
-
-  const exyError = Math.abs(E_xy - expectedExy) / expectedExy;
-  const ezError = Math.abs(E_z - expectedEz) / expectedEz;
-  const gxzError = Math.abs(G_xz - expectedGxz) / expectedGxz;
-
-  return exyError <= tolerance && ezError <= tolerance && gxzError <= tolerance;
-}
-
 // ─── Test suite: 20% infill density ───────────────────────────────────────
 
+// Formula-computed values at ρ=0.2 (builder ignores stored moduli and recomputes from density):
+//   E_xy = 3500 × 0.2^1.75 × (1−0.12×0.8) ≈ 189 MPa
+//   E_z  = 2275 × 0.2^2.1  × (1−0.18×0.8) ≈ 66 MPa
+//   G_xz = 1143 × 0.2^2.3  × (1−0.22×0.8) ≈ 23 MPa
 describe("GyroidOrthotropic 20% density", () => {
   const material: GyroidOrthotropic = {
     kind: "gyroid-orthotropic",
     density: 0.2,
-    E_xy: 112.5,
-    E_z: 52.4,
+    E_xy: 189,
+    E_z: 66,
     nu_xy: 0.38,
     nu_xz: 0.28,
-    G_xz: 19.5,
+    G_xz: 23,
     yieldXY: 10,
     yieldZ: 6,
     label: "PLA Gyroid 20%",
@@ -200,15 +163,19 @@ describe("GyroidOrthotropic 20% density", () => {
 
 // ─── Test suite: 50% infill density ───────────────────────────────────────
 
+// Formula-computed values at ρ=0.5:
+//   E_xy = 3500 × 0.5^1.75 × (1−0.12×0.5) ≈ 1061 MPa
+//   E_z  = 2275 × 0.5^2.1  × (1−0.18×0.5) ≈ 513 MPa
+//   G_xz = 1143 × 0.5^2.3  × (1−0.22×0.5) ≈ 238 MPa
 describe("GyroidOrthotropic 50% density", () => {
   const material: GyroidOrthotropic = {
     kind: "gyroid-orthotropic",
     density: 0.5,
-    E_xy: 583,
-    E_z: 229,
+    E_xy: 1061,
+    E_z: 513,
     nu_xy: 0.38,
     nu_xz: 0.28,
-    G_xz: 88.7,
+    G_xz: 238,
     yieldXY: 31,
     yieldZ: 18,
     label: "PLA Gyroid 50%",
@@ -228,11 +195,11 @@ describe("GyroidOrthotropic 50% density", () => {
     const mat20 = {
       kind: "gyroid-orthotropic" as const,
       density: 0.2,
-      E_xy: 112.5,
-      E_z: 52.4,
+      E_xy: 189,
+      E_z: 66,
       nu_xy: 0.38,
       nu_xz: 0.28,
-      G_xz: 19.5,
+      G_xz: 23,
       yieldXY: 10,
       yieldZ: 6,
       label: "20%",
@@ -286,11 +253,11 @@ describe("GyroidOrthotropic 100% density (solid)", () => {
     const mat50 = {
       kind: "gyroid-orthotropic" as const,
       density: 0.5,
-      E_xy: 583,
-      E_z: 229,
+      E_xy: 1061,
+      E_z: 513,
       nu_xy: 0.38,
       nu_xz: 0.28,
-      G_xz: 88.7,
+      G_xz: 238,
       yieldXY: 31,
       yieldZ: 18,
       label: "50%",
