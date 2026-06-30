@@ -1386,7 +1386,16 @@ async function checkMeshingBinaries(): Promise<void> {
     console.log(`    ✗ TetGen  — NOT FOUND (looked for '${tet.path}')`);
     console.log(`              STL analysis will fall back to a solid box mesh —`);
     console.log(`              holes & stress concentrations will NOT be modelled.`);
-    console.log(`              Put the tetgen binary next to the server or on PATH.`);
+    console.log(`              To install TetGen:`);
+    if (process.platform === "win32") {
+      console.log(`              Windows: Download tetgen.exe from`);
+      console.log(`              https://github.com/emersonkeenan/tetgen1.5.1-beta1/releases`);
+      console.log(`              then rename to tetgen.exe and place in this directory.`);
+    } else if (process.platform === "darwin") {
+      console.log(`              macOS: brew install tetgen`);
+    } else {
+      console.log(`              Linux: apt-get install tetgen`);
+    }
   }
   if (gm.found) {
     console.log(`    ✓ Gmsh    — found${gm.version ? ` (${gm.version})` : ""} (${gm.path})`);
