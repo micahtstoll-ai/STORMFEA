@@ -237,7 +237,7 @@ app.post("/api/analyse", async (req, res) => {
       timeoutPromise,
     ]);
 
-    console.log(`[analyse] done in ${result.solverMs}ms: maxVM=${result.maxVonMisesMPa.toFixed(2)}MPa SF=${result.safetyFactor.toFixed(2)} converged=${result.converged}`);
+    console.log(`[analyse] done in ${result.solverMs}ms: maxVM=${result.maxVonMisesMPa.toFixed(2)}MPa SF=${result.safetyFactor !== null ? result.safetyFactor.toFixed(2) : '(unavailable)'} converged=${result.converged}`);
 
     // Send back summary + per-vertex stress and displacement as base64
     res.json({
@@ -245,7 +245,7 @@ app.post("/api/analyse", async (req, res) => {
         maxVonMisesMPa:       +result.maxVonMisesMPa.toFixed(4),
         maxDisplacementMm:    +result.maxDisplacementMm.toFixed(6),
         effectiveYieldMPa:    +result.effectiveYieldMPa.toFixed(2),
-        safetyFactor:         +result.safetyFactor.toFixed(3),
+        safetyFactor:         result.safetyFactor !== null ? +result.safetyFactor.toFixed(3) : null,
         safetyfactorLow:      result.safetyfactorLow,
         safetyFactorHigh:     result.safetyFactorHigh,
         estimatedFailForce:   +result.estimatedFailForce.toFixed(1),
@@ -1386,7 +1386,16 @@ async function checkMeshingBinaries(): Promise<void> {
     console.log(`    ✗ TetGen  — NOT FOUND (looked for '${tet.path}')`);
     console.log(`              STL analysis will fall back to a solid box mesh —`);
     console.log(`              holes & stress concentrations will NOT be modelled.`);
-    console.log(`              Put the tetgen binary next to the server or on PATH.`);
+    console.log(`              To install TetGen:`);
+    if (process.platform === "win32") {
+      console.log(`              Windows: Download tetgen.exe from`);
+      console.log(`              https://github.com/emersonkeenan/tetgen1.5.1-beta1/releases`);
+      console.log(`              then rename to tetgen.exe and place in this directory.`);
+    } else if (process.platform === "darwin") {
+      console.log(`              macOS: brew install tetgen`);
+    } else {
+      console.log(`              Linux: apt-get install tetgen`);
+    }
   }
   if (gm.found) {
     console.log(`    ✓ Gmsh    — found${gm.version ? ` (${gm.version})` : ""} (${gm.path})`);
