@@ -237,7 +237,7 @@ app.post("/api/analyse", async (req, res) => {
       timeoutPromise,
     ]);
 
-    console.log(`[analyse] done in ${result.solverMs}ms: maxVM=${result.maxVonMisesMPa.toFixed(2)}MPa SF=${result.safetyFactor.toFixed(2)} converged=${result.converged}`);
+    console.log(`[analyse] done in ${result.solverMs}ms: maxVM=${result.maxVonMisesMPa.toFixed(2)}MPa SF=${result.safetyFactor !== null ? result.safetyFactor.toFixed(2) : '(unavailable)'} converged=${result.converged}`);
 
     // Send back summary + per-vertex stress and displacement as base64
     res.json({
@@ -245,7 +245,7 @@ app.post("/api/analyse", async (req, res) => {
         maxVonMisesMPa:       +result.maxVonMisesMPa.toFixed(4),
         maxDisplacementMm:    +result.maxDisplacementMm.toFixed(6),
         effectiveYieldMPa:    +result.effectiveYieldMPa.toFixed(2),
-        safetyFactor:         +result.safetyFactor.toFixed(3),
+        safetyFactor:         result.safetyFactor !== null ? +result.safetyFactor.toFixed(3) : null,
         safetyfactorLow:      result.safetyfactorLow,
         safetyFactorHigh:     result.safetyFactorHigh,
         estimatedFailForce:   +result.estimatedFailForce.toFixed(1),
