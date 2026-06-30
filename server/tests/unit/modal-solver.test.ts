@@ -121,6 +121,32 @@ function firstBendingFrequency(modes: Array<{ frequencyHz: number }>): number {
   );
 }
 
+// ─── Eigenvector comparison ───────────────────────────────────────────────────
+
+/**
+ * Compute dot product of two mode shapes (eigenvectors).
+ * Both are Float64Array of length n (DOF count).
+ */
+function dotProduct(a: Float64Array, b: Float64Array): number {
+  if (a.length !== b.length) throw new Error(`Shape mismatch: ${a.length} vs ${b.length}`);
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) sum += (a[i] ?? 0) * (b[i] ?? 0);
+  return sum;
+}
+
+/**
+ * Normalize a vector to unit length (L2 norm).
+ */
+function normalize(v: Float64Array): Float64Array {
+  let norm = 0;
+  for (let i = 0; i < v.length; i++) norm += (v[i] ?? 0) ** 2;
+  norm = Math.sqrt(norm);
+  if (norm < 1e-14) return v; // avoid division by zero
+  const normalized = new Float64Array(v.length);
+  for (let i = 0; i < v.length; i++) normalized[i] = (v[i] ?? 0) / norm;
+  return normalized;
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("Analytical reference value checks", () => {
@@ -163,6 +189,8 @@ describe("Modal solver — C3D4 cantilever beam (40×5×5)", () => {
 
   it("first bending frequency is within 5% of Euler-Bernoulli (f₁ ≈ 835.5 Hz)", () => {
     const error = Math.abs(f1_fem - f1_ref) / f1_ref;
+    const errorPct = (error * 100).toFixed(2);
+    console.log(`\n  [C3D4 40×5×5] f₁_computed = ${f1_fem.toFixed(2)} Hz, f₁_analytical = ${f1_ref.toFixed(2)} Hz, error = ${errorPct}%`);
     expect(error).toBeLessThanOrEqual(0.05);
   });
 
@@ -199,10 +227,80 @@ describe("Modal solver — C3D10 cantilever beam (20×3×3 upgraded)", () => {
 
   it("first bending frequency is within 2% of Euler-Bernoulli (f₁ ≈ 835.5 Hz)", () => {
     const error = Math.abs(f1_fem_c3d10 - f1_ref) / f1_ref;
+    const errorPct = (error * 100).toFixed(2);
+    console.log(`\n  [C3D10 20×3×3] f₁_computed = ${f1_fem_c3d10.toFixed(2)} Hz, f₁_analytical = ${f1_ref.toFixed(2)} Hz, error = ${errorPct}%`);
     expect(error).toBeLessThanOrEqual(0.02);
   });
 
   it("first bending frequency is above 10 Hz", () => {
     expect(f1_fem_c3d10).toBeGreaterThan(10);
+  });
+});
+
+describe("Modal solver — Mode independence (nModes=5 vs nModes=10)", () => {
+  let modes5: Array<{ frequencyHz: number; modeShape: Float64Array }>;
+  let modes10: Array<{ frequencyHz: number; modeShape: Float64Array }>;
+
+  beforeAll(async () => {
+    // Use a smaller mesh (20×3×3 C3D4) for faster convergence testing
+    const mesh = generateBoxMesh(0, 0, 0, L, W, H, 20, 3, 3);
+    const fixedNodes = getNodesOnFace(mesh, "x", 0);
+
+    // Solve for 5 modes
+    const result5 = await runModalAnalysis({
+      mesh,
+      material: STEEL,
+      fixedNodes,
+      nModes: 5,
+    });
+    modes5 = result5.modes;
+
+    // Solve for 10 modes on the same mesh
+    const result10 = await runModalAnalysis({
+      mesh,
+      material: STEEL,
+      fixedNodes,
+      nModes: 10,
+    });
+    modes10 = result10.modes;
+
+    console.log(`\n  [Mode Independence] Comparing nModes=5 vs nModes=10 on 20×3×3 mesh`);
+  }, 600_000);  // 10-minute timeout for both solves
+
+  it("modes 0-4 frequencies are identical between nModes=5 and nModes=10 runs", () => {
+    const freqTol = 0.001;  // 0.1% frequency tolerance
+    for (let i = 0; i < 5; i++) {
+      const f5 = modes5[i]?.frequencyHz ?? NaN;
+      const f10 = modes10[i]?.frequencyHz ?? NaN;
+      const freqDiff = Math.abs(f5 - f10) / Math.max(Math.abs(f10), 1);
+      console.log(`    Mode ${i}: f(nModes=5)=${f5.toFixed(2)} Hz, f(nModes=10)=${f10.toFixed(2)} Hz, relDiff=${(freqDiff*100).toFixed(4)}%`);
+      expect(freqDiff).toBeLessThan(freqTol);
+    }
+  });
+
+  it("modes 0-4 eigenvectors are nearly identical between nModes=5 and nModes=10 runs", () => {
+    const dotTol = 0.95;  // eigenvectors should have dot product > 0.95 (allowing for sign flip or minor numerical variation)
+    for (let i = 0; i < 5; i++) {
+      const shape5 = modes5[i]?.modeShape;
+      const shape10 = modes10[i]?.modeShape;
+      if (!shape5 || !shape10) {
+        console.log(`    Mode ${i}: Missing mode shape data`);
+        expect(false).toBe(true);
+        continue;
+      }
+
+      // Normalize both vectors to unit length to compare direction
+      const norm5 = normalize(shape5);
+      const norm10 = normalize(shape10);
+
+      // Compute dot product; may be negative if vectors point in opposite direction (sign ambiguity in eigenvector)
+      let dot = dotProduct(norm5, norm10);
+
+      // Take absolute value to account for sign ambiguity (eigenvectors are defined up to sign)
+      dot = Math.abs(dot);
+
+      console.log(`    Mode ${i}: dot product = ${dot.toFixed(6)} (expected > ${dotTol})`);
+      expect(dot).toBeGreaterThan(dotTol);
+    }
   });
 });
