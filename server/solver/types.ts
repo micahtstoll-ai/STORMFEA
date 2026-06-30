@@ -62,7 +62,9 @@ export interface IsotropicMaterial {
  *   nu_xz — out-of-plane Poisson's ratio
  *   G_xz  — out-of-plane shear modulus (~35-45% of in-plane)
  *
- * In-plane shear modulus is derived: G_xy = E_xy / (2 × (1 + nu_xy))
+ * In-plane shear modulus G_xy: when G_xy is explicitly set (e.g. from CLT 1/A₆₆
+ * inversion), that value is used. When absent, the constitutive builder derives it
+ * as G_xy = E_xy / (2(1 + nu_xy)) — the isotropic approximation.
  *
  * Source: Ahn et al. 2002, Casavola et al. 2016, Rodriguez et al. 2001.
  */
@@ -73,6 +75,8 @@ export interface OrthotropicMaterial {
   readonly nu_xy:         number;   // in-plane Poisson's ratio
   readonly nu_xz:         number;   // out-of-plane Poisson's ratio
   readonly G_xz:          number;   // MPa — out-of-plane shear modulus
+  /** When set, used as-is. When absent, derived as E_xy/(2(1+nu_xy)). */
+  readonly G_xy?:         number;   // MPa — in-plane shear (explicit or derived)
   /** Yield strength in XY (in-layer). Used for failure comparison. */
   readonly yieldXY:       number;   // MPa
   /** Yield strength in Z (inter-layer). ~50-60% of yieldXY for FDM. */
@@ -98,7 +102,10 @@ export interface OrthotropicMaterial {
  *   G_xy(ρ) = E_xy(ρ) / (2(1 + ν_xy))              [derived]
  *   ν_xy and ν_xz are constant across densities
  *
- * Reference: Birosz et al. (2022), Hikmat et al. (2023), Gibson-Ashby (1997).
+ * Gibson-Ashby (1997) lattice scaling: E ∝ ρ^n with n ∈ [1.5, 2.5] for open-cell solids.
+ * NOTE: The specific exponents (1.75, 2.1, 2.3) and linear correction factors (0.12, 0.18, 0.22)
+ * are NOT sourced to any cited paper. Birosz et al. (2022) is a qualitative infill pattern
+ * comparison and does not provide power-law density-modulus coefficients.
  */
 export interface GyroidOrthotropic {
   readonly kind:          "gyroid-orthotropic";

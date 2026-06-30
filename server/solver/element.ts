@@ -92,8 +92,8 @@ export function buildOrthotropicConstitutiveMatrix(mat: OrthotropicMaterial): Fl
   if (E_z  <= 0) throw new Error(`E_z must be > 0, got ${E_z}`);
   if (G_xz <= 0) throw new Error(`G_xz must be > 0, got ${G_xz}`);
 
-  // Derived quantities
-  const G_xy  = E_xy / (2 * (1 + nu_xy));   // in-plane shear modulus
+  // Use explicitly set G_xy (e.g. from CLT 1/A66) when available; fall back to isotropic approximation.
+  const G_xy = mat.G_xy ?? E_xy / (2 * (1 + nu_xy));
   const nu_zx = nu_xz * E_xy / E_z;          // reciprocal Poisson (Maxwell relation)
 
   // Check stability: denominator Δ must be > 0
@@ -191,7 +191,10 @@ export function buildOrthotropicConstitutiveMatrix(mat: OrthotropicMaterial): Fl
  *
  * The material is treated as orthotropic after density-scaling.
  *
- * Reference: Birosz et al. (2022), power-law lattice degradation.
+ * NOTE: The exponents (1.75, 2.1, 2.3) and linear correction factors are NOT traceable
+ * to Birosz et al. (2022) or any other cited paper. Birosz (2022) is a qualitative pattern
+ * comparison study, not a source of density-modulus power-law coefficients. These values
+ * are unverified empirical parameters; treat results with caution until a source is found.
  */
 export function buildGyroidConstitutiveMatrix(mat: GyroidOrthotropic): Float64Array {
   const { density, nu_xy, nu_xz, yieldXY, yieldZ, label } = mat;
@@ -200,8 +203,7 @@ export function buildGyroidConstitutiveMatrix(mat: GyroidOrthotropic): Float64Ar
     throw new Error(`Gyroid density must be in [0, 1.0], got ${density}`);
   }
 
-  // Power-law degradation formulas for PLA gyroid (based on empirical data)
-  // Exponents: E_xy^1.75, E_z^2.1, G_xz^2.3 with linear correction factors
+  // Power-law degradation — exponents and correction factors are unverified (no citable source).
   const rho = density;
   const one_minus_rho = 1 - rho;
 

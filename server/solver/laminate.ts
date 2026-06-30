@@ -206,6 +206,7 @@ export function buildLaminateCMatrix(
     nu_xy:   ip.nu_xy,
     nu_xz,
     G_xz,
+    G_xy:    ip.G_xy,   // CLT: 1/A66; more accurate than isotropic E_xy/(2(1+ν_xy))
     yieldXY,
     yieldZ,
     label,

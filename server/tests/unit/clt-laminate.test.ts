@@ -16,6 +16,7 @@
 import { describe, it, expect } from "vitest";
 import { buildLaminateCMatrix, DEFAULT_BEAD_PROPS } from "../../solver/laminate.js";
 import type { BeadProperties } from "../../solver/laminate.js";
+import { buildOrthotropicConstitutiveMatrix } from "../../solver/element.js";
 
 // PLA bead properties from Ahn et al. (2002) as used in DEFAULT_BEAD_PROPS
 const PLA = DEFAULT_BEAD_PROPS["pla"]!;
@@ -150,17 +151,15 @@ describe("CLT [0/90] balanced laminate", () => {
     expect(mat.nu_xy).toBeCloseTo(nu_xy_expected, 4);
   });
 
-  it("CLT G_xy (from A66) differs from G_xy derived via E_xy/(2(1+ν_xy))", () => {
-    // This test documents the known architectural gap in PR #52:
-    // buildLaminateCMatrix discards ip.G_xy and OrthotropicMaterial re-derives it.
-    // For [0/90] PLA: CLT gives G_xy = G12 = 1350 MPa, derived gives ~1168 MPa.
-    // The discrepancy is ~15.5% — real and reproducible.
-    expect(G_xy_CLT).not.toBeCloseTo(G_xy_derived, 0);  // they differ by >10 MPa
-    // CLT is higher (= G12), derived is lower
-    expect(G_xy_CLT).toBeGreaterThan(G_xy_derived);
-    // Document the magnitude
-    const pctErr = Math.abs(G_xy_CLT - G_xy_derived) / G_xy_CLT;
-    expect(pctErr).toBeGreaterThan(0.10);  // > 10% discrepancy
+  it("CLT G_xy (1/A66) is propagated to material and used in constitutive matrix", () => {
+    // Before the fix, buildLaminateCMatrix discarded ip.G_xy and the constitutive
+    // builder re-derived G_xy = E_xy/(2(1+ν_xy)) — a ~15.5% discrepancy for [0/90] PLA.
+    // After the fix, mat.G_xy carries the CLT value and C[21] reflects it.
+    expect(G_xy_CLT).not.toBeCloseTo(G_xy_derived, 0);  // discrepancy exists (unchanged physics)
+    expect(mat.G_xy).toBeCloseTo(G_xy_CLT, 1);          // CLT value propagated to field
+    expect(mat.G_xy).not.toBeCloseTo(G_xy_derived, 0);  // not the isotropic approximation
+    const C = buildOrthotropicConstitutiveMatrix(mat);
+    expect(C[21]).toBeCloseTo(G_xy_CLT, 1);             // C[3,3] = G_xy slot uses CLT value
   });
 });
 
@@ -209,10 +208,13 @@ describe("CLT [±45°] balanced laminate", () => {
     expect(mat.nu_xy).toBeLessThan(mat0_90.nu_xy);
   });
 
-  it("CLT G_xy (from A66) differs from derived G_xy for [±45°] laminate", () => {
-    // Confirms the architectural gap is present for ±45° layup too.
-    // G_xy(CLT) = A66, G_xy(derived) = E_xy/(2(1+ν_xy)) — different values.
-    expect(G_xy_CLT).not.toBeCloseTo(G_xy_derived, 0);
+  it("CLT G_xy (A66) is propagated to material and used in constitutive matrix for [±45°]", () => {
+    // For [±45°] PLA the gap between CLT G_xy and the isotropic approximation is large
+    // (A66 > E_xy/(2(1+ν_xy)) because shear coupling is dominant at 45°).
+    expect(G_xy_CLT).not.toBeCloseTo(G_xy_derived, 0);  // physical discrepancy remains
+    expect(mat.G_xy).toBeCloseTo(G_xy_CLT, 1);          // CLT value propagated
+    const C = buildOrthotropicConstitutiveMatrix(mat);
+    expect(C[21]).toBeCloseTo(G_xy_CLT, 1);             // C[21] = G_xy slot uses CLT value
   });
 });
 
