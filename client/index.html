@@ -1723,7 +1723,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
           </button>
         </div>
         <div style="font-family:'Outfit',system-ui,sans-serif;font-size:10px;color:var(--text-lo);margin-bottom:10px;line-height:1.6">
-          32 tests across 8 groups — patch test, cantilever beam, Hill 1948 criterion, SPR smoothing, C3D10 element properties, Kt calibration. Each validates against a known analytical solution.
+          67 tests across 8 groups — patch test, cantilever beam, Hill 1948 criterion, SPR smoothing, C3D10 element properties, Kt calibration. Each validates against a known analytical solution.
         </div>
         <div id="validation-summary" style="display:none;font-family:'DM Mono',monospace;font-size:10px;padding:6px 10px;border-radius:3px;margin-bottom:10px;border:1px solid var(--border)"></div>
         <div id="validation-groups"></div>
@@ -7108,7 +7108,7 @@ async function runSolverValidation() {
   summary.style.color   = 'var(--text-mid)';
   summary.style.background = 'var(--bg-card)';
   summary.style.borderColor = 'var(--border)';
-  summary.textContent   = 'Running 32 tests...';
+  summary.textContent   = 'Running 67 tests...';
   groups.innerHTML      = '';
 
   try {
