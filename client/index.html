@@ -527,6 +527,172 @@ body:not(.has-results) #btn-stress { display: none !important; }
 </head>
 <body>
 
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     LANDING SCREEN
+     Shown on app load. Hides app shell until a card is clicked.
+     State variable: _landingScreenActive (boolean, defined in <script> below)
+     ═══════════════════════════════════════════════════════════════════════════ -->
+<div id="landing-screen" style="
+  position:fixed;inset:0;z-index:9999;
+  background:var(--bg-base);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  overflow:hidden">
+
+  <!-- Wordmark -->
+  <div style="display:flex;flex-direction:column;align-items:center;margin-bottom:52px;gap:10px">
+
+    <!-- Compass mark (reuse exact SVG from header) -->
+    <svg width="52" height="52" viewBox="0 0 34 34" fill="none" aria-label="STORMFEA compass mark">
+      <circle cx="17" cy="17" r="15.5" fill="none" stroke="var(--gold)" stroke-width="1.1" opacity=".7"/>
+      <polygon points="17,2 20,17 17,14 14,17" fill="var(--gold)"/>
+      <polygon points="17,32 20,17 17,20 14,17" fill="var(--gold)" opacity=".5"/>
+      <polygon points="32,17 17,20 20,17 17,14" fill="var(--gold)" opacity=".5"/>
+      <polygon points="2,17  17,20 14,17 17,14" fill="var(--gold)" opacity=".5"/>
+      <line x1="28.5" y1="5.5"  x2="26"  y2="8"    stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
+      <line x1="5.5"  y1="5.5"  x2="8"   y2="8"    stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
+      <line x1="28.5" y1="28.5" x2="26"  y2="26"   stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
+      <line x1="5.5"  y1="28.5" x2="8"   y2="26"   stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
+      <circle cx="17" cy="17" r="2.5" fill="none" stroke="var(--gold)" stroke-width="1.1" opacity=".8"/>
+      <circle cx="17" cy="17" r="1"   fill="var(--gold)"/>
+    </svg>
+
+    <!-- Title block -->
+    <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+      <div style="font-family:'Outfit',sans-serif;font-size:10px;letter-spacing:.22em;color:var(--text-lo);text-transform:uppercase">Nordic Storm · FTC 5962</div>
+      <div style="font-family:'Rajdhani',sans-serif;font-size:42px;font-weight:700;letter-spacing:.10em;color:var(--gold);line-height:1">STORMFEA</div>
+      <div style="font-family:'DM Mono',monospace;font-size:9px;letter-spacing:.12em;color:var(--text-lo);text-transform:uppercase">FDM-Aware Finite Element Analysis</div>
+    </div>
+  </div>
+
+  <!-- Card rail -->
+  <div style="display:flex;flex-direction:column;gap:6px;width:320px">
+
+    <!-- 1: NEW ANALYSIS — fully wired -->
+    <button onclick="dismissLandingScreen(); switchTab('setup');"
+      style="display:flex;align-items:center;gap:14px;
+             padding:14px 18px;
+             background:var(--gold);border:none;border-radius:4px;
+             cursor:pointer;text-align:left;width:100%;
+             font-family:'Outfit',sans-serif">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#0a0806" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+        <line x1="8" y1="2" x2="8" y2="14"/>
+        <line x1="2" y1="8" x2="14" y2="8"/>
+      </svg>
+      <div>
+        <div style="font-size:13px;font-weight:700;letter-spacing:.06em;color:#0a0806;line-height:1.2">NEW ANALYSIS</div>
+        <div style="font-size:10px;color:#0a0806;opacity:.65;margin-top:3px;letter-spacing:.02em">Load a part and begin</div>
+      </div>
+    </button>
+
+    <!-- 2: RESUME SESSION — disabled -->
+    <!-- TODO: wire once session persistence layer exists -->
+    <div style="display:flex;align-items:center;gap:14px;
+                padding:14px 18px;
+                background:var(--bg-card);border:1px solid var(--border);border-radius:4px;
+                opacity:.45;cursor:default">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--text-lo)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+        <path d="M2 8a6 6 0 1 0 1-3.5"/>
+        <polyline points="2,2 2,6 6,6"/>
+      </svg>
+      <div>
+        <div style="font-size:13px;font-weight:700;letter-spacing:.06em;color:var(--text-mid);line-height:1.2">RESUME SESSION</div>
+        <div style="font-size:10px;color:var(--text-lo);margin-top:3px;letter-spacing:.02em">No active session</div>
+      </div>
+    </div>
+
+    <!-- 3: PAST EXPORTS — disabled -->
+    <!-- TODO: wire once session persistence layer exists -->
+    <div style="display:flex;align-items:center;gap:14px;
+                padding:14px 18px;
+                background:var(--bg-card);border:1px solid var(--border);border-radius:4px;
+                opacity:.45;cursor:default">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--text-lo)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+        <rect x="2" y="2" width="12" height="12" rx="2"/>
+        <line x1="8" y1="6" x2="8" y2="10"/>
+        <polyline points="5.5,8 8,10.5 10.5,8"/>
+      </svg>
+      <div>
+        <div style="font-size:13px;font-weight:700;letter-spacing:.06em;color:var(--text-mid);line-height:1.2">PAST EXPORTS</div>
+        <div style="font-size:10px;color:var(--text-lo);margin-top:3px;letter-spacing:.02em">No exports yet</div>
+      </div>
+    </div>
+
+    <!-- Divider -->
+    <div style="height:1px;background:var(--border);margin:4px 0;opacity:.6"></div>
+
+    <!-- 4: CALIBRATE — fully wired -->
+    <button onclick="dismissLandingScreen(); switchTab('calibrate');"
+      style="display:flex;align-items:center;gap:14px;
+             padding:12px 18px;
+             background:var(--bg-card);border:1px solid var(--border);border-radius:4px;
+             cursor:pointer;text-align:left;width:100%;
+             font-family:'Outfit',sans-serif;
+             transition:border-color var(--t-fast),background var(--t-fast)"
+      onmouseover="this.style.borderColor='var(--gold)';this.style.background='var(--gold-faint)'"
+      onmouseout="this.style.borderColor='var(--border)';this.style.background='var(--bg-card)'">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--gold)" stroke-width="1.4" stroke-linecap="round" style="flex-shrink:0">
+        <circle cx="8" cy="8" r="6"/>
+        <line x1="5" y1="5" x2="11" y2="11"/>
+        <line x1="11" y1="5" x2="5" y2="11"/>
+      </svg>
+      <div>
+        <div style="font-size:13px;font-weight:700;letter-spacing:.06em;color:var(--text-hi);line-height:1.2">CALIBRATE</div>
+        <div style="font-size:10px;color:var(--text-lo);margin-top:3px;letter-spacing:.02em">Material coupons &amp; measured profiles</div>
+      </div>
+    </button>
+
+    <!-- 5: SOURCES — fully wired -->
+    <button onclick="dismissLandingScreen(); if(!_sourcesRendered){renderSourcesTab();_sourcesRendered=true;} switchTab('sources');"
+      style="display:flex;align-items:center;gap:14px;
+             padding:12px 18px;
+             background:var(--bg-card);border:1px solid var(--border);border-radius:4px;
+             cursor:pointer;text-align:left;width:100%;
+             font-family:'Outfit',sans-serif;
+             transition:border-color var(--t-fast),background var(--t-fast)"
+      onmouseover="this.style.borderColor='var(--gold)';this.style.background='var(--gold-faint)'"
+      onmouseout="this.style.borderColor='var(--border)';this.style.background='var(--bg-card)'">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--gold)" stroke-width="1.4" stroke-linecap="round" style="flex-shrink:0">
+        <circle cx="8" cy="8" r="6"/>
+        <line x1="8" y1="4.5" x2="8" y2="11.5"/>
+        <line x1="4.5" y1="8" x2="11.5" y2="8"/>
+      </svg>
+      <div>
+        <div style="font-size:13px;font-weight:700;letter-spacing:.06em;color:var(--text-hi);line-height:1.2">SOURCES</div>
+        <div style="font-size:10px;color:var(--text-lo);margin-top:3px;letter-spacing:.02em">Peer-reviewed citations for every constant</div>
+      </div>
+    </button>
+
+    <!-- 6: PREFERENCES — fully wired -->
+    <button onclick="dismissLandingScreen(); togglePrefsPanel();"
+      style="display:flex;align-items:center;gap:14px;
+             padding:12px 18px;
+             background:var(--bg-card);border:1px solid var(--border);border-radius:4px;
+             cursor:pointer;text-align:left;width:100%;
+             font-family:'Outfit',sans-serif;
+             transition:border-color var(--t-fast),background var(--t-fast)"
+      onmouseover="this.style.borderColor='var(--gold)';this.style.background='var(--gold-faint)'"
+      onmouseout="this.style.borderColor='var(--border)';this.style.background='var(--bg-card)'">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--gold)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+        <polygon points="8,1.5 12.83,4.5 12.83,10.5 8,13.5 3.17,10.5 3.17,4.5"/>
+        <circle cx="8" cy="8" r="2.5"/>
+      </svg>
+      <div>
+        <div style="font-size:13px;font-weight:700;letter-spacing:.06em;color:var(--text-hi);line-height:1.2">PREFERENCES</div>
+        <div style="font-size:10px;color:var(--text-lo);margin-top:3px;letter-spacing:.02em">Theme, units, heatmap, and display</div>
+      </div>
+    </button>
+
+  </div><!-- end card rail -->
+
+  <!-- Footer -->
+  <div style="position:absolute;bottom:20px;font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);letter-spacing:.08em;opacity:.5">
+    STORMFEA · Nordic Storm FTC 5962 · St. Peter MN
+  </div>
+</div>
+
+<!-- APP SHELL — hidden until landing screen is dismissed -->
+<div id="app-shell" style="display:none;flex:1;display:none;flex-direction:column;height:100vh;overflow:hidden">
+
 <!-- PRINT HEADER (only visible when printing) -->
 <div class="print-page-header" style="margin-bottom:16px;padding-bottom:12px;border-bottom:2px solid var(--gold-dim)">
   <div style="display:flex;justify-content:space-between;align-items:flex-start">
@@ -583,8 +749,6 @@ body:not(.has-results) #btn-stress { display: none !important; }
     <div style="width:1px;background:var(--border);align-self:stretch;flex-shrink:0;margin:0 4px"></div>
     <!-- Utility tabs: smaller, receded -->
     <button class="tab-btn tab-util" data-tab="prefs"     onclick="switchTab('prefs')"><svg width="9" height="9" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/></svg> PREFS</button>
-    <button class="tab-btn tab-util" data-tab="calibrate" onclick="switchTab('calibrate')"><svg width="9" height="9" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="3" y1="3" x2="7" y2="7"/><line x1="7" y1="3" x2="3" y2="7"/></svg> CAL</button>
-    <button class="tab-btn tab-util" data-tab="sources"   onclick="switchTab('sources')"><svg width="9" height="9" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> SRC</button>
     <button class="tab-btn tab-util" data-tab="debug"     onclick="switchTab('debug')"><svg width="9" height="9" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="2.3" y1="7.7" x2="7.7" y2="2.3"/></svg> DBG</button>
   </div>
   <style>
@@ -1799,6 +1963,16 @@ const S = {
   // Hole bolt-type overrides: holeId -> string key
   holeTypeOverrides: {},
 };
+
+// ─── Landing screen state ─────────────────────────────────────────────────────
+let _landingScreenActive = true;
+
+function dismissLandingScreen() {
+  _landingScreenActive = false;
+  document.getElementById('landing-screen').style.display = 'none';
+  const shell = document.getElementById('app-shell');
+  shell.style.display = 'flex';
+}
 
 // ─── Web Worker for solver communication ──────────────────────────────────────
 let solverWorker = null;
@@ -4978,7 +5152,7 @@ function showResults(s) {
   // ── Calibration status badge ─────────────────────────────────────────────
   const calibBadge = s.calibrationId
     ? `<div style="display:inline-flex;align-items:center;gap:5px;padding:3px 8px;background:var(--gold-faint);border:1px solid var(--gold-glow);border-radius:2px;font-size:9px;color:var(--success);margin-bottom:10px;letter-spacing:.06em"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="3" y1="3" x2="7" y2="7"/><line x1="7" y1="3" x2="3" y2="7"/></svg> CALIBRATED PROFILE ACTIVE</div>`
-    : `<div style="display:inline-flex;align-items:center;gap:5px;padding:3px 8px;background:var(--bg-card);border:1px solid var(--border);border-radius:2px;font-size:9px;color:var(--text-lo);margin-bottom:10px;letter-spacing:.06em;cursor:pointer" onclick="switchTab('calibrate')"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4"><polygon points="5,1 9,5 5,9 1,5"/></svg> LITERATURE DEFAULTS · click to calibrate</div>`;
+    : `<div style="display:inline-flex;align-items:center;gap:5px;padding:3px 8px;background:var(--bg-card);border:1px solid var(--border);border-radius:2px;font-size:9px;color:var(--text-lo);margin-bottom:10px;letter-spacing:.06em"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4"><polygon points="5,1 9,5 5,9 1,5"/></svg> LITERATURE DEFAULTS</div>`;
 
   // ── Build the top-line action sentence ────────────────────────────────
   // Governing failure mode
@@ -5124,20 +5298,20 @@ function showResults(s) {
       const qualityColor = mqr.qualityScore > 0.8 ? 'var(--success)' : mqr.qualityScore > 0.5 ? 'var(--warn)' : 'var(--danger)';
       const qualityBg = mqr.qualityScore > 0.8 ? 'var(--gold-faint)' : mqr.qualityScore > 0.5 ? 'var(--bg-card)' : 'var(--bg-card)';
       const qualityBorder = mqr.qualityScore > 0.8 ? 'var(--gold-glow)' : mqr.qualityScore > 0.5 ? 'var(--gold-glow)' : 'var(--gold)33';
-      return \`
+      return `
       <details style="margin-bottom:12px">
-        <summary style="cursor:pointer;font-size:11px;font-weight:600;color:var(--text-mid);padding:10px 12px;background:\${qualityBg};border:1px solid \${qualityBorder};border-radius:4px;user-select:none">
-          <span style="color:\${qualityColor}\${mqr.degenerateCount > 0 ? ';font-weight:700' : ''}">⚙ Mesh Quality — \${(mqr.qualityScore*100).toFixed(0)}%</span>
-          \${mqr.degenerateCount > 0 ? \` <span style="color:var(--danger);font-weight:700">\${mqr.degenerateCount} degenerate</span>\` : ''}
-          \${mqr.poorQualityCount > 0 ? \` <span style="color:var(--warn)">\${mqr.poorQualityCount} poor</span>\` : ''}
+        <summary style="cursor:pointer;font-size:11px;font-weight:600;color:var(--text-mid);padding:10px 12px;background:${qualityBg};border:1px solid ${qualityBorder};border-radius:4px;user-select:none">
+          <span style="color:${qualityColor}${mqr.degenerateCount > 0 ? ';font-weight:700' : ''}">⚙ Mesh Quality — ${(mqr.qualityScore*100).toFixed(0)}%</span>
+          ${mqr.degenerateCount > 0 ? ` <span style="color:var(--danger);font-weight:700">${mqr.degenerateCount} degenerate</span>` : ''}
+          ${mqr.poorQualityCount > 0 ? ` <span style="color:var(--warn)">${mqr.poorQualityCount} poor</span>` : ''}
         </summary>
         <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px;font-size:10px;color:var(--text-lo);line-height:1.8">
-          Elements: <b style="color:var(--text-hi)">\${mqr.normalCount}</b> normal ·
-          \${mqr.poorQualityCount > 0 ? \`<b style="color:var(--warn)">\${mqr.poorQualityCount}</b> poor · \` : ''}
-          \${mqr.degenerateCount > 0 ? \`<b style="color:var(--danger)">\${mqr.degenerateCount}</b> degenerate\` : 'none degenerate'}<br>
-          Worst: J<sub>min</sub>=\${mqr.worstJacobianMin.toFixed(6)} · AR=\${mqr.worstAspectRatio.toFixed(1)}× · dihedral=\${mqr.worstMinDihedralDeg.toFixed(1)}°
+          Elements: <b style="color:var(--text-hi)">${mqr.normalCount}</b> normal ·
+          ${mqr.poorQualityCount > 0 ? `<b style="color:var(--warn)">${mqr.poorQualityCount}</b> poor · ` : ''}
+          ${mqr.degenerateCount > 0 ? `<b style="color:var(--danger)">${mqr.degenerateCount}</b> degenerate` : 'none degenerate'}<br>
+          Worst: J<sub>min</sub>=${mqr.worstJacobianMin.toFixed(6)} · AR=${mqr.worstAspectRatio.toFixed(1)}× · dihedral=${mqr.worstMinDihedralDeg.toFixed(1)}°
         </div>
-      </details>\`;
+      </details>`;
     })() : ''}
 
     ${s.residualCheckpoints && s.residualCheckpoints.length > 0 ? `
@@ -5183,7 +5357,7 @@ function showResults(s) {
 
     ${s.isotropicComparison ? `
     <div style="margin-bottom:16px">
-      <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:4px">VS. CONVENTIONAL FEA &nbsp;<button onclick="switchTab('sources')" style="font-size:9px;color:var(--text-lo);background:none;border:none;cursor:pointer;font-family:inherit;padding:0;text-decoration:underline;vertical-align:middle">Why? →</button></div>
+      <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:4px">VS. CONVENTIONAL FEA</div>
       <div style="padding:10px 12px;background:${s.isotropicComparison.falseSafe?'var(--gold-faint)':'var(--bg-card)'};border:1px solid ${s.isotropicComparison.falseSafe?'var(--gold-glow)':s.isotropicComparison.optimismPct>10?'var(--gold)33':'var(--border)'};border-radius:3px">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
           <div style="padding:8px;background:var(--bg-input);border-radius:3px;border:1px solid var(--border-mid)">
@@ -5565,11 +5739,6 @@ function switchTab(name) {
     setMode('bed');
   } else if (name !== 'orient' && S.mode === 'bed') {
     setMode('view');
-  }
-  // Lazy-render sources tab on first visit
-  if (name === 'sources' && !_sourcesRendered) {
-    renderSourcesTab();
-    _sourcesRendered = true;
   }
 }
 
@@ -9830,9 +9999,7 @@ document.addEventListener('keydown', (e) => {
     case '4': switchTab('material'); break;
     case '5': switchTab('results'); break;
     case '6': switchTab('prefs'); break;
-    case '7': switchTab('calibrate'); break;
-    case '8': switchTab('sources'); break;
-    case '9': switchTab('debug'); break;
+    case '7': switchTab('debug'); break;
     case 'o': case 'O': setMode('view'); break;
     case 'b': case 'B': if (mesh3d) setMode('bed'); break;
     case 'f': case 'F': if (mesh3d) setMode('force'); break;
@@ -9975,20 +10142,6 @@ const DEMO_STEPS = [
     text: "STORMFEA checks bulk yield, net-section tension, shear-out, thread strip-out, and bearing failure. " +
           "Each carries an explicit confidence label based on data quality, and the governing mode is flagged.",
     duration: 8000,
-  },
-  {
-    tab: "calibrate",
-    title: "Physical Calibration System",
-    text: "Literature constants are averages across many printers. These coupons let you measure your actual " +
-          "material — print them, pull to failure, enter the loads, and the model updates to your setup.",
-    duration: 8000,
-  },
-  {
-    tab: "sources",
-    title: "Every Constant Has a Citation",
-    text: "Every model constant has a peer-reviewed source with an explicit confidence level. " +
-          "We disclose what we don't know. No number is presented without its basis.",
-    duration: 7000,
   },
 ];
 
@@ -10281,9 +10434,6 @@ const CHECKLIST = [
   { id:'ab_compare',   label:'A vs B — run analysis, change something, run again, diff table appears' },
   { id:'export_pdf',   label:'Export PDF — downloads a .pdf file directly (no new tab)' },
   { id:'export_zip',   label:'Export ZIP — .json file downloads' },
-  { id:'calibrate_download', label:'Calibrate — <svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="1.5" x2="5" y2="7"/><polyline points="2.5,5 5,7.5 7.5,5"/><line x1="1.5" y1="9" x2="8.5" y2="9"/></svg> STL downloads work for all 3 coupons' },
-  { id:'calibrate_save', label:'Calibrate — enter numbers, save profile, profile appears in dropdown' },
-  { id:'calibrate_active', label:'Calibrate — select profile -> CALIBRATED badge shows in results' },
   { id:'onshape_key',  label:'Onshape — enter API keys, green dot appears' },
   { id:'onshape_import', label:'Onshape — paste URL, <svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M7.5 3A3.5 3.5 0 1 0 8.5 6"/><polyline points="7,1.5 8.5,3 7,4.5" fill="none"/></svg> loads parts, import works' },
   { id:'c3d10',        label:'C3D10 elements — Settings -> Quadratic -> analyse STEP -> <svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> C3D10 badge' },
@@ -10735,5 +10885,6 @@ fetch('/api/health').catch(() => {
     </div>
   </div>
 </div>
+</div><!-- end #app-shell -->
 </body>
 </html>
