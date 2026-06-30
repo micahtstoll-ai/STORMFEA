@@ -4837,8 +4837,8 @@ async function runAnalysis() {
 
     // Store convergence data for the manual study button
     S._convergenceData = {
-      standard: { nodes: dataStd.summary.nodeCount, maxVM: vmStd, sf: dataStd.summary.safetyFactor },
-      fine:     { nodes: dataFine.summary.nodeCount, maxVM: vmFine, sf: dataFine.summary.safetyFactor },
+      standard: { nodes: dataStd.summary.nodeCount, maxVM: vmStd, sf: dataStd.summary.safetyFactorAvailable ? dataStd.summary.safetyFactor : null },
+      fine:     { nodes: dataFine.summary.nodeCount, maxVM: vmFine, sf: dataFine.summary.safetyFactorAvailable ? dataFine.summary.safetyFactor : null },
       changePct, converged,
     };
 
@@ -4931,6 +4931,7 @@ function updateStickyResults(s) {
   const bar = document.getElementById('results-sticky');
   if (!bar) return;
   if (!s) { bar.style.display = 'none'; return; }
+  if (!s.safetyFactorAvailable) { bar.style.display = 'none'; return; }
 
   const sf      = s.safetyFactor;
   const sfColor = sf >= 2 ? 'var(--success)' : sf >= 1 ? 'var(--warn)' : 'var(--danger)';
@@ -4969,7 +4970,7 @@ function showResults(s) {
   const oldBadge = document.getElementById('convergence-badge');
   if (oldBadge) oldBadge.remove();
 
-  const sfColor = s.safetyFactor >= 2 ? 'var(--gold)' : s.safetyFactor >= 1 ? 'var(--gold)' : 'var(--text-hi)';
+  const sfColor = s.safetyFactorAvailable ? (s.safetyFactor >= 2 ? 'var(--gold)' : s.safetyFactor >= 1 ? 'var(--gold)' : 'var(--text-hi)') : 'var(--text-lo)';
   const yieldNote = s.yielding
     ? '<span style="color:var(--danger)"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Yield predicted at this load</span>'
     : '<span style="color:var(--success)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> Below yield threshold</span>';
@@ -4983,7 +4984,7 @@ function showResults(s) {
   // Governing failure mode
   const govMode = s.failureModes && s.failureModes.length
     ? s.failureModes.find(m => m.checked) : null;
-  const govSF = govMode ? govMode.sf : s.safetyFactor;
+  const govSF = govMode ? govMode.sf : (s.safetyFactorAvailable ? s.safetyFactor : null);
 
   // Best recommendation
   const bestRec = s.recommendations && s.recommendations.length
@@ -5057,6 +5058,7 @@ function showResults(s) {
           <span style="color:#1650d8">${(s.minSignedVonMisesMPa ?? 0).toFixed(1)} MPa</span> comp · <span style="color:#c01717">${(s.maxSignedVonMisesMPa ?? 0).toFixed(1)} MPa</span> tens
         </div>` : ''}
       </div>
+      ${s.safetyFactorAvailable ? `
       <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
         <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">SAFETY FACTOR</div>
         <div style="font-size:18px;font-weight:500;color:${sfColor}">${s.safetyFactor.toFixed(2)}×</div>
@@ -5079,6 +5081,13 @@ function showResults(s) {
           </div>`;
         })() : ''}
       </div>
+      ` : `
+      <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
+        <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">SAFETY FACTOR</div>
+        <div style="font-size:18px;font-weight:500;color:var(--text-lo)">—</div>
+        <div style="font-size:9px;color:var(--text-lo);margin-top:4px;line-height:1.4">Mesh fallback: SF unavailable</div>
+      </div>
+      `}
       <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
         <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">MAX DISPLACEMENT</div>
         <div style="font-size:18px;font-weight:500;color:var(--text-hi)">${s.maxDisplacementMm.toFixed(4)} <span style="font-size:10px;color:var(--text-label)">mm</span></div>
@@ -5094,7 +5103,7 @@ function showResults(s) {
       <div style="font-size:11px;color:var(--text-mid)">${s.verdict}</div>
     </div>
 
-    ${(s.safetyfactorLow !== undefined && s.safetyfactorLow < 1.5 && s.safetyFactor >= 1.5) ? `
+    ${(s.safetyFactorAvailable && s.safetyfactorLow !== undefined && s.safetyfactorLow < 1.5 && s.safetyFactor >= 1.5) ? `
     <div style="padding:10px 12px;background:#fdf3e0;border:1px solid #d97a00;border-radius:4px;margin-bottom:12px;display:flex;gap:8px;align-items:flex-start">
       <span style="font-size:16px;line-height:1">&#9888;</span>
       <div>
@@ -5258,7 +5267,7 @@ function showResults(s) {
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
             ${isGoverning ? '<div style="font-size:10px;color:var(--gold);margin-right:2px"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,1.5 8,7.5 1,7.5"/></svg> GOVERNING</div>' : ''}
             <div style="flex:1;font-size:11px;color:${m.checked?'var(--bg-base)':'var(--text-mid)'}">${m.mode}</div>
-            <div style="font-size:11px;font-weight:500;color:${sfColor}">${m.checked ? 'SF '+m.sf.toFixed(2)+'×' : '—'}</div>
+            <div style="font-size:11px;font-weight:500;color:${sfColor}">${m.checked && s.safetyFactorAvailable ? 'SF '+m.sf.toFixed(2)+'×' : '—'}</div>
           </div>
           <div style="font-size:10px;color:${confColor}">${confLabel}</div>
           <div style="font-size:10px;color:var(--text-lo);margin-top:3px;line-height:1.5">${m.note}</div>
@@ -6201,6 +6210,8 @@ function openSplitView() {
 
   const sfA = AB.baseline.summary.safetyFactor;
   const sfB = AB.comparison.summary.safetyFactor;
+  // Both SF values must be available for comparison
+  if (sfA === null || sfB === null) return;
   const sfCol = sf => sf >= 2 ? 'var(--success)' : sf >= 1 ? 'var(--warn)' : 'var(--danger)';
 
   document.getElementById('split-name-a').textContent = AB.baseline.fileName  || 'Design A';
@@ -6756,7 +6767,7 @@ async function runConvergenceStudy() {
       <span style="color:var(--text-mid)">${r.quality}</span>
       <span style="color:var(--text-label)">${(r.nodes||0).toLocaleString()} nodes</span>
       <span style="color:var(--text-hi)">${U.stressStr(r.maxVM,2)}</span>
-      <span style="color:${r.sf>=1?'var(--warn)':'var(--danger)'}">SF ${r.sf.toFixed(2)}×</span>
+      <span style="color:${r.sf !== null && r.sf >= 1 ? 'var(--warn)' : 'var(--danger)'}">${r.sf !== null ? `SF ${r.sf.toFixed(2)}×` : 'SF —'}</span>
     </div>`).join('');
 
   reportEl.innerHTML = `
@@ -7960,27 +7971,44 @@ function drawSummaryCanvas() {
 
     // ── Safety factor — big number ──────────────────────────────────────────
     const s     = S.results.summary;
-    const sf    = s.safetyFactor;
-    const sfCol = sf >= 2 ? GOLD : sf >= 1 ? WARN : DANGER;
+    if (s.safetyFactorAvailable) {
+      const sf    = s.safetyFactor;
+      const sfCol = sf >= 2 ? GOLD : sf >= 1 ? WARN : DANGER;
 
-    ctx.fillStyle = TEXT_MID;
-    ctx.font = '9px monospace';
-    ctx.fillText('SAFETY FACTOR', RX, RY);
-    RY += 6;
+      ctx.fillStyle = TEXT_MID;
+      ctx.font = '9px monospace';
+      ctx.fillText('SAFETY FACTOR', RX, RY);
+      RY += 6;
 
-    ctx.fillStyle = sfCol;
-    ctx.font = 'bold 64px monospace';
-    ctx.fillText(sf.toFixed(2) + '×', RX, RY + 56);
-    RY += 76;
+      ctx.fillStyle = sfCol;
+      ctx.font = 'bold 64px monospace';
+      ctx.fillText(sf.toFixed(2) + '×', RX, RY + 56);
+      RY += 76;
 
-    // SF verdict
-    const verdict = sf >= 2 ? 'SAFE — exceeds 2× threshold'
-                  : sf >= 1 ? 'MARGINAL — below recommended 2×'
-                  : 'WILL FAIL under applied load';
-    ctx.fillStyle = sfCol;
-    ctx.font = '10px monospace';
-    ctx.fillText(verdict, RX, RY);
-    RY += 28;
+      // SF verdict
+      const verdict = sf >= 2 ? 'SAFE — exceeds 2× threshold'
+                    : sf >= 1 ? 'MARGINAL — below recommended 2×'
+                    : 'WILL FAIL under applied load';
+      ctx.fillStyle = sfCol;
+      ctx.font = '10px monospace';
+      ctx.fillText(verdict, RX, RY);
+      RY += 28;
+    } else {
+      ctx.fillStyle = TEXT_MID;
+      ctx.font = '9px monospace';
+      ctx.fillText('SAFETY FACTOR', RX, RY);
+      RY += 6;
+
+      ctx.fillStyle = TEXT_LO;
+      ctx.font = 'bold 64px monospace';
+      ctx.fillText('—', RX, RY + 56);
+      RY += 76;
+
+      ctx.fillStyle = TEXT_LO;
+      ctx.font = '10px monospace';
+      ctx.fillText('(mesh fallback — unavailable)', RX, RY);
+      RY += 28;
+    }
 
     // Divider
     ctx.strokeStyle = BORDER;
@@ -9138,9 +9166,13 @@ function storeAsBaseline(summary, fileName) {
     },
   };
   document.getElementById('ab-baseline-name').textContent = AB.baseline.fileName;
-  document.getElementById('ab-baseline-sf').textContent   = `SF ${summary.safetyFactor.toFixed(2)}×`;
-  document.getElementById('ab-baseline-sf').style.color   =
-    summary.safetyFactor >= 2 ? 'var(--success)' : summary.safetyFactor >= 1 ? 'var(--warn)' : 'var(--danger)';
+  if (summary.safetyFactorAvailable && summary.safetyFactor !== null) {
+    document.getElementById('ab-baseline-sf').textContent = `SF ${summary.safetyFactor.toFixed(2)}×`;
+    document.getElementById('ab-baseline-sf').style.color = summary.safetyFactor >= 2 ? 'var(--success)' : summary.safetyFactor >= 1 ? 'var(--warn)' : 'var(--danger)';
+  } else {
+    document.getElementById('ab-baseline-sf').textContent = 'SF —';
+    document.getElementById('ab-baseline-sf').style.color = 'var(--text-lo)';
+  }
   document.getElementById('ab-panel').style.display = 'block';
   const abBtn = document.getElementById('ab-compare-btn');
   if (abBtn) {
@@ -10289,7 +10321,7 @@ function refreshDebugPanel() {
       `Session file:  ${fd?.fileName ?? 'none restored'}`,
       ``,
       `Mesh:          ${r ? `${r.nodeCount} nodes, ${r.elementCount} elements` : '—'}`,
-      `SF:            ${r ? `${r.safetyFactor.toFixed(3)} (${r.safetyfactorLow?.toFixed(2)}–${r.safetyFactorHigh?.toFixed(2)})` : '—'}`,
+      `SF:            ${r && r.safetyFactorAvailable ? `${r.safetyFactor.toFixed(3)} (${r.safetyfactorLow?.toFixed(2)}–${r.safetyFactorHigh?.toFixed(2)})` : '—'}`,
       `VM peak:       ${r ? `${r.maxVonMisesMPa.toFixed(1)} MPa` : '—'}`,
       `Converged:     ${r ? String(r.converged) : '—'}`,
       `CG iters:      ${r ? r.cgIterations : '—'}`,
@@ -10422,7 +10454,7 @@ function copyBugReport() {
     ``,
     '--- LAST ANALYSIS ---',
     r ? [
-      `SF: ${r.safetyFactor.toFixed(3)} (range ${r.safetyfactorLow?.toFixed(2)}–${r.safetyFactorHigh?.toFixed(2)})`,
+      `SF: ${r.safetyFactorAvailable ? r.safetyFactor.toFixed(3) : '—'} (range ${r.safetyfactorLow?.toFixed(2)}–${r.safetyFactorHigh?.toFixed(2)})`,
       `VM peak: ${r.maxVonMisesMPa.toFixed(1)} MPa`,
       `Nodes: ${r.nodeCount}, Elements: ${r.elementCount}`,
       `Converged: ${r.converged} (${r.cgIterations} CG iters)`,
