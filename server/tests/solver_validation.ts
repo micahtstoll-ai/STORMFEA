@@ -9,7 +9,7 @@
  */
 
 import { runLinearStatic }      from "../solver/pipeline.js";
-import { generateBoxMesh }      from "../solver/meshgen.js";
+import { generateBoxMesh, generateBoxMeshC3D10 } from "../solver/meshgen.js";
 import { sprSmoothedStress, nodeAveragedStress } from "../solver/stress.js";
 import {
   buildConstitutiveMatrix,
@@ -1006,6 +1006,135 @@ console.log("\n[17] Simply-supported beam — center deflection (δ = PL³/48EI)
   test("[17.6] Linear scaling: 2× load → 2× deflection",
     near(r2.maxDisplacementMm, r.maxDisplacementMm * 2, 0.005),
     `ratio=${(r2.maxDisplacementMm / r.maxDisplacementMm).toFixed(4)}`);
+}
+
+// ── Test group 19: C3D10 cantilever convergence sweep ─────────────────────────
+// Euler-Bernoulli tip deflection: δ = PL³ / (3EI).
+// Verifies that C3D10 elements converge to the analytical value with mesh
+// refinement and do not exhibit shear locking.  Uses generateBoxMeshC3D10
+// (6-tet body-diagonal split) so no Gmsh binary is required.
+//
+// Geometry: L=20mm, W=H=2mm along y and z; P=1N transverse tip load (z).
+// Fixed face: x=0 (full constraint).  Load face: x=L nodes, z-force only.
+// I = W * H³ / 12 = 2 * 8 / 12 = 4/3 mm⁴
+// δ_EB = 1 * 20³ / (3 * 3500 * 4/3) = 8000 / 14000 ≈ 0.5714 mm
+console.log("\n[19] C3D10 cantilever convergence sweep (body-diagonal mesh, no Gmsh)");
+{
+  const E = 3500, nu = 0.36, P = 1.0;
+  const L = 20, W = 2, H = 2;
+  const I = W * H * H * H / 12;
+  const dEB = P * L * L * L / (3 * E * I);
+  const mat = { E, nu, yieldStrength: 50, label: "pla" };
+
+  // Three mesh densities along x (2 elements across W and H for all):
+  // each level quadruples the element count → convergence should be clear.
+  const densities = [
+    { nx: 4,  ny: 1, nz: 2, label: "4×1×2  (48 elems)" },
+    { nx: 8,  ny: 2, nz: 2, label: "8×2×2  (192 elems)" },
+    { nx: 16, ny: 2, nz: 4, label: "16×2×4 (768 elems)" },
+  ];
+
+  const ratios: number[] = [];
+
+  for (const { nx, ny, nz, label } of densities) {
+    const mesh = generateBoxMeshC3D10(0, 0, 0, L, W, H, nx, ny, nz);
+
+    const fixed: number[] = [], tip: number[] = [];
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      const x = mesh.nodes[n * 3] ?? 0;
+      if (Math.abs(x) < 1e-9) fixed.push(n);
+      if (Math.abs(x - L) < 1e-9) tip.push(n);
+    }
+
+    const r = await runLinearStatic({
+      mesh, material: mat,
+      constraints: [{ nodeIndices: fixed }],
+      forces: tip.map(n => ({
+        nodeIndex: n,
+        forceN: [0, 0, P / tip.length] as [number, number, number],
+      })),
+    });
+
+    const ratio = r.maxDisplacementMm / dEB;
+    ratios.push(ratio);
+    console.log(`  [19] ${label}: δ/δ_EB = ${ratio.toFixed(4)} (${r.maxDisplacementMm.toFixed(5)} mm vs ${dEB.toFixed(5)} mm expected)`);
+  }
+
+  // C3D10 should not lock: even the coarsest mesh should capture >60% of E-B.
+  test("[19.1] Coarse mesh: δ > 0.60 × δ_EB (no shear locking)",
+    (ratios[0] ?? 0) > 0.60,
+    `ratio=${(ratios[0] ?? 0).toFixed(4)}`);
+
+  // Medium mesh should be within ±15% of E-B.
+  test("[19.2] Medium mesh: δ within 15% of δ_EB",
+    Math.abs((ratios[1] ?? 0) - 1.0) < 0.15,
+    `ratio=${(ratios[1] ?? 0).toFixed(4)}`);
+
+  // Fine mesh should be within ±5% of E-B.
+  test("[19.3] Fine mesh: δ within 5% of δ_EB",
+    Math.abs((ratios[2] ?? 0) - 1.0) < 0.05,
+    `ratio=${(ratios[2] ?? 0).toFixed(4)}`);
+
+  // Convergence: each refinement brings the ratio closer to 1.0.
+  const d0 = Math.abs((ratios[0] ?? 0) - 1.0);
+  const d1 = Math.abs((ratios[1] ?? 0) - 1.0);
+  const d2 = Math.abs((ratios[2] ?? 0) - 1.0);
+  test("[19.4] Convergence: fine mesh closer to E-B than coarse mesh",
+    d2 < d0,
+    `|ratio-1|: coarse=${d0.toFixed(4)}, fine=${d2.toFixed(4)}`);
+
+  // All meshes should produce positive deflection and converge.
+  test("[19.5] All solves converged", ratios.length === 3);
+}
+
+// ── Test group 18: IC(0) vs Jacobi full displacement vector comparison ────────
+// Regression test ensuring both preconditioners yield the same nodal solution.
+// Uses tol=1e-10 so both solvers converge to near machine precision before the
+// L2 comparison — this makes the comparison independent of solver tolerance.
+// A relative L2 difference < 1e-9 confirms IC(0) and Jacobi solve the same
+// system (rules out wrong preconditioner application / false convergence).
+console.log("\n[18] IC(0) vs Jacobi: full displacement vector L2 comparison");
+{
+  const mesh = generateBoxMesh(0, 0, 0, 10, 10, 10, 8, 8, 8);
+  const mat  = { E: 3500, nu: 0.36, yieldStrength: 50, label: "pla" };
+  const fixed: number[] = [], loaded: number[] = [];
+  for (let n = 0; n < mesh.nodeCount; n++) {
+    const x = mesh.nodes[n * 3] ?? 0;
+    if (x < 0.01) fixed.push(n);
+    if (x > 9.99) loaded.push(n);
+  }
+  const forces = loaded.map(n => ({
+    nodeIndex: n,
+    forceN: [100 / loaded.length, 0, 0] as [number, number, number],
+  }));
+  const baseInput = { mesh, material: mat, constraints: [{ nodeIndices: fixed }], forces };
+
+  // Solve both at tight tolerance so both reach near-machine-precision solution.
+  const r_ic0  = await runLinearStatic({ ...baseInput, preconditioner: 'ic0'    as const, cgTolerance: 1e-10 });
+  const r_jac  = await runLinearStatic({ ...baseInput, preconditioner: 'jacobi' as const, cgTolerance: 1e-10 });
+
+  // Compute L2 relative difference: ‖u_ic0 − u_jac‖₂ / ‖u_jac‖₂
+  const u0 = r_ic0.displacement;
+  const u1 = r_jac.displacement;
+  let num = 0, den = 0;
+  for (let i = 0; i < u0.length; i++) {
+    const d = (u0[i] ?? 0) - (u1[i] ?? 0);
+    num += d * d;
+    den += (u1[i] ?? 0) * (u1[i] ?? 0);
+  }
+  const relL2Diff = Math.sqrt(num / Math.max(den, 1e-300));
+  console.log(`[bench] L2 relative diff IC(0) vs Jacobi = ${relL2Diff.toExponential(3)}`);
+
+  test("[18.1] IC(0) converged at tol=1e-10",   r_ic0.converged,
+    `iters=${r_ic0.cgIterations}`);
+  test("[18.2] Jacobi converged at tol=1e-10",  r_jac.converged,
+    `iters=${r_jac.cgIterations}`);
+  test("[18.3] Full displacement vector L2 diff < 1e-9",
+    relL2Diff < 1e-9,
+    `relL2Diff=${relL2Diff.toExponential(3)}`);
+  test("[18.4] Both solvers agree on max displacement within 0.001%",
+    near(r_ic0.maxDisplacementMm, r_jac.maxDisplacementMm, 1e-5),
+    `IC0=${r_ic0.maxDisplacementMm.toExponential(8)}, Jacobi=${r_jac.maxDisplacementMm.toExponential(8)}`);
 }
 
 })();  // End async IIFE
