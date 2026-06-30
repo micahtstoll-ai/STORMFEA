@@ -211,11 +211,11 @@ console.log('\n[D] A/B comparison baseline lock — does not overwrite on re-ana
   new Function('module', 'exports', fnMatch[0] + '\nmodule.exports = { AB, storeAsBaseline };')(mod, mod.exports);
   const { AB, storeAsBaseline } = mod.exports;
 
-  storeAsBaseline({ safetyFactor: 8.52, maxVonMisesMPa: 5.28 }, 'test.step');
+  storeAsBaseline({ safetyFactor: 8.52, maxVonMisesMPa: 5.28, safetyFactorAvailable: true }, 'test.step');
   const sfAfterFirst = AB.baseline.summary.safetyFactor;
 
   // Simulate re-running ANALYSE with different settings (force 200N -> 400N)
-  storeAsBaseline({ safetyFactor: 4.26, maxVonMisesMPa: 10.56 }, 'test.step');
+  storeAsBaseline({ safetyFactor: 4.26, maxVonMisesMPa: 10.56, safetyFactorAvailable: true }, 'test.step');
   const sfAfterSecond = AB.baseline.summary.safetyFactor;
 
   test('Baseline is captured on first analysis',
@@ -225,13 +225,29 @@ console.log('\n[D] A/B comparison baseline lock — does not overwrite on re-ana
     `expected baseline to stay at 8.52, got ${sfAfterSecond} — this is the exact bug that was reported and fixed`);
   test('baselineLocked flag is set after first capture',
     AB.baselineLocked === true);
+  test('DOM: baseline SF displays numeric value when available',
+    stubEl.textContent === 'SF 8.52×',
+    `expected 'SF 8.52×', got '${stubEl.textContent}'`);
 
   // Simulate the explicit "reset baseline" action
   AB.baselineLocked = false;
-  storeAsBaseline({ safetyFactor: 1.05 }, 'test.step');
+  storeAsBaseline({ safetyFactor: 1.05, safetyFactorAvailable: true }, 'test.step');
   test('Explicit unlock allows a deliberate new baseline capture',
     AB.baseline.summary.safetyFactor === 1.05,
     `sf=${AB.baseline.summary.safetyFactor}`);
+  test('DOM: baseline SF displays correct numeric value after reset',
+    stubEl.textContent === 'SF 1.05×',
+    `expected 'SF 1.05×', got '${stubEl.textContent}'`);
+
+  // Test mesh fallback case: safetyFactorAvailable = false
+  AB.baselineLocked = false;
+  storeAsBaseline({ safetyFactor: null, safetyFactorAvailable: false, maxVonMisesMPa: 25.5 }, 'fallback.step');
+  test('DOM: baseline SF shows fallback when unavailable (mesh fallback)',
+    stubEl.textContent === 'SF —',
+    `expected 'SF —', got '${stubEl.textContent}'`);
+  test('DOM: fallback text color is text-lo (muted)',
+    stubEl.style.color === 'var(--text-lo)',
+    `expected 'var(--text-lo)', got '${stubEl.style.color}'`);
 }
 
 // ── Test group E: parseGcodeParams ──────────────────────────────────────────

@@ -1012,12 +1012,12 @@ export interface AnalysisResult {
   maxVonMisesMPa:         number;
   maxDisplacementMm:      number;
   effectiveYieldMPa:      number;
-  safetyFactor:           number;
+  safetyFactor:           number | null;
   estimatedFailForce:     number;
   /** Conservative SF using lower bound of literature uncertainty range */
-  safetyfactorLow:        number;
+  safetyfactorLow:        number | null;
   /** Optimistic SF using upper bound of literature uncertainty range */
-  safetyFactorHigh:       number;
+  safetyFactorHigh:       number | null;
   yielding:               boolean;
   verdict:                string;
   cgIterations:           number;
@@ -1070,6 +1070,8 @@ export interface AnalysisResult {
   minSignedVonMisesMPa:    number;
   /** Most tensile signed VM value (positive) across all nodes */
   maxSignedVonMisesMPa:    number;
+  /** False when mesh fallback occurred; true when SF values are valid */
+  safetyFactorAvailable:   boolean;
 }
 
 // ─── Stress singularity detection ────────────────────────────────────────────
@@ -2552,8 +2554,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // no holes, no fillets, no stress concentrations. The number is a rough
   // sanity check at best; say so up front rather than presenting it as a result.
   const governingVerdict = meshFallback
-    ? `⚠ Approximate (mesh fallback) — analysed as a solid block; holes and stress ` +
-      `concentrations are NOT modelled. Treat as a rough check only. ${baseVerdict}`
+    ? `Safety factor cannot be computed: TetGen mesh generation failed or is unavailable. Analysis was performed on a bounding box with NO holes, fillets, or geometric features. Stress concentrators (where parts actually fail) are not modeled. This result is not suitable for design decisions. To enable proper analysis, install TetGen (see startup messages).`
     : baseVerdict;
   const baseMat2    = MATERIALS[req.print.materialId] ?? MATERIALS["pla"]!;
   const totalForce  = req.forces.reduce((s, f) => s + f.magnitude, 0) || 1;
@@ -2798,15 +2799,16 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     maxVonMisesMPa:     maxVM,
     maxDisplacementMm:  result.maxDisplacementMm,
     effectiveYieldMPa:  effectiveYield,
-    safetyFactor:       sf,
-    safetyfactorLow:    sfLow,
-    safetyFactorHigh:   sfHigh,
+    safetyFactor:       meshFallback ? null : sf,
+    safetyfactorLow:    meshFallback ? null : sfLow,
+    safetyFactorHigh:   meshFallback ? null : sfHigh,
     estimatedFailForce,
     yielding,
     verdict:            governingVerdict,
     cgIterations:       result.cgIterations,
     converged:          result.converged,
     meshFallback,
+    safetyFactorAvailable: !meshFallback,
     solverMs,
     nodeCount:          mesh.nodeCount,
     elementCount:       mesh.elementCount,
