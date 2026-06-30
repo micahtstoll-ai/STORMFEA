@@ -179,3 +179,4 @@
 - Fatigue estimate: LOW confidence — sparse FDM S-N data
 - Filament color: known to affect strength (η²=97.3%) — not modeled
 - All tensile data is in-plane; pull-through failure mode is extrapolated
+- **generateBoxMesh fallback always produces C3D4** — when TetGen fails and the mesh-fallback path is taken, the part is analysed with C3D4 linear elements regardless of the user's element-order selector. This is gated by the existing reliability banner but not separately flagged. Affects bending-stress accuracy (~55% underpredict) for any TetGen-fallback run.
