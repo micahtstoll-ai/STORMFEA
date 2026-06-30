@@ -169,6 +169,144 @@ export function generateBoxMesh(
 }
 
 /**
+ * Generate a structured C3D10 (10-node quadratic tet) mesh of a rectangular box.
+ *
+ * Uses a 6-tet body-diagonal split per hex cell.  All 6 tets share the v0-v6
+ * body diagonal (from corner (i,j,k) to corner (i+1,j+1,k+1)).  This split is
+ * globally conforming for C3D10: the face diagonal on every shared quad face is
+ * the same from both adjacent hexes, so midpoint nodes on shared faces are
+ * identical.  The 5-tet split used by generateBoxMesh is NOT conforming for
+ * C3D10 (adjacent hexes pick different face diagonals).
+ *
+ * 6-tet split (body diagonal v0–v6, all tets have positive volume):
+ *   T0: [v0, v6, v1, v2]
+ *   T1: [v0, v6, v2, v3]
+ *   T2: [v0, v6, v3, v7]
+ *   T3: [v0, v6, v7, v4]
+ *   T4: [v0, v6, v4, v5]
+ *   T5: [v0, v6, v5, v1]
+ *
+ * STORMFEA C3D10 midpoint ordering for tet [n0,n1,n2,n3]:
+ *   node 4 = mid(n0,n1), 5 = mid(n1,n2), 6 = mid(n0,n2)
+ *   node 7 = mid(n0,n3), 8 = mid(n1,n3), 9 = mid(n2,n3)
+ */
+export function generateBoxMeshC3D10(
+  x0: number, y0: number, z0: number,
+  x1: number, y1: number, z1: number,
+  nx: number, ny: number, nz: number,
+): TetMesh & { surfaceToNode: Int32Array } {
+  if (nx < 1 || ny < 1 || nz < 1) throw new Error("Division counts must be ≥ 1");
+
+  const Nx = nx + 1;
+  const Ny = ny + 1;
+  const Nz = nz + 1;
+  const cornerCount = Nx * Ny * Nz;
+
+  const dx = (x1 - x0) / nx;
+  const dy = (y1 - y0) / ny;
+  const dz = (z1 - z0) / nz;
+
+  const cornerNodes = new Float64Array(cornerCount * 3);
+  let ni = 0;
+  for (let k = 0; k < Nz; k++) {
+    for (let j = 0; j < Ny; j++) {
+      for (let i = 0; i < Nx; i++) {
+        cornerNodes[ni * 3]     = x0 + i * dx;
+        cornerNodes[ni * 3 + 1] = y0 + j * dy;
+        cornerNodes[ni * 3 + 2] = z0 + k * dz;
+        ni++;
+      }
+    }
+  }
+
+  const cornerIdx = (i: number, j: number, k: number): number =>
+    k * Ny * Nx + j * Nx + i;
+
+  const elementCount = nx * ny * nz * 6;
+  const elemConnFlat = new Int32Array(elementCount * 10);
+  let ei = 0;
+
+  // Edge midpoint cache: sorted edge (lo,hi) → midpoint node index
+  const midMap = new Map<number, number>();
+  let nextMidIdx = cornerCount;
+  const midXYZ: number[] = [];
+
+  const getMid = (a: number, b: number): number => {
+    const lo = Math.min(a, b), hi = Math.max(a, b);
+    const key = lo * (cornerCount + 1) + hi;
+    let idx = midMap.get(key);
+    if (idx !== undefined) return idx;
+    idx = nextMidIdx++;
+    midMap.set(key, idx);
+    const ax = cornerNodes[a * 3]!,    ay = cornerNodes[a * 3 + 1]!,    az = cornerNodes[a * 3 + 2]!;
+    const bx = cornerNodes[b * 3]!,    by = cornerNodes[b * 3 + 1]!,    bz = cornerNodes[b * 3 + 2]!;
+    midXYZ.push((ax + bx) * 0.5, (ay + by) * 0.5, (az + bz) * 0.5);
+    return idx;
+  };
+
+  for (let k = 0; k < nz; k++) {
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        const v0 = cornerIdx(i,   j,   k);
+        const v1 = cornerIdx(i+1, j,   k);
+        const v2 = cornerIdx(i+1, j+1, k);
+        const v3 = cornerIdx(i,   j+1, k);
+        const v4 = cornerIdx(i,   j,   k+1);
+        const v5 = cornerIdx(i+1, j,   k+1);
+        const v6 = cornerIdx(i+1, j+1, k+1);
+        const v7 = cornerIdx(i,   j+1, k+1);
+
+        // 6-tet body-diagonal split — all share edge v0-v6
+        const tets: [number, number, number, number][] = [
+          [v0, v6, v1, v2],
+          [v0, v6, v2, v3],
+          [v0, v6, v3, v7],
+          [v0, v6, v7, v4],
+          [v0, v6, v4, v5],
+          [v0, v6, v5, v1],
+        ];
+
+        for (const [n0, n1, n2, n3] of tets) {
+          const base = ei * 10;
+          // Corners
+          elemConnFlat[base]     = n0;
+          elemConnFlat[base + 1] = n1;
+          elemConnFlat[base + 2] = n2;
+          elemConnFlat[base + 3] = n3;
+          // Edge midpoints: 4=mid(n0,n1), 5=mid(n1,n2), 6=mid(n0,n2)
+          //                 7=mid(n0,n3), 8=mid(n1,n3), 9=mid(n2,n3)
+          elemConnFlat[base + 4] = getMid(n0, n1);
+          elemConnFlat[base + 5] = getMid(n1, n2);
+          elemConnFlat[base + 6] = getMid(n0, n2);
+          elemConnFlat[base + 7] = getMid(n0, n3);
+          elemConnFlat[base + 8] = getMid(n1, n3);
+          elemConnFlat[base + 9] = getMid(n2, n3);
+          ei++;
+        }
+      }
+    }
+  }
+
+  const midCount = midXYZ.length / 3;
+  const nodeCount = cornerCount + midCount;
+  const nodes = new Float64Array(nodeCount * 3);
+  nodes.set(cornerNodes);
+  for (let m = 0; m < midXYZ.length; m++) nodes[cornerCount * 3 + m] = midXYZ[m]!;
+
+  const surfaceToNode = new Int32Array(nodeCount);
+  for (let n = 0; n < nodeCount; n++) surfaceToNode[n] = n;
+
+  return {
+    nodes,
+    elements: elemConnFlat,
+    nodeCount,
+    elementCount,
+    nodesPerElem: 10,
+    surfaceToNode,
+  };
+}
+
+/**
  * Return all node indices where z ≈ target (within tolerance).
  * Used to identify the constrained face (z=z0) and loaded face (z=z1).
  */
