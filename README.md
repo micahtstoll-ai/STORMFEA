@@ -130,7 +130,7 @@ Express Server (Node.js + TypeScript)
 
 | Component | Implementation |
 |-----------|---------------|
-| Elements | C3D4 (linear tet) + C3D10 (quadratic tet) |
+| Elements | C3D10 (quadratic tet, default) + C3D4 (linear tet, faster but shear-locking-prone for bending) |
 | Constitutive matrix | Transversely isotropic, 5 constants |
 | Global assembly | Compressed Sparse Row (CSR) |
 | Boundary conditions | Dirichlet via penalty method |
@@ -147,11 +147,13 @@ All constants are cited to peer-reviewed literature and documented in the app's 
 | Constant | Value | Source |
 |----------|-------|--------|
 | E_z / E_xy (stiffness ratio) | 0.65 | Perez et al. 2021 |
-| σ_yield,Z / σ_yield,XY | 0.58 | Cojocaru et al. 2019 |
+| σ_yield,Z / σ_yield,XY | 0.58 ± 0.10† | Cojocaru et al. 2019 |
 | G_xz / G_xy | 0.40 | Ahn et al. 2002 |
 | ν_xz | 0.30 | Casavola et al. 2016 |
-| Layer height slope | −1.0 %/mm | Farashi & Vafaee 2022 |
+| Layer height slope | −1.0 ± 30%† /mm | Farashi & Vafaee 2022 |
 | Se / UTS (endurance ratio) | 0.37 | Wang et al. 2020 |
+
+† Central value is sourced to the cited paper. The uncertainty band (±0.10 on yield ratio; ±30% on layer-height slope) is an engineering margin applied for the conservative/optimistic SF range bar — it is not a value reported by those papers. See the app's **Sources** tab for detail.
 
 ---
 
@@ -220,6 +222,7 @@ stormfea/
 - **Fatigue confidence: LOW** — sparse FDM S-N curve data; estimate only
 - **Filament color** affects strength (η² = 97.3% in one study) — not modeled
 - **Layer height correction** is a linear approximation; valid within ±0.15 mm of nominal
+- **STL uploads use C3D4 only** — STEP uploads default to C3D10 (quadratic, accurate bending). STL uploads are currently locked to C3D4 (linear, shear-locking-prone) because TetGen's quadratic element output (`-o2`) is implemented but its node-ordering permutation has not been verified against a TetGen binary. C3D4 underpredicts bending stress by ~55%; prefer STEP when bending is the governing load case.
 - **Closely-spaced holes (STEP):** if Gmsh merges two hole surfaces, detected radius can be wrong — use `start-debug.bat` and check `[gmsh-debug]` lines if hole geometry looks off
 
 ---
@@ -244,7 +247,7 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the ful
 
 1. Fork → create a branch (`git checkout -b fix/my-fix`)
 2. Make changes; if touching physics, verify the 65% stiffness / 58% bond constants are unchanged
-3. Run `npm run test` — all 32 solver validation tests must pass
+3. Run `npm run test` — all solver validation tests must pass (67 tests in `solver_validation.ts` + 69 vitest unit tests across 6 files)
 4. Open a pull request using the provided template
 
 ---
