@@ -1070,6 +1070,8 @@ export interface AnalysisResult {
   minSignedVonMisesMPa:    number;
   /** Most tensile signed VM value (positive) across all nodes */
   maxSignedVonMisesMPa:    number;
+  /** False when mesh fallback occurred; true when SF values are valid */
+  safetyFactorAvailable:   boolean;
 }
 
 // ─── Stress singularity detection ────────────────────────────────────────────

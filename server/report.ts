@@ -39,7 +39,7 @@ export function generateHtmlReport(
   // When the solve didn't converge or fell back to a box mesh, the SF is not
   // trustworthy — colour the verdict box neutral grey rather than a reassuring
   // green/amber so the printed report can't imply confidence it doesn't have.
-  const unreliable = converged === false || meshFallback === true;
+  const unreliable = converged === false || meshFallback === true || safetyFactor === null;
   const sfColor = unreliable ? '#5a5a5a'
     : safetyFactor >= 2 ? '#1a7a40' : safetyFactor >= 1 ? '#7a5a00' : '#7a1a1a';
   const verdictBg = unreliable ? '#ececec'
@@ -143,7 +143,7 @@ export function generateHtmlReport(
   <div class="grid4">
     <div class="card">
       <div class="card-label">Safety Factor</div>
-      <div class="card-value" style="color:${sfColor}">${safetyFactor.toFixed(2)}<span class="card-unit">×</span></div>
+      <div class="card-value" style="color:${sfColor}">${safetyFactor !== null ? safetyFactor.toFixed(2) : '—'}<span class="card-unit">×</span></div>
     </div>
     <div class="card">
       <div class="card-label">Peak Stress</div>
