@@ -553,12 +553,14 @@ body:not(.has-results) #btn-stress { display: none !important; }
 
 /* ── Landing screen (brand retheme) ────────────────────────────────────────── */
 #sf-landing { background: var(--sf-bg); }
-#sf-rain-canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: -1; }
+#sf-rain-canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 0; }
 .sf-nav-card {
   background: var(--sf-mid);
   border: 0.5px solid var(--sf-border);
   border-radius: 8px;
   transition: border-color 0.15s;
+  position: relative;
+  z-index: 1;
 }
 .sf-nav-card:not(.sf-disabled):hover {
   border-color: color-mix(in srgb, var(--sf-accent) 40%, transparent);
