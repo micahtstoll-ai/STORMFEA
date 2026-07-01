@@ -3233,6 +3233,7 @@ async function handleFile(file) {
     S.forces = [];
     S.results = null;
     S._convergenceData = null;
+    _clearGcodeImportUI();
     showTopologyMarkers([]);
     if (data.stepB64) S.fileData.stepB64 = data.stepB64;
 
@@ -10863,6 +10864,13 @@ document.addEventListener('click', e => {
 });
 
 // ─── G-code UI mapping ────────────────────────────────────────────────────────
+function _clearGcodeImportUI() {
+  const badge = document.getElementById('gcode-import-badge');
+  if (badge) badge.style.display = 'none';
+  const toast = document.getElementById('gcode-import-toast');
+  if (toast) { clearTimeout(toast._hideTimer); toast.style.opacity = '0'; }
+}
+
 function applyGcodeParamsToUI(params) {
   const imported = [], warnings = [];
 
