@@ -211,7 +211,7 @@ app.post("/api/analyse", async (req, res) => {
     // (TetGen/Gmsh subprocess calls, file I/O) which can hang if a binary is
     // missing or a pipe stalls, and gives the browser a proper error response
     // instead of an open connection.
-    const ANALYSE_TIMEOUT_MS = 120_000;
+    const ANALYSE_TIMEOUT_MS = 600_000;
     const timeoutPromise = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error(
         `Solver timed out after ${ANALYSE_TIMEOUT_MS / 1000}s. ` +
