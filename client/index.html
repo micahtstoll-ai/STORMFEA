@@ -5162,9 +5162,9 @@ function showConvergenceBadge(state, changePct, nodesStd, nodesFine) {
     badge.style.cssText = 'margin-bottom:8px';
     const rc = document.getElementById('results-content');
     if (rc) {
-      // Insert after calibration badge if it exists, otherwise at top
+      // Insert after calibration badge if it exists and is a direct child, otherwise at top
       const calibBadge = rc.querySelector('[style*="inline-flex"]');
-      if (calibBadge?.nextSibling) rc.insertBefore(badge, calibBadge.nextSibling);
+      if (calibBadge?.parentNode === rc && calibBadge.nextSibling) rc.insertBefore(badge, calibBadge.nextSibling);
       else if (rc.firstChild) rc.insertBefore(badge, rc.firstChild);
       else rc.appendChild(badge);
     }
