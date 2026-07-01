@@ -5043,7 +5043,7 @@ async function runAnalysis() {
     // No SF data: fine mesh would also produce no SF — skip it and surface a note.
     // null > 3.0 evaluates false (null coerces to 0), so without this guard we
     // would always launch an expensive fine-mesh analysis that produces no useful output.
-    showConvergenceBadge('c3d4_skipped', 0, dataStd.summary.nodeCount, 0);
+    showConvergenceBadge('c3d4_no_sf', 0, dataStd.summary.nodeCount, 0);
     S._convergenceData = {
       standard: { nodes: dataStd.summary.nodeCount, maxVM: dataStd.summary.maxVonMisesMPa, sf: null, safetyFactorAvailable: false },
       fine: null, changePct: 0, converged: true, skipped: true,
@@ -5143,6 +5143,12 @@ function showConvergenceBadge(state, changePct, nodesStd, nodesFine) {
       icon: '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg>',
       text: `<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> Mesh check skipped — SF > 3.0 (clearly safe, fine mesh not needed)`,
       sub: 'Fine mesh convergence check only runs when SF < 3.0. Results are reliable.',
+    },
+    c3d4_no_sf: {
+      color: 'var(--warn)', bg: 'var(--bg-card)', border: 'var(--gold)33',
+      icon: '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="currentColor"><polygon points="5,1 9.5,9 0.5,9"/><rect x="4.4" y="4.2" width="1.2" height="2.8" fill="var(--bg-base)"/><rect x="4.4" y="7.5" width="1.2" height="1.2" fill="var(--bg-base)"/></svg>',
+      text: `No safety factor — fine mesh skipped`,
+      sub: `The solver did not produce a safety factor for this analysis. A finer mesh would not change this result.`,
     },
     c3d4_skipped: {
       color: 'var(--warn)', bg: 'var(--bg-card)', border: 'var(--gold)33',
