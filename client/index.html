@@ -2072,12 +2072,14 @@ function initLandingRain() {
   }
 
   function resize() {
+    const dpr = window.devicePixelRatio || 1;
     let w = canvas.clientWidth;
     let h = canvas.clientHeight;
     if (!w) w = window.innerWidth;
     if (!h) h = window.innerHeight;
-    canvas.width = w;
-    canvas.height = h;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    ctx.scale(dpr, dpr);
     drops = Array.from({ length: DROP_COUNT }, () => makeDrop(w, h));
   }
 
