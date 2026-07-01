@@ -131,6 +131,7 @@
     if (typeof updateNextButtons    === 'function') updateNextButtons();
     if (typeof updateHintBar        === 'function') updateHintBar();
     if (typeof updateOrientDerivedDisplay === 'function') updateOrientDerivedDisplay();
+    if (typeof updateAnalyseButton  === 'function') updateAnalyseButton();
   });
 
   window.showErrorToast = showErrorToast;
@@ -510,6 +511,11 @@ h1, h2, h3 { font-weight: inherit; font-size: inherit; margin: 0; }
 /* Upload-begin button visibility is driven solely by the body.has-file class,
    so it never depends on a render function firing or DOM-sibling lookups. */
 body.has-file #upload-begin-btn { display: none !important; }
+/* Setup "Next: Orient" CTA only shown after a file is loaded */
+body:not(.has-file) #next-setup-wrap { display: none !important; }
+/* Orient tab: hide instructions when no file; show placeholder instead */
+body:not(.has-file) #orient-file-instructions { display: none !important; }
+body.has-file #orient-no-file-placeholder { display: none !important; }
 
 /* Results chrome must vanish the instant results are cleared (e.g. loading a new
    part after a solve). CSS only ever HIDES here — the existing solve code keeps
@@ -1337,12 +1343,24 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M1.5 5a3.5 3.5 0 1 0 1-2.5"/><polyline points="1,1 1,3 3,3" fill="none"/></svg>
         Start New File
       </button>
+
+      <!-- Next step CTA — only shown after a file is loaded (body.has-file) -->
+      <div id="next-setup-wrap" class="tab-cta">
+        <button id="next-setup" class="btn primary"
+          style="width:100%;font-family:'Rajdhani',sans-serif;letter-spacing:.08em"
+          onclick="nextStepFromTab('setup')">
+          Next: Orient →
+        </button>
+      </div>
     </div>
 
     <!-- ORIENTATION TAB -->
     <div id="tab-orient" style="display:none;padding:var(--sp-2) var(--sp-3)">
       <h2 class="section-title">PRINT ORIENTATION</h2>
-      <div style="font-size:11px;color:var(--text-lo);margin-bottom:14px;line-height:1.7">
+      <div id="orient-no-file-placeholder" style="font-size:11px;color:var(--text-mid);text-align:center;padding:20px 0;border:1px dashed var(--border);border-radius:3px;margin-bottom:14px">
+        Upload a part to set print orientation.
+      </div>
+      <div id="orient-file-instructions" style="font-size:11px;color:var(--text-lo);margin-bottom:14px;line-height:1.7">
         Hover over a face — it highlights gold. Click to snap that face flat to the build plate.
         <br><span style="color:var(--gold)99">Right-drag to pan · left-drag to rotate · scroll to zoom</span>
       </div>
@@ -1418,6 +1436,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
 
       <!-- FTC Load Case Library -->
       <div style="margin-bottom:16px;padding-top:14px;border-top:1px solid var(--border)">
+        <div style="font-size:10px;color:var(--text-lo);margin-bottom:8px">Not sure what force to enter? Try an FTC preset →</div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
           <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label)">FTC LOAD PRESETS</div>
           <button class="btn" id="load-case-toggle-btn" style="font-size:10px;padding:2px 8px" onclick="toggleLoadCases()" aria-expanded="false" id="lc-toggle-btn"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="currentColor"><polygon points="1.5,3 7.5,3 4.5,7"/></svg> show</button>
@@ -1521,6 +1540,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <div style="font-size:10px;color:var(--text-lo);margin-top:5px;line-height:1.5">
           Set the bed face in the Orientation tab, then add forces — orientation is computed automatically from the angle between your forces and layer direction.
         </div>
+        <div id="orient-derived-nav" style="font-size:10px;margin-top:4px;display:none"></div>
       </div>
 
       <div style="margin-bottom:16px;padding-top:14px;border-top:1px solid var(--border)">
@@ -1571,7 +1591,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <!-- Scrollable content area -->
       <div style="flex:1;overflow-y:auto;padding:var(--sp-2) var(--sp-3)">
         <h2 class="section-title">ANALYSIS RESULTS</h2>
-        <div id="results-placeholder" style="font-size:11px;color:var(--text-mid);text-align:center;padding:40px 0">No analysis run yet.<br>Place constraints and forces, then click Analyse.</div>
+        <div id="results-placeholder" style="font-size:11px;color:var(--text-mid);text-align:center;padding:40px 0">No analysis run yet.<br>Place constraints and forces, then click the ANALYSE button below.</div>
         <div id="results-content" aria-live="polite" aria-atomic="false" style="display:none"></div>
 
       <!-- A vs B comparison panel -->
@@ -1923,12 +1943,12 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <button id="analyse-btn" class="btn primary" style="width:100%;padding:12px;font-size:11px;letter-spacing:.04em" onclick="runAnalysis()" disabled>
         ANALYSE
       </button>
-      <div id="analyse-status" aria-live="polite" aria-atomic="true" style="font-size:11px;color:var(--text-lo);text-align:center;margin-top:6px">Upload a file, place a bolt constraint and a force to enable analysis.</div>
-      <button id="convergence-btn" style="display:none;width:100%;margin-top:6px;padding:8px;font-size:11px;background:transparent;border:1px solid var(--border-mid);color:var(--text-mid);border-radius:3px;cursor:pointer;font-family:inherit" onclick="runConvergenceStudy()"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><rect x="1" y="1" width="8" height="8" rx="1"/><line x1="1" y1="4" x2="9" y2="4"/><line x1="1" y1="7" x2="9" y2="7"/><line x1="4" y1="1" x2="4" y2="9"/><line x1="7" y1="1" x2="7" y2="9"/></svg> MESH CONVERGENCE STUDY</button>
+      <div id="analyse-status" aria-live="polite" aria-atomic="true" style="font-size:11px;color:var(--text-lo);text-align:center;margin-top:6px">Upload a part to begin.</div>
+      <button id="convergence-btn" style="display:none;width:100%;margin-top:6px;padding:8px;font-size:11px;background:transparent;border:1px solid var(--border-mid);color:var(--text-mid);border-radius:3px;cursor:pointer;font-family:inherit;line-height:1.3" onclick="runConvergenceStudy()"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><rect x="1" y="1" width="8" height="8" rx="1"/><line x1="1" y1="4" x2="9" y2="4"/><line x1="1" y1="7" x2="9" y2="7"/><line x1="4" y1="1" x2="4" y2="9"/><line x1="7" y1="1" x2="7" y2="9"/></svg> MESH CONVERGENCE STUDY<br><span style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text-lo)">Checks if results would change with a finer mesh.</span></button>
       <div style="display:flex;gap:4px;margin-top:4px">
-        <button id="export-pdf-btn" style="display:none;flex:1;padding:8px;font-size:11px;background:transparent;border:1px solid var(--gold-glow);color:var(--gold);border-radius:3px;cursor:pointer;font-family:inherit;letter-spacing:.08em" onclick="exportFullReportPDF()"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="1.5" x2="5" y2="7"/><polyline points="2.5,5 5,7.5 7.5,5"/><line x1="1.5" y1="9" x2="8.5" y2="9"/></svg> REPORT PDF</button>
-        <button id="export-zip-btn" style="display:none;flex:1;padding:8px;font-size:11px;background:transparent;border:1px solid var(--border);color:var(--text-mid);border-radius:3px;cursor:pointer;font-family:inherit;letter-spacing:.08em" onclick="exportZip()" title="Export session + report bundle"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="1.5" x2="5" y2="7"/><polyline points="2.5,5 5,7.5 7.5,5"/><line x1="1.5" y1="9" x2="8.5" y2="9"/></svg> EXPORT ZIP</button>
-        <button id="export-img-btn" style="display:none;flex:1;padding:8px;font-size:11px;background:transparent;border:1px solid var(--border);color:var(--text-mid);border-radius:3px;cursor:pointer;font-family:inherit;letter-spacing:.08em" onclick="exportSummaryImage()" title="Export summary image for sharing"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1.5" width="8" height="7" rx="1"/><circle cx="3.5" cy="4" r="1"/><polyline points="1,8 3.5,5.5 5.5,7 7,5.5 9,8"/></svg> IMAGE</button>
+        <button id="export-pdf-btn" style="display:none;flex:1;padding:8px;font-size:11px;background:transparent;border:1px solid var(--gold-glow);color:var(--gold);border-radius:3px;cursor:pointer;font-family:inherit;letter-spacing:.08em;line-height:1.2" onclick="exportFullReportPDF()"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="1.5" x2="5" y2="7"/><polyline points="2.5,5 5,7.5 7.5,5"/><line x1="1.5" y1="9" x2="8.5" y2="9"/></svg> REPORT PDF<br><span style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--gold-dim)">Full analysis report</span></button>
+        <button id="export-zip-btn" style="display:none;flex:1;padding:8px;font-size:11px;background:transparent;border:1px solid var(--border);color:var(--text-mid);border-radius:3px;cursor:pointer;font-family:inherit;letter-spacing:.08em;line-height:1.2" onclick="exportZip()" title="Export session + report bundle"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="1.5" x2="5" y2="7"/><polyline points="2.5,5 5,7.5 7.5,5"/><line x1="1.5" y1="9" x2="8.5" y2="9"/></svg> EXPORT ZIP<br><span style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text-lo)">All session files</span></button>
+        <button id="export-img-btn" style="display:none;flex:1;padding:8px;font-size:11px;background:transparent;border:1px solid var(--border);color:var(--text-mid);border-radius:3px;cursor:pointer;font-family:inherit;letter-spacing:.08em;line-height:1.2" onclick="exportSummaryImage()" title="Export summary image for sharing"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1.5" width="8" height="7" rx="1"/><circle cx="3.5" cy="4" r="1"/><polyline points="1,8 3.5,5.5 5.5,7 7,5.5 9,8"/></svg> IMAGE<br><span style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text-lo)">Results summary image</span></button>
       </div>
       <div id="session-indicator" style="font-size:10px;color:var(--text-lo);text-align:center;margin-top:4px;letter-spacing:.06em"></div>
     </div>
@@ -4666,11 +4686,17 @@ function calcEffectiveMul(infill, walls, pattern, orient) {
 function updateOrientDerivedDisplay() {
   const labelEl = document.getElementById('orient-derived-label');
   const badgeEl = document.getElementById('orient-derived-badge');
+  const navEl   = document.getElementById('orient-derived-nav');
   if (!labelEl) return;
+
+  function _setNav(html) {
+    if (navEl) { navEl.innerHTML = html; navEl.style.display = html ? 'block' : 'none'; }
+  }
 
   if (!S.fileData) {
     labelEl.textContent = 'Upload a part first';
     if (badgeEl) { badgeEl.textContent = ''; }
+    _setNav('');
     return;
   }
 
@@ -4678,6 +4704,7 @@ function updateOrientDerivedDisplay() {
     labelEl.textContent = 'Set bed face in Orientation tab first';
     labelEl.style.color = 'var(--warn)';
     if (badgeEl) { badgeEl.textContent = ''; }
+    _setNav('<button onclick="switchTab(\'orient\')" style="background:none;border:none;padding:0;cursor:pointer;color:var(--gold);font-size:10px;font-family:inherit;text-decoration:underline">← Set in Orient</button>');
     return;
   }
 
@@ -4687,6 +4714,7 @@ function updateOrientDerivedDisplay() {
       : 'Add forces to derive orientation';
     labelEl.style.color = 'var(--text-mid)';
     if (badgeEl) { badgeEl.textContent = ''; }
+    _setNav('<button onclick="switchTab(\'loads\')" style="background:none;border:none;padding:0;cursor:pointer;color:var(--gold);font-size:10px;font-family:inherit;text-decoration:underline">← Add in Loads</button>');
     return;
   }
 
@@ -4714,6 +4742,7 @@ function updateOrientDerivedDisplay() {
     badgeEl.style.color = colors[orient] || 'var(--text-lo)';
     badgeEl.style.borderColor = colors[orient] || 'var(--border)';
   }
+  _setNav('');
 
   // Sync hidden select for session save compatibility
   const sel = document.getElementById('s-orient');
@@ -4793,7 +4822,7 @@ function updateAnalyseButton() {
           ' Forces cancel out — net load near zero. Results will show near-zero stress everywhere.';
         msg.style.color = 'var(--warn)';
       } else {
-        msg.textContent = `Ready — ${S.bolts.length} bolt(s), ${S.forces.length} force(s).`;
+        msg.textContent = '';
         msg.style.color = '';
       }
     } else {
@@ -5144,7 +5173,7 @@ function showResults(s) {
   const oldBadge = document.getElementById('convergence-badge');
   if (oldBadge) oldBadge.remove();
 
-  const sfColor = s.safetyFactorAvailable ? (s.safetyFactor >= 2 ? 'var(--gold)' : s.safetyFactor >= 1 ? 'var(--gold)' : 'var(--text-hi)') : 'var(--text-lo)';
+  const sfColor = s.safetyFactorAvailable ? (s.safetyFactor >= 2 ? 'var(--gold)' : s.safetyFactor >= 1 ? 'var(--gold)' : 'var(--danger)') : 'var(--text-lo)';
   const yieldNote = s.yielding
     ? '<span style="color:var(--danger)"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Yield predicted at this load</span>'
     : '<span style="color:var(--success)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> Below yield threshold</span>';
@@ -5152,7 +5181,7 @@ function showResults(s) {
   // ── Calibration status badge ─────────────────────────────────────────────
   const calibBadge = s.calibrationId
     ? `<div style="display:inline-flex;align-items:center;gap:5px;padding:3px 8px;background:var(--gold-faint);border:1px solid var(--gold-glow);border-radius:2px;font-size:9px;color:var(--success);margin-bottom:10px;letter-spacing:.06em"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="3" y1="3" x2="7" y2="7"/><line x1="7" y1="3" x2="3" y2="7"/></svg> CALIBRATED PROFILE ACTIVE</div>`
-    : `<div style="display:inline-flex;align-items:center;gap:5px;padding:3px 8px;background:var(--bg-card);border:1px solid var(--border);border-radius:2px;font-size:9px;color:var(--text-lo);margin-bottom:10px;letter-spacing:.06em"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4"><polygon points="5,1 9,5 5,9 1,5"/></svg> LITERATURE DEFAULTS</div>`;
+    : `<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap"><div style="display:inline-flex;align-items:center;gap:5px;padding:3px 8px;background:var(--bg-card);border:1px solid var(--border);border-radius:2px;font-size:9px;color:var(--text-lo);letter-spacing:.06em"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4"><polygon points="5,1 9,5 5,9 1,5"/></svg> LITERATURE DEFAULTS</div><span style="font-size:9px;color:var(--text-lo)">· Calibrate from the Start Screen &nbsp;·&nbsp; See Sources from the Start Screen</span></div>`;
 
   // ── Build the top-line action sentence ────────────────────────────────
   // Governing failure mode
@@ -5237,6 +5266,7 @@ function showResults(s) {
         <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">SAFETY FACTOR</div>
         <div style="font-size:18px;font-weight:500;color:${sfColor}">${s.safetyFactor.toFixed(2)}×</div>
         <div style="font-size:10px;color:var(--text-lo);margin-top:2px">yield / peak</div>
+        <div style="font-size:9px;color:var(--text-lo);margin-top:3px">Recommended minimum: 2×</div>
         ${s.safetyfactorLow !== undefined ? (() => {
           const lo = s.safetyfactorLow, hi = s.safetyFactorHigh ?? s.safetyfactorLow, mid = s.safetyFactor;
           const span = Math.max(hi - lo, 0.01);
