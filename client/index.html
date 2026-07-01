@@ -533,7 +533,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
      State variable: _landingScreenActive (boolean, defined in <script> below)
      ═══════════════════════════════════════════════════════════════════════════ -->
 <div id="landing-screen" style="
-  position:fixed;inset:0;z-index:9999;
+  position:fixed;inset:0;z-index:9998;
   background:var(--bg-base);
   display:flex;flex-direction:column;align-items:center;justify-content:center;
   overflow:hidden">
@@ -1058,7 +1058,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
     <div id="badges" style="display:none;position:absolute;bottom:54px;left:12px;display:flex;gap:8px">
       <div id="mesh-stats-badge" style="display:none;padding:3px 8px;background:var(--bg-panel);border:1px solid var(--border);border-radius:3px;font-size:10px;color:var(--text-mid);letter-spacing:.06em"></div>
       <span id="badge-bolts"  style="font-size:11px;background:var(--gold-faint);border:1px solid var(--gold-faint);color:var(--gold);padding:3px 8px;border-radius:2px"><svg width="11" height="11" viewBox="0 0 11 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5.5" cy="5.5" r="4"/><circle cx="5.5" cy="5.5" r="1.5" fill="currentColor" stroke="none"/></svg> 0 bolts</span>
-      <span id="badge-forces" style="font-size:11px;background:var(--gold-faint);border:1px solid var(--gold)22;color:var(--gold);padding:3px 8px;border-radius:2px"<svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg>> 0 forces</span>
+      <span id="badge-forces" style="font-size:11px;background:var(--gold-faint);border:1px solid var(--gold)22;color:var(--gold);padding:3px 8px;border-radius:2px"><svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> 0 forces</span>
     </div>
 
     <!-- Stress legend — title and swatch stack share one flex container so
@@ -1409,7 +1409,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <!-- STEP 2: Forces -->
       <div style="margin-bottom:24px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-          <div style="font-size:11px;letter-spacing:.04em;color:var(--gold)88"<svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg>> STEP 2 — APPLY FORCE</div>
+          <div style="font-size:11px;letter-spacing:.04em;color:var(--gold)88"><svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> STEP 2 — APPLY FORCE</div>
           <button class="btn" id="place-force-btn" onclick="openForcePopupDirect()" style="color:var(--gold)88;border-color:var(--gold)33">+ Place Force</button>
         </div>
         <div style="font-size:11px;color:var(--text-lo);margin-bottom:8px">Click <svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> FORCE in the toolbar, then click anywhere on the 3D model.</div>
@@ -4894,7 +4894,7 @@ async function runAnalysis() {
     if (dataStd.summary.nodesPerElem === 10) {
       showConvergenceBadge('c3d10', 0, dataStd.summary.nodeCount, 0);
       S._convergenceData = {
-        standard: { nodes: dataStd.summary.nodeCount, maxVM: dataStd.summary.maxVonMisesMPa, sf: dataStd.summary.safetyFactor },
+        standard: { nodes: dataStd.summary.nodeCount, maxVM: dataStd.summary.maxVonMisesMPa, sf: dataStd.summary.safetyFactor, safetyFactorAvailable: dataStd.summary.safetyFactorAvailable },
         fine: null, changePct: 0, converged: true, skipped: true,
       };
     } else {
@@ -4925,7 +4925,7 @@ async function runAnalysis() {
       friendlyFix = 'Your constraint setup may be under-constrained — check that bolts are placed on holes that are actually fixing the part. Try a coarser mesh (lower mesh quality) or add an additional bolt constraint.';
     } else if (errMsg.includes('401') || errMsg.includes('Unauthorized')) {
       friendlyErr = 'Authentication failed';
-      friendlyFix = 'Your Onshape API key has expired or is incorrect. Go to Settings → Calibrate → change key, or generate a new key at dev-portal.onshape.com/keys.';
+      friendlyFix = 'Your Onshape API key has expired or is incorrect. Go to the Start Screen → Calibrate → update your API key, or generate a new key at dev-portal.onshape.com/keys.';
     } else if (errMsg.includes('Failed to fetch') || errMsg.includes('NetworkError') || errMsg.includes('ECONNREFUSED')) {
       friendlyErr = 'Cannot reach the STORMFEA server';
       friendlyFix = 'The Node.js server is not running. Open a terminal in the stormfea-local folder and run: <code>npm start</code>. Then refresh this page.';
@@ -4966,11 +4966,22 @@ async function runAnalysis() {
     // C3D10 already converged — no auto-upgrade needed
     return;
   }
+  if (!dataStd.summary.safetyFactorAvailable) {
+    // No SF data: fine mesh would also produce no SF — skip it and surface a note.
+    // null > 3.0 evaluates false (null coerces to 0), so without this guard we
+    // would always launch an expensive fine-mesh analysis that produces no useful output.
+    showConvergenceBadge('c3d4_skipped', 0, dataStd.summary.nodeCount, 0);
+    S._convergenceData = {
+      standard: { nodes: dataStd.summary.nodeCount, maxVM: dataStd.summary.maxVonMisesMPa, sf: null, safetyFactorAvailable: false },
+      fine: null, changePct: 0, converged: true, skipped: true,
+    };
+    return;
+  }
   if (stdSF > 3.0) {
     // C3D4 with high SF: fine mesh not run, but C3D4 may still underpredict bending stress.
     showConvergenceBadge('c3d4_skipped', 0, dataStd.summary.nodeCount, 0);
     S._convergenceData = {
-      standard: { nodes: dataStd.summary.nodeCount, maxVM: dataStd.summary.maxVonMisesMPa, sf: stdSF },
+      standard: { nodes: dataStd.summary.nodeCount, maxVM: dataStd.summary.maxVonMisesMPa, sf: stdSF, safetyFactorAvailable: dataStd.summary.safetyFactorAvailable },
       fine: null, changePct: 0, converged: true, skipped: true,
     };
     return;
@@ -5197,7 +5208,14 @@ function showResults(s) {
   }
 
   let actionHTML = '';
-  if (govSF < 1.0) {
+  // Guard govSF comparisons on safetyFactorAvailable: null coerces to 0 in JS,
+  // which would falsely trigger "Will fail" when SF data is simply unavailable.
+  if (!s.safetyFactorAvailable || govSF === null) {
+    actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--border);border-radius:6px;margin-bottom:16px">
+      <div style="font-size:13px;font-weight:600;color:var(--text-lo);margin-bottom:4px">Safety factor unavailable</div>
+      <div style="font-size:11px;color:var(--text-lo)">Not enough material data to compute a safety factor for this configuration.</div>
+    </div>`;
+  } else if (govSF < 1.0) {
     const failN = U.forceStr(s.estimatedFailForce);
     const modeStr = govMode ? govMode.mode.toLowerCase() : 'bulk yield';
     actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--text-hi)66;border-radius:6px;margin-bottom:16px">
@@ -5370,7 +5388,7 @@ function showResults(s) {
           <div style="padding:8px;background:var(--gold-faint);border-radius:3px;border:1px solid var(--gold-glow)">
             <div style="font-size:9px;color:var(--gold-dim);letter-spacing:.1em;margin-bottom:3px">STORMFEA (orthotropic)</div>
             <div style="font-size:16px;font-weight:700;color:${sfColor};font-family:'Outfit',system-ui,sans-serif">
-              ${s.safetyFactor.toFixed(2)}<span style="font-size:10px">×</span>
+              ${s.safetyFactorAvailable ? s.safetyFactor.toFixed(2) : 'N/A'}<span style="font-size:10px">×</span>
             </div>
             <div style="font-size:10px;color:var(--text-lo)">models FDM anisotropy</div>
           </div>
@@ -6379,16 +6397,18 @@ function openSplitView() {
 
   const sfA = AB.baseline.summary.safetyFactor;
   const sfB = AB.comparison.summary.safetyFactor;
-  // Both SF values must be available for comparison
-  if (sfA === null || sfB === null) return;
+  const sfAAvail = AB.baseline.summary.safetyFactorAvailable;
+  const sfBAvail = AB.comparison.summary.safetyFactorAvailable;
+  // Use the boolean flag — guards null, undefined, and false uniformly.
+  // The old === null check would pass on undefined, causing .toFixed() to throw.
   const sfCol = sf => sf >= 2 ? 'var(--success)' : sf >= 1 ? 'var(--warn)' : 'var(--danger)';
 
   document.getElementById('split-name-a').textContent = AB.baseline.fileName  || 'Design A';
   document.getElementById('split-name-b').textContent = AB.comparison.fileName || 'Design B';
-  document.getElementById('split-sf-a').textContent   = 'SF ' + sfA.toFixed(2) + '×';
-  document.getElementById('split-sf-b').textContent   = 'SF ' + sfB.toFixed(2) + '×';
-  document.getElementById('split-sf-a').style.color   = sfCol(sfA);
-  document.getElementById('split-sf-b').style.color   = sfCol(sfB);
+  document.getElementById('split-sf-a').textContent   = sfAAvail ? ('SF ' + sfA.toFixed(2) + '×') : 'SF unavailable';
+  document.getElementById('split-sf-b').textContent   = sfBAvail ? ('SF ' + sfB.toFixed(2) + '×') : 'SF unavailable';
+  if (sfAAvail) document.getElementById('split-sf-a').style.color = sfCol(sfA);
+  if (sfBAvail) document.getElementById('split-sf-b').style.color = sfCol(sfB);
 
   const ov = document.getElementById('split-overlay');
   if (ov) ov.style.display = 'block';
@@ -8659,8 +8679,10 @@ async function exportSummaryImage() {
     const out = drawSummaryCanvas();
     if (!out) throw new Error('Could not render summary canvas — run an analysis first.');
 
+    const sfAvail = S.results.summary.safetyFactorAvailable;
     const sf = S.results.summary.safetyFactor;
-    const filename = `stressform-${(S.fileData?.fileName||'part').replace(/\.[^.]+$/,'')}-sf${sf.toFixed(2)}.png`;
+    const sfStr = sfAvail ? sf.toFixed(2) : 'sf-unavailable';
+    const filename = `stressform-${(S.fileData?.fileName||'part').replace(/\.[^.]+$/,'')}-${sfStr}.png`;
     out.toBlob(blob => {
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
@@ -9435,6 +9457,7 @@ function renderABComparison() {
     return `<span style="color:${color}">${sign}${rounded}%</span>`;
   };
 
+  const sfAAvail = A.safetyFactorAvailable, sfBAvail = B.safetyFactorAvailable;
   const sfA = A.safetyFactor, sfB = B.safetyFactor;
   const vmA = A.maxVonMisesMPa, vmB = B.maxVonMisesMPa;
   const dA  = A.maxDisplacementMm, dB = B.maxDisplacementMm;
@@ -9493,14 +9516,19 @@ function renderABComparison() {
       <div style="text-align:right">${deltaHtml}</div>
     </div>`;
 
-  const sfColor = sfB >= 2 ? 'var(--success)' : sfB >= 1 ? 'var(--warn)' : 'var(--danger)';
-  const verdict = sfB > sfA
+  const sfColor = sfBAvail && sfB >= 2 ? 'var(--success)' : sfBAvail && sfB >= 1 ? 'var(--warn)' : 'var(--danger)';
+  // Guard SF verdict on availability: comparing null values produces NaN percentages
+  const verdict = (!sfAAvail || !sfBAvail)
+    ? `<div style="padding:8px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:3px;font-size:11px;color:var(--text-lo);margin-bottom:12px">Safety factor unavailable for one or both designs</div>`
+    : sfB > sfA
     ? `<div style="padding:8px 12px;background:var(--gold-faint);border:1px solid var(--gold-glow);border-radius:3px;font-size:11px;color:var(--success);margin-bottom:12px"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> Design B is ${((sfB-sfA)/sfA*100).toFixed(0)}% stronger</div>`
     : sfB < sfA
     ? `<div style="padding:8px 12px;background:var(--bg-card);border:1px solid var(--danger)44;border-radius:3px;font-size:11px;color:var(--danger);margin-bottom:12px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Design B is ${((sfA-sfB)/sfA*100).toFixed(0)}% weaker</div>`
     : `<div style="padding:8px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:3px;font-size:11px;color:var(--text-lo);margin-bottom:12px">≈ No significant difference (&lt;2%)</div>`;
 
-  let resultsRows = row('Safety factor',      `${sfA.toFixed(2)}×`, `<b style="color:${sfColor}">${sfB.toFixed(2)}×</b>`, delta(sfA,sfB,'',true)) +
+  const sfAStr = sfAAvail ? `${sfA.toFixed(2)}×` : 'SF unavailable';
+  const sfBStr = sfBAvail ? `${sfB.toFixed(2)}×` : 'SF unavailable';
+  let resultsRows = row('Safety factor',      sfAStr, `<b style="color:${sfColor}">${sfBStr}</b>`, (sfAAvail && sfBAvail) ? delta(sfA,sfB,'',true) : '') +
     row('Fail force (' + U.forceLabel() + ')',  `${U.force(fA).toFixed(0)}`,  `${U.force(fB).toFixed(0)}`, delta(fA,fB,'',true)) +
     row('Peak stress (' + U.stressLabel() + ')', `${U.stress(vmA).toFixed(S.units==='imperial'?0:1)}`, `${U.stress(vmB).toFixed(S.units==='imperial'?0:1)}`, delta(vmA,vmB,'',false)) +
     row('Max displacement (' + U.lenLabel() + ')', `${U.len(dA).toFixed(S.units==='imperial'?4:3)}`, `${U.len(dB).toFixed(S.units==='imperial'?4:3)}`, delta(dA,dB,'',false));
@@ -9929,11 +9957,13 @@ const SHORTCUTS = {
     { key: 'Ctrl+Shift+Z', desc: 'Redo' },
   ],
   tabs: [
-    { key: '1',          desc: 'Setup tab' },
-    { key: '2',          desc: 'Orientation tab' },
-    { key: '3',          desc: 'Constraints tab' },
-    { key: '4',          desc: 'Settings tab' },
-    { key: '5',          desc: 'Results tab' },
+    { key: '1',          desc: 'SETUP tab' },
+    { key: '2',          desc: 'ORIENT tab' },
+    { key: '3',          desc: 'LOADS tab' },
+    { key: '4',          desc: 'MATERIAL tab' },
+    { key: '5',          desc: 'RESULTS tab' },
+    { key: '6',          desc: 'PREFS tab' },
+    { key: '7',          desc: 'DBG tab' },
   ],
   viewer: [
     { key: '← →',        desc: 'Rotate left / right' },
@@ -10010,6 +10040,10 @@ document.addEventListener('keydown', (e) => {
       closeShortcuts();
       break;
     case '?':
+      // Guard: landing screen is on top (z-index:9998); opening shortcuts behind it
+      // would leave the panel in display:flex but hidden, then pop up unexpectedly
+      // the moment the landing screen is dismissed.
+      if (_landingScreenActive) break;
       // Toggle shortcut reference panel
       const scOv = document.getElementById('shortcut-overlay');
       if (scOv && scOv.style.display !== 'none') closeShortcuts();
@@ -10734,8 +10768,8 @@ updateAnalyseButton();
 
 // Check server is alive
 fetch('/api/health').catch(() => {
-  document.getElementById('overlay-msg').textContent = 'Cannot reach server — is it running?';
-  document.getElementById('overlay').style.display = 'flex';
+  hideOverlay();
+  showErrorToast('Cannot reach server — is it running? Start the Node.js server with: npm start', { severity: 'warn', source: '[health]' });
 });
 </script>
 <script>
