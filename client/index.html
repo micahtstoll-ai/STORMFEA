@@ -1002,19 +1002,11 @@ body:not(.has-results) #btn-stress { display: none !important; }
     <div id="dropzone-wrapper"
          style="position:absolute;inset:0;display:flex;flex-direction:row;">
 
-      <!-- File requirement hint -->
-      <div style="position:absolute;top:0;left:0;right:0;z-index:2;text-align:center;padding:7px 12px;font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);letter-spacing:.04em;pointer-events:none">
-        Drop a part file (.stl / .step) to begin &nbsp;·&nbsp; <span style="color:var(--text-lo)">Optionally also drop a .gcode to import print settings — either zone accepts any supported file</span>
-      </div>
-
-      <!-- STL/STEP zone (original) -->
+      <!-- Unified drop zone — accepts part files (.stl/.step) and GCode -->
       <div id="dropzone"
            onclick="document.getElementById('filein').click()"
-           ondragover="event.preventDefault();this.classList.add('drag-over')"
-           ondragleave="this.classList.remove('drag-over')"
-           ondrop="event.preventDefault();this.classList.remove('drag-over');handleFile(event.dataTransfer.files[0])"
-           style="flex:3;display:flex;flex-direction:column;align-items:center;justify-content:center;
-                  cursor:pointer;border:1px solid var(--border);border-right:none;
+           style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
+                  cursor:pointer;border:1px solid var(--border);
                   -webkit-mask-image:radial-gradient(ellipse 80% 80% at 50% 50%,black 40%,transparent 100%)">
         <div id="dropzone-compass" style="opacity:.28;margin-bottom:20px;animation:spin-slow 12s linear infinite;transform-origin:center">
           <svg width="52" height="52" viewBox="0 0 34 34" fill="none" aria-hidden="true">
@@ -1032,41 +1024,17 @@ body:not(.has-results) #btn-stress { display: none !important; }
           </svg>
         </div>
         <div style="font-family:'Rajdhani',sans-serif;font-size:22px;font-weight:700;letter-spacing:.10em;color:var(--text-lo)">LOAD PART</div>
-        <div style="font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo);margin-top:var(--sp-1);letter-spacing:.04em">drag &amp; drop &nbsp;·&nbsp; .stl &nbsp;·&nbsp; .step</div>
-        <input id="filein" type="file" accept=".stl,.step,.stp" style="display:none" onchange="handleFile(this.files[0])">
-      </div>
-
-      <!-- Secondary drop zone — accepts part files and GCode -->
-      <div id="gcode-drop-zone"
-           onclick="document.getElementById('gcode-filein').click()"
-           style="flex:2;display:flex;flex-direction:column;align-items:center;justify-content:center;
-                  cursor:pointer;border:1px solid var(--border);border-left:1px dashed var(--border);
-                  -webkit-mask-image:radial-gradient(ellipse 80% 80% at 50% 50%,black 40%,transparent 100%)">
-        <div id="gcode-drop-icon" style="opacity:.28;margin-bottom:16px;animation:spin-slow 18s linear infinite;transform-origin:center">
-          <svg width="44" height="44" viewBox="0 0 34 34" fill="none" aria-hidden="true">
-            <circle cx="17" cy="17" r="15.5" fill="none" stroke="var(--gold)" stroke-width="1.1" opacity=".7" stroke-dasharray="3 2"/>
-            <line x1="10" y1="12" x2="24" y2="12" stroke="var(--gold)" stroke-width="1.1" stroke-linecap="round" opacity=".8"/>
-            <line x1="10" y1="17" x2="24" y2="17" stroke="var(--gold)" stroke-width="1.1" stroke-linecap="round" opacity=".6"/>
-            <line x1="10" y1="22" x2="24" y2="22" stroke="var(--gold)" stroke-width="1.1" stroke-linecap="round" opacity=".4"/>
-            <polyline points="14,9 17,6 20,9" fill="none" stroke="var(--gold)" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" opacity=".6"/>
-          </svg>
-        </div>
-        <div style="font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;letter-spacing:.10em;color:var(--text-lo)">LOAD FILE</div>
         <div style="font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo);margin-top:var(--sp-1);letter-spacing:.04em">drag &amp; drop &nbsp;·&nbsp; .stl &nbsp;·&nbsp; .step &nbsp;·&nbsp; .gcode</div>
-        <input id="gcode-filein" type="file" accept=".stl,.step,.stp,.gcode" style="display:none">
+        <input id="filein" type="file" accept=".stl,.step,.stp,.gcode" style="display:none">
       </div>
 
     </div><!-- end #dropzone-wrapper -->
     <style>
+      #dropzone { transition: border-color .15s, background .15s; }
       #dropzone.drag-over { border-color: var(--gold); }
       #dropzone.drag-over #dropzone-compass { animation-duration: 2s; opacity: .6; }
       #dropzone:hover #dropzone-compass { animation-duration: 4s; opacity: .45; }
-      #gcode-drop-zone { transition: border-color .15s, background .15s; }
-      #gcode-drop-zone:hover { border-color: var(--gold); }
-      #gcode-drop-zone:hover #gcode-drop-icon { animation-duration: 6s; opacity: .45; }
-      #gcode-drop-zone.drag-over { border-color: var(--gold); }
-      #gcode-drop-zone.drag-over #gcode-drop-icon { animation-duration: 3s; opacity: .65; }
-      #gcode-drop-zone.drop-error { border-color: #c0392b; }
+      #dropzone.drop-error { border-color: #c0392b; }
     </style>
 
     <!-- Toolbar (shown when file loaded) -->
@@ -11024,7 +10992,7 @@ fetch('/api/health').catch(() => {
 })();
 </script>
 <script>
-/* ── Secondary drop zone events (accepts .stl / .step / .gcode) ─────────── */
+/* ── Drop zone events (accepts .stl / .step / .gcode) ─────────── */
 (function () {
   'use strict';
   function _acceptAnyFile(file, zone) {
@@ -11040,13 +11008,13 @@ fetch('/api/health').catch(() => {
     }
     zone.classList.add('drop-error');
     setTimeout(function() { zone.classList.remove('drop-error'); }, 1200);
-    if (window.showErrorToast) showErrorToast('Unsupported file. Upload .stl, .step, or .gcode.', { severity: 'warn', source: '[gcode-drop-zone]' });
+    if (window.showErrorToast) showErrorToast('Unsupported file. Upload .stl, .step, or .gcode.', { severity: 'warn', source: '[dropzone]' });
     return false;
   }
 
-  var zone = document.getElementById('gcode-drop-zone');
-  var input = document.getElementById('gcode-filein');
-  if (!zone || !input) { console.warn('[gcode-drop-zone] elements not found'); return; }
+  var zone = document.getElementById('dropzone');
+  var input = document.getElementById('filein');
+  if (!zone || !input) { console.warn('[dropzone] elements not found'); return; }
 
   zone.addEventListener('dragover', function(e) {
     e.preventDefault();
