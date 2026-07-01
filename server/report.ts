@@ -82,8 +82,8 @@ export function generateHtmlReport(
   * { box-sizing:border-box; margin:0; padding:0; }
   body { font-family:'Source Sans Pro',sans-serif; color:#1a1814; background:#fff; font-size:11px; }
   .page { width:100%; max-width:960px; margin:0 auto; padding:24px 28px; }
-  .header { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:2px solid #B8860B; padding-bottom:12px; margin-bottom:16px; }
-  .title { font-family:'Rajdhani',sans-serif; font-size:22px; font-weight:700; color:#B8860B; letter-spacing:.1em; }
+  .header { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:2px solid #C9A227; padding-bottom:12px; margin-bottom:16px; }
+  .title { font-family:'Rajdhani',sans-serif; font-size:22px; font-weight:700; color:#C9A227; letter-spacing:.1em; }
   .subtitle { font-size:10px; color:#888; letter-spacing:.08em; margin-top:2px; }
   .meta { text-align:right; font-size:10px; color:#888; line-height:1.6; }
   .verdict-box { padding:12px 16px; border-radius:4px; margin-bottom:14px; background:${verdictBg}; border:1px solid ${sfColor}44; }
@@ -95,7 +95,7 @@ export function generateHtmlReport(
   .card-label { font-size:9px; color:#888; text-transform:uppercase; letter-spacing:.1em; margin-bottom:2px; }
   .card-value { font-size:16px; font-weight:600; color:#1a1814; }
   .card-unit { font-size:10px; color:#888; }
-  .section-title { font-family:'Rajdhani',sans-serif; font-size:12px; font-weight:700; letter-spacing:.15em; color:#B8860B; text-transform:uppercase; border-bottom:1px solid #e0d8c8; padding-bottom:4px; margin-bottom:8px; }
+  .section-title { font-family:'Rajdhani',sans-serif; font-size:12px; font-weight:700; letter-spacing:.15em; color:#C9A227; text-transform:uppercase; border-bottom:1px solid #e0d8c8; padding-bottom:4px; margin-bottom:8px; }
   table { width:100%; border-collapse:collapse; font-size:10px; }
   th { background:#8B6914; color:#fff; padding:5px 8px; text-align:left; font-size:10px; font-weight:600; }
   .settings-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin-bottom:14px; }
