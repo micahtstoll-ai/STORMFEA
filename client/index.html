@@ -1004,7 +1004,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
 
       <!-- File requirement hint -->
       <div style="position:absolute;top:0;left:0;right:0;z-index:2;text-align:center;padding:7px 12px;font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);letter-spacing:.04em;pointer-events:none">
-        <span style="color:var(--text-mid)">Required:</span> Part file (.stl / .step) &nbsp;·&nbsp; <span style="color:var(--text-lo)">Optional:</span> GCode file (.gcode) — you can proceed with just a part file
+        Drop a part file (.stl / .step) to begin &nbsp;·&nbsp; <span style="color:var(--text-lo)">Optionally also drop a .gcode to import print settings — either zone accepts any supported file</span>
       </div>
 
       <!-- STL/STEP zone (original) -->
@@ -1036,7 +1036,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <input id="filein" type="file" accept=".stl,.step,.stp" style="display:none" onchange="handleFile(this.files[0])">
       </div>
 
-      <!-- GCode zone (new) -->
+      <!-- Secondary drop zone — accepts part files and GCode -->
       <div id="gcode-drop-zone"
            onclick="document.getElementById('gcode-filein').click()"
            style="flex:2;display:flex;flex-direction:column;align-items:center;justify-content:center;
@@ -1051,9 +1051,9 @@ body:not(.has-results) #btn-stress { display: none !important; }
             <polyline points="14,9 17,6 20,9" fill="none" stroke="var(--gold)" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" opacity=".6"/>
           </svg>
         </div>
-        <div style="font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;letter-spacing:.10em;color:var(--text-lo)">LOAD GCODE</div>
-        <div style="font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo);margin-top:var(--sp-1);letter-spacing:.04em">drag &amp; drop &nbsp;·&nbsp; .gcode</div>
-        <input id="gcode-filein" type="file" accept=".gcode" style="display:none">
+        <div style="font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;letter-spacing:.10em;color:var(--text-lo)">LOAD FILE</div>
+        <div style="font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo);margin-top:var(--sp-1);letter-spacing:.04em">drag &amp; drop &nbsp;·&nbsp; .stl &nbsp;·&nbsp; .step &nbsp;·&nbsp; .gcode</div>
+        <input id="gcode-filein" type="file" accept=".stl,.step,.stp,.gcode" style="display:none">
       </div>
 
     </div><!-- end #dropzone-wrapper -->
@@ -1562,11 +1562,23 @@ body:not(.has-results) #btn-stress { display: none !important; }
         </div>
       </div>
 
-      <!-- .gcode import badge — shown by applyGcodeParamsToUI(), hidden by default -->
-      <div id="gcode-import-badge" style="display:none;padding:8px 12px;background:rgba(212,175,55,0.08);border:1px solid rgba(212,175,55,0.3);border-radius:4px;margin-bottom:16px;font-size:10px;color:var(--gold)">
-        <svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg>
-        <span id="gcode-import-badge-text">Imported from .gcode</span>
-        <span id="gcode-import-badge-extra" style="color:var(--text-lo);margin-left:6px"></span>
+      <!-- GCode import — button to load a .gcode file for print-settings extraction -->
+      <div style="margin-bottom:16px;padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <div style="font-size:10px;letter-spacing:.06em;color:var(--text-lo)">GCODE (OPTIONAL)</div>
+          <button class="btn" style="font-size:10px;padding:3px 10px" onclick="document.getElementById('gcode-filein-material').click()">
+            <svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4.5 1v5.5"/><polyline points="2,4 4.5,6.5 7,4"/><line x1="1" y1="8.5" x2="8" y2="8.5"/></svg>
+            Load .gcode
+          </button>
+          <input id="gcode-filein-material" type="file" accept=".gcode" style="display:none">
+        </div>
+        <div style="font-size:10px;color:var(--text-lo);line-height:1.5">Auto-fills material, layer height, infill, and wall count from your slicer output.</div>
+        <!-- .gcode import badge — shown by applyGcodeParamsToUI() -->
+        <div id="gcode-import-badge" style="display:none;margin-top:8px;font-size:10px;color:var(--gold)">
+          <svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg>
+          <span id="gcode-import-badge-text">Imported from .gcode</span>
+          <span id="gcode-import-badge-extra" style="color:var(--text-lo);margin-left:6px"></span>
+        </div>
       </div>
 
       <div style="margin-bottom:16px">
@@ -3285,7 +3297,7 @@ async function handleFile(file) {
     }
 
     // Show UI
-    document.getElementById('dropzone').style.display = 'none';
+    document.getElementById('dropzone-wrapper').style.display = 'none';
     document.getElementById('toolbar').style.display = 'flex';
     document.getElementById('topright').style.display = 'flex';
     document.getElementById('badges').style.display = 'flex';
@@ -9269,6 +9281,8 @@ async function loadSession() {
         }
         const dropzone = document.getElementById('dropzone');
         if (dropzone) {
+          const wrapper = document.getElementById('dropzone-wrapper');
+          if (wrapper) wrapper.style.display = 'flex';
           const filein = document.getElementById('filein');
           dropzone.style.display = 'flex';
           dropzone.innerHTML = `<div style="text-align:center">
@@ -9960,7 +9974,7 @@ async function importFromOnshape() {
     const positions = new Float32Array(arr.buffer);
 
     loadMeshFromPositions(positions, data.triangleCount);
-    document.getElementById('dropzone').style.display = 'none';
+    document.getElementById('dropzone-wrapper').style.display = 'none';
     document.getElementById('toolbar').style.display = 'flex';
     document.getElementById('topright').style.display = 'flex';
     document.getElementById('badges').style.display = 'flex';
@@ -11010,19 +11024,24 @@ fetch('/api/health').catch(() => {
 })();
 </script>
 <script>
-/* ── G-code drop zone events ─────────────────────────────────────────────── */
+/* ── Secondary drop zone events (accepts .stl / .step / .gcode) ─────────── */
 (function () {
   'use strict';
-  function _acceptGcode(file, zone) {
+  function _acceptAnyFile(file, zone) {
     if (!file) return false;
-    if (!file.name.toLowerCase().endsWith('.gcode')) {
-      zone.classList.add('drop-error');
-      setTimeout(function() { zone.classList.remove('drop-error'); }, 1200);
-      if (window.showErrorToast) showErrorToast('Only .gcode files accepted. Got: ' + file.name, { severity: 'warn', source: '[gcode-drop-zone]' });
-      return false;
+    var name = file.name.toLowerCase();
+    if (name.endsWith('.gcode')) {
+      document.dispatchEvent(new CustomEvent('gcodeFileLoaded', { bubbles: true, detail: { file: file } }));
+      return true;
     }
-    document.dispatchEvent(new CustomEvent('gcodeFileLoaded', { bubbles: true, detail: { file: file } }));
-    return true;
+    if (name.endsWith('.stl') || name.endsWith('.step') || name.endsWith('.stp')) {
+      if (window.handleFile) handleFile(file);
+      return true;
+    }
+    zone.classList.add('drop-error');
+    setTimeout(function() { zone.classList.remove('drop-error'); }, 1200);
+    if (window.showErrorToast) showErrorToast('Unsupported file. Upload .stl, .step, or .gcode.', { severity: 'warn', source: '[gcode-drop-zone]' });
+    return false;
   }
 
   var zone = document.getElementById('gcode-drop-zone');
@@ -11041,12 +11060,23 @@ fetch('/api/health').catch(() => {
   zone.addEventListener('drop', function(e) {
     e.preventDefault();
     zone.classList.remove('drag-over');
-    _acceptGcode(e.dataTransfer.files[0], zone);
+    _acceptAnyFile(e.dataTransfer.files[0], zone);
   });
   input.addEventListener('change', function() {
-    if (input.files[0]) _acceptGcode(input.files[0], zone);
+    if (input.files[0]) _acceptAnyFile(input.files[0], zone);
     input.value = '';
   });
+
+  // Material-tab GCode button — dispatches the same gcodeFileLoaded event
+  var materialInput = document.getElementById('gcode-filein-material');
+  if (materialInput) {
+    materialInput.addEventListener('change', function() {
+      if (materialInput.files[0]) {
+        document.dispatchEvent(new CustomEvent('gcodeFileLoaded', { bubbles: true, detail: { file: materialInput.files[0] } }));
+      }
+      materialInput.value = '';
+    });
+  }
 })();
 </script>
 
