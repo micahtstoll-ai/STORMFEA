@@ -577,15 +577,15 @@ body:not(.has-results) #btn-stress { display: none !important; }
      Shown on app load. Hides app shell until a card is clicked.
      State variable: _landingScreenActive (boolean, defined in <script> below)
      ═══════════════════════════════════════════════════════════════════════════ -->
-<div id="sf-landing" style="
-  position:fixed;inset:0;z-index:9998;
-  display:flex;flex-direction:column;align-items:center;justify-content:center;
-  overflow:hidden">
+<div id="sf-landing" style="position:fixed;inset:0;z-index:9998;overflow:hidden">
 
   <canvas id="sf-rain-canvas"></canvas>
 
+  <!-- Content layer — single z-index:1 container above rain canvas -->
+  <div style="position:absolute;inset:0;z-index:1;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden">
+
   <!-- Wordmark -->
-  <div style="position:relative;z-index:1;display:flex;flex-direction:column;align-items:center;margin-bottom:52px;gap:10px">
+  <div style="display:flex;flex-direction:column;align-items:center;margin-bottom:52px;gap:10px">
 
     <!-- Compass mark (reuse exact SVG from header) -->
     <svg width="52" height="52" viewBox="0 0 34 34" fill="none" aria-label="STORMFEA compass mark">
@@ -613,7 +613,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
   </div>
 
   <!-- Card rail -->
-  <div style="position:relative;z-index:1;display:flex;flex-direction:column;gap:6px;width:320px">
+  <div style="display:flex;flex-direction:column;gap:6px;width:320px">
 
     <!-- 1: NEW ANALYSIS — fully wired -->
     <button class="sf-nav-card" onclick="dismissLandingScreen(); switchTab('setup');"
@@ -715,9 +715,11 @@ body:not(.has-results) #btn-stress { display: none !important; }
   </div><!-- end card rail -->
 
   <!-- Footer -->
-  <div style="position:absolute;bottom:20px;z-index:1;font-family:'DM Mono',monospace;font-size:9px;color:var(--sf-text-lo);letter-spacing:.08em;opacity:.5">
+  <div style="position:absolute;bottom:20px;font-family:'DM Mono',monospace;font-size:9px;color:var(--sf-text-lo);letter-spacing:.08em;opacity:.5">
     STORMFEA · Nordic Storm FTC 5962 · St. Peter MN
   </div>
+
+  </div><!-- end content layer -->
 </div>
 
 <!-- APP SHELL — hidden until landing screen is dismissed -->
@@ -2088,8 +2090,8 @@ function initLandingRain() {
   const rainOpacity = parseFloat(rootStyle.getPropertyValue('--sf-rain-opacity')) || 0.3;
 
   function step() {
-    const w = canvas.width;
-    const h = canvas.height;
+    const w = window.innerWidth;
+    const h = window.innerHeight;
     ctx.clearRect(0, 0, w, h);
     ctx.strokeStyle = accentColor;
     ctx.globalAlpha = rainOpacity;
