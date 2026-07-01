@@ -74,7 +74,7 @@
     var close = document.createElement('button');
     close.textContent = '\u2715';
     close.setAttribute('aria-label', 'Dismiss');
-    close.style.cssText = 'margin-left:auto;background:none;border:none;cursor:pointer;color:var(--text-lo);font-size:11px;line-height:1;padding:2px 4px';
+    close.style.cssText = 'margin-left:auto;background:none;border:none;cursor:pointer;color:var(--text-hi);font-size:11px;line-height:1;padding:2px 4px';
     close.onclick = function () {
       live.delete(key);
       var i = order.indexOf(key);
@@ -90,21 +90,33 @@
     msgEl.style.cssText = 'color:var(--text-hi, var(--text-mid));font-size:10px;word-break:break-word';
     el.appendChild(msgEl);
 
-    if (stack) {
-      var pre = document.createElement('pre');
-      pre.textContent = stack;
-      pre.style.cssText = "margin:6px 0 0;max-height:180px;overflow:auto;font-family:'DM Mono',monospace;font-size:10px;line-height:1.5;color:var(--text-lo);white-space:pre-wrap;word-break:break-all;user-select:text;background:var(--danger-faint, transparent);border-radius:3px;padding:6px";
-      el.appendChild(pre);
-    }
-
     host().appendChild(el);
     live.set(key, { el: el, count: 1, badge: badge });
     order.push(key);
+    var _dropped = 0;
     while (order.length > MAX_VISIBLE) {
       var oldestKey = order.shift();
       var rec = live.get(oldestKey);
       live.delete(oldestKey);
       if (rec && rec.el) rec.el.remove();
+      _dropped++;
+    }
+    if (_dropped > 0) {
+      var msg = 'and ' + _dropped + ' more error' + (_dropped !== 1 ? 's' : '') + ' — open the Debug tab for the full log';
+      var h = host();
+      var existCons = h.querySelector('[data-sf-consolidation]');
+      if (existCons) {
+        existCons.querySelector('[data-sf-cons-msg]').textContent = msg;
+      } else {
+        var consEl = document.createElement('div');
+        consEl.setAttribute('data-sf-consolidation', '');
+        consEl.style.cssText = 'pointer-events:auto;background:var(--bg-panel);border:1px solid var(--border);border-left:3px solid var(--warn);border-radius:4px;padding:6px 10px;font-size:10px;color:var(--text-mid);box-shadow:0 4px 14px rgba(0,0,0,.25)';
+        var cm = document.createElement('span');
+        cm.setAttribute('data-sf-cons-msg', '');
+        cm.textContent = msg;
+        consEl.appendChild(cm);
+        h.insertBefore(consEl, h.firstChild);
+      }
     }
   }
 
@@ -140,9 +152,8 @@
   window.onerror = function (message, source, lineno, colno, error) {
     showErrorToast(error && error.message ? error.message : String(message || 'Unknown error'), {
       severity: 'error',
-      source: 'uncaught',
-      error: error,
-      stack: (error && error.stack) ? error.stack : ((source || '') + ':' + (lineno || '?') + ':' + (colno || '?'))
+      source: 'Unexpected error',
+      error: error
     });
     if (typeof prevOnError === 'function') return prevOnError.apply(this, arguments);
     return false; // do not suppress default console logging
@@ -152,7 +163,7 @@
     var r = ev && ev.reason;
     showErrorToast(r && r.message ? r.message : String(r == null ? 'Unhandled promise rejection' : r), {
       severity: 'error',
-      source: 'unhandled rejection',
+      source: 'Unexpected error',
       error: (r && r.stack) ? r : null
     });
   });
@@ -685,6 +696,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <div>
         <div style="font-size:13px;font-weight:700;letter-spacing:.06em;color:var(--text-hi);line-height:1.2">PREFERENCES</div>
         <div style="font-size:10px;color:var(--text-lo);margin-top:3px;letter-spacing:.02em">Theme, units, heatmap, and display</div>
+        <div style="font-size:9px;color:var(--text-lo);margin-top:4px;letter-spacing:.01em;opacity:.7">Additional display options available from the ⚙ icon inside the app.</div>
       </div>
     </button>
 
@@ -755,7 +767,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
     <div style="width:1px;background:var(--border);align-self:stretch;flex-shrink:0;margin:0 4px"></div>
     <!-- Utility tabs: smaller, receded -->
     <button class="tab-btn tab-util" data-tab="prefs"     onclick="switchTab('prefs')"><svg width="9" height="9" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/></svg> PREFS</button>
-    <button class="tab-btn tab-util" data-tab="debug"     onclick="switchTab('debug')"><svg width="9" height="9" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="2.3" y1="7.7" x2="7.7" y2="2.3"/></svg> DBG</button>
+    <button class="tab-btn tab-util tab-util-dev" data-tab="debug"     onclick="switchTab('debug')"><svg width="9" height="9" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="2.3" y1="7.7" x2="7.7" y2="2.3"/></svg> DBG</button>
   </div>
   <style>
     /* Tab button — instrument panel selector style */
@@ -795,10 +807,22 @@ body:not(.has-results) #btn-stress { display: none !important; }
       color: var(--gold);
       border-top-color: var(--gold);
     }
+    /* Dev-only tab: visually muted to distinguish from workflow tabs */
+    .tab-btn.tab-util-dev:not(.active) {
+      opacity: 0.6;
+      font-style: italic;
+    }
   </style>
 
   <!-- Right side: theme toggle + team badge -->
   <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
+    <!-- Keyboard shortcuts link -->
+    <button onclick="if(!_landingScreenActive)openShortcuts()" title="Keyboard shortcuts"
+            style="background:none;border:1px solid var(--border);border-radius:20px;padding:4px 9px;cursor:pointer;font-size:9px;color:var(--text-lo);letter-spacing:.05em;display:flex;align-items:center;gap:4px;transition:all .15s"
+            onmouseover="this.style.borderColor='var(--gold)';this.style.color='var(--gold)'"
+            onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-lo)'">
+      <kbd style="font-family:'DM Mono',monospace;font-size:9px;background:var(--bg-base);border:1px solid var(--border);border-radius:2px;padding:0 3px">?</kbd> Shortcuts
+    </button>
     <!-- Preferences gear icon -->
     <button id="prefs-btn" onclick="togglePrefsPanel()" title="Preferences"
             style="background:none;border:1px solid var(--border);border-radius:20px;padding:4px 8px;cursor:pointer;font-size:11px;color:var(--text-mid);display:flex;align-items:center;gap:5px;transition:all .15s"
@@ -913,6 +937,10 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <svg width="8" height="8" viewBox="0 0 9 9" style="margin-left:auto;flex-shrink:0" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><line x1="1" y1="8" x2="8" y2="1"/><polyline points="4,1 8,1 8,5"/></svg>
     </button>
   </div>
+  <!-- Cross-reference -->
+  <div style="border-top:1px solid var(--border);padding-top:8px;font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);text-align:center;line-height:1.6">
+    More settings available from the Start Screen.
+  </div>
 </div>
 
 <!-- WORKFLOW PROGRESS BAR -->
@@ -959,6 +987,11 @@ body:not(.has-results) #btn-stress { display: none !important; }
     <!-- Drop zone wrapper (shown when no file loaded) -->
     <div id="dropzone-wrapper"
          style="position:absolute;inset:0;display:flex;flex-direction:row;">
+
+      <!-- File requirement hint -->
+      <div style="position:absolute;top:0;left:0;right:0;z-index:2;text-align:center;padding:7px 12px;font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);letter-spacing:.04em;pointer-events:none">
+        <span style="color:var(--text-mid)">Required:</span> Part file (.stl / .step) &nbsp;·&nbsp; <span style="color:var(--text-lo)">Optional:</span> GCode file (.gcode) — you can proceed with just a part file
+      </div>
 
       <!-- STL/STEP zone (original) -->
       <div id="dropzone"
@@ -1025,7 +1058,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
     <!-- Toolbar (shown when file loaded) -->
     <div id="toolbar" style="display:none;position:absolute;top:12px;left:12px;display:flex;gap:6px;flex-wrap:wrap;max-width:440px">
       <button class="btn active" id="btn-view"  onclick="setMode('view')"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="5" y1="1" x2="5" y2="9"/><line x1="1" y1="5" x2="9" y2="5"/><line x1="2.2" y1="2.2" x2="7.8" y2="7.8"/><line x1="7.8" y1="2.2" x2="2.2" y2="7.8"/></svg> ORBIT</button>
-      <button class="btn"        id="btn-bed"   onclick="setMode('bed')" style="color:var(--gold)88;border-color:var(--gold-glow)"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="1.5" y="1.5" width="7" height="7" rx="1"/><rect x="3.5" y="3.5" width="3" height="3"/></svg> BED</button>
+      <button class="btn"        id="btn-bed"   onclick="setMode('bed')" style="color:var(--gold)88;border-color:var(--gold-glow)" title="Click to select which face rests on the print bed — this sets load direction"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="1.5" y="1.5" width="7" height="7" rx="1"/><rect x="3.5" y="3.5" width="3" height="3"/></svg> BED</button>
       <button class="btn"        id="btn-force" onclick="setMode('force')" style="color:var(--gold)88;border-color:var(--gold)33"><svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> FORCE</button>
       <button class="btn"        id="btn-addhole" onclick="toggleMode('addhole')" style="color:var(--gold)88;border-color:var(--gold)33" title="Manually define a hole the auto-detector missed (e.g. angled / side-wall holes)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> HOLE</button>
         <div style="width:1px;height:20px;background:var(--border);margin:0 4px;align-self:center;flex-shrink:0"></div>
@@ -1036,21 +1069,21 @@ body:not(.has-results) #btn-stress { display: none !important; }
         </button>
         <button class="btn" id="redo-btn" onclick="performRedo()" disabled
           aria-label="Redo" title="Nothing to redo"
-          style="padding:5px 8px;opacity:0.35;flex-shrink:0;transform:scaleX(-1)">
-          <svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M7.5 3A3.5 3.5 0 1 0 8.5 6"/><polyline points="7,1.5 8.5,3 7,4.5" fill="none"/></svg>
+          style="padding:5px 8px;opacity:0.35;flex-shrink:0">
+          <svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2.5 3A3.5 3.5 0 1 1 1.5 6"/><polyline points="3,1.5 1.5,3 3,4.5" fill="none"/></svg>
         </button>
       <!-- Stress visualization mode (shown after solve) -->
       <div id="stress-mode-wrap" style="display:none;border-left:1px solid var(--border);margin-left:2px;padding-left:6px;gap:3px;align-items:center">
         <span style="font-size:9px;color:var(--text-lo);letter-spacing:.04em;margin-right:2px" title="Choose what the heatmap colors represent">VIEW:</span>
-        <button class="btn active" id="btn-vm"  onclick="setStressMode('vm')"  style="font-size:10px;padding:4px 8px" title="von Mises stress — overall combined stress magnitude">VM</button>
-        <button class="btn"        id="btn-svm" onclick="setStressMode('svm')" style="font-size:10px;padding:4px 8px;display:none" title="Signed von Mises — blue=compression, white=zero, red=tension. Sign = sign of hydrostatic stress (trace of σ). Useful for distinguishing delamination risk (tension) from compressive crush.">±VM</button>
-        <button class="btn"        id="btn-s1"  onclick="setStressMode('s1')"  style="font-size:10px;padding:4px 8px" title="Maximum principal stress σ₁ — most tensile direction (red=tensile, blue=compressive)">σ₁</button>
-        <button class="btn"        id="btn-s2"  onclick="setStressMode('s2')"  style="font-size:10px;padding:4px 8px" title="Intermediate principal stress σ₂ (red=tensile, blue=compressive)">σ₂</button>
-        <button class="btn"        id="btn-s3"  onclick="setStressMode('s3')"  style="font-size:10px;padding:4px 8px" title="Minimum principal stress σ₃ — most compressive direction (red=tensile, blue=compressive)">σ₃</button>
-        <button class="btn"        id="btn-dmg"    onclick="setStressMode('dmg')"    style="font-size:10px;padding:4px 8px" title="Damage ratio — stress as a fraction of material yield strength (1.0 = at yield)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="3" y1="3" x2="7" y2="7"/><line x1="7" y1="3" x2="3" y2="7"/></svg></button>
-        <button class="btn"        id="btn-xyutil" onclick="setStressMode('xyutil')" style="font-size:10px;padding:4px 8px;display:none" title="XY in-plane utilization — sqrt(σxx²+σyy²-σxx·σyy+3·σxy²) / yieldXY. Red at 1.0 = at in-plane yield. High → add infill.">U<sub>XY</sub></button>
-        <button class="btn"        id="btn-zutil"  onclick="setStressMode('zutil')"  style="font-size:10px;padding:4px 8px;display:none" title="Z out-of-plane utilization — max(|σzz|, √3·√(σyz²+σxz²)) / yieldZ. Red at 1.0 = at inter-layer yield. High → reorient or add walls.">U<sub>Z</sub></button>
-        <button class="btn"        id="btn-error"  onclick="setStressMode('error')"  style="font-size:10px;padding:4px 8px;display:none" title="Error estimate η — Zienkiewicz-Zhu mesh quality metric (0–1), identifies under-resolved elements">η</button>
+        <button class="btn active" id="btn-vm"  onclick="setStressMode('vm')"  style="font-size:10px;padding:4px 8px;display:flex;flex-direction:column;align-items:center;gap:1px" title="von Mises stress — overall combined stress magnitude"><span style="font-weight:700">VM</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Overall</span></button>
+        <button class="btn"        id="btn-svm" onclick="setStressMode('svm')" style="font-size:10px;padding:4px 8px;display:none;flex-direction:column;align-items:center;gap:1px" title="Signed von Mises — blue=compression, white=zero, red=tension. Sign = sign of hydrostatic stress (trace of σ). Useful for distinguishing delamination risk (tension) from compressive crush."><span style="font-weight:700">±VM</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Signed</span></button>
+        <button class="btn"        id="btn-s1"  onclick="setStressMode('s1')"  style="font-size:10px;padding:4px 8px;display:flex;flex-direction:column;align-items:center;gap:1px" title="Maximum principal stress σ₁ — most tensile direction (red=tensile, blue=compressive)"><span style="font-weight:700">σ₁</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Max tension</span></button>
+        <button class="btn"        id="btn-s2"  onclick="setStressMode('s2')"  style="font-size:10px;padding:4px 8px;display:flex;flex-direction:column;align-items:center;gap:1px" title="Intermediate principal stress σ₂ (red=tensile, blue=compressive)"><span style="font-weight:700">σ₂</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Mid stress</span></button>
+        <button class="btn"        id="btn-s3"  onclick="setStressMode('s3')"  style="font-size:10px;padding:4px 8px;display:flex;flex-direction:column;align-items:center;gap:1px" title="Minimum principal stress σ₃ — most compressive direction (red=tensile, blue=compressive)"><span style="font-weight:700">σ₃</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Max compression</span></button>
+        <button class="btn"        id="btn-dmg"    onclick="setStressMode('dmg')"    style="font-size:10px;padding:4px 8px;display:flex;flex-direction:column;align-items:center;gap:1px" title="Damage ratio — stress as a fraction of material yield strength (1.0 = at yield)"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="3" y1="3" x2="7" y2="7"/><line x1="7" y1="3" x2="3" y2="7"/></svg><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Damage</span></button>
+        <button class="btn"        id="btn-xyutil" onclick="setStressMode('xyutil')" style="font-size:10px;padding:4px 8px;display:none;flex-direction:column;align-items:center;gap:1px" title="XY in-plane utilization — sqrt(σxx²+σyy²-σxx·σyy+3·σxy²) / yieldXY. Red at 1.0 = at in-plane yield. High → add infill."><span style="font-weight:700">U<sub>XY</sub></span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">In-plane use</span></button>
+        <button class="btn"        id="btn-zutil"  onclick="setStressMode('zutil')"  style="font-size:10px;padding:4px 8px;display:none;flex-direction:column;align-items:center;gap:1px" title="Z out-of-plane utilization — max(|σzz|, √3·√(σyz²+σxz²)) / yieldZ. Red at 1.0 = at inter-layer yield. High → reorient or add walls."><span style="font-weight:700">U<sub>Z</sub></span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Z-layer use</span></button>
+        <button class="btn"        id="btn-error"  onclick="setStressMode('error')"  style="font-size:10px;padding:4px 8px;display:none;flex-direction:column;align-items:center;gap:1px" title="Error estimate η — Zienkiewicz-Zhu mesh quality metric (0–1), identifies under-resolved elements"><span style="font-weight:700">η</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Mesh quality</span></button>
       </div>
     </div>
 
@@ -1464,13 +1497,16 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <div style="margin-bottom:16px">
         <label for="s-material">Material</label>
         <select id="s-material" onchange="updateSettingsPreview()">
-          <option value="pla">PLA — E=3500 MPa, yield 50 MPa</option>
-          <option value="petg">PETG — E=2100 MPa, yield 45 MPa</option>
-          <option value="abs">ABS — E=2300 MPa, yield 40 MPa</option>
-          <option value="asa">ASA — E=2100 MPa, yield 40 MPa</option>
-          <option value="tpu">TPU — E=200 MPa, yield 15 MPa</option>
-          <option value="pa12">PA12 (Nylon) — E=1700 MPa, yield 48 MPa</option>
+          <option value="pla">PLA — most common, good stiffness</option>
+          <option value="petg">PETG — tougher than PLA, slightly flexible</option>
+          <option value="abs">ABS — rigid, may warp without enclosure</option>
+          <option value="asa">ASA — UV-resistant, good for outdoor use</option>
+          <option value="tpu">TPU — flexible, impact-absorbing</option>
+          <option value="pa12">PA12 (Nylon) — high strength, moisture-sensitive</option>
         </select>
+        <div style="font-size:9px;color:var(--text-lo);margin-top:4px;line-height:1.5">
+          Engineering values (E, yield strength) are shown in the estimate panel below after you select.
+        </div>
       </div>
 
       <div style="margin-bottom:16px">
@@ -1557,10 +1593,11 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <label for="s-mesh-order">Element order</label>
         <select id="s-mesh-order">
           <option value="1">C3D4 — Linear (fast, shear-locking in bending)</option>
-          <option value="2" id="s-mesh-order-c3d10" selected>C3D10 — Quadratic (accurate bending, ~3× slower)</option>
+          <option value="2" id="s-mesh-order-c3d10" selected>C3D10 — Quadratic ★ Recommended</option>
         </select>
         <div id="s-mesh-order-hint" style="font-size:10px;color:var(--text-lo);margin-top:4px;line-height:1.6">
           C3D10 uses 10-node quadratic tetrahedra — eliminates shear locking for more accurate bending and stress concentrations near holes.
+          <span style="color:var(--text-mid);display:block;margin-top:3px">Changing this affects result accuracy — leave as default unless you know what this means.</span>
         </div>
       </div>
 
@@ -1642,6 +1679,10 @@ body:not(.has-results) #btn-stress { display: none !important; }
       </div>
       <div style="font-size:10px;color:var(--text-lo);margin-top:8px;line-height:1.5">
         Tones help identify each analysis stage — especially useful in loud lab environments. Disable if using hearing aids or in quiet settings where visual feedback is preferred.
+      </div>
+      <!-- Cross-reference -->
+      <div style="margin-top:16px;padding-top:10px;border-top:1px solid var(--border);font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);text-align:center;line-height:1.6">
+        More settings available from the Start Screen.
       </div>
     </div>  <!-- end tab-prefs -->
 
@@ -1884,6 +1925,9 @@ body:not(.has-results) #btn-stress { display: none !important; }
 
     <!-- DEBUG TAB -->
     <div id="tab-debug" style="display:none;padding:var(--sp-2) var(--sp-3);overflow-y:auto;font-family:'Courier New',monospace">
+      <div style="margin-bottom:14px;padding:7px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:3px;font-family:'Outfit',system-ui,sans-serif;font-size:10px;color:var(--text-lo);text-align:center;line-height:1.5">
+        Developer tools — for diagnosing solver issues, not for regular use.
+      </div>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
         <div style="font-family:'Outfit',system-ui,sans-serif;font-size:13px;font-weight:700;letter-spacing:.2em;color:var(--gold)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="2.3" y1="7.7" x2="7.7" y2="2.3"/></svg> DEBUG PANEL</div>
         <div style="display:flex;gap:6px">
