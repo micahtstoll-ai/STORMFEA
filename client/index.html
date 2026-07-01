@@ -187,64 +187,76 @@
 /* Palette: Gold (classic Nordic Storm) */
 :root,
 [data-palette="gold"] {
-  --gold:       #C9A227;
-  --gold-bright:#dbb832;
-  --gold-dim:   #9a7d1e;
-  --gold-glow:  #C9A22740;
-  --gold-faint: #C9A22714;
+  --gold:       #c8a84b;
+  --gold-bright:#d4b85a;
+  --gold-dim:   #a08030;
+  --gold-glow:  rgba(200,168,75,0.40);
+  --gold-faint: rgba(200,168,75,0.14);
 }
 
 /* Palette: Amber (instrument — default) */
 [data-palette="amber"] {
-  --gold:       #F5A623;
-  --gold-bright:#f7bb4a;
-  --gold-dim:   #c07818;
-  --gold-glow:  #F5A62340;
-  --gold-faint: #F5A62314;
+  --gold:       #d4a030;
+  --gold-bright:#e0b448;
+  --gold-dim:   #a87820;
+  --gold-glow:  rgba(212,160,48,0.40);
+  --gold-faint: rgba(212,160,48,0.14);
 }
 
-/* Dark mode: black page, warm-tinted text */
+/* Dark mode: slate-blue page, cool text */
 :root, [data-theme="dark"] {
-  --bg-base:    #0a0806;
-  --bg-panel:   #0f0d0b;
-  --bg-card:    #141210;
-  --bg-input:   #0c0a08;
-  --border:     #251e10;
-  --border-mid: #332810;
-  --text-hi:    #f0e8d8;
-  --text-mid:   #827668;
-  --text-lo:    #80786c;
-  --text-label: #847c70;
-  --accent-dim: rgba(245,166,35,0.12);
+  --bg-base:     var(--sf-bg);
+  --bg-panel:    #0f141c;
+  --bg-card:     var(--sf-mid);
+  --bg-input:    #111827;
+  --border:      var(--sf-border);
+  --border-mid:  rgba(126,184,212,0.25);
+  --text-hi:     var(--sf-text);
+  --text-mid:    #a8b8c4;
+  --text-lo:     var(--sf-text-lo);
+  --text-label:  #8a9aaa;
+  --accent-dim:  rgba(126,184,212,0.12);
+  --gold:        var(--sf-highlight);
+  --gold-bright: #d4b85a;
+  --gold-dim:    #a08030;
+  --gold-glow:   rgba(200,168,75,0.40);
+  --gold-faint:  rgba(200,168,75,0.14);
   /* Semantic */
   --success:      var(--gold);
-  --warn:         #D6862E;
-  --warn-faint:   #D6862E18;
-  --warn-glow:    #D6862E55;
-  --danger:       #C2452F;
-  --danger-faint: #C2452F1c;
-  --viewer-bg:  #070604;
-  --shadow:     0 4px 24px rgba(0,0,0,.7);
+  --warn:         var(--sf-warn);
+  --warn-faint:   rgba(212,133,58,0.18);
+  --warn-glow:    rgba(212,133,58,0.55);
+  --danger:       var(--sf-danger);
+  --danger-faint: rgba(224,90,74,0.18);
+  --viewer-bg:   #080c12;
+  --shadow:      0 4px 24px rgba(0,0,0,.7);
 }
 
-/* Light mode: warm off-white page, near-black text */
+/* Light mode: cool-grey page, dark text */
 [data-theme="light"] {
-  --bg-base:    #faf7f2;
-  --bg-panel:   #ffffff;
-  --bg-card:    #ffffff;
-  --bg-input:   #f2ede6;
-  --border:     #e4ddd0;
-  --border-mid: #ccc4b4;
-  --text-hi:    #1c1a16;
-  --text-mid:   #6a6050;
-  --text-lo:    #766e62;
-  --text-label: #7a7060;
-  --accent-dim: rgba(245,166,35,0.08);
-  --success:    var(--gold);
-  --warn:       #BD7016;
-  --danger:     #B23A28;
-  --viewer-bg:  #eceae4;
-  --shadow:     0 2px 12px rgba(0,0,0,.08);
+  --bg-base:     #f0f4f8;
+  --bg-panel:    #ffffff;
+  --bg-card:     #ffffff;
+  --bg-input:    #e8eef4;
+  --border:      rgba(126,184,212,0.20);
+  --border-mid:  rgba(126,184,212,0.35);
+  --text-hi:     #1a2332;
+  --text-mid:    #4a6070;
+  --text-lo:     #6a8090;
+  --text-label:  #5a7080;
+  --accent-dim:  rgba(126,184,212,0.08);
+  --gold:        #a07828;
+  --gold-bright: #b88c38;
+  --gold-dim:    #806018;
+  --gold-glow:   rgba(160,120,40,0.40);
+  --gold-faint:  rgba(160,120,40,0.14);
+  --success:     var(--gold);
+  --warn:        #b06820;
+  --warn-faint:  rgba(176,104,32,0.12);
+  --danger:      #c03828;
+  --danger-faint: rgba(192,56,40,0.12);
+  --viewer-bg:   #e4ecf2;
+  --shadow:      0 2px 12px rgba(0,0,0,.08);
 }
 
 /* ── Design system tokens ────────────────────────────────────────────────────
@@ -395,7 +407,7 @@ input[type=range]:focus-visible { outline: 2px solid var(--gold); outline-offset
 /* Tier 1 — primary action: substantial, weighted */
 .btn.primary {
   background: var(--gold);
-  color: #0a0806;
+  color: var(--sf-bg);
   border-color: var(--gold);
   font-weight: 600;
   font-family: 'Outfit', sans-serif;
@@ -873,11 +885,11 @@ body:not(.has-results) #btn-stress { display: none !important; }
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
       <button class="btn" id="palette-amber-btn" onclick="setPalette('amber')"
         style="font-size:var(--text-sm);display:flex;align-items:center;justify-content:center;gap:5px;border-radius:0">
-        <span style="width:8px;height:8px;border-radius:2px;background:#F5A623;flex-shrink:0"></span> Amber
+        <span style="width:8px;height:8px;border-radius:2px;background:#d4a030;flex-shrink:0"></span> Amber
       </button>
       <button class="btn" id="palette-gold-btn" onclick="setPalette('gold')"
         style="font-size:var(--text-sm);display:flex;align-items:center;justify-content:center;gap:5px;border-radius:0;margin-left:-1px">
-        <span style="width:8px;height:8px;border-radius:2px;background:#C9A227;flex-shrink:0"></span> Gold
+        <span style="width:8px;height:8px;border-radius:2px;background:#c8a84b;flex-shrink:0"></span> Gold
       </button>
     </div>
   </div>
@@ -968,13 +980,13 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <div id="split-overlay" style="display:none;position:absolute;inset:0;pointer-events:none;z-index:10">
         <!-- Left label (Design A) -->
         <div id="split-label-a" style="position:absolute;top:54px;left:12px;pointer-events:none;
-              background:rgba(10,8,6,.75);border:1px solid var(--border);border-radius:3px;
+              background:rgba(13,17,23,0.75);border:1px solid var(--border);border-radius:3px;
               padding:4px 10px;font-family:'DM Mono',monospace;font-size:10px;color:var(--text-mid)">
           <span id="split-name-a">Design A</span> &nbsp;·&nbsp; <span id="split-sf-a" style="color:var(--gold)">—</span>
         </div>
         <!-- Right label (Design B) -->
         <div id="split-label-b" style="position:absolute;top:54px;right:12px;pointer-events:none;
-              background:rgba(10,8,6,.75);border:1px solid var(--border);border-radius:3px;
+              background:rgba(13,17,23,0.75);border:1px solid var(--border);border-radius:3px;
               padding:4px 10px;font-family:'DM Mono',monospace;font-size:10px;color:var(--text-mid)">
           <span id="split-sf-b" style="color:var(--gold)">—</span> &nbsp;·&nbsp; <span id="split-name-b">Design B</span>
         </div>
@@ -1062,7 +1074,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       #gcode-drop-zone:hover #gcode-drop-icon { animation-duration: 6s; opacity: .45; }
       #gcode-drop-zone.drag-over { border-color: var(--gold); }
       #gcode-drop-zone.drag-over #gcode-drop-icon { animation-duration: 3s; opacity: .65; }
-      #gcode-drop-zone.drop-error { border-color: #c0392b; }
+      #gcode-drop-zone.drop-error { border-color: var(--danger); }
     </style>
 
     <!-- Toolbar (shown when file loaded) -->
@@ -1559,7 +1571,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       </div>
 
       <!-- .gcode import badge — shown by applyGcodeParamsToUI(), hidden by default -->
-      <div id="gcode-import-badge" style="display:none;padding:8px 12px;background:rgba(212,175,55,0.08);border:1px solid rgba(212,175,55,0.3);border-radius:4px;margin-bottom:16px;font-size:10px;color:var(--gold)">
+      <div id="gcode-import-badge" style="display:none;padding:8px 12px;background:rgba(200,168,75,0.08);border:1px solid rgba(200,168,75,0.3);border-radius:4px;margin-bottom:16px;font-size:10px;color:var(--gold)">
         <svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg>
         <span id="gcode-import-badge-text">Imported from .gcode</span>
         <span id="gcode-import-badge-extra" style="color:var(--text-lo);margin-left:6px"></span>
@@ -3998,7 +4010,7 @@ function showWelcome(force) {
       <label style="display:flex;align-items:center;gap:7px;font-size:10px;color:var(--text-lo);margin-bottom:16px;cursor:pointer">
         <input type="checkbox" id="ob-dontshow" checked style="accent-color:var(--gold)"> Don't show this again
       </label>
-      <button id="ob-start" style="width:100%;padding:10px;background:var(--gold);color:#1a1712;border:none;border-radius:5px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">Get started</button>
+      <button id="ob-start" style="width:100%;padding:10px;background:var(--gold);color:var(--sf-bg);border:none;border-radius:5px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">Get started</button>
     </div>`;
   document.body.appendChild(ov);
   ov.querySelector('#ob-start').onclick = () => {
@@ -5462,11 +5474,11 @@ function showResults(s) {
     </div>
 
     ${(s.safetyFactorAvailable && s.safetyfactorLow !== undefined && s.safetyfactorLow < 1.5 && s.safetyFactor >= 1.5) ? `
-    <div style="padding:10px 12px;background:#fdf3e0;border:1px solid #d97a00;border-radius:4px;margin-bottom:12px;display:flex;gap:8px;align-items:flex-start">
+    <div style="padding:10px 12px;background:rgba(212,133,58,0.10);border:1px solid rgba(212,133,58,0.30);border-radius:4px;margin-bottom:12px;display:flex;gap:8px;align-items:flex-start">
       <span style="font-size:16px;line-height:1">&#9888;</span>
       <div>
-        <div style="font-size:10px;font-weight:600;color:#8a5000;letter-spacing:.04em;margin-bottom:2px">MATERIAL UNCERTAINTY CAUTION</div>
-        <div style="font-size:11px;color:#6b3e00;line-height:1.5">Central SF ${s.safetyFactor.toFixed(2)}× passes the 1.5 threshold, but conservative material properties (yieldZ/yieldXY=0.48, steeper layer height penalty) give SF ${s.safetyfactorLow.toFixed(2)}× — below 1.5×. Consider another design iteration or physical coupon testing to confirm margin.</div>
+        <div style="font-size:10px;font-weight:600;color:var(--sf-warn);letter-spacing:.04em;margin-bottom:2px">MATERIAL UNCERTAINTY CAUTION</div>
+        <div style="font-size:11px;color:rgba(212,133,58,0.80);line-height:1.5">Central SF ${s.safetyFactor.toFixed(2)}× passes the 1.5 threshold, but conservative material properties (yieldZ/yieldXY=0.48, steeper layer height penalty) give SF ${s.safetyfactorLow.toFixed(2)}× — below 1.5×. Consider another design iteration or physical coupon testing to confirm margin.</div>
       </div>
     </div>` : ''}
 
