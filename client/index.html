@@ -266,6 +266,16 @@
   /* Motion — 2 speeds only */
   --t-fast:  80ms;
   --t-slow: 220ms;
+
+  /* Landing screen brand palette (locked brief) */
+  --sf-bg:        #0d1117;
+  --sf-mid:       #1a2332;
+  --sf-accent:    #7eb8d4;
+  --sf-highlight: #c8a84b;
+  --sf-text:      #e8edf2;
+  --sf-text-lo:   #7a8a96;
+  --sf-border:    rgba(126,184,212,0.15);
+  --sf-rain-opacity: 0.30;
 }
 
 /* ── Reset ──────────────────────────────────────────────────────────────────── */
@@ -540,6 +550,22 @@ body:not(.has-results) #convergence-btn,
 body:not(.has-results) #ab-compare-btn,
 body:not(.has-results) #legend,
 body:not(.has-results) #btn-stress { display: none !important; }
+
+/* ── Landing screen (brand retheme) ────────────────────────────────────────── */
+#sf-landing { background: var(--sf-bg); }
+#sf-rain-canvas { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
+.sf-nav-card {
+  background: var(--sf-mid);
+  border: 0.5px solid var(--sf-border);
+  border-radius: 8px;
+  transition: border-color 0.15s;
+}
+.sf-nav-card:not(.sf-disabled):hover {
+  border-color: color-mix(in srgb, var(--sf-accent) 40%, transparent);
+}
+.sf-nav-card.sf-disabled { opacity: 0.5; cursor: default; }
+.sf-card-label { color: var(--sf-text); font-size: 14px; font-weight: 500; line-height: 1.2; }
+.sf-card-sub { color: var(--sf-text-lo); font-size: 12px; margin-top: 3px; letter-spacing: .02em; }
 </style>
 </head>
 <body>
@@ -549,161 +575,145 @@ body:not(.has-results) #btn-stress { display: none !important; }
      Shown on app load. Hides app shell until a card is clicked.
      State variable: _landingScreenActive (boolean, defined in <script> below)
      ═══════════════════════════════════════════════════════════════════════════ -->
-<div id="landing-screen" style="
+<div id="sf-landing" style="
   position:fixed;inset:0;z-index:9998;
-  background:var(--bg-base);
   display:flex;flex-direction:column;align-items:center;justify-content:center;
   overflow:hidden">
 
+  <canvas id="sf-rain-canvas"></canvas>
+
   <!-- Wordmark -->
-  <div style="display:flex;flex-direction:column;align-items:center;margin-bottom:52px;gap:10px">
+  <div style="position:relative;z-index:1;display:flex;flex-direction:column;align-items:center;margin-bottom:52px;gap:10px">
 
     <!-- Compass mark (reuse exact SVG from header) -->
     <svg width="52" height="52" viewBox="0 0 34 34" fill="none" aria-label="STORMFEA compass mark">
-      <circle cx="17" cy="17" r="15.5" fill="none" stroke="var(--gold)" stroke-width="1.1" opacity=".7"/>
-      <polygon points="17,2 20,17 17,14 14,17" fill="var(--gold)"/>
-      <polygon points="17,32 20,17 17,20 14,17" fill="var(--gold)" opacity=".5"/>
-      <polygon points="32,17 17,20 20,17 17,14" fill="var(--gold)" opacity=".5"/>
-      <polygon points="2,17  17,20 14,17 17,14" fill="var(--gold)" opacity=".5"/>
-      <line x1="28.5" y1="5.5"  x2="26"  y2="8"    stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
-      <line x1="5.5"  y1="5.5"  x2="8"   y2="8"    stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
-      <line x1="28.5" y1="28.5" x2="26"  y2="26"   stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
-      <line x1="5.5"  y1="28.5" x2="8"   y2="26"   stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
-      <circle cx="17" cy="17" r="2.5" fill="none" stroke="var(--gold)" stroke-width="1.1" opacity=".8"/>
-      <circle cx="17" cy="17" r="1"   fill="var(--gold)"/>
+      <circle cx="17" cy="17" r="15.5" fill="none" stroke="var(--sf-highlight)" stroke-width="1.1" opacity=".7"/>
+      <polygon points="17,2 20,17 17,14 14,17" fill="var(--sf-highlight)"/>
+      <polygon points="17,32 20,17 17,20 14,17" fill="var(--sf-highlight)" opacity=".5"/>
+      <polygon points="32,17 17,20 20,17 17,14" fill="var(--sf-highlight)" opacity=".5"/>
+      <polygon points="2,17  17,20 14,17 17,14" fill="var(--sf-highlight)" opacity=".5"/>
+      <line x1="28.5" y1="5.5"  x2="26"  y2="8"    stroke="var(--sf-highlight)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
+      <line x1="5.5"  y1="5.5"  x2="8"   y2="8"    stroke="var(--sf-highlight)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
+      <line x1="28.5" y1="28.5" x2="26"  y2="26"   stroke="var(--sf-highlight)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
+      <line x1="5.5"  y1="28.5" x2="8"   y2="26"   stroke="var(--sf-highlight)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
+      <circle cx="17" cy="17" r="2.5" fill="none" stroke="var(--sf-highlight)" stroke-width="1.1" opacity=".8"/>
+      <circle cx="17" cy="17" r="1"   fill="var(--sf-highlight)"/>
     </svg>
 
     <!-- Title block -->
     <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
-      <div style="font-family:'Outfit',sans-serif;font-size:10px;letter-spacing:.22em;color:var(--text-lo);text-transform:uppercase">Nordic Storm · FTC 5962</div>
-      <div style="font-family:'Rajdhani',sans-serif;font-size:42px;font-weight:700;letter-spacing:.10em;color:var(--gold);line-height:1">STORMFEA</div>
-      <div style="font-family:'DM Mono',monospace;font-size:9px;letter-spacing:.12em;color:var(--text-lo);text-transform:uppercase">FDM-Aware Finite Element Analysis</div>
+      <div style="font-family:'Rajdhani',sans-serif;font-size:36px;letter-spacing:.10em;line-height:1">
+        <span style="font-weight:700;color:var(--sf-text)">STORM</span><span style="font-weight:300;opacity:.7;color:var(--sf-text)">FEA</span>
+      </div>
+      <div style="font-family:'Outfit',sans-serif;font-size:11px;letter-spacing:.12em;color:var(--sf-accent);text-transform:uppercase;margin-top:6px">by Nordic Storm · 5962</div>
+      <div style="font-family:'DM Mono',monospace;font-size:9px;letter-spacing:.12em;color:var(--sf-text-lo);text-transform:uppercase">FDM-Aware Finite Element Analysis</div>
     </div>
   </div>
 
   <!-- Card rail -->
-  <div style="display:flex;flex-direction:column;gap:6px;width:320px">
+  <div style="position:relative;z-index:1;display:flex;flex-direction:column;gap:6px;width:320px">
 
     <!-- 1: NEW ANALYSIS — fully wired -->
-    <button onclick="dismissLandingScreen(); switchTab('setup');"
+    <button class="sf-nav-card" onclick="dismissLandingScreen(); switchTab('setup');"
       style="display:flex;align-items:center;gap:14px;
              padding:14px 18px;
-             background:var(--gold);border:none;border-radius:4px;
              cursor:pointer;text-align:left;width:100%;
              font-family:'Outfit',sans-serif">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#0a0806" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--sf-highlight)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
         <line x1="8" y1="2" x2="8" y2="14"/>
         <line x1="2" y1="8" x2="14" y2="8"/>
       </svg>
       <div>
-        <div style="font-size:13px;font-weight:700;letter-spacing:.06em;color:#0a0806;line-height:1.2">NEW ANALYSIS</div>
-        <div style="font-size:10px;color:#0a0806;opacity:.65;margin-top:3px;letter-spacing:.02em">Load a part and begin</div>
+        <div class="sf-card-label">NEW ANALYSIS</div>
+        <div class="sf-card-sub">Load a part and begin</div>
       </div>
     </button>
 
     <!-- 2: RESUME SESSION — disabled -->
     <!-- TODO: wire once session persistence layer exists -->
-    <div style="display:flex;align-items:center;gap:14px;
-                padding:14px 18px;
-                background:var(--bg-card);border:1px solid var(--border);border-radius:4px;
-                opacity:.45;cursor:default">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--text-lo)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+    <div class="sf-nav-card sf-disabled" style="display:flex;align-items:center;gap:14px;padding:14px 18px">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--sf-text-lo)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
         <path d="M2 8a6 6 0 1 0 1-3.5"/>
         <polyline points="2,2 2,6 6,6"/>
       </svg>
       <div>
-        <div style="font-size:13px;font-weight:700;letter-spacing:.06em;color:var(--text-mid);line-height:1.2">RESUME SESSION</div>
-        <div style="font-size:10px;color:var(--text-lo);margin-top:3px;letter-spacing:.02em">No active session</div>
+        <div class="sf-card-label">RESUME SESSION</div>
+        <div class="sf-card-sub">No active session</div>
       </div>
     </div>
 
     <!-- 3: PAST EXPORTS — disabled -->
     <!-- TODO: wire once session persistence layer exists -->
-    <div style="display:flex;align-items:center;gap:14px;
-                padding:14px 18px;
-                background:var(--bg-card);border:1px solid var(--border);border-radius:4px;
-                opacity:.45;cursor:default">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--text-lo)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+    <div class="sf-nav-card sf-disabled" style="display:flex;align-items:center;gap:14px;padding:14px 18px">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--sf-text-lo)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
         <rect x="2" y="2" width="12" height="12" rx="2"/>
         <line x1="8" y1="6" x2="8" y2="10"/>
         <polyline points="5.5,8 8,10.5 10.5,8"/>
       </svg>
       <div>
-        <div style="font-size:13px;font-weight:700;letter-spacing:.06em;color:var(--text-mid);line-height:1.2">PAST EXPORTS</div>
-        <div style="font-size:10px;color:var(--text-lo);margin-top:3px;letter-spacing:.02em">No exports yet</div>
+        <div class="sf-card-label">PAST EXPORTS</div>
+        <div class="sf-card-sub">No exports yet</div>
       </div>
     </div>
 
     <!-- Divider -->
-    <div style="height:1px;background:var(--border);margin:4px 0;opacity:.6"></div>
+    <div style="height:1px;background:var(--sf-border);margin:4px 0"></div>
 
     <!-- 4: CALIBRATE — fully wired -->
-    <button onclick="dismissLandingScreen(); switchTab('calibrate');"
+    <button class="sf-nav-card" onclick="dismissLandingScreen(); switchTab('calibrate');"
       style="display:flex;align-items:center;gap:14px;
              padding:12px 18px;
-             background:var(--bg-card);border:1px solid var(--border);border-radius:4px;
              cursor:pointer;text-align:left;width:100%;
-             font-family:'Outfit',sans-serif;
-             transition:border-color var(--t-fast),background var(--t-fast)"
-      onmouseover="this.style.borderColor='var(--gold)';this.style.background='var(--gold-faint)'"
-      onmouseout="this.style.borderColor='var(--border)';this.style.background='var(--bg-card)'">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--gold)" stroke-width="1.4" stroke-linecap="round" style="flex-shrink:0">
+             font-family:'Outfit',sans-serif">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--sf-accent)" stroke-width="1.4" stroke-linecap="round" style="flex-shrink:0">
         <circle cx="8" cy="8" r="6"/>
         <line x1="5" y1="5" x2="11" y2="11"/>
         <line x1="11" y1="5" x2="5" y2="11"/>
       </svg>
       <div>
-        <div style="font-size:13px;font-weight:700;letter-spacing:.06em;color:var(--text-hi);line-height:1.2">CALIBRATE</div>
-        <div style="font-size:10px;color:var(--text-lo);margin-top:3px;letter-spacing:.02em">Material coupons &amp; measured profiles</div>
+        <div class="sf-card-label">CALIBRATE</div>
+        <div class="sf-card-sub">Material coupons &amp; measured profiles</div>
       </div>
     </button>
 
     <!-- 5: SOURCES — fully wired -->
-    <button onclick="dismissLandingScreen(); if(!_sourcesRendered){renderSourcesTab();_sourcesRendered=true;} switchTab('sources');"
+    <button class="sf-nav-card" onclick="dismissLandingScreen(); if(!_sourcesRendered){renderSourcesTab();_sourcesRendered=true;} switchTab('sources');"
       style="display:flex;align-items:center;gap:14px;
              padding:12px 18px;
-             background:var(--bg-card);border:1px solid var(--border);border-radius:4px;
              cursor:pointer;text-align:left;width:100%;
-             font-family:'Outfit',sans-serif;
-             transition:border-color var(--t-fast),background var(--t-fast)"
-      onmouseover="this.style.borderColor='var(--gold)';this.style.background='var(--gold-faint)'"
-      onmouseout="this.style.borderColor='var(--border)';this.style.background='var(--bg-card)'">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--gold)" stroke-width="1.4" stroke-linecap="round" style="flex-shrink:0">
+             font-family:'Outfit',sans-serif">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--sf-accent)" stroke-width="1.4" stroke-linecap="round" style="flex-shrink:0">
         <circle cx="8" cy="8" r="6"/>
         <line x1="8" y1="4.5" x2="8" y2="11.5"/>
         <line x1="4.5" y1="8" x2="11.5" y2="8"/>
       </svg>
       <div>
-        <div style="font-size:13px;font-weight:700;letter-spacing:.06em;color:var(--text-hi);line-height:1.2">SOURCES</div>
-        <div style="font-size:10px;color:var(--text-lo);margin-top:3px;letter-spacing:.02em">Peer-reviewed citations for every constant</div>
+        <div class="sf-card-label">SOURCES</div>
+        <div class="sf-card-sub">Peer-reviewed citations for every constant</div>
       </div>
     </button>
 
     <!-- 6: PREFERENCES — fully wired -->
-    <button onclick="dismissLandingScreen(); togglePrefsPanel();"
+    <button class="sf-nav-card" onclick="dismissLandingScreen(); togglePrefsPanel();"
       style="display:flex;align-items:center;gap:14px;
              padding:12px 18px;
-             background:var(--bg-card);border:1px solid var(--border);border-radius:4px;
              cursor:pointer;text-align:left;width:100%;
-             font-family:'Outfit',sans-serif;
-             transition:border-color var(--t-fast),background var(--t-fast)"
-      onmouseover="this.style.borderColor='var(--gold)';this.style.background='var(--gold-faint)'"
-      onmouseout="this.style.borderColor='var(--border)';this.style.background='var(--bg-card)'">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--gold)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+             font-family:'Outfit',sans-serif">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--sf-accent)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
         <polygon points="8,1.5 12.83,4.5 12.83,10.5 8,13.5 3.17,10.5 3.17,4.5"/>
         <circle cx="8" cy="8" r="2.5"/>
       </svg>
       <div>
-        <div style="font-size:13px;font-weight:700;letter-spacing:.06em;color:var(--text-hi);line-height:1.2">PREFERENCES</div>
-        <div style="font-size:10px;color:var(--text-lo);margin-top:3px;letter-spacing:.02em">Theme, units, heatmap, and display</div>
-        <div style="font-size:9px;color:var(--text-lo);margin-top:4px;letter-spacing:.01em;opacity:.7">Additional display options available from the ⚙ icon inside the app.</div>
+        <div class="sf-card-label">PREFERENCES</div>
+        <div class="sf-card-sub">Theme, units, heatmap, and display</div>
+        <div style="font-size:9px;color:var(--sf-text-lo);margin-top:4px;letter-spacing:.01em;opacity:.7">Additional display options available from the ⚙ icon inside the app.</div>
       </div>
     </button>
 
   </div><!-- end card rail -->
 
   <!-- Footer -->
-  <div style="position:absolute;bottom:20px;font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);letter-spacing:.08em;opacity:.5">
+  <div style="position:absolute;bottom:20px;z-index:1;font-family:'DM Mono',monospace;font-size:9px;color:var(--sf-text-lo);letter-spacing:.08em;opacity:.5">
     STORMFEA · Nordic Storm FTC 5962 · St. Peter MN
   </div>
 </div>
@@ -2030,13 +2040,89 @@ const S = {
 
 // ─── Landing screen state ─────────────────────────────────────────────────────
 let _landingScreenActive = true;
+let _landingRainFrame = null;
 
 function dismissLandingScreen() {
   _landingScreenActive = false;
-  document.getElementById('landing-screen').style.display = 'none';
+  if (_landingRainFrame !== null) {
+    cancelAnimationFrame(_landingRainFrame);
+    _landingRainFrame = null;
+  }
+  document.getElementById('sf-landing').style.display = 'none';
   const shell = document.getElementById('app-shell');
   shell.style.display = 'flex';
 }
+
+// ─── Tier-1 CSS rain (landing screen only) ────────────────────────────────────
+function initLandingRain() {
+  const canvas = document.getElementById('sf-rain-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const DROP_COUNT = 45;
+  const ANGLE = 10 * Math.PI / 180; // 10° from vertical
+  let drops = [];
+
+  function makeDrop(w, h) {
+    return {
+      x: Math.random() * w,
+      y: Math.random() * h,
+      len: 10 + Math.random() * 8,       // 10–18px
+      speed: 2.5 + Math.random() * 2.5,  // 2.5–5px/frame
+    };
+  }
+
+  function resize() {
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    canvas.width = w;
+    canvas.height = h;
+    drops = Array.from({ length: DROP_COUNT }, () => makeDrop(w, h));
+  }
+
+  const rootStyle = getComputedStyle(document.documentElement);
+  const accentColor = rootStyle.getPropertyValue('--sf-accent').trim() || '#7eb8d4';
+  const rainOpacity = parseFloat(rootStyle.getPropertyValue('--sf-rain-opacity')) || 0.3;
+
+  function step() {
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    ctx.strokeStyle = accentColor;
+    ctx.globalAlpha = rainOpacity;
+    ctx.lineWidth = 0.8;
+    const dx = Math.sin(ANGLE);
+    const dy = Math.cos(ANGLE);
+
+    for (const d of drops) {
+      const x2 = d.x + dx * d.len;
+      const y2 = d.y + dy * d.len;
+      ctx.beginPath();
+      ctx.moveTo(d.x, d.y);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+
+      d.x += dx * d.speed;
+      d.y += dy * d.speed;
+
+      if (d.y > h) {
+        d.x = Math.random() * w;
+        d.y = -d.len;
+      }
+    }
+
+    if (_landingScreenActive) {
+      _landingRainFrame = requestAnimationFrame(step);
+    }
+  }
+
+  resize();
+  window.addEventListener('resize', resize);
+  _landingRainFrame = requestAnimationFrame(step);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  if (_landingScreenActive) initLandingRain();
+});
 
 // ─── Web Worker for solver communication ──────────────────────────────────────
 let solverWorker = null;
