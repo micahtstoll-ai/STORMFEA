@@ -1989,6 +1989,17 @@ function dismissLandingScreen() {
   document.getElementById('sf-landing').style.display = 'none';
   const shell = document.getElementById('app-shell');
   shell.style.display = 'flex';
+  // initThree() ran while app-shell was display:none (0×0). Now that the shell
+  // is visible, let the browser recalculate layout then resize the renderer.
+  requestAnimationFrame(() => {
+    const el = document.getElementById('viewer');
+    if (renderer && el.clientWidth > 0 && el.clientHeight > 0) {
+      renderer.setSize(el.clientWidth, el.clientHeight);
+      camera.aspect = el.clientWidth / el.clientHeight;
+      camera.updateProjectionMatrix();
+      updateCamera();
+    }
+  });
 }
 
 // ─── Tier-1 CSS rain (landing screen only) ────────────────────────────────────
