@@ -430,7 +430,7 @@ export async function meshStepWithGmsh(
   }
 
   try {
-    await execFileAsync(GMSH_BIN, args, { timeout: 120_000, maxBuffer: 50*1024*1024 });
+    await execFileAsync(GMSH_BIN, args, { timeout: 600_000, maxBuffer: 50*1024*1024 });
   } catch (err) {
     throw new Error(`Gmsh failed: ${err}`);
   }

@@ -318,7 +318,7 @@ export async function probeTetGen(): Promise<{ found: boolean; path: string }> {
 async function tryTetGen(offPath: string, switches: string[]): Promise<boolean> {
   try {
     await execFileAsync(TETGEN_BIN, [...switches, offPath], {
-      timeout: 120_000,
+      timeout: 600_000,
       maxBuffer: 10 * 1024 * 1024,
     });
     return true;
