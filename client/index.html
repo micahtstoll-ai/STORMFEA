@@ -1989,6 +1989,10 @@ function dismissLandingScreen() {
   document.getElementById('sf-landing').style.display = 'none';
   const shell = document.getElementById('app-shell');
   shell.style.display = 'flex';
+  // initThree() ran at load while the shell was hidden, so the viewer/renderer
+  // were sized 0×0. Now that the shell is visible, resync to real dimensions —
+  // otherwise the WebGL canvas stays 0×0 and uploaded parts never render.
+  requestAnimationFrame(() => { if (typeof resizeViewer === 'function') resizeViewer(); });
 }
 
 // ─── Tier-1 CSS rain (landing screen only) ────────────────────────────────────
@@ -2195,10 +2199,23 @@ function initThree() {
   };
   loop();
 
-  window.addEventListener('resize', () => {
-    const w = el.clientWidth, h = el.clientHeight;
-    renderer.setSize(w, h); camera.aspect = w/h; camera.updateProjectionMatrix(); updateCamera();
-  });
+  window.addEventListener('resize', resizeViewer);
+}
+
+// Resync renderer + camera to the current viewer element size. Called on window
+// resize AND when the app shell is first revealed from the landing screen —
+// initThree() runs while #app-shell is display:none (viewer is 0×0), so without
+// this the WebGL canvas stays 0×0 and nothing ever draws.
+function resizeViewer() {
+  if (!renderer || !camera) return;
+  const el = document.getElementById('viewer');
+  if (!el) return;
+  const w = el.clientWidth, h = el.clientHeight;
+  if (!w || !h) return;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  updateCamera();
 }
 
 // ─── Orbit controls ──────────────────────────────────────────────────────────
