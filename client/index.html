@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="light" data-palette="amber">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -177,30 +177,17 @@
    No cyan, no green, no red, no blue — only these three.
    ─────────────────────────────────────────────────────────────────────────── */
 
-/* ── Palette system ──────────────────────────────────────────────────────────
-   Two palettes: gold (classic) and amber (instrument).
-   Switched via data-palette="gold"|"amber" on <html>.
-   Default: amber. Each palette defines --gold and its derived tokens.
-   data-theme controls dark/light. Both axes are independent.
+/* ── Nordic Storm gold palette ───────────────────────────────────────────────
+   Single canonical palette derived from the Nordic Storm brand mark.
+   --gold matches the ship/lightning in the logo. All UI gold tokens derive
+   from this one value so the brand stays consistent across light and dark.
    ─────────────────────────────────────────────────────────────────────────── */
-
-/* Palette: Gold (classic Nordic Storm) */
-:root,
-[data-palette="gold"] {
+:root {
   --gold:       #C9A227;
-  --gold-bright:#dbb832;
-  --gold-dim:   #9a7d1e;
+  --gold-bright:#E8C840;
+  --gold-dim:   #8B6914;
   --gold-glow:  #C9A22740;
   --gold-faint: #C9A22714;
-}
-
-/* Palette: Amber (instrument — default) */
-[data-palette="amber"] {
-  --gold:       #F5A623;
-  --gold-bright:#f7bb4a;
-  --gold-dim:   #c07818;
-  --gold-glow:  #F5A62340;
-  --gold-faint: #F5A62314;
 }
 
 /* Dark mode: black page, warm-tinted text */
@@ -215,7 +202,7 @@
   --text-mid:   #827668;
   --text-lo:    #80786c;
   --text-label: #847c70;
-  --accent-dim: rgba(245,166,35,0.12);
+  --accent-dim: rgba(201,162,39,0.12);
   /* Semantic */
   --success:      var(--gold);
   --warn:         #D6862E;
@@ -239,7 +226,7 @@
   --text-mid:   #6a6050;
   --text-lo:    #766e62;
   --text-label: #7a7060;
-  --accent-dim: rgba(245,166,35,0.08);
+  --accent-dim: rgba(201,162,39,0.08);
   --success:    var(--gold);
   --warn:       #BD7016;
   --danger:     #B23A28;
@@ -267,15 +254,15 @@
   --t-fast:  80ms;
   --t-slow: 220ms;
 
-  /* Landing screen brand palette (locked brief) */
-  --sf-bg:        #0d1117;
-  --sf-mid:       #1a2332;
-  --sf-accent:    #7eb8d4;
-  --sf-highlight: #c8a84b;
-  --sf-text:      #e8edf2;
-  --sf-text-lo:   #7a8a96;
-  --sf-border:    rgba(126,184,212,0.15);
-  --sf-rain-opacity: 0.30;
+  /* Landing screen brand palette — Nordic Storm */
+  --sf-bg:        #080603;
+  --sf-mid:       #110E08;
+  --sf-accent:    #C9A227;
+  --sf-highlight: #E8C840;
+  --sf-text:      #f0e8d8;
+  --sf-text-lo:   #7A6A50;
+  --sf-border:    rgba(201,162,39,0.18);
+  --sf-rain-opacity: 0.22;
 }
 
 /* ── Reset ──────────────────────────────────────────────────────────────────── */
@@ -872,20 +859,6 @@ body:not(.has-results) #btn-stress { display: none !important; }
   <div style="font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:700;letter-spacing:.10em;color:var(--gold);margin-bottom:12px">SETTINGS</div>
 
   <!-- Accent colour -->
-  <div style="border-top:1px solid var(--border);padding-top:10px;padding-bottom:10px">
-    <div style="font-family:'Outfit',sans-serif;font-size:var(--text-sm);color:var(--text-label);letter-spacing:.06em;margin-bottom:6px">ACCENT</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
-      <button class="btn" id="palette-amber-btn" onclick="setPalette('amber')"
-        style="font-size:var(--text-sm);display:flex;align-items:center;justify-content:center;gap:5px;border-radius:0">
-        <span style="width:8px;height:8px;border-radius:2px;background:#F5A623;flex-shrink:0"></span> Amber
-      </button>
-      <button class="btn" id="palette-gold-btn" onclick="setPalette('gold')"
-        style="font-size:var(--text-sm);display:flex;align-items:center;justify-content:center;gap:5px;border-radius:0;margin-left:-1px">
-        <span style="width:8px;height:8px;border-radius:2px;background:#C9A227;flex-shrink:0"></span> Gold
-      </button>
-    </div>
-  </div>
-
   <!-- Heatmap colormap -->
   <div style="border-top:1px solid var(--border);padding-top:10px;padding-bottom:10px">
     <div style="font-family:'Outfit',sans-serif;font-size:var(--text-sm);color:var(--text-label);letter-spacing:.06em;margin-bottom:6px">HEATMAP</div>
@@ -2066,7 +2039,7 @@ function initLandingRain() {
   }
 
   const rootStyle = getComputedStyle(document.documentElement);
-  const accentColor = rootStyle.getPropertyValue('--sf-accent').trim() || '#7eb8d4';
+  const accentColor = rootStyle.getPropertyValue('--sf-accent').trim() || '#C9A227';
   const rainOpacity = parseFloat(rootStyle.getPropertyValue('--sf-rain-opacity')) || 0.3;
 
   function step() {
@@ -2230,7 +2203,7 @@ function initThree() {
 
   // Set clear color to match current theme
   const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-  renderer.setClearColor(isDark ? 0x060709 : 0xeeeae3, 0);
+  renderer.setClearColor(isDark ? 0x070604 : 0xeeeae3, 0);
   const loop = () => {
     animId = requestAnimationFrame(loop);
     if (_splitActive) {
@@ -4058,8 +4031,8 @@ function addBoltMarker(bolt) {
   // ── Bolt markers: gold rings (occupied) ─────────────────────────────────────
   // Gold = constrained with bolt. Cyan is used only for empty-hole hover rings.
   // Outer ring (bolt head footprint) — bright gold, full opacity
-  const BOLT_COLOR      = 0xF5A623;  // amber gold — matches UI palette
-  const BOLT_COLOR_DIM  = 0xc07818;  // gold-dim for inner ring
+  const BOLT_COLOR      = 0xC9A227;  // Nordic Storm gold
+  const BOLT_COLOR_DIM  = 0x8B6914;  // gold-dim for inner ring
 
   const N = 48, pts = [];
   for (let i = 0; i <= N; i++) {
@@ -4187,7 +4160,7 @@ function showForcePreview() {
 
   _forcePreviewArrow = new THREE.ArrowHelper(
     dir, pos, len,
-    0xF5A623,   // gold — matches palette
+    0xC9A227,   // Nordic Storm gold
     len * 0.28, // head length
     len * 0.16  // head width
   );
@@ -5678,7 +5651,7 @@ function renderConvergenceGraph(checkpoints) {
   // Get CSS variables for colors
   const style = getComputedStyle(document.documentElement);
   const textColor = style.getPropertyValue('--text-mid').trim() || '#827668';
-  const lineColor = style.getPropertyValue('--gold').trim() || '#F5A623';
+  const lineColor = style.getPropertyValue('--gold').trim() || '#C9A227';
   const gridColor = style.getPropertyValue('--border').trim() || '#e4ddd0';
 
   // Clear canvas
@@ -7251,30 +7224,25 @@ function toggleTheme() {
   const next = isDark ? 'light' : 'dark';
   html.setAttribute('data-theme', next);
   document.getElementById('theme-icon').innerHTML = buildThemeIcon(next);
-  if (renderer) renderer.setClearColor(next === 'dark' ? 0x060709 : 0xeeeae3, 0);
+  if (renderer) renderer.setClearColor(next === 'dark' ? 0x070604 : 0xeeeae3, 0);
   localStorage.setItem('sf-theme', next);
   syncAppearanceBtns();
 }
 
-// Restore saved theme (default: light)
+// Restore saved theme (default: dark)
 (function() {
-  const saved = localStorage.getItem('sf-theme') || 'light';
+  const saved = localStorage.getItem('sf-theme') || 'dark';
   document.documentElement.setAttribute('data-theme', saved);
   const icon = document.getElementById('theme-icon');
   if (icon) icon.innerHTML = buildThemeIcon(saved);
 })();
 
-// ─── Palette toggle ───────────────────────────────────────────────────────────
+// ─── Appearance toggle ────────────────────────────────────────────────────────
 function syncAppearanceBtns() {
-  const palette = document.documentElement.getAttribute('data-palette') || 'amber';
-  const theme   = document.documentElement.getAttribute('data-theme')   || 'light';
-  const cmap    = S.colormap || 'viridis';
-  const ab = document.getElementById('palette-amber-btn');
-  const gb = document.getElementById('palette-gold-btn');
+  const theme = document.documentElement.getAttribute('data-theme') || 'dark';
+  const cmap  = S.colormap || 'viridis';
   const lb = document.getElementById('theme-light-btn');
   const db = document.getElementById('theme-dark-btn');
-  if (ab) ab.classList.toggle('active', palette === 'amber');
-  if (gb) gb.classList.toggle('active', palette === 'gold');
   if (lb) lb.classList.toggle('active', theme === 'light');
   if (db) db.classList.toggle('active', theme === 'dark');
   ['rainbow','viridis','plasma'].forEach(m => {
@@ -7287,23 +7255,6 @@ function syncAppearanceBtns() {
   });
   updateLegendSwatches();
 }
-
-function setPalette(name) {
-  document.documentElement.setAttribute('data-palette', name);
-  localStorage.setItem('sf-palette', name);
-  // Update viewer background to match palette warmth
-  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-  if (window.renderer) {
-    renderer.setClearColor(isDark ? (name === 'amber' ? 0x070604 : 0x060709) : 0xeeeae3, 0);
-  }
-  syncAppearanceBtns();
-}
-
-// Restore saved palette (default: amber)
-(function() {
-  const saved = localStorage.getItem('sf-palette') || 'amber';
-  document.documentElement.setAttribute('data-palette', saved);
-})();
 
 // ─── Audio Manager ────────────────────────────────────────────────────────────
 // Persistent global AudioContext with accessibility controls and per-stage tones
@@ -8221,10 +8172,9 @@ function drawSummaryCanvas() {
   out.width = W; out.height = H;
     const ctx = out.getContext('2d');
 
-    // ── Resolve palette colours ──────────────────────────────────────────────
+    // ── Resolve theme colours ────────────────────────────────────────────────
     const isDark   = document.documentElement.getAttribute('data-theme') === 'dark';
-    const palette  = document.documentElement.getAttribute('data-palette') || 'amber';
-    const GOLD     = palette === 'amber' ? '#F5A623' : '#C9A227';
+    const GOLD     = '#C9A227';
     const BG       = isDark ? '#0a0806' : '#faf7f2';
     const BG_CARD  = isDark ? '#141210' : '#ffffff';
     const TEXT_HI  = isDark ? '#f0e8d8' : '#1c1a16';
@@ -8462,8 +8412,7 @@ function drawDetailCanvas() {
   const ctx = out.getContext('2d');
 
   const isDark   = document.documentElement.getAttribute('data-theme') === 'dark';
-  const palette  = document.documentElement.getAttribute('data-palette') || 'amber';
-  const GOLD     = palette === 'amber' ? '#F5A623' : '#C9A227';
+  const GOLD     = '#C9A227';
   const BG       = isDark ? '#0a0806' : '#faf7f2';
   const BG_CARD  = isDark ? '#141210' : '#ffffff';
   const TEXT_HI  = isDark ? '#f0e8d8' : '#1c1a16';
