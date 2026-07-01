@@ -9866,12 +9866,7 @@ async function importFromOnshape() {
     const abPanelEl2 = document.getElementById('ab-panel');
     if (abPanelEl2) abPanelEl2.style.display = 'none';
 
-    const raw = atob(data.positionsB64);
-    const arr = new Uint8Array(raw.length);
-    for (let i=0;i<raw.length;i++) arr[i]=raw.charCodeAt(i);
-    const positions = new Float32Array(arr.buffer);
-
-    loadMeshFromPositions(positions, data.triangleCount);
+    loadMeshFromPositions(data.positionsB64);
     document.getElementById('dropzone-wrapper').style.display = 'none';
     document.getElementById('toolbar').style.display = 'flex';
     document.getElementById('topright').style.display = 'flex';
