@@ -569,10 +569,10 @@ body:not(.has-results) #btn-stress { display: none !important; }
   <canvas id="sf-rain-canvas"></canvas>
 
   <!-- Content layer — single z-index:1 container above rain canvas -->
-  <div style="position:absolute;inset:0;z-index:1;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden">
+  <div style="position:absolute;inset:0;z-index:1;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;padding-left:8vw;overflow:hidden">
 
   <!-- Wordmark -->
-  <div style="display:flex;flex-direction:column;align-items:center;margin-bottom:52px;gap:10px">
+  <div style="display:flex;flex-direction:column;align-items:flex-start;margin-bottom:36px;gap:10px">
 
     <!-- Compass mark (reuse exact SVG from header) -->
     <svg width="52" height="52" viewBox="0 0 34 34" fill="none" aria-label="STORMFEA compass mark">
@@ -590,7 +590,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
     </svg>
 
     <!-- Title block -->
-    <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+    <div style="display:flex;flex-direction:column;align-items:flex-start;gap:4px">
       <div style="font-family:'Rajdhani',sans-serif;font-size:36px;letter-spacing:.10em;line-height:1">
         <span style="font-weight:700;color:var(--sf-text)">STORM</span><span style="font-weight:300;opacity:.7;color:var(--sf-text)">FEA</span>
       </div>
@@ -612,10 +612,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <line x1="8" y1="2" x2="8" y2="14"/>
         <line x1="2" y1="8" x2="14" y2="8"/>
       </svg>
-      <div>
-        <div class="sf-card-label">NEW ANALYSIS</div>
-        <div class="sf-card-sub">Load a part and begin</div>
-      </div>
+      <div class="sf-card-label">NEW ANALYSIS</div>
     </button>
 
     <!-- 2: RESUME SESSION — disabled -->
@@ -625,10 +622,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <path d="M2 8a6 6 0 1 0 1-3.5"/>
         <polyline points="2,2 2,6 6,6"/>
       </svg>
-      <div>
-        <div class="sf-card-label">RESUME SESSION</div>
-        <div class="sf-card-sub">No active session</div>
-      </div>
+      <div class="sf-card-label">RESUME SESSION</div>
     </div>
 
     <!-- 3: PAST EXPORTS — disabled -->
@@ -639,10 +633,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <line x1="8" y1="6" x2="8" y2="10"/>
         <polyline points="5.5,8 8,10.5 10.5,8"/>
       </svg>
-      <div>
-        <div class="sf-card-label">PAST EXPORTS</div>
-        <div class="sf-card-sub">No exports yet</div>
-      </div>
+      <div class="sf-card-label">PAST EXPORTS</div>
     </div>
 
     <!-- Divider -->
@@ -659,10 +650,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <line x1="5" y1="5" x2="11" y2="11"/>
         <line x1="11" y1="5" x2="5" y2="11"/>
       </svg>
-      <div>
-        <div class="sf-card-label">CALIBRATE</div>
-        <div class="sf-card-sub">Material coupons &amp; measured profiles</div>
-      </div>
+      <div class="sf-card-label">CALIBRATE</div>
     </button>
 
     <!-- 5: SOURCES — fully wired -->
@@ -676,10 +664,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <line x1="8" y1="4.5" x2="8" y2="11.5"/>
         <line x1="4.5" y1="8" x2="11.5" y2="8"/>
       </svg>
-      <div>
-        <div class="sf-card-label">SOURCES</div>
-        <div class="sf-card-sub">Peer-reviewed citations for every constant</div>
-      </div>
+      <div class="sf-card-label">SOURCES</div>
     </button>
 
     <!-- 6: PREFERENCES — fully wired -->
@@ -692,11 +677,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <polygon points="8,1.5 12.83,4.5 12.83,10.5 8,13.5 3.17,10.5 3.17,4.5"/>
         <circle cx="8" cy="8" r="2.5"/>
       </svg>
-      <div>
-        <div class="sf-card-label">PREFERENCES</div>
-        <div class="sf-card-sub">Theme, units, heatmap, and display</div>
-        <div style="font-size:9px;color:var(--sf-text-lo);margin-top:4px;letter-spacing:.01em;opacity:.7">Additional display options available from the ⚙ icon inside the app.</div>
-      </div>
+      <div class="sf-card-label">PREFERENCES</div>
     </button>
 
   </div><!-- end card rail -->
