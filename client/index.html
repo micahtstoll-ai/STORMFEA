@@ -2969,7 +2969,7 @@ function applyStressColors(stressB64, maxStress, principalStressB64, errorEstima
   if (!mesh3d) return;
   const buf = Uint8Array.from(atob(stressB64), c => c.charCodeAt(0));
   const vertexStress = new Float32Array(buf.buffer);
-  const expectedLength = mesh3d.geometry.attributes.position.count * 3;
+  const expectedLength = mesh3d.geometry.attributes.position.count;
 
   // Validate array integrity
   try {
