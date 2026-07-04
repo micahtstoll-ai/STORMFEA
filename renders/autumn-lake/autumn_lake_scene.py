@@ -11,9 +11,12 @@ import sys
 import os
 from mathutils import noise, Vector
 
-# shared procedural cattail generator (renders/cattail/cattail_lib.py)
-sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "cattail"))
+# shared procedural generators: cattails (renders/cattail) + trees (this dir)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.join(_HERE, "..", "cattail"))
+sys.path.append(_HERE)
 import cattail_lib as ct
+import tree_lib
 
 random.seed(20260703)
 
@@ -80,15 +83,9 @@ def simple_mat(name, color, rough=0.9):
     p.inputs["Roughness"].default_value = rough
     return m
 
+# trunk material kept for the fallen log & stump; tree foliage/bark now come
+# from tree_lib's vertex-colour materials (per-tree colour lives in the mesh)
 mat_trunk = simple_mat("Trunk", (0.05, 0.03, 0.02))
-mat_birch = simple_mat("Birch", (0.65, 0.62, 0.55))
-mat_red = simple_mat("LeafRed", (0.42, 0.03, 0.008))
-mat_orange = simple_mat("LeafOrange", (0.55, 0.13, 0.01))
-mat_yellow = simple_mat("LeafYellow", (0.55, 0.32, 0.02))
-mat_pine = simple_mat("Pine", (0.015, 0.045, 0.015))
-mat_pine2 = simple_mat("Pine2", (0.03, 0.07, 0.02))
-mat_reed = simple_mat("Reed", (0.12, 0.20, 0.04))
-mat_cattail = simple_mat("Cattail", (0.15, 0.07, 0.02))
 
 # ground: noisy mix of grass green and autumn brown
 mat_ground = bpy.data.materials.new("Ground")
@@ -166,76 +163,35 @@ water.name = "Water"
 water.data.materials.append(mat_water)
 
 # ------------------------------------------------------------------ trees ---
-def make_deciduous(name, leaf_mat, trunk_mat=mat_trunk, blob=0.35):
-    bpy.ops.mesh.primitive_cylinder_add(radius=0.14, depth=2.4, location=(0, 0, 1.2))
-    trunk = bpy.context.object
-    trunk.data.materials.append(trunk_mat)
-    bpy.ops.mesh.primitive_ico_sphere_add(subdivisions=2, radius=1.9, location=(0, 0, 3.4))
-    canopy = bpy.context.object
-    canopy.scale = (1.0, 1.0, 1.25)
-    for v in canopy.data.vertices:
-        v.co += v.co.normalized() * random.uniform(-blob, blob)
-    canopy.data.materials.append(leaf_mat)
-    for poly in canopy.data.polygons:
-        poly.use_smooth = True
-    bpy.ops.object.select_all(action="DESELECT")
-    trunk.select_set(True)
-    canopy.select_set(True)
-    bpy.context.view_layer.objects.active = trunk
-    bpy.ops.object.join()
-    tree = bpy.context.object
-    tree.name = name
-    return tree
+# Every tree is generated fresh from its own random.Random(seed) via tree_lib,
+# so no two share geometry or colour (see tree_lib.py). Autumn palettes below
+# get a per-tree hue/value jitter inside the generator.
+PALETTE = {
+    "red":    (0.42, 0.03, 0.008),
+    "orange": (0.55, 0.13, 0.01),
+    "yellow": (0.55, 0.32, 0.02),
+    "birch":  (0.60, 0.42, 0.05),
+    "pine":   (0.020, 0.060, 0.020),
+    "pine2":  (0.030, 0.080, 0.025),
+}
+BROADLEAF = {"red", "orange", "yellow", "birch"}
 
-def make_conifer(name, mat):
-    parts = []
-    for k, (r, h, z) in enumerate([(1.5, 2.6, 1.6), (1.15, 2.4, 3.0), (0.75, 2.2, 4.4)]):
-        bpy.ops.mesh.primitive_cone_add(radius1=r, depth=h, location=(0, 0, z), vertices=10)
-        c = bpy.context.object
-        c.data.materials.append(mat)
-        parts.append(c)
-    bpy.ops.mesh.primitive_cylinder_add(radius=0.10, depth=1.0, location=(0, 0, 0.5))
-    tr = bpy.context.object
-    tr.data.materials.append(mat_trunk)
-    parts.append(tr)
-    bpy.ops.object.select_all(action="DESELECT")
-    for p in parts:
-        p.select_set(True)
-    bpy.context.view_layer.objects.active = parts[0]
-    bpy.ops.object.join()
-    tree = bpy.context.object
-    tree.name = name
-    return tree
-
-templates = [
-    ("red", make_deciduous("T_Red", mat_red)),
-    ("red2", make_deciduous("T_Red2", mat_red, blob=0.5)),
-    ("orange", make_deciduous("T_Orange", mat_orange)),
-    ("yellow", make_deciduous("T_Yellow", mat_yellow)),
-    ("birch", make_deciduous("T_Birch", mat_yellow, trunk_mat=mat_birch, blob=0.5)),
-    ("pine", make_conifer("T_Pine", mat_pine)),
-    ("pine2", make_conifer("T_Pine2", mat_pine2)),
-]
-tdict = dict(templates)
-for _, t in templates:
-    t.location = (0, -500, 0)  # park templates out of view
-    t.hide_render = True
-
-def pick_template(x, y):
+def pick_species(x, y):
+    """Return a palette key, biome-weighted by bank (matches the old layout)."""
     r = random.random()
-    if y > 55:  # far shoreline: mostly conifers
+    if y > 55:                       # far shoreline: mostly conifers
         if r < 0.55:
             return random.choice(["pine", "pine2"])
         return random.choice(["orange", "yellow", "red", "birch"])
-    if x < 0:  # left bank: blazing autumn
-        if r < 0.42:
-            return "red" if random.random() < 0.6 else "red2"
-        if r < 0.68:
+    if x < 0:                        # left bank: blazing autumn
+        if r < 0.50:
+            return "red"
+        if r < 0.72:
             return "orange"
-        if r < 0.82:
+        if r < 0.86:
             return random.choice(["yellow", "birch"])
         return random.choice(["pine", "pine2"])
-    else:  # right bank: dark conifers with autumn accents
+    else:                            # right bank: dark conifers with accents
         if r < 0.72:
             return random.choice(["pine", "pine2"])
         if r < 0.85:
@@ -243,6 +199,10 @@ def pick_template(x, y):
         if r < 0.94:
             return "yellow"
         return "red"
+
+CAM_XY = Vector((0.0, -51.5))        # for distance-based level of detail
+tree_mats = tree_lib.make_tree_materials()
+tree_acc = tree_lib.new_accumulators()
 
 placed = 0
 attempts = 0
@@ -259,17 +219,23 @@ while placed < 650 and attempts < 20000:
     # keep the near shore around the camera clear
     if y < -32 and abs(x) < 16:
         continue
-    key = pick_template(x, y)
-    tpl = tdict[key]
-    inst = bpy.data.objects.new(f"Tree_{placed}", tpl.data)
+    key = pick_species(x, y)
     s = random.uniform(0.7, 1.5)
     if y < -20:  # trees near the camera stay modest so they don't block the frame
         s = min(s, 1.05)
-    inst.scale = (s, s, s * random.uniform(0.9, 1.3))
-    inst.rotation_euler = (0, 0, random.uniform(0, 6.28))
-    inst.location = (x, y, h - 0.15)
-    scene.collection.objects.link(inst)
+    s *= random.uniform(0.9, 1.3)
+    # detail falls off with distance so far background trees stay cheap
+    dist = (Vector((x, y)) - CAM_XY).length
+    lod = max(0.0, min(1.0, 1.25 - dist / 90.0))
+    base = (x, y, h - 0.15)
+    rng = random.Random(placed * 2654435761 & 0xFFFFFFFF)
+    if key in BROADLEAF:
+        tree_lib.build_broadleaf(tree_acc, base, s, PALETTE[key], rng, lod=lod)
+    else:
+        tree_lib.build_conifer(tree_acc, base, s, PALETTE[key], rng, lod=lod)
     placed += 1
+
+tree_lib.realize(scene, tree_acc, tree_mats)
 
 # --------------------------------------------------------------- cattails ---
 # Real procedural Typha latifolia clumps lining the near shore, replacing the
