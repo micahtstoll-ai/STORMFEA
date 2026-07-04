@@ -8,7 +8,12 @@ import bpy
 import math
 import random
 import sys
+import os
 from mathutils import noise, Vector
+
+# shared procedural cattail generator (renders/cattail/cattail_lib.py)
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "cattail"))
+import cattail_lib as ct
 
 random.seed(20260703)
 
@@ -266,46 +271,41 @@ while placed < 650 and attempts < 20000:
     scene.collection.objects.link(inst)
     placed += 1
 
-# ------------------------------------------------------------------ reeds ---
-bpy.ops.mesh.primitive_cylinder_add(radius=0.028, depth=2.0, location=(0, -500, 0), vertices=5)
-reed_tpl = bpy.context.object
-reed_tpl.data.materials.append(mat_reed)
-reed_tpl.hide_render = True
-bpy.ops.mesh.primitive_cylinder_add(radius=0.05, depth=0.35, location=(0, -500, 0), vertices=6)
-head_tpl = bpy.context.object
-head_tpl.data.materials.append(mat_cattail)
-head_tpl.hide_render = True
+# --------------------------------------------------------------- cattails ---
+# Real procedural Typha latifolia clumps lining the near shore, replacing the
+# old crude reeds. Warm/dry material variant so they read against the sunset;
+# strongly backlit by the low sun -> orange-rimmed silhouettes as in the photo.
+def near_shore_y(x):
+    """y of the near (camera-side) waterline for a given x on the lake ellipse."""
+    v = 1.0 - (x / 26.0) ** 2
+    return 8.0 - 52.0 * math.sqrt(max(v, 0.0))
 
-from mathutils import Euler
+def cattail_base_z(x, y):
+    """Sit bases right at the waterline, a touch submerged."""
+    return max(min(ground_h(x, y), 0.05), -0.18)
 
-def reed_clump(cx, cy, count, spread, hmin=1.0, hmax=2.2):
-    for k in range(count):
-        x = cx + random.uniform(-spread, spread)
-        y = cy + random.uniform(-spread, spread)
-        h = ground_h(x, y)
-        base = max(h, -0.2)
-        length = random.uniform(hmin, hmax)
-        rot = Euler((random.uniform(-0.18, 0.18), random.uniform(-0.18, 0.18), 0))
-        center = Vector((x, y, base)) + rot.to_matrix() @ Vector((0, 0, length / 2.0))
-        r = bpy.data.objects.new("Reed", reed_tpl.data)
-        r.scale = (1, 1, length / 2.0)
-        r.location = center
-        r.rotation_euler = rot
-        scene.collection.objects.link(r)
-        if random.random() < 0.15:
-            tip = Vector((x, y, base)) + rot.to_matrix() @ Vector((0, 0, length + 0.18))
-            hd = bpy.data.objects.new("CattailHead", head_tpl.data)
-            hd.location = tip
-            hd.rotation_euler = rot
-            scene.collection.objects.link(hd)
+cat_mats = ct.make_cattail_materials(wet=False, warm=True)
+cat_acc = ct.new_accumulators()
 
-reed_clump(-5.0, -44.0, 60, 2.5)          # foreground left
-reed_clump(6.0, -44.5, 45, 2.0)           # foreground right
-reed_clump(0.5, -42.0, 15, 1.2, 0.7, 1.4)  # short center tuft
-reed_clump(-22, -27, 30, 3.0)             # mid-distance left shore
-reed_clump(22, -26, 30, 3.0)              # mid-distance right shore
-reed_clump(-2.5, -51.5, 55, 3.5, 0.3, 0.9)  # short grass tufts near camera
-reed_clump(3.5, -50.5, 40, 2.5, 0.3, 0.8)
+# dense fringe strung along the whole near shoreline arc
+for x in range(-34, 35, 3):
+    ys = near_shore_y(x)
+    cx = x + random.uniform(-1.6, 1.6)
+    cy = ys + random.uniform(-1.6, 0.8)
+    dist = abs(x)
+    n = random.randint(7, 11) if dist < 20 else random.randint(4, 7)
+    smin = 1.3 - dist * 0.010            # centre clumps taller than the wings
+    ct.build_clump(cat_acc, (cx, cy, 0.0), n,
+                   (max(0.8, smin), max(1.0, smin + 0.5)), spread=2.4,
+                   rng=random, male_prob=0.55, base_z_fn=cattail_base_z)
+
+# tall hero clumps just in front of the waterline -> foreground silhouettes
+for cx, cy in [(-11, -47.0), (-4, -48.0), (4.5, -48.2), (11.5, -47.2), (0.0, -49.2)]:
+    ct.build_clump(cat_acc, (cx + random.uniform(-1, 1), cy, 0.0),
+                   random.randint(10, 15), (1.5, 2.3), spread=2.0,
+                   rng=random, male_prob=0.6, base_z_fn=cattail_base_z)
+
+ct.realize(scene, cat_acc, cat_mats, prefix="Cattail_")
 
 # fallen log and stump on the near bank, as in the reference photo
 log_h = ground_h(5.5, -49.5)
