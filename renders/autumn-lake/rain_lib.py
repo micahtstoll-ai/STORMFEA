@@ -177,3 +177,70 @@ def add_rain_streaks(scene, count=650, box=(-35, 35, -50, 8, 0.5, 22),
         s.visible_shadow = False
         scene.collection.objects.link(s)
     return tpl
+
+
+# ------------------------------------------------- 5. rain splash rings -------
+def add_splash_rings(mat, scale=1.0, ring_scale=3.2, frequency=46.0,
+                     strength=0.5, falloff=2.3, density=0.72):
+    """Concentric expanding rings at scattered impact points, layered on top of
+       the fine ripple normal. A Voronoi feature field gives one impact per cell;
+       sin(distance*frequency) makes the rings; a radial falloff fades them out
+       and a per-cell gate leaves only some cells splashing."""
+    nt = mat.node_tree
+    p = nt.nodes.get("Principled BSDF")
+    # keep whatever normal is already driving the shader (the fine ripples) so
+    # the splash bump can be chained on top of it
+    prev_normal = p.inputs["Normal"].links[0].from_socket if p.inputs["Normal"].is_linked else None
+
+    coord = nt.nodes.new("ShaderNodeTexCoord")
+    mapping = nt.nodes.new("ShaderNodeMapping")
+    mapping.inputs["Scale"].default_value = (scale, scale, scale)
+    nt.links.new(coord.outputs["Object"], mapping.inputs["Vector"])
+
+    vor = nt.nodes.new("ShaderNodeTexVoronoi")
+    vor.feature = 'F1'
+    vor.inputs["Scale"].default_value = ring_scale
+    nt.links.new(mapping.outputs["Vector"], vor.inputs["Vector"])
+
+    def _math(op, v1=None):
+        n = nt.nodes.new("ShaderNodeMath")
+        n.operation = op
+        if v1 is not None:
+            n.inputs[1].default_value = v1
+        return n
+
+    # concentric rings: sin(distance * frequency)
+    mul = _math('MULTIPLY', frequency)
+    nt.links.new(vor.outputs["Distance"], mul.inputs[0])
+    sine = _math('SINE')
+    nt.links.new(mul.outputs["Value"], sine.inputs[0])
+
+    # radial falloff: 1 - distance*falloff, clamped at 0 -> rings die out at the rim
+    fmul = _math('MULTIPLY', falloff)
+    nt.links.new(vor.outputs["Distance"], fmul.inputs[0])
+    inv = _math('SUBTRACT')
+    inv.inputs[0].default_value = 1.0
+    nt.links.new(fmul.outputs["Value"], inv.inputs[1])
+    clamp = _math('MAXIMUM', 0.0)
+    nt.links.new(inv.outputs["Value"], clamp.inputs[0])
+
+    # per-cell gate: only cells whose random colour exceeds `density` splash
+    gate = _math('GREATER_THAN', density)
+    nt.links.new(vor.outputs["Color"], gate.inputs[0])
+
+    # amplitude = sine * falloff * gate
+    a1 = _math('MULTIPLY')
+    nt.links.new(sine.outputs["Value"], a1.inputs[0])
+    nt.links.new(clamp.outputs["Value"], a1.inputs[1])
+    a2 = _math('MULTIPLY')
+    nt.links.new(a1.outputs["Value"], a2.inputs[0])
+    nt.links.new(gate.outputs["Value"], a2.inputs[1])
+
+    bump = nt.nodes.new("ShaderNodeBump")
+    bump.inputs["Strength"].default_value = strength
+    bump.inputs["Distance"].default_value = 0.05
+    nt.links.new(a2.outputs["Value"], bump.inputs["Height"])
+    if prev_normal is not None:
+        nt.links.new(prev_normal, bump.inputs["Normal"])
+    nt.links.new(bump.outputs["Normal"], p.inputs["Normal"])
+    return bump

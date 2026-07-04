@@ -362,8 +362,11 @@ if RAIN:
     # 2. volumetric rain mist wrapping the camera + lake -> atmospheric depth
     rl.add_volumetric_mist(scene, bounds=(-95, 95, -70, 125, -6, 30),
                            density=0.010, anisotropy=0.7)
-    # 3. procedural rain ripples break the mirror into hundreds of splashes
+    # 3. procedural rain ripples break the mirror into hundreds of splashes,
+    #    with concentric splash rings at scattered impact points on top
     rl.apply_rain_ripples(mat_water, scale=1.6, strength=0.32)
+    rl.add_splash_rings(mat_water, scale=1.0, ring_scale=0.8, frequency=42,
+                        strength=0.7, density=0.65)
     # 4. a curtain of fine falling rain streaks through the camera view
     rl.add_rain_streaks(scene, count=800, radius=0.009, emission=0.55,
                         length=(0.5, 1.0))
