@@ -33,3 +33,7 @@ Thumbs.db
 *.log
 .vscode/
 .idea/
+
+# Python bytecode cache (generated when Blender scripts import cattail_lib)
+__pycache__/
+*.pyc
