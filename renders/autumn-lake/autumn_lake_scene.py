@@ -262,7 +262,8 @@ def cattail_base_z(x, y):
     """Sit bases right at the waterline, a touch submerged."""
     return max(min(ground_h(x, y), 0.05), -0.18)
 
-cat_mats = ct.make_cattail_materials(wet=False, warm=True)
+# in rain mode the reeds get the wet material variant (clear-coat sheen + droplets)
+cat_mats = ct.make_cattail_materials(wet=RAIN, warm=True)
 cat_acc = ct.new_accumulators()
 
 # dense fringe strung along the whole near shoreline arc
@@ -363,6 +364,16 @@ if RAIN:
                            density=0.010, anisotropy=0.7)
     # 3. procedural rain ripples break the mirror into hundreds of splashes
     rl.apply_rain_ripples(mat_water, scale=1.6, strength=0.32)
+    # 4. a curtain of fine falling rain streaks through the camera view
+    rl.add_rain_streaks(scene, count=800, radius=0.009, emission=0.55,
+                        length=(0.5, 1.0))
+    # 5. soak the reeds: stronger clear-coat sheen so they read as wet
+    for _key in ("leaf", "stem"):
+        _p = cat_mats[_key].node_tree.nodes.get("Principled BSDF")
+        if _p:
+            _p.inputs["Coat Weight"].default_value = 0.6
+            _p.inputs["Coat Roughness"].default_value = 0.04
+            _p.inputs["Roughness"].default_value = 0.28
 
 # --------------------------------------- high-detail micropolygon displacement --
 # Cycles Adaptive Subdivision gives the ground, mud and rocks true 4K geometric

@@ -1,6 +1,6 @@
 # rain_lib.py — turn the autumn lake into a moody "Autumn Rain" scene.
 #
-# Three atmospheric building blocks (Blender 4.x node API):
+# Atmospheric building blocks (Blender 4.x node API):
 #   1. make_overcast_world() — heavy overcast sky: soft, diffuse cool-grey/blue
 #      world light with no sun disc, so there are no harsh sun shadows.
 #   2. add_volumetric_mist()  — a Principled Volume cube wrapping the camera +
@@ -8,6 +8,10 @@
 #      distant forest and hides the far low-poly edges (atmospheric depth).
 #   3. apply_rain_ripples()   — rebuilds the lake normals from tiled Voronoi +
 #      Noise through a Color Ramp, breaking the mirror into hundreds of splashes.
+#   4. add_rain_streaks()     — a curtain of thin, faintly-emissive falling
+#      streaks through the camera view (motion-blur-look rain).
+import math
+import random
 import bpy
 
 
@@ -131,3 +135,45 @@ def apply_rain_ripples(mat, scale=1.6, strength=0.32, roughness=0.06,
     nt.links.new(ramp.outputs["Color"], bump.inputs["Height"])
     nt.links.new(bump.outputs["Normal"], p.inputs["Normal"])
     return mat
+
+
+# ------------------------------------------------- 4. falling rain streaks ----
+def add_rain_streaks(scene, count=650, box=(-35, 35, -50, 8, 0.5, 22),
+                     length=(0.35, 0.75), radius=0.013, tilt_deg=(3, 10),
+                     emission=0.7, mix=0.92, seed=7):
+    """A curtain of thin, faintly self-lit streaks through the camera view.
+       Each is an elongated 4-sided cylinder (a motion-blurred raindrop)."""
+    rng = random.Random(seed)
+    x0, x1, y0, y1, z0, z1 = box
+
+    mat = bpy.data.materials.new("RainStreak")
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.clear()
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    mixsh = nt.nodes.new("ShaderNodeMixShader")
+    mixsh.inputs["Fac"].default_value = mix          # mostly transparent
+    tr = nt.nodes.new("ShaderNodeBsdfTransparent")
+    em = nt.nodes.new("ShaderNodeEmission")
+    em.inputs["Color"].default_value = (0.72, 0.78, 0.85, 1.0)
+    em.inputs["Strength"].default_value = emission
+    nt.links.new(tr.outputs["BSDF"], mixsh.inputs[1])
+    nt.links.new(em.outputs["Emission"], mixsh.inputs[2])
+    nt.links.new(mixsh.outputs["Shader"], out.inputs["Surface"])
+
+    bpy.ops.mesh.primitive_cylinder_add(radius=radius, depth=1.0, vertices=4,
+                                        location=(0, -500, 0))
+    tpl = bpy.context.object
+    tpl.name = "RainStreakTpl"
+    tpl.data.materials.append(mat)
+    tpl.hide_render = True
+
+    for i in range(count):
+        s = bpy.data.objects.new("RainStreak", tpl.data)
+        s.location = (rng.uniform(x0, x1), rng.uniform(y0, y1), rng.uniform(z0, z1))
+        s.rotation_euler = (math.radians(rng.uniform(*tilt_deg)), 0.0,
+                            rng.uniform(0, math.tau))
+        s.scale = (1.0, 1.0, rng.uniform(*length))
+        s.visible_shadow = False
+        scene.collection.objects.link(s)
+    return tpl
