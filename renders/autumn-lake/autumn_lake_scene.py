@@ -27,20 +27,24 @@ if "--" in sys.argv:
     if args:
         mode = args[0]
 
-# "final-hd" turns on Cycles Adaptive Subdivision (micropolygon displacement) for
-# the ground, mud and rocks; it is much heavier, so it stays out of the default
-# render path. "preview-hd" is the same but at preview resolution for quick checks.
-HD = mode in ("final-hd", "preview-hd")
+# Composable render flags in the mode string, e.g. "final", "final-hd",
+# "final-rain", "final-rain-hd", "preview-rain":
+#   hd   -> Cycles Adaptive Subdivision (micropolygon displacement); heavy.
+#   rain -> "Autumn Rain": overcast world + volumetric mist + rain-ripple water.
+_tok = set(mode.split("-"))
+IS_PREVIEW = "preview" in _tok
+HD = "hd" in _tok
+RAIN = "rain" in _tok
 
-if mode in ("preview", "preview-hd"):
-    RES_X, RES_Y, SAMPLES = 640, 360, 48 if HD else 32
+if IS_PREVIEW:
+    RES_X, RES_Y = 640, 360
+    SAMPLES = 64 if (HD or RAIN) else 32
     OUT = "/tmp/claude-0/-home-user-STORMFEA/e03c2369-f850-53e7-8a78-a274eb7d038a/scratchpad/preview.png"
-elif mode == "final-hd":
-    RES_X, RES_Y, SAMPLES = 1280, 720, 128
-    OUT = "/home/user/STORMFEA/renders/autumn-lake/autumn_lake_render_hd.png"
 else:
-    RES_X, RES_Y, SAMPLES = 1280, 720, 256
-    OUT = "/home/user/STORMFEA/renders/autumn-lake/autumn_lake_render.png"
+    RES_X, RES_Y = 1280, 720
+    SAMPLES = 128 if HD else (170 if RAIN else 256)
+    _suffix = ("_rain" if RAIN else "") + ("_hd" if HD else "")
+    OUT = f"/home/user/STORMFEA/renders/autumn-lake/autumn_lake_render{_suffix}.png"
 
 # ------------------------------------------------------------ scene setup ---
 bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -342,6 +346,23 @@ direction = target - Vector(cam.location)
 cam.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
 scene.collection.objects.link(cam)
 scene.camera = cam
+
+# ----------------------------------------------------------- Autumn Rain mood --
+# Overcast world (no sun) + volumetric mist + rain-ripple water. Only runs in the
+# "*-rain" modes so the default sunset render is untouched.
+if RAIN:
+    import rain_lib as rl
+    # cooler, dimmer grade for the overcast mood
+    scene.view_settings.look = "Medium Contrast"
+    scene.view_settings.exposure = 0.4
+    # 1. heavy overcast sky (soft diffuse cool light, no harsh sun shadows)
+    rl.make_overcast_world(scene, strength=1.3)
+    clouds.hide_render = True                      # drop the warm sunset clouds
+    # 2. volumetric rain mist wrapping the camera + lake -> atmospheric depth
+    rl.add_volumetric_mist(scene, bounds=(-95, 95, -70, 125, -6, 30),
+                           density=0.010, anisotropy=0.7)
+    # 3. procedural rain ripples break the mirror into hundreds of splashes
+    rl.apply_rain_ripples(mat_water, scale=1.6, strength=0.32)
 
 # --------------------------------------- high-detail micropolygon displacement --
 # Cycles Adaptive Subdivision gives the ground, mud and rocks true 4K geometric
