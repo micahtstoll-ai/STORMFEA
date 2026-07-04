@@ -27,9 +27,17 @@ if "--" in sys.argv:
     if args:
         mode = args[0]
 
-if mode == "preview":
-    RES_X, RES_Y, SAMPLES = 640, 360, 32
+# "final-hd" turns on Cycles Adaptive Subdivision (micropolygon displacement) for
+# the ground, mud and rocks; it is much heavier, so it stays out of the default
+# render path. "preview-hd" is the same but at preview resolution for quick checks.
+HD = mode in ("final-hd", "preview-hd")
+
+if mode in ("preview", "preview-hd"):
+    RES_X, RES_Y, SAMPLES = 640, 360, 48 if HD else 32
     OUT = "/tmp/claude-0/-home-user-STORMFEA/e03c2369-f850-53e7-8a78-a274eb7d038a/scratchpad/preview.png"
+elif mode == "final-hd":
+    RES_X, RES_Y, SAMPLES = 1280, 720, 128
+    OUT = "/home/user/STORMFEA/renders/autumn-lake/autumn_lake_render_hd.png"
 else:
     RES_X, RES_Y, SAMPLES = 1280, 720, 256
     OUT = "/home/user/STORMFEA/renders/autumn-lake/autumn_lake_render.png"
@@ -334,6 +342,67 @@ direction = target - Vector(cam.location)
 cam.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
 scene.collection.objects.link(cam)
 scene.camera = cam
+
+# --------------------------------------- high-detail micropolygon displacement --
+# Cycles Adaptive Subdivision gives the ground, mud and rocks true 4K geometric
+# relief. Screen-adaptive dicing keeps the foreground crisp while the rest stays
+# cheap. Only runs in the "*-hd" modes so the normal render is untouched.
+if HD:
+    import displace_lib as dl
+    dl.enable_experimental(scene, dicing=1.0, offscreen=8.0, preview=8.0)
+
+    # (a) existing ground: adaptive subdiv + micro clods/pebbles. Slightly coarser
+    #     per-object dicing since it spans the whole scene.
+    dl.add_adaptive_subdiv(ground, dicing_rate=2.0, simple=True)
+    dl.set_displacement(mat_ground, "ground", scale=0.08, midlevel=0.5)
+
+    # (b) mud apron conforming to the near shoreline in the foreground bank
+    mat_mud_hd = simple_mat("MudHD", (0.055, 0.040, 0.026), rough=0.95)
+    mv, mf = [], []
+    MX0, MX1, MY0, MY1 = -30.0, 30.0, -53.0, -41.0
+    NX, NY = 40, 14
+    for j in range(NY + 1):
+        yy = MY0 + (MY1 - MY0) * j / NY
+        for i in range(NX + 1):
+            xx = MX0 + (MX1 - MX0) * i / NX
+            mv.append((xx, yy, ground_h(xx, yy) + 0.03))
+    for j in range(NY):
+        for i in range(NX):
+            a = j * (NX + 1) + i
+            mf.append((a, a + 1, a + NX + 2, a + NX + 1))
+    mud_mesh = bpy.data.meshes.new("MudMesh")
+    mud_mesh.from_pydata(mv, [], mf)
+    mud_mesh.update()
+    for poly in mud_mesh.polygons:
+        poly.use_smooth = True
+    mud = bpy.data.objects.new("Mud", mud_mesh)
+    mud.data.materials.append(mat_mud_hd)
+    scene.collection.objects.link(mud)
+    dl.add_adaptive_subdiv(mud, dicing_rate=1.0, simple=True)
+    dl.set_displacement(mat_mud_hd, "mud", scale=0.06, midlevel=0.5)
+
+    # (c) boulders along the foreground shore -> craggy *real* geometry (the
+    #     silhouette detail is genuine subdivided mesh, not a bump fake).
+    mat_rock_hd = simple_mat("RockHD", (0.13, 0.115, 0.10), rough=0.85)
+    dl.set_displacement(mat_rock_hd, "rock", scale=0.22, midlevel=0.5)
+    # hero boulders in the visible mid-foreground, nestled between the reed clumps
+    hero = [(-13.0, -48.5, 1.6), (-6.0, -49.0, 1.9), (6.5, -49.0, 1.8),
+            (14.0, -48.0, 1.4)]
+    scatter = [(random.uniform(-26, 26), random.uniform(-47.0, -42.0),
+                random.uniform(0.5, 1.2)) for _ in range(10)]
+    for k, (rx, ry, rr) in enumerate(hero + scatter):
+        bpy.ops.mesh.primitive_ico_sphere_add(
+            subdivisions=2, radius=rr,
+            location=(rx, ry, ground_h(rx, ry) + rr * 0.5))
+        rock = bpy.context.object
+        rock.name = f"Rock_{k}"
+        rock.scale = (1.0, random.uniform(0.7, 1.1), random.uniform(0.55, 0.85))
+        rock.rotation_euler = (random.uniform(-0.2, 0.2), random.uniform(-0.2, 0.2),
+                               random.uniform(0, 6.28))
+        rock.data.materials.append(mat_rock_hd)
+        for poly in rock.data.polygons:
+            poly.use_smooth = True
+        dl.add_adaptive_subdiv(rock, dicing_rate=1.0, simple=False)
 
 # ------------------------------------------------------------------ render --
 bpy.ops.render.render(write_still=True)
