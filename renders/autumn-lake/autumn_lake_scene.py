@@ -35,15 +35,16 @@ _tok = set(mode.split("-"))
 IS_PREVIEW = "preview" in _tok
 HD = "hd" in _tok
 RAIN = "rain" in _tok
+PR = "pr" in _tok          # photoreal Sapling trees, visibility-culled
 
 if IS_PREVIEW:
     RES_X, RES_Y = 640, 360
-    SAMPLES = 64 if (HD or RAIN) else 32
+    SAMPLES = 64 if (HD or RAIN or PR) else 32
     OUT = "/tmp/claude-0/-home-user-STORMFEA/e03c2369-f850-53e7-8a78-a274eb7d038a/scratchpad/preview.png"
 else:
     RES_X, RES_Y = 1280, 720
-    SAMPLES = 128 if HD else (170 if RAIN else 256)
-    _suffix = ("_rain" if RAIN else "") + ("_hd" if HD else "")
+    SAMPLES = 600 if PR else (128 if HD else (170 if RAIN else 256))
+    _suffix = ("_rain" if RAIN else "") + ("_hd" if HD else "") + ("_pr" if PR else "")
     OUT = f"/home/user/STORMFEA/renders/autumn-lake/autumn_lake_render{_suffix}.png"
 
 # ------------------------------------------------------------ scene setup ---
@@ -213,41 +214,121 @@ def pick_species(x, y):
         return "red"
 
 CAM_XY = Vector((0.0, -51.5))        # for distance-based level of detail
-tree_mats = tree_lib.make_tree_materials()
-tree_acc = tree_lib.new_accumulators()
 
-placed = 0
-attempts = 0
-while placed < 650 and attempts < 20000:
-    attempts += 1
-    x = random.uniform(-80, 80)
-    y = random.uniform(-58, 118)
-    e = lake_e(x, y)
-    if e < 1.04 or e > 5.0:
-        continue
-    h = ground_h(x, y)
-    if h < 0.12:
-        continue
-    # keep the near shore around the camera clear
-    if y < -32 and abs(x) < 16:
-        continue
-    key = pick_species(x, y)
-    s = random.uniform(0.7, 1.5)
-    if y < -20:  # trees near the camera stay modest so they don't block the frame
-        s = min(s, 1.05)
-    s *= random.uniform(0.9, 1.3)
-    # detail falls off with distance so far background trees stay cheap
-    dist = (Vector((x, y)) - CAM_XY).length
-    lod = max(0.0, min(1.0, 1.25 - dist / 90.0))
-    base = (x, y, h - 0.15)
-    rng = random.Random(placed * 2654435761 & 0xFFFFFFFF)
-    if key in BROADLEAF:
-        tree_lib.build_broadleaf(tree_acc, base, s, PALETTE[key], rng, lod=lod)
-    else:
-        tree_lib.build_conifer(tree_acc, base, s, PALETTE[key], rng, lod=lod)
-    placed += 1
+# camera is created up-front so photoreal mode can frustum-cull trees against it
+cam_data = bpy.data.cameras.new("Cam")
+cam_data.lens = 24
+cam = bpy.data.objects.new("Camera", cam_data)
+cam.location = (0, -51.5, 2.5)
+_target = Vector((0, 40, 0.5))
+cam.rotation_euler = (_target - Vector(cam.location)).to_track_quat("-Z", "Y").to_euler()
+scene.collection.objects.link(cam)
+scene.camera = cam
 
-tree_lib.realize(scene, tree_acc, tree_mats)
+
+def pick_species_pr(x, y):
+    """Biome-weighted pick over the photoreal species set."""
+    r = random.random()
+    near_water = lake_e(x, y) < 1.35
+    if y > 55:                                   # far shore: conifers dominant
+        if r < 0.60:
+            return random.choice(["pine", "spruce", "fir"])
+        if r < 0.85:
+            return random.choice(["birch", "aspen"])
+        return random.choice(["oak", "maple"])
+    if x < 0:                                    # left bank: blazing broadleaf
+        if near_water and r < 0.18:
+            return "willow"
+        if r < 0.42:
+            return random.choice(["oak", "maple"])
+        if r < 0.72:
+            return random.choice(["aspen", "birch"])
+        if r < 0.88:
+            return "maple"
+        if r < 0.95:
+            return random.choice(["pine", "fir"])
+        return "snag"
+    else:                                        # right bank: conifers + accents
+        if r < 0.50:
+            return random.choice(["pine", "spruce", "fir"])
+        if r < 0.70:
+            return random.choice(["oak", "maple"])
+        if r < 0.85:
+            return random.choice(["birch", "aspen"])
+        if r < 0.93:
+            return "willow" if near_water else "maple"
+        return "snag"
+
+
+if PR:
+    # ---- photoreal Sapling trees, only where the camera can see them ----------
+    import sapling_trees as st
+    from bpy_extras.object_utils import world_to_camera_view
+    assert st.ensure_addon(), "Sapling add-on unavailable"
+    sap_mats = st.make_materials()
+    PR_CAP = 55 if IS_PREVIEW else 150
+    placed = 0
+    attempts = 0
+    while placed < PR_CAP and attempts < 80000:
+        attempts += 1
+        x = random.uniform(-80, 80)
+        y = random.uniform(-58, 118)
+        e = lake_e(x, y)
+        if e < 1.04 or e > 4.0:
+            continue
+        h = ground_h(x, y)
+        if h < 0.12:
+            continue
+        if y < -30 and abs(x) < 18:              # keep the near shore clear
+            continue
+        # frustum cull: keep only trees whose canopy centre projects on-screen
+        ndc = world_to_camera_view(scene, cam, Vector((x, y, h + 4.0)))
+        if not (-0.06 < ndc.x < 1.06 and -0.04 < ndc.y < 1.20 and ndc.z > 0.5):
+            continue
+        key = pick_species_pr(x, y)
+        size = random.uniform(0.85, 1.3)
+        if y < -18:
+            size = min(size, 1.05)
+        dist = (Vector((x, y)) - CAM_XY).length
+        lod = max(0.0, min(1.0, 1.4 - dist / 80.0))
+        seed = (placed * 2654435761) & 0x7FFFFFFF     # Sapling seed is int32
+        st.grow_tree(scene, key, seed, (x, y, h - 0.1), size,
+                     random.uniform(0, 6.2832), sap_mats, lod)
+        placed += 1
+    print(f"PR: placed {placed} photoreal trees in {attempts} attempts")
+else:
+    # ---- stylized low-poly trees (fast default path) --------------------------
+    tree_mats = tree_lib.make_tree_materials()
+    tree_acc = tree_lib.new_accumulators()
+    placed = 0
+    attempts = 0
+    while placed < 650 and attempts < 20000:
+        attempts += 1
+        x = random.uniform(-80, 80)
+        y = random.uniform(-58, 118)
+        e = lake_e(x, y)
+        if e < 1.04 or e > 5.0:
+            continue
+        h = ground_h(x, y)
+        if h < 0.12:
+            continue
+        if y < -32 and abs(x) < 16:
+            continue
+        key = pick_species(x, y)
+        s = random.uniform(0.7, 1.5)
+        if y < -20:
+            s = min(s, 1.05)
+        s *= random.uniform(0.9, 1.3)
+        dist = (Vector((x, y)) - CAM_XY).length
+        lod = max(0.0, min(1.0, 1.25 - dist / 90.0))
+        base = (x, y, h - 0.15)
+        rng = random.Random(placed * 2654435761 & 0xFFFFFFFF)
+        if key in BROADLEAF:
+            tree_lib.build_broadleaf(tree_acc, base, s, PALETTE[key], rng, lod=lod)
+        else:
+            tree_lib.build_conifer(tree_acc, base, s, PALETTE[key], rng, lod=lod)
+        placed += 1
+    tree_lib.realize(scene, tree_acc, tree_mats)
 
 # --------------------------------------------------------------- cattails ---
 # Real procedural Typha latifolia clumps lining the near shore, replacing the
@@ -337,16 +418,7 @@ clouds.scale = (2200, 900, 1)
 clouds.data.materials.append(mat_cloud)
 clouds.visible_shadow = False
 
-# ----------------------------------------------------------------- camera ---
-cam_data = bpy.data.cameras.new("Cam")
-cam_data.lens = 24
-cam = bpy.data.objects.new("Camera", cam_data)
-cam.location = (0, -51.5, 2.5)
-target = Vector((0, 40, 0.5))
-direction = target - Vector(cam.location)
-cam.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
-scene.collection.objects.link(cam)
-scene.camera = cam
+# (camera is created earlier, before tree placement, for PR frustum culling)
 
 # ----------------------------------------------------------- Autumn Rain mood --
 # Overcast world (no sun) + volumetric mist + rain-ripple water. Only runs in the
@@ -438,6 +510,15 @@ if HD:
         for poly in rock.data.polygons:
             poly.use_smooth = True
         dl.add_adaptive_subdiv(rock, dicing_rate=1.0, simple=False)
+
+# ----------------------------------------------- photoreal render settings --
+if PR:
+    # extra light/transmission bounces so leaf translucency + dense canopies
+    # resolve; brute-force samples stand in for the missing denoiser
+    scene.cycles.max_bounces = 12
+    scene.cycles.diffuse_bounces = 6
+    scene.cycles.transmission_bounces = 12
+    scene.cycles.transparent_max_bounces = 16
 
 # ------------------------------------------------------------------ render --
 bpy.ops.render.render(write_still=True)
