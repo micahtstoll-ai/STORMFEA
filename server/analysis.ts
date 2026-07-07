@@ -2815,12 +2815,16 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   //   Constant           Central   Conservative  Optimistic
   //   E_z/E_xy           0.65      0.55          0.75       (stiffness — affects K, not fast-path)
   //   yieldZ/yieldXY     0.58      0.48          0.68       (central 0.58 from Cojocaru 2019 / Rodriguez 2001;
-  //                                                          ±0.10 band is an engineering margin, not a value
-  //                                                          reported by either paper)
+  //                                                          ±0.10 band is an engineering margin — no paper
+  //                                                          reports these bounds — but lies inside published
+  //                                                          cross-study scatter; see uncertainty_table /
+  //                                                          allum2020 / zaldivar2017 SOURCES entries)
   //   G_xz/G_xy          0.40      0.33          0.47       (Casavola 2016)
   //   Layer height slope −1.0/mm  −1.3/mm       −0.7/mm    (central −1.0/mm from Farashi 2022 meta-analysis;
-  //                                                          ±30% bound width is an engineering margin, not a
-  //                                                          value reported by Farashi 2022)
+  //                                                          band bracketed by published extremes — Shergill
+  //                                                          2023 ≈−2.0/mm steep end, Garg 2025 slope ≥ 0 —
+  //                                                          exact ±30% width is a choice within that spread;
+  //                                                          see uncertainty_table / shergill2023 SOURCES)
   //
   // Fast-path: reuse displacement field, only re-evaluate Hill yield criterion with
   // perturbed yield strengths. E_z and G_xz affect K (not fast to perturb).
