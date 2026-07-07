@@ -27,6 +27,11 @@
  * A positive BLF means the applied load must be multiplied by λ before
  * buckling occurs. Negative or zero BLF indicates the pre-stress state is
  * tensile (no buckling possible from that mode).
+ *
+ * This module returns the raw BLF only. The FAIL/MARGINAL/PASS verdict is
+ * applied by the caller (server/analysis.ts, "Linear buckling (BLF)" failure
+ * mode) using design-basis thresholds documented in the client SOURCES tab
+ * ("blf_thresholds" entry in SOURCES_DB, client/index.html).
  */
 
 import type { CSRMatrix } from "./types.js";
