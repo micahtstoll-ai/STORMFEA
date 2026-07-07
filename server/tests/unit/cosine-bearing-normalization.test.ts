@@ -195,3 +195,171 @@ describe("Cosine bearing: algebraic simplification consistency", () => {
     });
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Analytical benchmark against the ACTUAL implementation (issue #63)
+// ───────────────────────────────────────────────────────────────────────────────
+// The groups above test a replica of the normalization algebra. The groups
+// below call computeCosineBearingForces — the real production code, extracted
+// (behavior-preserving) from the cosine_bearing branch of analyse() in
+// server/analysis.ts — and check it against hand-calculated nodal forces.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+import { computeCosineBearingForces } from "../../analysis.js";
+
+/**
+ * Build a packed node-coordinate array for a ring of nodes in the XY plane.
+ * Two dummy nodes are prepended so faceNodes indices are offset from 0 —
+ * this exercises the `nodes[n*3]` indexing of the real implementation.
+ */
+function buildRing(radius: number, angleDeg: number[]): { nodes: Float64Array; faceNodes: number[] } {
+  const DUMMIES = 2;
+  const nodes = new Float64Array((angleDeg.length + DUMMIES) * 3);
+  nodes.set([999, 999, 999, -999, -999, -999], 0);  // dummy nodes 0 and 1
+  const faceNodes: number[] = [];
+  // Snap |v| < 1e-9 to exactly 0 so that e.g. cos(90°) is exactly 0 rather
+  // than 6.1e-17 — keeps the θ=±90° zero-force check exact.
+  const snap = (v: number) => (Math.abs(v) < 1e-9 ? 0 : v);
+  for (let i = 0; i < angleDeg.length; i++) {
+    const a = (angleDeg[i]! * Math.PI) / 180;
+    const n = i + DUMMIES;
+    nodes[n*3]   = snap(radius * Math.cos(a));
+    nodes[n*3+1] = snap(radius * Math.sin(a));
+    nodes[n*3+2] = 0;
+    faceNodes.push(n);
+  }
+  return { nodes, faceNodes };
+}
+
+describe("computeCosineBearingForces (actual implementation): hand-calculated ring", () => {
+  // ─── Setup ────────────────────────────────────────────────────────────────
+  // 8 nodes on a 10 mm circle around a bolt hole centred at the origin,
+  // at 45° increments. Applied load: 100 N in +X (the bolt bears on the
+  // hole wall at the θ = 0° node).
+  //
+  // Hand calculation:
+  //   weight w(θ) = max(0, cos θ) measured from the +X force direction:
+  //     θ =   0°  → cos = 1
+  //     θ = ±45°  → cos = √2/2      = 0.7071067812
+  //     θ = ±90°  → cos = 0          (edge of bearing contact)
+  //     θ = 135°, 180°, 225° → cos < 0 → clamped to 0 (no tension transfer)
+  //   wSum = 1 + 2·(√2/2) = 1 + √2 = 2.4142135624
+  //   Nodal force magnitudes (all directed along +X):
+  //     F(0°)   = 100·1/(1+√2)      = 100·(√2−1)   = 41.4213562373 N
+  //     F(±45°) = 100·(√2/2)/(1+√2) = 100·(2−√2)/2 = 29.2893218813 N
+  //     F(±90°) and all rear nodes  = 0 N
+  //   Vector sum: 41.4213562 + 2×29.2893219 = 100.0000000 N in +X exactly.
+  const angles = [0, 45, 90, 135, 180, 225, 270, 315];
+  const { nodes, faceNodes } = buildRing(10, angles);
+  const F = 100;
+  const { nodalForces, peakNodalForce } = computeCosineBearingForces(
+    nodes, faceNodes,
+    0, 0, 0,        // hole centre
+    1, 0, 0,        // unit force direction (+X)
+    F, 0, 0,        // total force components
+  );
+
+  it("vector sum of nodal forces equals the applied load [100, 0, 0] N", () => {
+    let sx = 0, sy = 0, sz = 0;
+    for (const [fx, fy, fz] of nodalForces) { sx += fx; sy += fy; sz += fz; }
+    expect(sx).toBeCloseTo(F, 9);
+    expect(sy).toBeCloseTo(0, 12);
+    expect(sz).toBeCloseTo(0, 12);
+  });
+
+  it("contact-point node (θ=0°) carries 100(√2−1) = 41.4213562373 N (the peak)", () => {
+    expect(nodalForces[0]![0]).toBeCloseTo(41.4213562373, 8);
+    expect(nodalForces[0]![1]).toBe(0);
+    expect(nodalForces[0]![2]).toBe(0);
+    expect(peakNodalForce).toBeCloseTo(41.4213562373, 8);
+  });
+
+  it("θ=±45° nodes carry 100(2−√2)/2 = 29.2893218813 N each", () => {
+    expect(nodalForces[1]![0]).toBeCloseTo(29.2893218813, 8);  // +45°
+    expect(nodalForces[7]![0]).toBeCloseTo(29.2893218813, 8);  // −45° (315°)
+  });
+
+  it("follows the cosine distribution: F(45°)/F(0°) = cos 45° = 0.7071067812", () => {
+    expect(nodalForces[1]![0] / nodalForces[0]![0]).toBeCloseTo(Math.SQRT1_2, 10);
+  });
+
+  it("nodes at ±90° receive exactly zero force", () => {
+    expect(nodalForces[2]![0]).toBe(0);  //  90°
+    expect(nodalForces[6]![0]).toBe(0);  // 270°
+  });
+
+  it("nodes behind the contact point (135°, 180°, 225°) receive exactly zero force", () => {
+    for (const idx of [3, 4, 5]) {
+      expect(nodalForces[idx]![0]).toBe(0);
+      expect(nodalForces[idx]![1]).toBe(0);
+      expect(nodalForces[idx]![2]).toBe(0);
+    }
+  });
+});
+
+describe("computeCosineBearingForces: asymmetric quarter-arc hand calculation", () => {
+  // Nodes only at θ = 0°, 30°, 60°, 90° (radius 10 mm), load 100 N in +X.
+  //
+  // Hand calculation:
+  //   weights: cos 0° = 1, cos 30° = √3/2 = 0.8660254038, cos 60° = 0.5,
+  //            cos 90° = 0
+  //   wSum = 1 + 0.8660254038 + 0.5 + 0 = 2.3660254038
+  //   F(0°)  = 100·1/2.3660254038          = 42.2649730810 N
+  //   F(30°) = 100·0.8660254038/2.3660254038 = 36.6025403784 N
+  //   F(60°) = 100·0.5/2.3660254038        = 21.1324865405 N
+  //   F(90°) = 0
+  //   Check: 42.2649731 + 36.6025404 + 21.1324865 + 0 = 100.0000000 N ✓
+  const { nodes, faceNodes } = buildRing(10, [0, 30, 60, 90]);
+  const { nodalForces } = computeCosineBearingForces(
+    nodes, faceNodes, 0, 0, 0, 1, 0, 0, 100, 0, 0,
+  );
+
+  it("per-node forces match the hand calculation", () => {
+    expect(nodalForces[0]![0]).toBeCloseTo(42.2649730810, 8);
+    expect(nodalForces[1]![0]).toBeCloseTo(36.6025403784, 8);
+    expect(nodalForces[2]![0]).toBeCloseTo(21.1324865405, 8);
+    expect(nodalForces[3]![0]).toBe(0);
+  });
+
+  it("vector sum still equals the applied load despite the asymmetric node set", () => {
+    const sx = nodalForces.reduce((s, f) => s + f[0], 0);
+    expect(sx).toBeCloseTo(100, 9);
+  });
+});
+
+describe("computeCosineBearingForces: off-axis load direction", () => {
+  // Full 8-node ring, load 250 N in direction (0.6, 0.8, 0) — already a unit
+  // vector (0.36 + 0.64 = 1). Force components: fx = 150 N, fy = 200 N.
+  // The force direction points at atan2(0.8, 0.6) = 53.13°, so the nearest
+  // ring node is the one at 45° — it must carry the peak nodal force.
+  //   cos θ for node at 45°: cos(45° − 53.13°) = cos45·0.6 + sin45·0.8
+  //                        = (√2/2)(1.4) = 0.9899494937 (largest weight)
+  const angles = [0, 45, 90, 135, 180, 225, 270, 315];
+  const { nodes, faceNodes } = buildRing(10, angles);
+  const { nodalForces, peakNodalForce } = computeCosineBearingForces(
+    nodes, faceNodes, 0, 0, 0, 0.6, 0.8, 0, 150, 200, 0,
+  );
+
+  it("vector sum equals the applied load (150, 200, 0) N", () => {
+    let sx = 0, sy = 0, sz = 0;
+    for (const [fx, fy, fz] of nodalForces) { sx += fx; sy += fy; sz += fz; }
+    expect(sx).toBeCloseTo(150, 9);
+    expect(sy).toBeCloseTo(200, 9);
+    expect(sz).toBeCloseTo(0, 12);
+  });
+
+  it("peak nodal force is at the 45° node (closest to the 53.13° load direction)", () => {
+    const mags = nodalForces.map(([fx, fy, fz]) => Math.hypot(fx, fy, fz));
+    const maxIdx = mags.indexOf(Math.max(...mags));
+    expect(maxIdx).toBe(1);
+    expect(peakNodalForce).toBeCloseTo(mags[1]!, 12);
+  });
+
+  it("every nodal force is parallel to the applied force direction", () => {
+    for (const [fx, fy, fz] of nodalForces) {
+      if (fx === 0 && fy === 0) continue;   // zero-weight nodes
+      expect(fy / fx).toBeCloseTo(200 / 150, 10);
+      expect(fz).toBe(0);
+    }
+  });
+});
