@@ -7716,6 +7716,14 @@ const SOURCES_DB = [
         confidence: "medium",
         note: "ABS data. Original source for layer height effect direction. Superseded by larger meta-analysis for magnitude.",
       },
+      {
+        id: "blf_thresholds",
+        citation: "STORMFEA internal design basis — Buckling Load Factor (BLF) verdict thresholds. Engineering judgment documented for transparency; not a published standard.",
+        url: "",
+        usedFor: "Classifying the linear buckling check: BLF < 1.5 → FAIL, 1.5 ≤ BLF < 3.0 → MARGINAL, BLF ≥ 3.0 → PASS (server/analysis.ts)",
+        confidence: "medium",
+        note: `Why these values:\n  FAIL below 1.5× — linear (eigenvalue) buckling assumes perfect geometry, perfectly centered loads, and linear pre-buckling response. FDM parts violate all three (layer seams, wall-thickness variation, warp, joint eccentricity), so the real buckling load is typically 10–40% below the linear prediction. A predicted margin under 1.5× can vanish entirely in the printed part.\n  MARGINAL between 1.5× and 3.0× — extra allowance beyond the imperfection knockdown for nonlinear pre-buckling deformation, idealized boundary conditions, and mesh/modeling error.\n  PASS at 3.0× and above — comfortable margin for a design-comparison tool.\n\nContext: applying a substantial factor to linear buckling predictions is normal engineering practice — pressure-vessel rules commonly use design factors of roughly 2–3 on elastic buckling, and structural steel codes place slender-column capacity well below the Euler load via column curves that account for imperfections. Those factors are calibrated for metals in other industries and do not transfer directly to FDM polymers; 1.5/3.0 are STORMFEA's own conservative choices.`,
+      },
     ]
   },
 ];
