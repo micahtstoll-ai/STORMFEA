@@ -26,7 +26,7 @@ import type { FixedNodeSet } from "./boundary.js";
 import { assembleK }           from "./assembly.js";
 import { applyDirichletBC }    from "./boundary.js";
 import { assembleForceVector } from "./load.js";
-import { solvePCG }            from "./cg.js";
+import { solvePCG, solvePCGStreaming } from "./cg.js";
 import { buildSolverResult }   from "./stress.js";
 import { computeMeshQuality }  from "./meshQuality.js";
 
@@ -163,10 +163,13 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
   applyDirichletBC(K, f, diagIdx, constraints);
   _snap("after applyDirichletBC");
 
-  const cg = solvePCG(K, f, diagIdx, tol, maxIter, preconditioner, null, {
-    signal:     input.signal,
-    onProgress: input.onCgProgress,
-  });
+  // Use the cooperative (event-loop-yielding) solver on the streaming analysis
+  // path so CG residuals stream live and a mid-solve abort is observed promptly
+  // (issue #109); the blocking path keeps the tight synchronous solver.
+  const cgOpts = { signal: input.signal, onProgress: input.onCgProgress };
+  const cg = (input.signal || input.onCgProgress)
+    ? await solvePCGStreaming(K, f, diagIdx, tol, maxIter, preconditioner, null, cgOpts)
+    : solvePCG(K, f, diagIdx, tol, maxIter, preconditioner);
   _snap("after solvePCG");
 
   // Warn (but don't throw) if CG didn't converge — let caller inspect result

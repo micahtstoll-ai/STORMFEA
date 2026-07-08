@@ -244,23 +244,6 @@ export interface CGResult {
 }
 
 /**
- * Solve K·u = f using Preconditioned Conjugate Gradient.
- *
- * @param K             Global stiffness matrix in CSR format (modified in-place by BCs).
- * @param f             Right-hand side force vector in Newtons.
- * @param diagIdx       Diagonal entry positions in K.data, for preconditioner.
- * @param tol           Relative residual tolerance (default 1e-8).
- * @param maxIter       Maximum iterations (default 3 × DOF count).
- * @param preconditioner Which preconditioner to use: 'ic0' (default) or 'jacobi'.
- *                       IC(0) typically converges in 3-10x fewer iterations.
- *                       Falls back to Jacobi if IC(0) factorization fails.
- * @param prebuiltFactor Optional prebuilt IC(0) factor of K (from buildIC0).
- *                       When solving many right-hand sides against the SAME
- *                       matrix (e.g. modal subspace iteration), factor once and
- *                       pass it here instead of re-factorizing on every call
- *                       (issue #100). Only used when preconditioner==='ic0'.
- */
-/**
  * Optional progress/abort hooks (issue #109). Passed only by the streaming
  * analysis path; all other callers (modal, buckling, tests) omit it and are
  * unaffected.
@@ -272,16 +255,26 @@ export interface SolvePCGOpts {
   onProgress?: (iteration: number, relativeResidual: number) => void;
 }
 
-export function solvePCG(
+/** Progress emitted at each CG residual checkpoint. */
+type CGProgress = { iteration: number; relativeResidual: number };
+
+/**
+ * Core PCG iteration as a generator (issue #109). It yields a { iteration,
+ * relativeResidual } at each residual checkpoint and returns the final
+ * CGResult. This is the SINGLE source of the CG numerics: the synchronous
+ * driver (solvePCG) drains it in a tight loop, and the cooperative async driver
+ * (solvePCGStreaming) drives it while yielding the event loop between
+ * checkpoints — so the blocking and streaming solve paths can never drift.
+ */
+function* pcgSolve(
   K:        CSRMatrix,
   f:        Float64Array,
   diagIdx:  Int32Array,
-  tol       = 1e-8,
-  maxIter?: number,
-  preconditioner: 'jacobi' | 'ic0' = 'ic0',
-  prebuiltFactor?: IC0Factor | null,
-  opts?: SolvePCGOpts,
-): CGResult {
+  tol:      number,
+  maxIter:  number | undefined,
+  preconditioner: 'jacobi' | 'ic0',
+  prebuiltFactor: IC0Factor | null | undefined,
+): Generator<CGProgress, CGResult, void> {
   const n    = K.n;
   // Hard cap at 5 000 iterations regardless of DOF count.
   // Rationale: with Jacobi preconditioning on a well-conditioned FEM system,
@@ -416,15 +409,10 @@ export function solvePCG(
       if (debugCG) {
         console.log(`[cg] iter ${iter}: relRes=${relRes.toExponential(3)} (initial=${initialRelRes.toExponential(3)})`);
       }
-      // Live progress + cooperative abort (issue #109). onProgress streams the
-      // residual to the client; the signal check bails out of a solve the
-      // caller has cancelled. Both are no-ops unless opts was supplied.
-      if (opts?.onProgress) opts.onProgress(iter, relRes);
-      if (opts?.signal?.aborted) {
-        const e = new Error(`PCG aborted by caller at iteration ${iter}`);
-        e.name = 'AnalysisAbortError';
-        throw e;
-      }
+      // Checkpoint boundary: hand control to the driver so it can stream live
+      // progress and observe an abort (issue #109). The sync driver resumes
+      // immediately; the streaming driver yields the event loop here first.
+      yield { iteration: iter, relativeResidual: relRes };
       nextLogIter = iter < 256 ? iter * 2 : iter + 256;
     }
 
@@ -500,4 +488,74 @@ export function solvePCG(
     preconditionerUsed:     useIC0 ? 'ic0' as const : 'jacobi' as const,
     residualCheckpoints:    residualCheckpoints,
   };
+}
+
+// Apply the caller's progress callback and abort check at a checkpoint. Shared
+// by both drivers so streaming and blocking solves handle opts identically.
+function _applyPCGProgress(p: CGProgress, opts?: SolvePCGOpts): void {
+  if (opts?.onProgress) opts.onProgress(p.iteration, p.relativeResidual);
+  if (opts?.signal?.aborted) {
+    const e = new Error(`PCG aborted by caller at iteration ${p.iteration}`);
+    e.name = 'AnalysisAbortError';
+    throw e;
+  }
+}
+
+/**
+ * Solve K·u = f using Preconditioned Conjugate Gradient (synchronous).
+ *
+ * @param K              Global stiffness matrix in CSR format.
+ * @param f              Right-hand side force vector in Newtons.
+ * @param diagIdx        Diagonal entry positions in K.data, for preconditioner.
+ * @param tol            Relative residual tolerance (default 1e-8).
+ * @param maxIter        Maximum iterations (default min(5000, max(1000, 3×DOF))).
+ * @param preconditioner 'ic0' (default) or 'jacobi'.
+ * @param prebuiltFactor Optional prebuilt IC(0) factor (issue #100).
+ * @param opts           Optional progress/abort hooks (issue #109).
+ */
+export function solvePCG(
+  K:        CSRMatrix,
+  f:        Float64Array,
+  diagIdx:  Int32Array,
+  tol       = 1e-8,
+  maxIter?: number,
+  preconditioner: 'jacobi' | 'ic0' = 'ic0',
+  prebuiltFactor?: IC0Factor | null,
+  opts?: SolvePCGOpts,
+): CGResult {
+  const gen = pcgSolve(K, f, diagIdx, tol, maxIter, preconditioner, prebuiltFactor ?? null);
+  let step = gen.next();
+  while (!step.done) {
+    _applyPCGProgress(step.value, opts);
+    step = gen.next();
+  }
+  return step.value;
+}
+
+/**
+ * Cooperative-yielding twin of solvePCG (issue #109). Numerically identical —
+ * both drive the same pcgSolve generator — but between residual checkpoints it
+ * awaits setImmediate so the event loop can flush streamed progress events and
+ * observe a mid-solve abort (tab close / Cancel), which a fully synchronous
+ * solve would block until completion. Used only by the SSE analysis path;
+ * equivalence with solvePCG is guarded by server/tests/unit/cg-streaming.test.ts.
+ */
+export async function solvePCGStreaming(
+  K:        CSRMatrix,
+  f:        Float64Array,
+  diagIdx:  Int32Array,
+  tol       = 1e-8,
+  maxIter?: number,
+  preconditioner: 'jacobi' | 'ic0' = 'ic0',
+  prebuiltFactor?: IC0Factor | null,
+  opts?: SolvePCGOpts,
+): Promise<CGResult> {
+  const gen = pcgSolve(K, f, diagIdx, tol, maxIter, preconditioner, prebuiltFactor ?? null);
+  let step = gen.next();
+  while (!step.done) {
+    _applyPCGProgress(step.value, opts);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    step = gen.next();
+  }
+  return step.value;
 }
