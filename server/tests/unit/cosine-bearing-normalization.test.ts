@@ -363,3 +363,28 @@ describe("computeCosineBearingForces: off-axis load direction", () => {
     }
   });
 });
+
+describe("computeCosineBearingForces: uniform fallback when no node faces the load", () => {
+  // Nodes only at θ = 90°, 180°, 270° (radius 10 mm), load 100 N in +X.
+  // Every weight is max(0, cos θ) = 0, so wSum = 0. Without the fallback this
+  // divides by zero and every nodal force is NaN; with it, the load is
+  // distributed uniformly: 100/3 = 33.3333333333 N per node in +X.
+  const { nodes, faceNodes } = buildRing(10, [90, 180, 270]);
+  const { nodalForces, peakNodalForce } = computeCosineBearingForces(
+    nodes, faceNodes, 0, 0, 0, 1, 0, 0, 100, 0, 0,
+  );
+
+  it("produces finite, uniform forces of F/N per node", () => {
+    for (const [fx, fy, fz] of nodalForces) {
+      expect(fx).toBeCloseTo(100 / 3, 9);
+      expect(fy).toBe(0);
+      expect(fz).toBe(0);
+    }
+    expect(peakNodalForce).toBeCloseTo(100 / 3, 9);
+  });
+
+  it("vector sum still equals the applied load", () => {
+    const sx = nodalForces.reduce((s, f) => s + f[0], 0);
+    expect(sx).toBeCloseTo(100, 9);
+  });
+});

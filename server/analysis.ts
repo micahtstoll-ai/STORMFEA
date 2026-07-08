@@ -1021,7 +1021,8 @@ export function computeUtilizationRatios(
  * position (relative to the hole centre) and the force direction. The weights
  * are normalized so the vector sum of the nodal forces equals the applied
  * force exactly; the peak occurs at the contact point (θ = 0) and the load
- * tapers to zero at θ = ±90°.
+ * tapers to zero at θ = ±90°. If no node faces the force direction (all
+ * weights zero), the load is distributed uniformly instead.
  *
  * @param nodes      Packed node coordinates [x0,y0,z0, x1,y1,z1, ...]
  * @param faceNodes  Indices (into `nodes`) of the loaded face nodes
@@ -1061,7 +1062,14 @@ export function computeCosineBearingForces(
   }
 
   // Normalize weights so total force is preserved
-  const wSum = Array.from(weights).reduce((a,b)=>a+b, 0);
+  let wSum = Array.from(weights).reduce((a,b)=>a+b, 0);
+  if (wSum < 1e-12) {
+    // Edge case: no node faces the force direction (all cos θ ≤ 0) — e.g. the
+    // hole-face centroid sits ahead of every node. Fall back to a uniform
+    // distribution instead of dividing by ~0 and emitting NaN forces.
+    weights.fill(1);
+    wSum = k;
+  }
   const wScale = k / wSum;  // scale so Σ w_i = k
   let peakNodalForce = 0;
   const nodalForces: Array<[number, number, number]> = [];
