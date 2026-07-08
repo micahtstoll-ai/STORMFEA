@@ -666,26 +666,31 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <div class="sf-card-label">NEW ANALYSIS</div>
     </button>
 
-    <!-- 2: RESUME SESSION — disabled -->
-    <!-- TODO: wire once session persistence layer exists -->
-    <div class="sf-nav-card sf-disabled" style="display:flex;align-items:center;gap:14px;padding:14px 18px">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--sf-text-lo)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+    <!-- 2: RESUME SESSION — enabled by initLandingResumeCard() when a saved
+         session exists on the server (issue #110). Disabled with a hint when
+         there is none. Restores geometry (IndexedDB) + settings/loads/last-tab
+         from the latest autosave via resumeSession(). -->
+    <button id="sf-resume-card" class="sf-nav-card sf-disabled" disabled
+      onclick="resumeSession()"
+      style="display:flex;align-items:center;gap:14px;padding:14px 18px;
+             cursor:pointer;text-align:left;width:100%;background:none;
+             font-family:'Outfit',sans-serif">
+      <svg id="sf-resume-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--sf-text-lo)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
         <path d="M2 8a6 6 0 1 0 1-3.5"/>
         <polyline points="2,2 2,6 6,6"/>
       </svg>
-      <div class="sf-card-label">RESUME SESSION</div>
-    </div>
+      <div>
+        <div class="sf-card-label">RESUME SESSION</div>
+        <div class="sf-card-sub" id="sf-resume-hint">No saved session</div>
+      </div>
+    </button>
 
-    <!-- 3: PAST EXPORTS — disabled -->
-    <!-- TODO: wire once session persistence layer exists -->
-    <div class="sf-nav-card sf-disabled" style="display:flex;align-items:center;gap:14px;padding:14px 18px">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--sf-text-lo)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
-        <rect x="2" y="2" width="12" height="12" rx="2"/>
-        <line x1="8" y1="6" x2="8" y2="10"/>
-        <polyline points="5.5,8 8,10.5 10.5,8"/>
-      </svg>
-      <div class="sf-card-label">PAST EXPORTS</div>
-    </div>
+    <!-- PAST EXPORTS card removed (issue #110): export bundles are streamed
+         straight to the browser as a download by POST /api/export-zip and are
+         not persisted or indexed anywhere on the server, so there is nothing to
+         list. Building the card would require new export-history infrastructure;
+         the issue explicitly allows removal, so we remove rather than ship a
+         half-feature. -->
 
     <!-- Divider -->
     <div style="height:1px;background:var(--sf-border);margin:4px 0"></div>
@@ -2117,7 +2122,45 @@ function initLandingRain() {
 
 document.addEventListener('DOMContentLoaded', () => {
   if (_landingScreenActive) initLandingRain();
+  initLandingResumeCard();
 });
+
+// Compact "N ago" formatter for the RESUME SESSION card hint.
+function _shortAgo(iso) {
+  const t = Date.parse(iso);
+  if (!isFinite(t)) return '';
+  const secs = Math.round((Date.now() - t) / 1000);
+  if (secs < 60)  return 'just now';
+  const mins = Math.round(secs / 60);
+  if (mins < 60)  return mins + ' min ago';
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24)   return hrs + 'h ago';
+  return Math.round(hrs / 24) + 'd ago';
+}
+
+// Probe the server for a saved session and enable the RESUME SESSION landing
+// card only when one exists (issue #110). The card stays disabled with a
+// "No saved session" hint otherwise, so NEW ANALYSIS remains the obvious path.
+async function initLandingResumeCard() {
+  const card = document.getElementById('sf-resume-card');
+  const hint = document.getElementById('sf-resume-hint');
+  const icon = document.getElementById('sf-resume-icon');
+  if (!card || !hint) return;
+  try {
+    const r = await fetch('/api/session');
+    if (!r.ok) return;
+    const s = await r.json();
+    if (s && s.version === 2 && s.fileName) {
+      card.classList.remove('sf-disabled');
+      card.disabled = false;
+      if (icon) icon.setAttribute('stroke', 'var(--sf-highlight)');
+      const ago = s.savedAt ? _shortAgo(s.savedAt) : '';
+      hint.textContent = s.fileName + (ago ? ' · ' + ago : '');
+    }
+  } catch (_e) {
+    // Leave the card disabled — resuming is optional, a probe failure is not fatal.
+  }
+}
 
 // ─── Web Worker for solver communication ──────────────────────────────────────
 let solverWorker = null;
@@ -3319,16 +3362,25 @@ async function handleFile(file) {
     updateBoltList();
     updateForceList();
     updateAnalyseButton();
-    // Show orientation tab first — user picks bed face before placing constraints
-    switchTab('orient');
-    showOnce('orient', {
-      title: 'Step 1 — orient the part',
-      body: 'Print orientation sets the layer direction, which drives the anisotropy STORMFEA models. Use BED to snap a face to the build plate before adding loads — the same part oriented two ways can fail at different stresses.',
-      anchorSel: '[data-tab="orient"]',
-    });
-    // Show bed mode prompt
-    document.getElementById('bed-indicator').style.display = 'block';
-    document.getElementById('bed-face-label').textContent = 'CLICK A FACE TO SET AS PRINT BED';
+    // On a session RESUME, jump back to the tab the user left off on (issue
+    // #110). Results are not persisted, so if that was RESULTS fall back to
+    // LOADS. Otherwise show ORIENT — user picks bed face before constraints.
+    const resumeTab = _pendingResumeTab;
+    _pendingResumeTab = null;
+    const targetTab = resumeTab
+      ? (resumeTab === 'results' && !S.results ? 'loads' : resumeTab)
+      : 'orient';
+    switchTab(targetTab);
+    if (targetTab === 'orient') {
+      showOnce('orient', {
+        title: 'Step 1 — orient the part',
+        body: 'Print orientation sets the layer direction, which drives the anisotropy STORMFEA models. Use BED to snap a face to the build plate before adding loads — the same part oriented two ways can fail at different stresses.',
+        anchorSel: '[data-tab="orient"]',
+      });
+      // Show bed mode prompt
+      document.getElementById('bed-indicator').style.display = 'block';
+      document.getElementById('bed-face-label').textContent = 'CLICK A FACE TO SET AS PRINT BED';
+    }
     updateHintBar();
     updateOrientDerivedDisplay();
     hideOverlay();
@@ -5942,7 +5994,14 @@ function renderBoltLoadTable(s) {
 }
 
 // ─── Tab switching ───────────────────────────────────────────────────────────── ────────────────────────────────────────────────────────────
+// Last active main-flow tab — persisted in the session so RESUME jumps the
+// user back to where they left off (issue #110). Util tabs (prefs/debug/
+// calibrate/sources) are intentionally not tracked here.
+let _activeMainTab = 'setup';
+const _PERSISTABLE_TABS = ['setup','orient','loads','material','results'];
+
 function switchTab(name) {
+  if (_PERSISTABLE_TABS.includes(name)) _activeMainTab = name;
   if (name === 'material') syncAppearanceBtns();
   updateNextButtons();
   if (typeof updateHintBar === 'function') updateHintBar();
@@ -9193,6 +9252,9 @@ const SESSION_AUTOSAVE_MS = 5000;  // autosave every 5s after changes
 let _sessionDirty  = false;
 let _sessionTimer  = null;
 let _sessionLoaded = false;
+// Tab to jump to once a resumed geometry finishes loading (issue #110). Set by
+// loadSession(), consumed by handleFile() after the mesh rebuilds.
+let _pendingResumeTab = null;
 
 function markSessionDirty() {
   _sessionDirty = true;
@@ -9243,6 +9305,7 @@ async function saveSession() {
     holeTypeOverrides: S.holeTypeOverrides,
     bedNormal:         S.bedNormal,
     bedFaceName:       S.bedFaceName,
+    lastTab:           _activeMainTab,   // jumped to on RESUME (issue #110)
     // Geometry is NOT saved in session — re-upload required on restore.
     // This keeps session files small (kb not mb). The mesh will be rebuilt on restore.
     positionsB64:  null,
@@ -9269,6 +9332,10 @@ async function loadSession() {
     if (!session || session.version !== 2) return;
 
     console.log('[session] restoring:', session.fileName, 'saved', session.savedAt);
+
+    // Remember which tab to land on once geometry finishes loading (issue #110).
+    // handleFile() consumes this after the mesh rebuilds; falls back to 'orient'.
+    _pendingResumeTab = _PERSISTABLE_TABS.includes(session.lastTab) ? session.lastTab : null;
 
     // Restore session metadata (geometry requires re-upload)
     if (session.bounds) {
@@ -9512,12 +9579,20 @@ const _origUpdateForceList = updateForceList;
 
 // Patch will be done after functions are defined — use event-based approach
 function initSessionPersistence() {
-  // Load session on startup
-  loadSession();
-
-  // Autosave on bolt/force changes — patch key state mutators
-  // We mark dirty after any user action that changes analysis-relevant state
+  // Autosave wiring only. Restoring is now a deliberate user action via the
+  // RESUME SESSION landing card (resumeSession()), rather than an automatic
+  // startup load — so NEW ANALYSIS always starts clean and resuming is opt-in
+  // (issue #110). Autosave still runs continuously so a session is always
+  // available to resume after a crash/tab-close.
   document.addEventListener('stressform:statechange', markSessionDirty);
+}
+
+// Explicit resume from the landing screen (issue #110): dismiss the landing UI,
+// then restore geometry (from IndexedDB) + print settings + loads + last tab
+// from the latest autosave via loadSession().
+async function resumeSession() {
+  dismissLandingScreen();
+  await loadSession();
 }
 
 // Dispatch statechange events from key actions
