@@ -59,7 +59,12 @@ export interface IsotropicMaterial {
  *   E_xy  — in-plane Young's modulus (along filament direction)
  *   E_z   — through-thickness Young's modulus (~40-55% of E_xy for FDM)
  *   nu_xy — in-plane Poisson's ratio
- *   nu_xz — out-of-plane Poisson's ratio
+ *   nu_xz — out-of-plane Poisson's ratio (STANDARD engineering convention:
+ *           ν_xz = −ε_z/ε_x under uniaxial IN-PLANE stress along x, so the
+ *           compliance entry is S13 = −ν_xz/E_xy. The reciprocal ratio
+ *           ν_zx = ν_xz·E_z/E_xy is derived internally for symmetry.
+ *           Matches the convention of Casavola et al. 2016, the source of
+ *           the default value 0.30. See issue #102.)
  *   G_xz  — out-of-plane shear modulus (~35-45% of in-plane)
  *
  * In-plane shear modulus G_xy: when G_xy is explicitly set (e.g. from CLT 1/A₆₆
@@ -73,7 +78,7 @@ export interface OrthotropicMaterial {
   readonly E_xy:          number;   // MPa — in-plane modulus
   readonly E_z:           number;   // MPa — through-thickness modulus
   readonly nu_xy:         number;   // in-plane Poisson's ratio
-  readonly nu_xz:         number;   // out-of-plane Poisson's ratio
+  readonly nu_xz:         number;   // out-of-plane Poisson's ratio (standard convention: S13 = −ν_xz/E_xy)
   readonly G_xz:          number;   // MPa — out-of-plane shear modulus
   /** When set, used as-is. When absent, derived as E_xy/(2(1+nu_xy)). */
   readonly G_xy?:         number;   // MPa — in-plane shear (explicit or derived)
