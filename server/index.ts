@@ -376,7 +376,14 @@ app.post("/api/analyse", async (req, res) => {
 
   } catch (err) {
     console.error("[analyse error]", err);
-    res.status(500).json({ error: String(err) });
+    if (err instanceof TetGenNotFoundError) {
+      // Environment problem, not a geometry or request problem: the mesher
+      // binary is absent. 503 = "service (meshing) unavailable"; the hint
+      // carries platform-specific install instructions (issue #106).
+      res.status(503).json({ error: err.message, hint: err.hint });
+      return;
+    }
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
@@ -1517,15 +1524,17 @@ app.use((err: unknown, _req: express.Request, res: express.Response, next: expre
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
-import { probeTetGen } from "./tetgen.js";
+import { probeTetGen, TetGenNotFoundError } from "./tetgen.js";
 import { probeGmsh }   from "./gmsh_mesh.js";
 
 /**
  * Check meshing binaries at startup and print a clear status banner. Without
- * TetGen, STL analysis silently falls back to a featureless box mesh (holes and
- * stress concentrations vanish); without Gmsh, STEP analysis can't run at all.
- * Making this loud at launch turns a confusing mid-analysis degradation into an
- * obvious "install this" message before the user wastes a run.
+ * TetGen, STL analyses fail fast with an install hint (issue #106 — they used
+ * to silently degrade to a featureless box mesh whose error message blamed the
+ * user's geometry); without Gmsh, STEP analysis can't run at all. Making this
+ * loud at launch surfaces the "install this" message before the user wastes a
+ * run. The probe result is also cached inside tetgen.ts so a missing binary is
+ * reported immediately, without retrying four switch sets per analysis.
  */
 async function checkMeshingBinaries(): Promise<void> {
   const [tet, gm] = await Promise.all([probeTetGen(), probeGmsh()]);
@@ -1535,8 +1544,8 @@ async function checkMeshingBinaries(): Promise<void> {
     console.log(`    ✓ TetGen  — found (${tet.path})`);
   } else {
     console.log(`    ✗ TetGen  — NOT FOUND (looked for '${tet.path}')`);
-    console.log(`              STL analysis will fall back to a solid box mesh —`);
-    console.log(`              holes & stress concentrations will NOT be modelled.`);
+    console.log(`              STL analyses will fail with an install hint until`);
+    console.log(`              TetGen is available.`);
     console.log(`              To install TetGen:`);
     if (process.platform === "win32") {
       console.log(`              Windows: Download tetgen.exe from`);

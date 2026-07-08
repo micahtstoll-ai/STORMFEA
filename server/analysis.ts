@@ -49,7 +49,7 @@ import { isOrthotropic, isOrthotropicLike } from "./solver/types.js";
 import { recoverElementStressComponents }   from "./solver/stress_detail.js";
 import { sprSmoothedStress, sprSmoothedStress6, recoverElementStress, nodeAveragedPrincipalStress } from "./solver/stress.js";
 import type { HoleFeature }                 from "./holes.js";
-import { meshWithTetGen }                   from "./tetgen.js";
+import { meshWithTetGen, TetGenNotFoundError } from "./tetgen.js";
 import { meshStepWithGmsh }                 from "./gmsh_mesh.js";
 
 // ─── Standard bolt database ───────────────────────────────────────────────────
@@ -2064,6 +2064,12 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       console.log(`[analysis] TetGen mesh: ${mesh.nodeCount} nodes, ${mesh.elementCount} elements (${mesh.nodesPerElem}-node)`);
       _snapAnalysis("after TetGen mesh");
     } catch (err) {
+      // A missing binary is an environment problem, not a geometry problem —
+      // don't degrade to the box mesh (which the UI explains as "your STL may
+      // be broken"). Surface the real cause with its install hint instead
+      // (issue #106). The box fallback below remains for genuine meshing
+      // failures where TetGen ran and rejected the geometry.
+      if (err instanceof TetGenNotFoundError) throw err;
       console.warn("[analysis] TetGen failed, falling back to C3D4 box mesh (C3D10 not available in fallback):", err);
       meshFallback = true;
       const { minX, maxX, minY, maxY, minZ, maxZ } = req.bounds;
