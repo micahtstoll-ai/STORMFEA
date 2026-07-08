@@ -127,17 +127,7 @@ export function buildOrthotropicConstitutiveMatrix(mat: OrthotropicMaterial): Fl
   const s13 = -nu_zx / E_xy;   // = -nu_xz / E_z  by reciprocal
   const s33 =  1 / E_z;
 
-  // Cofactors of the 3×3 compliance block:
-  const A11 = s33 * s11 - s13 * s13;           // cofactor (1,1) for S symmetric
-  const A22 = s33 * s11 - s13 * s13;           // = A11 (transverse isotropy)
-  const A33 = s11 * s11 - s12 * s12;           // cofactor (3,3)
-  const A12 = s12 * s33 - s13 * s13;           // no wait — correct formula below
-  // Using full 3×3 inverse:
-  // det = s11²×s33 + 2×s12×s13×s13 - s11×s13² - s12²×s33 - s13²×s11
-  // For transverse isotropy (s11=s22, s13=s23, s12=s21):
-  const det = s11*s11*s33 + 2*s12*s13*s13 - s11*s13*s13 - s12*s12*s33 - s11*s13*s13;
-  // Which simplifies to: (s11+s12)(s11-s12)s33 - 2×s13²×(s11-s12)... let me just compute numerically
-  // Actually for numerical robustness, build the 3×3 and invert directly:
+  // Invert the 3×3 normal-stress compliance block directly (transverse isotropy):
   // [a b c]   [s11 s12 s13]
   // [b a c] = [s12 s11 s13]
   // [c c d]   [s13 s13 s33]
@@ -510,13 +500,26 @@ export function elementGeometricStiffness(
  */
 
 
-/** 4-point Gauss quadrature points and weights for tetrahedron */
-const C3D10_GAUSS = [
-  // [ξ, η, ζ, weight×6] — standard tetrahedral quadrature
-  { xi:0.1381966, eta:0.1381966, zeta:0.1381966, w:0.0416667 },
-  { xi:0.5854102, eta:0.1381966, zeta:0.1381966, w:0.0416667 },
-  { xi:0.1381966, eta:0.5854102, zeta:0.1381966, w:0.0416667 },
-  { xi:0.1381966, eta:0.1381966, zeta:0.5854102, w:0.0416667 },
+/**
+ * 4-point Gauss quadrature points and weights for the reference tetrahedron.
+ *
+ * Closed forms (degree-2 exact rule, Hammer-Marlowe-Stroud):
+ *   a = (5 − √5)/20 ≈ 0.138196601...   (three barycentric coords)
+ *   b = (5 + 3√5)/20 ≈ 0.585410196...  (the fourth coord)
+ *   w = 1/24 per point (Σw = 1/6 = reference tet volume)
+ *
+ * Exported so stress recovery (stress.ts) uses the identical point set —
+ * do not duplicate these constants elsewhere.
+ */
+const TET4_GP_A = (5 - Math.sqrt(5)) / 20;
+const TET4_GP_B = (5 + 3 * Math.sqrt(5)) / 20;
+const TET4_GP_W = 1 / 24;
+
+export const C3D10_GAUSS = [
+  { xi: TET4_GP_A, eta: TET4_GP_A, zeta: TET4_GP_A, w: TET4_GP_W },
+  { xi: TET4_GP_B, eta: TET4_GP_A, zeta: TET4_GP_A, w: TET4_GP_W },
+  { xi: TET4_GP_A, eta: TET4_GP_B, zeta: TET4_GP_A, w: TET4_GP_W },
+  { xi: TET4_GP_A, eta: TET4_GP_A, zeta: TET4_GP_B, w: TET4_GP_W },
 ] as const;
 
 /**
