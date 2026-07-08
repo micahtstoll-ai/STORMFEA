@@ -24,10 +24,18 @@
 
 import type { CSRMatrix, TetMesh, AnyMaterial, ModalAnalysisResult, ModeResult } from "./types.js";
 import { assembleK, matvec } from "./assembly.js";
-import { assembleM } from "./mass.js";
+import { assembleM, assembleMass } from "./mass.js";
 import { solvePCG } from "./cg.js";
 
-// ─── Density lookup table (tonne/mm³) ────────────────────────────────────────
+// ─── Density lookup table (tonne/mm³) — FALLBACK ONLY ─────────────────────────
+//
+// Issue #99: this label-substring lookup is a legacy fallback used only when
+// the material carries no massRho. It knows nothing about infill/walls (it
+// returns SOLID density), so frequencies computed through it are wrong for
+// sparse-infill parts. analysis.ts always sets massRho (solid density ×
+// effective volume fraction); the proper path is assembleMass(mesh, material).
+// Entries are ordered most-specific-first: "pa12" must precede "nylon" so
+// "PA12 (Nylon)" resolves to the PA12 density, not generic nylon.
 
 const DENSITY_T_MM3: Array<[string, number]> = [
   ["steel",  7.85e-9],
@@ -37,9 +45,9 @@ const DENSITY_T_MM3: Array<[string, number]> = [
   ["ti-",    4.51e-9],
   ["copper", 8.96e-9],
   ["brass",  8.50e-9],
-  ["nylon",  1.15e-9],
-  ["pa12",   1.01e-9],
+  ["pa12",   1.01e-9],   // before "nylon": "PA12 (Nylon)" must match pa12
   ["pa6",    1.13e-9],
+  ["nylon",  1.15e-9],
   ["petg",   1.27e-9],
   ["abs",    1.05e-9],
   ["tpu",    1.20e-9],
@@ -50,6 +58,7 @@ const DENSITY_T_MM3: Array<[string, number]> = [
   ["hips",   1.05e-9],
 ];
 
+/** @deprecated Fallback for materials without massRho — assumes SOLID density. */
 function getDensityFromLabel(label: string): number {
   const lower = label.toLowerCase();
   for (const [key, rho] of DENSITY_T_MM3) {
@@ -575,12 +584,25 @@ export async function runModalAnalysis(input: ModalInput): Promise<ModalAnalysis
   const p = Math.min(Math.max(2 * nModes, nModes + 8), n);
   if (p <= nModes) throw new Error(`runModalAnalysis: subspace size p=${p} must be > nModes=${nModes}`);
 
-  // Get density
-  const rho = getDensityFromLabel(material.label);
-
-  // Assemble K and M
+  // Assemble K and M.
+  // Mass path (issue #99): use the material's massRho via assembleMass — set by
+  // analysis.ts to solid density × effective volume fraction (infill + walls),
+  // so mass tracks infill the same way stiffness does. The label-based lookup
+  // is a legacy fallback that assumes SOLID density and is labelled as such.
   const { K, diagIdx: kDiagIdx } = await assembleK(mesh, material);
-  const { M, diagIdx: mDiagIdx } = assembleM(mesh, rho);
+  let M: CSRMatrix;
+  if ((material as { massRho?: number }).massRho !== undefined) {
+    const massResult = assembleMass(mesh, material, 'consistent') as { M: CSRMatrix; diagIdx: Int32Array };
+    M = massResult.M;
+  } else {
+    console.warn(
+      `[modal] material "${material.label}" has no massRho — falling back to ` +
+      `label-based SOLID density (infill/wall mass reduction NOT applied; ` +
+      `frequencies will be underestimated for sparse-infill parts)`,
+    );
+    const rho = getDensityFromLabel(material.label);
+    M = assembleM(mesh, rho).M;
+  }
 
   // Apply penalty to constrained DOFs in K only.
   // For constrained DOF: ω²_constrained = K_penalty/M_diag = PENALTY*K_orig/M_orig >> structural modes.

@@ -123,6 +123,8 @@ export interface GyroidOrthotropic {
   readonly yieldXY:       number;           // MPa — yield strength in XY
   readonly yieldZ:        number;           // MPa — yield strength in Z
   readonly label:         string;
+  /** Mass density in kg/m³ (SI); see IsotropicMaterial.massRho. */
+  readonly massRho?:      number;
 }
 
 /** Union type accepted by the solver. */
