@@ -44,7 +44,7 @@ function _snapAnalysis(label: string): void {
 }
 import type { SolverInput }                 from "./solver/pipeline.js";
 import type { IsotropicMaterial, AnyMaterial, OrthotropicMaterial } from "./solver/types.js";
-import { isOrthotropic } from "./solver/types.js";
+import { isOrthotropic, isOrthotropicLike } from "./solver/types.js";
 import { recoverElementStressComponents }   from "./solver/stress_detail.js";
 import { sprSmoothedStress, sprSmoothedStress6, recoverElementStress, nodeAveragedPrincipalStress } from "./solver/stress.js";
 import type { HoleFeature }                 from "./holes.js";
@@ -193,6 +193,44 @@ export interface FailureModeResult {
 }
 
 /**
+ * Headline "bulk yield" safety factor for the verdict (issue #97).
+ *
+ * For orthotropic/gyroid materials the solver already evaluates the Hill
+ * (1948) anisotropic criterion per element (recoverElementStress →
+ * SolverResult.minSafetyFactor, using the calibrated yieldXY/yieldZ of the
+ * material actually solved). That is the number that must drive the verdict:
+ * the von Mises SF (effectiveYield / maxVM) applies the in-plane yield in all
+ * directions and overestimates the margin of Z-dominated stress states by up
+ * to yieldXY/yieldZ (~1.7×).
+ *
+ * The von Mises SF is still returned for display/comparison.
+ */
+export function computeBulkSF(params: {
+  /** SolverResult.minSafetyFactor — Hill-based for orthotropic materials */
+  minSafetyFactor:   number;
+  /** SolverResult.maxVonMisesMPa */
+  maxVonMisesMPa:    number;
+  /** Scalar effective yield (literature × print multipliers), MPa */
+  effectiveYieldMPa: number;
+  /** The material the solver actually ran with */
+  material:          AnyMaterial;
+}): { sf: number; criterion: "hill" | "von-mises"; vonMisesSF: number } {
+  const { minSafetyFactor, maxVonMisesMPa, effectiveYieldMPa, material } = params;
+  const vonMisesSF = effectiveYieldMPa / (maxVonMisesMPa || 0.001);
+  // Only OrthotropicMaterial gets the Hill criterion in recoverElementStress
+  // (GyroidOrthotropic falls back to von Mises there, but against the
+  // material's own yield — still preferable to the literature-only scalar).
+  if (isOrthotropicLike(material) && isFinite(minSafetyFactor)) {
+    return {
+      sf:        minSafetyFactor,
+      criterion: isOrthotropic(material) ? "hill" : "von-mises",
+      vonMisesSF,
+    };
+  }
+  return { sf: vonMisesSF, criterion: "von-mises", vonMisesSF };
+}
+
+/**
  * Check all applicable failure modes for a bolted hole connection.
  *
  * Modes checked:
@@ -210,8 +248,15 @@ export function checkFailureModes(params: {
   edgeDistMm:       number;
   holeSeparationMm: number;
   appliedForceN:    number;
+  /**
+   * Scalar in-plane yield of the material actually solved (MPa) — should
+   * include coupon calibration and CLT adjustments, not just literature
+   * values (issue #97). Used by the analytic (non-FEM) checks below.
+   */
   effectiveYieldMPa: number;
   bulkSF:           number;
+  /** Which criterion produced bulkSF — labels the "Bulk yield" entry. */
+  bulkCriterion?:   "hill" | "von-mises";
   orientation:      string;
   layerHeightMm:    number;
   calibratedBearingStrMPa?: number | null;
@@ -221,6 +266,7 @@ export function checkFailureModes(params: {
           appliedForceN, effectiveYieldMPa, bulkSF, orientation,
           layerHeightMm, calibratedBearingStrMPa } = params;
   const bearingStressMult = params.bearingStressMult ?? 1.0;
+  const bulkCriterion     = params.bulkCriterion ?? "von-mises";
 
   const results: FailureModeResult[] = [];
   const bolt = holeClass.bolt;
@@ -248,7 +294,9 @@ export function checkFailureModes(params: {
     failForceN:  F * bulkSF,
     checked:     true,
     confidence:  "high",
-    note:        "Von Mises stress from FEM vs effective yield. Most reliable result.",
+    note:        bulkCriterion === "hill"
+      ? "Hill (1948) anisotropic yield criterion from FEM — accounts for the weaker inter-layer (Z) direction. Most reliable result."
+      : "Von Mises stress from FEM vs effective yield. Most reliable result.",
   });
 
   // ── 2. Net-section tension ─────────────────────────────────────────────────
@@ -1137,6 +1185,14 @@ export interface AnalysisResult {
   maxDisplacementMm:      number;
   effectiveYieldMPa:      number;
   safetyFactor:           number | null;
+  /** Which yield criterion produced the headline safetyFactor (issue #97) */
+  sfCriterion:            "hill" | "von-mises";
+  /**
+   * Von Mises SF (effectiveYield / maxVM) — what a conventional isotropic
+   * check gives on the same stress field. Kept for display/comparison next
+   * to the Hill-based headline SF.
+   */
+  vonMisesSafetyFactor:   number | null;
   estimatedFailForce:     number;
   /** Conservative SF using lower bound of literature uncertainty range */
   safetyfactorLow:        number | null;
@@ -2453,13 +2509,29 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
 
   // ── Summary ────────────────────────────────────────────────────────────────
   const maxVM = result.maxVonMisesMPa;
-  const sf    = effectiveYield / (maxVM || 0.001);
+  // Headline SF (issue #97): the solver's per-element Hill (1948) minimum SF —
+  // uses the calibrated, anisotropic yield of the material actually solved.
+  // The von Mises SF is kept alongside for display/comparison.
+  const bulk = computeBulkSF({
+    minSafetyFactor:   result.minSafetyFactor,
+    maxVonMisesMPa:    maxVM,
+    effectiveYieldMPa: effectiveYield,
+    material,
+  });
+  const sf         = bulk.sf;
+  const sfVonMises = bulk.vonMisesSF;
+
+  // Scalar in-plane yield of the material actually solved (includes coupon
+  // calibration and CLT adjustments). The analytic hole checks below must use
+  // this, not the literature-only effectiveYield (issue #97).
+  const solvedYieldXY = isOrthotropicLike(material) ? material.yieldXY : effectiveYield;
 
   // Estimate failure force: linear scaling from applied loads
   const totalAppliedForce = req.forces.reduce((sum, f) => sum + f.magnitude, 0) || 1;
   const estimatedFailForce = totalAppliedForce * sf;
 
-  const yielding = maxVM >= effectiveYield;
+  // Yielding per the same criterion that produced the headline SF
+  const yielding = sf < 1.0;
 
   const solverMs = Date.now() - t0;
 
@@ -2569,8 +2641,9 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       edgeDistMm,
       holeSeparationMm:  holeSepMm,
       appliedForceN:     totalForce2 / Math.max(1, holesForClassification.length),
-      effectiveYieldMPa: effectiveYield,
+      effectiveYieldMPa: solvedYieldXY,
       bulkSF:            sf,
+      bulkCriterion:     bulk.criterion,
       orientation:       req.print.orientation,
       layerHeightMm:     req.print.layerHeightMm ?? 0.2,
       calibratedBearingStrMPa: req.calibration?.bearingStr_MPa ?? null,
@@ -2934,6 +3007,8 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     maxDisplacementMm:  result.maxDisplacementMm,
     effectiveYieldMPa:  effectiveYield,
     safetyFactor:       meshFallback ? null : sf,
+    sfCriterion:        bulk.criterion,
+    vonMisesSafetyFactor: meshFallback ? null : sfVonMises,
     safetyfactorLow:    meshFallback ? null : sfLow,
     safetyFactorHigh:   meshFallback ? null : sfHigh,
     estimatedFailForce,

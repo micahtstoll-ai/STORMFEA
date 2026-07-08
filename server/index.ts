@@ -246,6 +246,8 @@ app.post("/api/analyse", async (req, res) => {
         maxDisplacementMm:    +result.maxDisplacementMm.toFixed(6),
         effectiveYieldMPa:    +result.effectiveYieldMPa.toFixed(2),
         safetyFactor:         result.safetyFactor !== null ? +result.safetyFactor.toFixed(3) : null,
+        sfCriterion:          result.sfCriterion,
+        vonMisesSafetyFactor: result.vonMisesSafetyFactor !== null ? +result.vonMisesSafetyFactor.toFixed(3) : null,
         safetyfactorLow:      result.safetyfactorLow,
         safetyFactorHigh:     result.safetyFactorHigh,
         estimatedFailForce:   +result.estimatedFailForce.toFixed(1),
