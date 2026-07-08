@@ -989,6 +989,91 @@ export function estimateFatigue(
   };
 }
 
+// ─── Anisotropic utilization ratios (Hill-derived, dual-criterion heatmap) ────
+/**
+ * Per-node anisotropic utilization ratios:
+ *
+ *   U_XY = sqrt(σxx² + σyy² − σxx·σyy + 3·τxy²) / yieldXY
+ *          (in-plane von Mises measure vs in-plane yield Y)
+ *   U_Z  = max(|σzz|, √3·sqrt(τyz² + τxz²)) / yieldZ
+ *          (through-layer normal or interlayer shear vs bond yield Z;
+ *           the √3 factor comes from Hill L = M = 3/(2Z²), i.e. the shear
+ *           yield in Z-planes is Z/√3)
+ *
+ * Exported for unit testing (tests/unit/hill-utilization.test.ts).
+ */
+export function computeUtilizationRatios(
+  sxx: number, syy: number, szz: number,
+  txy: number, tyz: number, txz: number,
+  yieldXY: number, yieldZ: number,
+): { uXY: number; uZ: number } {
+  const uXY = Math.sqrt(Math.max(0, sxx*sxx + syy*syy - sxx*syy + 3*txy*txy)) / yieldXY;
+  const normalZ = Math.abs(szz);
+  const shearZ  = Math.sqrt(3) * Math.sqrt(tyz*tyz + txz*txz);
+  const uZ = Math.max(normalZ, shearZ) / yieldZ;
+  return { uXY, uZ };
+}
+
+// ─── Cosine-bearing nodal force distribution ──────────────────────────────────
+/**
+ * Distribute a bolt bearing load over the loaded-face nodes using a cosine
+ * distribution: w(θ) = max(0, cos θ), where θ is the angle between the node
+ * position (relative to the hole centre) and the force direction. The weights
+ * are normalized so the vector sum of the nodal forces equals the applied
+ * force exactly; the peak occurs at the contact point (θ = 0) and the load
+ * tapers to zero at θ = ±90°.
+ *
+ * @param nodes      Packed node coordinates [x0,y0,z0, x1,y1,z1, ...]
+ * @param faceNodes  Indices (into `nodes`) of the loaded face nodes
+ * @param ux,uy,uz   Unit force direction
+ * @param fx,fy,fz   Total force components (N) — magnitude × unit direction
+ *
+ * Exported for unit testing (tests/unit/cosine-bearing-normalization.test.ts).
+ */
+export function computeCosineBearingForces(
+  nodes: ArrayLike<number>,
+  faceNodes: number[],
+  holeCenterX: number, holeCenterY: number, holeCenterZ: number,
+  ux: number, uy: number, uz: number,
+  fx: number, fy: number, fz: number,
+): { nodalForces: Array<[number, number, number]>; peakNodalForce: number } {
+  const k = faceNodes.length || 1;
+
+  // Compute cosine weights
+  const weights = new Float64Array(faceNodes.length);
+  for (let ni = 0; ni < faceNodes.length; ni++) {
+    const n = faceNodes[ni]!;
+    const nx = nodes[n*3]   ?? 0;
+    const ny = nodes[n*3+1] ?? 0;
+    const nz = nodes[n*3+2] ?? 0;
+
+    // Vector from hole center to node
+    const rx = nx - holeCenterX;
+    const ry = ny - holeCenterY;
+    const rz = nz - holeCenterZ;
+
+    // cos(θ) = (r · d) / (|r| × |d|), d already normalized
+    const dotProduct = rx * ux + ry * uy + rz * uz;
+    const rMag = Math.sqrt(rx*rx + ry*ry + rz*rz) || 1e-6;
+    const cosTheta = dotProduct / rMag;
+
+    weights[ni] = Math.max(0, cosTheta);
+  }
+
+  // Normalize weights so total force is preserved
+  const wSum = Array.from(weights).reduce((a,b)=>a+b, 0);
+  const wScale = k / wSum;  // scale so Σ w_i = k
+  let peakNodalForce = 0;
+  const nodalForces: Array<[number, number, number]> = [];
+  for (let ni = 0; ni < faceNodes.length; ni++) {
+    const w = (weights[ni]! * wScale) / k;
+    const forceMag = Math.sqrt((fx*w)*(fx*w) + (fy*w)*(fy*w) + (fz*w)*(fz*w));
+    peakNodalForce = Math.max(peakNodalForce, forceMag);
+    nodalForces.push([fx*w, fy*w, fz*w]);
+  }
+  return { nodalForces, peakNodalForce };
+}
+
 export interface IsotropicComparison {
   /** SF predicted by a conventional isotropic FEA tool (treating the FDM part as solid) */
   isoSafetyFactor:    number;
@@ -1780,40 +1865,16 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       holeCenterY /= holeWeight;
       holeCenterZ /= holeWeight;
 
-      // Compute cosine weights
-      const weights = new Float64Array(faceNodes.length);
-      let maxWeight = 0;
+      // Compute cosine weights, normalize, and build nodal forces
+      // (extracted to computeCosineBearingForces for unit testing)
+      const { nodalForces, peakNodalForce } = computeCosineBearingForces(
+        mesh.nodes, faceNodes,
+        holeCenterX, holeCenterY, holeCenterZ,
+        dx/len, dy/len, dz/len,
+        fx, fy, fz,
+      );
       for (let ni = 0; ni < faceNodes.length; ni++) {
-        const n = faceNodes[ni]!;
-        const nx = mesh.nodes[n*3]   ?? 0;
-        const ny = mesh.nodes[n*3+1] ?? 0;
-        const nz = mesh.nodes[n*3+2] ?? 0;
-
-        // Vector from hole center to node
-        const rx = nx - holeCenterX;
-        const ry = ny - holeCenterY;
-        const rz = nz - holeCenterZ;
-
-        // cos(θ) = (r · d) / (|r| × |d|)
-        // d is already normalized (from f.direction / len)
-        const dotProduct = rx * (dx/len) + ry * (dy/len) + rz * (dz/len);
-        const rMag = Math.sqrt(rx*rx + ry*ry + rz*rz) || 1e-6;
-        const cosTheta = dotProduct / rMag;
-
-        weights[ni] = Math.max(0, cosTheta);
-        maxWeight = Math.max(maxWeight, weights[ni]!);
-      }
-
-      // Normalize weights so total force is preserved
-      const wSum = Array.from(weights).reduce((a,b)=>a+b, 0);
-      const wScale = k / wSum;  // scale so Σ w_i = k
-      let peakNodalForce = 0;
-      for (let ni = 0; ni < faceNodes.length; ni++) {
-        const n = faceNodes[ni]!;
-        const w = (weights[ni]! * wScale) / k;
-        const forceMag = Math.sqrt((fx*w)*(fx*w) + (fy*w)*(fy*w) + (fz*w)*(fz*w));
-        peakNodalForce = Math.max(peakNodalForce, forceMag);
-        solverForces.push({ nodeIndex: n, forceN: [fx*w, fy*w, fz*w] });
+        solverForces.push({ nodeIndex: faceNodes[ni]!, forceN: nodalForces[ni]! });
       }
       peakNodalForcesPerForce.set(forceIdx, peakNodalForce);
     } else if (holeList.length > 0 && faceNodes.length > 4) {
@@ -1965,10 +2026,9 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       const txy = nodeStress6[n*6+3] ?? 0;
       const tyz = nodeStress6[n*6+4] ?? 0;
       const txz = nodeStress6[n*6+5] ?? 0;
-      nodeUtilXY[n] = Math.sqrt(Math.max(0, sxx*sxx + syy*syy - sxx*syy + 3*txy*txy)) / utilYieldXY;
-      const normalZ = Math.abs(szz);
-      const shearZ  = Math.sqrt(3) * Math.sqrt(tyz*tyz + txz*txz);
-      nodeUtilZ[n]  = Math.max(normalZ, shearZ) / utilYieldZ;
+      const util = computeUtilizationRatios(sxx, syy, szz, txy, tyz, txz, utilYieldXY, utilYieldZ);
+      nodeUtilXY[n] = util.uXY;
+      nodeUtilZ[n]  = util.uZ;
       const hydro = sxx + syy + szz;
       nodeSignedStress[n] = (hydro >= 0 ? 1 : -1) * (nodeStress[n] ?? 0);
     }
@@ -2488,6 +2548,18 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
 
   // ── 6. Linear buckling (BLF) ─────────────────────────────────────────────────
   {
+    // BLF verdict thresholds — STORMFEA internal design-basis values, not a
+    // cited standard. User-facing rationale lives in the SOURCES tab
+    // ("blf_thresholds" entry in SOURCES_DB, client/index.html):
+    //   < 1.5  FAIL     — linear (eigenvalue) buckling assumes perfect geometry
+    //                     and centered loads; FDM imperfections and load
+    //                     eccentricity typically knock 10–40% off the linear
+    //                     prediction, so margins under 1.5× are not dependable.
+    //   < 3.0  MARGINAL — additional allowance for nonlinear pre-buckling
+    //                     deformation, idealized BCs, and modeling error.
+    //   ≥ 3.0  PASS     — comfortable margin.
+    const BLF_FAIL_THRESHOLD     = 1.5;
+    const BLF_MARGINAL_THRESHOLD = 3.0;
     const totalForceN = req.forces.reduce((s, f) => s + f.magnitude, 0) || 1;
     if (bucklingTensile) {
       allFailureModes.push({
@@ -2500,7 +2572,8 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       });
     } else if (bucklingBLF !== undefined && isFinite(bucklingBLF) && bucklingBLF > 0) {
       const blf = bucklingBLF;
-      const blfVerdict = blf < 1.5 ? "FAIL" : blf < 3.0 ? "MARGINAL" : "PASS";
+      const blfVerdict = blf < BLF_FAIL_THRESHOLD     ? "FAIL"
+                       : blf < BLF_MARGINAL_THRESHOLD ? "MARGINAL" : "PASS";
       const convergeNote = bucklingConverged ? "" : " (iteration did not converge — treat as estimate)";
       allFailureModes.push({
         mode:       "Linear buckling (BLF)",
@@ -2509,7 +2582,8 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         checked:     true,
         confidence:  "low",
         note:        `BLF ${blf.toFixed(2)}× → ${blfVerdict}. Linear buckling overestimates real BLF by 10–40% for ` +
-                     `imperfect FDM geometry. Critical for thin walls, channels, and gussets.${convergeNote}`,
+                     `imperfect FDM geometry. Critical for thin walls, channels, and gussets. Verdict thresholds ` +
+                     `(FAIL <1.5×, MARGINAL <3.0×) are STORMFEA design-basis values — see SOURCES tab.${convergeNote}`,
       });
     } else {
       // Buckling not available (C3D10 mesh, or solver failure)
@@ -2741,12 +2815,16 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   //   Constant           Central   Conservative  Optimistic
   //   E_z/E_xy           0.65      0.55          0.75       (stiffness — affects K, not fast-path)
   //   yieldZ/yieldXY     0.58      0.48          0.68       (central 0.58 from Cojocaru 2019 / Rodriguez 2001;
-  //                                                          ±0.10 band is an engineering margin, not a value
-  //                                                          reported by either paper)
+  //                                                          ±0.10 band is an engineering margin — no paper
+  //                                                          reports these bounds — but lies inside published
+  //                                                          cross-study scatter; see uncertainty_table /
+  //                                                          allum2020 / zaldivar2017 SOURCES entries)
   //   G_xz/G_xy          0.40      0.33          0.47       (Casavola 2016)
   //   Layer height slope −1.0/mm  −1.3/mm       −0.7/mm    (central −1.0/mm from Farashi 2022 meta-analysis;
-  //                                                          ±30% bound width is an engineering margin, not a
-  //                                                          value reported by Farashi 2022)
+  //                                                          band bracketed by published extremes — Shergill
+  //                                                          2023 ≈−2.0/mm steep end, Garg 2025 slope ≥ 0 —
+  //                                                          exact ±30% width is a choice within that spread;
+  //                                                          see uncertainty_table / shergill2023 SOURCES)
   //
   // Fast-path: reuse displacement field, only re-evaluate Hill yield criterion with
   // perturbed yield strengths. E_z and G_xz affect K (not fast to perturb).

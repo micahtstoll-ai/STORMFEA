@@ -130,14 +130,23 @@ function parseNodeFile(text: string): Float64Array {
 // nodesPerElem = 4 for C3D4 (linear), 10 for C3D10 (second-order via -o2).
 // TetGen uses 1-based indices by default — subtract 1 if the first index is 1.
 //
-// TetGen's C3D10 edge-midpoint ordering (nodes 4–9):
-//   TetGen: mid(0,1), mid(0,2), mid(0,3), mid(1,2), mid(1,3), mid(2,3)
-//   STORMFEA element.ts: mid(0,1), mid(1,2), mid(0,2), mid(0,3), mid(1,3), mid(2,3)
-// Positions 5–7 differ → apply C3D10_REORDER permutation after parsing.
-// NOTE: This permutation is derived from TetGen documentation and has NOT been
-// empirically verified with a TetGen binary. Must be confirmed before
-// production use of C3D10 on STL meshes.
-const C3D10_REORDER = [0, 1, 2, 3, 4, 7, 5, 6, 8, 9]; // tetgen idx → stormfea idx
+// TetGen's C3D10 edge-midpoint ordering (0-based .ele positions 4–9), VERIFIED
+// EMPIRICALLY against TetGen 1.5 (1.5.1-beta1 source, "Version 1.5, May 31,
+// 2014" banner) by meshing unit-cube and skewed-hexahedron OFF files with -o2
+// and matching each higher-order node's coordinates to the midpoint of a
+// corner pair. Consistent across every element of every run, with and without
+// quality refinement (-pQ, -pq1.4Q, -pq1.4a0.1Q):
+//   TetGen:   4=mid(2,3), 5=mid(0,3), 6=mid(0,1), 7=mid(1,2), 8=mid(1,3), 9=mid(0,2)
+//   STORMFEA: 4=mid(0,1), 5=mid(1,2), 6=mid(0,2), 7=mid(0,3), 8=mid(1,3), 9=mid(2,3)
+// (STORMFEA's convention comes from element.ts c3d10ShapeFunctions:
+//  N4=4ξη, N5=4ηζ, N6=4ξζ, N7=4ξδ, N8=4ηδ, N9=4ζδ with corners 0↔ξ,1↔η,2↔ζ,3↔δ.)
+//
+// STORMFEA slot k reads TetGen raw position C3D10_REORDER[k]:
+//   slot 4 (mid 0,1) ← raw 6;  slot 5 (mid 1,2) ← raw 7;  slot 6 (mid 0,2) ← raw 9;
+//   slot 7 (mid 0,3) ← raw 5;  slot 8 (mid 1,3) ← raw 8;  slot 9 (mid 2,3) ← raw 4.
+// Pinned by the regression test server/tests/unit/tetgen-c3d10.test.ts, which
+// runs whenever a tetgen binary is available (e.g. via the TETGEN_BIN env var).
+const C3D10_REORDER = [0, 1, 2, 3, 6, 7, 9, 5, 8, 4]; // stormfea slot k ← tetgen raw position C3D10_REORDER[k]
 
 function parseEleFile(text: string): { elements: Int32Array; nodesPerElem: number } {
   const lines = text.trim().split("\n").filter(l => l.trim() && !l.trim().startsWith("#"));
@@ -204,8 +213,9 @@ export async function meshWithTetGen(
   // -o2     second-order elements (C3D10); only added when elementOrder=2
   //
   // Note: C3D10_REORDER in parseEleFile remaps TetGen's midnode ordering to
-  // STORMFEA's element.ts ordering. This permutation must be verified
-  // empirically once a TetGen binary is available.
+  // STORMFEA's element.ts ordering. Verified empirically against TetGen 1.5
+  // (1.5.1-beta1) — see the comment above C3D10_REORDER and the regression
+  // test server/tests/unit/tetgen-c3d10.test.ts.
   //
   // Fallback chain: try quality+volume, then volume only, then basic.
   const nodePath = tmpBase + ".1.node";
@@ -276,6 +286,18 @@ export async function meshWithTetGen(
 // ─── Helper: find tetgen binary ───────────────────────────────────────────────
 
 function findTetGen(): string {
+  // Explicit override, e.g. for tests or deployments where the binary lives
+  // outside the default search paths. Ignored (with a warning) if the path
+  // does not exist, so the normal search below still applies.
+  const envBin = process.env["TETGEN_BIN"];
+  if (envBin) {
+    if (existsSync(envBin)) {
+      console.log(`[tetgen] using TETGEN_BIN: ${envBin}`);
+      return envBin;
+    }
+    console.warn(`[tetgen] TETGEN_BIN set but not found on disk: ${envBin}`);
+  }
+
   const __dir = path.dirname(ftu(import.meta.url));
   const candidates = [
     path.join(__dir, "..", "tetgen.exe"),
