@@ -2497,21 +2497,11 @@ function updateMeshOrderSelector() {
   const hint   = document.getElementById('s-mesh-order-hint');
   if (!sel || !opt2 || !hint) return;
 
-  const isStl = S.fileData?.fileType === 'stl' || (!S.fileData?.stepB64 && !!S.fileData);
-
-  if (isStl) {
-    opt2.disabled = true;
-    // Force back to C3D4 if C3D10 was previously selected
-    if (sel.value === '2') sel.value = '1';
-    hint.innerHTML =
-      'C3D10 requires a STEP file — STL meshing (TetGen) does not support quadratic elements. ' +
-      'Export your CAD as STEP to enable C3D10. ' +
-      '<b style="color:var(--warn)">C3D4 linear elements underpredict bending stress by ~55% due to shear locking.</b>';
-  } else {
-    opt2.disabled = false;
-    hint.innerHTML =
-      'C3D10 uses 10-node quadratic tetrahedra — eliminates shear locking for more accurate bending and stress concentrations near holes.';
-  }
+  // C3D10 is available on both meshing paths: STEP (Gmsh) and STL (TetGen -o2 —
+  // midnode ordering verified empirically, see server/tests/unit/tetgen-c3d10.test.ts).
+  opt2.disabled = false;
+  hint.innerHTML =
+    'C3D10 uses 10-node quadratic tetrahedra — eliminates shear locking for more accurate bending and stress concentrations near holes.';
 }
 
 function updateFileInfo() {
@@ -5198,13 +5188,13 @@ function showConvergenceBadge(state, changePct, nodesStd, nodesFine) {
       color: 'var(--warn)', bg: 'var(--bg-card)', border: 'var(--gold)33',
       icon: '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="currentColor"><polygon points="5,1 9.5,9 0.5,9"/><rect x="4.4" y="4.2" width="1.2" height="2.8" fill="var(--bg-base)"/><rect x="4.4" y="7.5" width="1.2" height="1.2" fill="var(--bg-base)"/></svg>',
       text: `C3D4 mesh, SF > 3.0 — fine mesh skipped, but C3D4 may underpredict bending stress`,
-      sub: `Linear C3D4 tetrahedra underpredict bending deflection and stress by ~55% at practical mesh densities due to shear locking. The reported SF may be higher than the true value for bending-loaded geometry. Use C3D10 (STEP files, Settings → Element order) for accurate bending analysis.`,
+      sub: `Linear C3D4 tetrahedra underpredict bending deflection and stress by ~55% at practical mesh densities due to shear locking. The reported SF may be higher than the true value for bending-loaded geometry. Use C3D10 (Settings → Element order) for accurate bending analysis.`,
     },
     c3d4_stable: {
       color: 'var(--warn)', bg: 'var(--bg-card)', border: 'var(--gold)33',
       icon: '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="currentColor"><polygon points="5,1 9.5,9 0.5,9"/><rect x="4.4" y="4.2" width="1.2" height="2.8" fill="var(--bg-base)"/><rect x="4.4" y="7.5" width="1.2" height="1.2" fill="var(--bg-base)"/></svg>',
       text: `C3D4 mesh stable within ${changePct?.toFixed(1)}% — but this is not convergence`,
-      sub: `Standard and fine C3D4 meshes agree because both are equally locked, not because they are correct. C3D4 underpredicts bending stress by ~55% at practical mesh densities. Switch to C3D10 in Settings → Element order (STEP files) for bending-loaded geometry.`,
+      sub: `Standard and fine C3D4 meshes agree because both are equally locked, not because they are correct. C3D4 underpredicts bending stress by ~55% at practical mesh densities. Switch to C3D10 in Settings → Element order for bending-loaded geometry.`,
     },
     converged: {
       color: 'var(--success)', bg: 'var(--gold-faint)', border: 'var(--gold-glow)',
@@ -10599,7 +10589,7 @@ const CHECKLIST = [
   { id:'export_zip',   label:'Export ZIP — .json file downloads' },
   { id:'onshape_key',  label:'Onshape — enter API keys, green dot appears' },
   { id:'onshape_import', label:'Onshape — paste URL, <svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M7.5 3A3.5 3.5 0 1 0 8.5 6"/><polyline points="7,1.5 8.5,3 7,4.5" fill="none"/></svg> loads parts, import works' },
-  { id:'c3d10',        label:'C3D10 elements — Settings -> Quadratic -> analyse STEP -> <svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> C3D10 badge' },
+  { id:'c3d10',        label:'C3D10 elements — Settings -> Quadratic -> analyse a part -> <svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> C3D10 badge' },
   { id:'dark_light',   label:'Dark/light mode — toggle works, persists after reload' },
   { id:'keyboard',     label:'Keyboard shortcuts — 1-5 switch tabs, Ctrl+Enter runs analysis' },
   { id:'demo_mode',    label:'Demo mode — About section -> <svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><polygon points="2.5,2 8.5,5 2.5,8"/></svg> JUDGE DEMO MODE -> steps advance' },
