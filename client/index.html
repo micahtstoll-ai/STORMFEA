@@ -4,7 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>STORMFEA — Nordic Storm 5962</title>
-<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
+<!-- Three.js is vendored locally (client/vendor/three.min.js, pinned r0.152.2)
+     so the 3-D viewer works with no internet connection. See issue #107. -->
+<script src="vendor/three.min.js"></script>
 <script>
 /* ── Runtime error surfacing ─────────────────────────────────────────────────
    Installed in <head>, BEFORE the main application script, so that even a
@@ -169,8 +171,57 @@
   });
 })();
 </script>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Rajdhani:wght@700&display=swap" rel="stylesheet">
+<!-- Fonts are vendored locally (client/vendor/fonts/, latin subset) instead of
+     loaded from Google Fonts, so typography works with no internet connection.
+     Families/weights match what the UI uses: Outfit 400/500/600 (variable),
+     DM Mono 300/400/500 + italic 300, Rajdhani 700. See issue #107. -->
+<style>
+  /* Outfit — variable font; one file serves weights 400–600. */
+  @font-face {
+    font-family: 'Outfit';
+    font-style: normal;
+    font-weight: 400 600;
+    font-display: swap;
+    src: url('vendor/fonts/outfit-variable.woff2') format('woff2');
+  }
+  /* DM Mono */
+  @font-face {
+    font-family: 'DM Mono';
+    font-style: normal;
+    font-weight: 300;
+    font-display: swap;
+    src: url('vendor/fonts/dmmono-normal-300.woff2') format('woff2');
+  }
+  @font-face {
+    font-family: 'DM Mono';
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url('vendor/fonts/dmmono-normal-400.woff2') format('woff2');
+  }
+  @font-face {
+    font-family: 'DM Mono';
+    font-style: normal;
+    font-weight: 500;
+    font-display: swap;
+    src: url('vendor/fonts/dmmono-normal-500.woff2') format('woff2');
+  }
+  @font-face {
+    font-family: 'DM Mono';
+    font-style: italic;
+    font-weight: 300;
+    font-display: swap;
+    src: url('vendor/fonts/dmmono-italic-300.woff2') format('woff2');
+  }
+  /* Rajdhani */
+  @font-face {
+    font-family: 'Rajdhani';
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    src: url('vendor/fonts/rajdhani-700.woff2') format('woff2');
+  }
+</style>
 <style>
 /* ── CSS Variables ───────────────────────────────────────────────────────────
    Three-color palette: gold · black · white. Both modes mirror each other.
