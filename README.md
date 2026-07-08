@@ -44,7 +44,7 @@ STORMFEA models the anisotropic reality.
 - **Onshape integration** — import directly from Part Studio via REST API, no export step
 - **Client-side PDF export** — full report generated in-browser, works offline at competition venues
 - **Automatic mesh convergence** — fine mesh runs in the background; you get a result and then it quietly improves
-- **Accessible audio feedback** — per-stage tones for upload → mesh → solve → completion, with volume control and disable toggle. Especially useful in loud lab/competition environments. Enable/disable in Settings tab
+- **Accessible audio feedback** — per-stage tones for upload → mesh → solve → completion, with volume control and disable toggle. Especially useful in loud lab/competition environments. Enable/disable in the PREFS tab
 
 ---
 
