@@ -298,11 +298,24 @@ export function computeGeometry(
   const β3 =  s * ((y0*(z1-z2)) + (y1*(z2-z0)) + (y2*(z0-z1)));
 
   // γ coefficients (∂N/∂y numerators) — cofactors of column 2 (y).
-  // Sign pattern: cofactor(i,2) = (-1)^(i+2), giving signs [+,-,+,-] for i=0,1,2,3.
-  const γ0 = -s * ((x1*(z2-z3)) + (x2*(z3-z1)) + (x3*(z1-z2)));
-  const γ1 =  s * ((x0*(z2-z3)) + (x2*(z3-z0)) + (x3*(z0-z2)));
-  const γ2 = -s * ((x0*(z1-z3)) + (x1*(z3-z0)) + (x3*(z0-z1)));
-  const γ3 =  s * ((x0*(z1-z2)) + (x1*(z2-z0)) + (x2*(z0-z1)));
+  // Sign pattern: cofactor(i,2) = (-1)^(i+2), giving signs [+,-,+,-] for i=0,1,2,3
+  // — the OPPOSITE of the β/δ rows (the y column sits between x and z, so its
+  // cofactor sign alternation is shifted by one).
+  //
+  // REGRESSION NOTE (found during #97): these four signs were previously
+  // [-,+,-,+] (copy of the β pattern), which negated every ∂N/∂y. Because the
+  // same B is used for assembly and recovery, the error conjugates away for
+  // loads confined to y-only or xz-only (K_wrong = P·K·P with P flipping uy
+  // DOFs, and D·C·D = C for block-diagonal C), which is why pure-axis
+  // validation tests passed. Mixed-direction loads and imposed strain fields
+  // were wrong, and C3D4 disagreed with the (correct, isoparametric) C3D10
+  // path. Hand check, canonical tet (0,0,0),(1,0,0),(0,1,0),(0,0,1):
+  // N0 = 1-x-y-z → ∂N0/∂y = -1 = γ0/(6V) with 6V = 1.
+  // See tests/unit/b-matrix-sign.test.ts.
+  const γ0 =  s * ((x1*(z2-z3)) + (x2*(z3-z1)) + (x3*(z1-z2)));
+  const γ1 = -s * ((x0*(z2-z3)) + (x2*(z3-z0)) + (x3*(z0-z2)));
+  const γ2 =  s * ((x0*(z1-z3)) + (x1*(z3-z0)) + (x3*(z0-z1)));
+  const γ3 = -s * ((x0*(z1-z2)) + (x1*(z2-z0)) + (x2*(z0-z1)));
 
   // δ coefficients (∂N/∂z numerators) — cofactors of column 3 (z).
   // Sign pattern: cofactor(i,3) = (-1)^(i+3), giving signs [-,+,-,+] for i=0,1,2,3.
