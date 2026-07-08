@@ -21,6 +21,8 @@ import { parseSTL }      from "./stl.js";
 import { detectHoles }   from "./holes.js";
 import { runAnalysis }   from "./analysis.js";
 import type { ForceSpec, PrintSettings } from "./analysis.js";
+import { expect as expectShape, ValidationError } from "./validate.js";
+import type { Spec } from "./validate.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app    = express();
@@ -49,6 +51,25 @@ app.use(cors({
 }));
 app.use(express.json({ limit: "50mb" }));
 
+// ── Request validation (issue #106) ───────────────────────────────────────────
+// Every error response across all routes uses the uniform envelope
+//   { error: string, field?: string, hint?: string }
+// POST routes validate their body shape with validateBody() BEFORE any heavy
+// work (base64 decode, meshing, solving), so a malformed request gets a 400
+// with the offending field path instead of an opaque mid-pipeline 500.
+function validateBody(req: express.Request, res: express.Response, spec: Spec): boolean {
+  try {
+    expectShape(req.body, spec);
+    return true;
+  } catch (e) {
+    if (e instanceof ValidationError) {
+      res.status(400).json({ error: e.message, field: e.field, hint: e.hint });
+      return false;
+    }
+    throw e;
+  }
+}
+
 // ── Serve the UI ──────────────────────────────────────────────────────────────
 // STRESSFORM_CLIENT_DIR env var is set by Electron to point to the
 // bundled client. Falls back to local dist/client for npm start usage.
@@ -67,7 +88,14 @@ app.get("/api/health", (_req, res) => {
 // ── Upload + parse STL or STEP ────────────────────────────────────────────────
 app.post("/api/upload", upload.single("file"), async (req, res) => {
   try {
-    if (!req.file) { res.status(400).json({ error: "No file uploaded" }); return; }
+    if (!req.file) {
+      res.status(400).json({
+        error: "No file uploaded",
+        field: "file",
+        hint:  "send multipart/form-data with a 'file' part containing an .stl, .step or .stp file",
+      });
+      return;
+    }
 
     const buffer   = req.file.buffer;
     const filename = (req.file.originalname ?? "").toLowerCase();
@@ -165,8 +193,42 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
 });
 
 // ── Run FEM analysis ──────────────────────────────────────────────────────────
+// Body shape checked BEFORE any decode/meshing/solve work — see validateBody().
+const ANALYSE_SPEC: Spec = {
+  positionsB64:     "string",
+  "stepB64?":       "string",
+  "fileType?":      "stl|step",
+  triangleCount:    "number",
+  bounds: {
+    minX: "number", maxX: "number",
+    minY: "number", maxY: "number",
+    minZ: "number", maxZ: "number",
+  },
+  holes: [{
+    id: "number", centre: "vec3", normal: "vec3", radius: "number",
+    "confidence?": "number", "edgeCount?": "number",
+    "rmsError?": "number", "maxDeviation?": "number",
+  }],
+  boltHoleIds: ["number"],
+  "boltFasteners?": [{ holeId: "number", "fastenerType?": "string", "washerOD?": "number" }],
+  forces: [{
+    magnitude: "number", direction: "vec3", position: "vec3",
+    "loadDistribution?": "uniform|cosine_bearing",
+  }],
+  print: {
+    materialId: "string", infillPct: "number", wallCount: "number",
+    pattern: "string", orientation: "string", layerHeightMm: "number",
+    "meshOrder?": "number", "useCLT?": "boolean", "beadProps?": "object",
+  },
+  "meshQuality?":  "coarse|standard|fine",
+  "analysisType?": "string",
+  "calibration?":  "object",
+};
+
 app.post("/api/analyse", async (req, res) => {
   try {
+    if (!validateBody(req, res, ANALYSE_SPEC)) return;
+
     const body = req.body as {
       positionsB64: string;
       stepB64?:     string;
@@ -190,7 +252,15 @@ app.post("/api/analyse", async (req, res) => {
     };
 
     // Decode positions
-    const posBuf   = Buffer.from(body.positionsB64, "base64");
+    const posBuf = Buffer.from(body.positionsB64, "base64");
+    if (posBuf.byteLength === 0 || posBuf.byteLength % 4 !== 0) {
+      res.status(400).json({
+        error: "Invalid request: positionsB64 does not decode to a float32 array",
+        field: "positionsB64",
+        hint:  `decoded to ${posBuf.byteLength} bytes — expected a non-empty multiple of 4 (use the positionsB64 returned by /api/upload)`,
+      });
+      return;
+    }
     const positions = new Float32Array(posBuf.buffer, posBuf.byteOffset, posBuf.byteLength / 4);
 
     // Decode STEP buffer if present
@@ -401,6 +471,14 @@ app.get("/api/calibration", (_req, res) => {
 // POST /api/calibration/calculate — back-calculate profile from coupon results
 app.post("/api/calibration/calculate", (req, res) => {
   try {
+    if (!validateBody(req, res, {
+      id: "string", label: "string", materialId: "string", layerHeightMm: "number",
+      // Coupon loads are nullable-by-design (null = coupon not tested), which
+      // the checker treats as absent — so they are declared optional here.
+      "tensileFailN?": "number", "lapShearFailN?": "number",
+      "bearingFailN?": "number", "tensileDeflMm?": "number",
+      "ktLapShear?": "number", "ktBearing?": "number",
+    })) return;
     const profile = backCalculateProfile(req.body);
     res.json({ profile });
   } catch (e) {
@@ -411,10 +489,8 @@ app.post("/api/calibration/calculate", (req, res) => {
 // POST /api/calibration/save — save a calibrated profile
 app.post("/api/calibration/save", (req, res) => {
   try {
+    if (!validateBody(req, res, { id: "string", materialId: "string" })) return;
     const profile = req.body as CalibrationProfile;
-    if (!profile.id || !profile.materialId) {
-      res.status(400).json({ error: "Missing id or materialId" }); return;
-    }
     const profiles = loadProfiles().filter(p => p.id !== profile.id);
     profiles.push(profile);
     saveProfiles(profiles);
@@ -463,12 +539,8 @@ app.get("/api/calibration/export-all", (_req, res) => {
 // that exists locally but wasn't part of the import.
 app.post("/api/calibration/import-all", (req, res) => {
   try {
-    const body = req.body as { profiles?: unknown };
-    const incoming = Array.isArray(body?.profiles) ? body.profiles : null;
-    if (!incoming) {
-      res.status(400).json({ error: "Expected { profiles: [...] } — is this a valid export file?" });
-      return;
-    }
+    if (!validateBody(req, res, { profiles: ["object"] })) return;
+    const incoming = (req.body as { profiles: unknown[] }).profiles;
 
     // Validate each incoming profile has the minimum required fields before
     // accepting it. Malformed entries are skipped (and reported) rather than
@@ -531,9 +603,16 @@ app.get("/api/validation", (_req, res) => {
 // POST /api/validation/save — add or update a validation case
 app.post("/api/validation/save", (req, res) => {
   try {
+    if (!validateBody(req, res, {
+      id: "string", predictedFailN: "number", measuredFailN: "number",
+    })) return;
     const c = req.body as ValidationCase;
-    if (!c.id || !(c.measuredFailN > 0) || !(c.predictedFailN > 0)) {
-      res.status(400).json({ error: "Need id, positive predictedFailN and measuredFailN" });
+    if (!(c.measuredFailN > 0) || !(c.predictedFailN > 0)) {
+      res.status(400).json({
+        error: "Invalid request: predictedFailN and measuredFailN must be positive",
+        field: c.predictedFailN > 0 ? "measuredFailN" : "predictedFailN",
+        hint:  "enter the failure load in newtons (must be > 0)",
+      });
       return;
     }
     const cases = loadValidations().filter(v => v.id !== c.id);
@@ -652,6 +731,7 @@ app.get("/api/solver-tests", async (_req, res) => {
 // for lap-shear and bearing coupons, given material and layer height.
 app.post("/api/calibration/kt", async (req, res) => {
   try {
+    if (!validateBody(req, res, { materialId: "string", "layerHeightMm?": "number" })) return;
     const { materialId, layerHeightMm = 0.2 } = req.body as {
       materialId: string;
       layerHeightMm?: number;
@@ -1082,6 +1162,9 @@ app.get("/api/session", (_req, res) => {
 
 app.post("/api/session", (req, res) => {
   try {
+    // Session payload is intentionally free-form client state — only require
+    // that it IS an object, so a corrupted request can't store e.g. `null`.
+    if (!validateBody(req, res, "object")) return;
     fs.writeFileSync(SESSION_PATH, JSON.stringify(req.body), "utf-8");
     res.json({ saved: true });
   } catch (e) {
@@ -1105,6 +1188,9 @@ import { pipeline }   from "stream/promises";
 
 app.post("/api/export-zip", async (req, res) => {
   try {
+    if (!validateBody(req, res, {
+      "session?": "object", "reportHtml?": "string", "calibProfile?": "object",
+    })) return;
     const { session, reportHtml, calibProfile } = req.body;
 
     // Build a simple .tar-like bundle as JSON (judges just need the data)
@@ -1134,8 +1220,11 @@ import { generateHtmlReport } from "./report.js";
 
 app.post("/api/report", async (req, res) => {
   try {
+    if (!validateBody(req, res, {
+      result: "object", "fileName?": "string",
+      "printSettings?": "object", "timestamp?": "string",
+    })) return;
     const { result, fileName, printSettings, timestamp } = req.body;
-    if (!result) { res.status(400).json({ error: "result required" }); return; }
     const html = generateHtmlReport(result, fileName || "part", printSettings || {}, timestamp || new Date().toLocaleString());
     res.setHeader("Content-Type", "text/html");
     res.send(html);
@@ -1186,9 +1275,15 @@ app.get("/api/onshape/status", (_req, res) => {
 
 // POST /api/onshape/credentials — save API key
 app.post("/api/onshape/credentials", (req, res) => {
+  if (!validateBody(req, res, { accessKey: "string", secretKey: "string" })) return;
   const { accessKey, secretKey } = req.body;
   if (!accessKey || !secretKey) {
-    res.status(400).json({ error: "accessKey and secretKey required" }); return;
+    res.status(400).json({
+      error: "Invalid request: accessKey and secretKey must be non-empty",
+      field: accessKey ? "secretKey" : "accessKey",
+      hint:  "copy both keys from dev-portal.onshape.com/keys",
+    });
+    return;
   }
   try {
     fs.writeFileSync(ONSHAPE_CREDS_PATH, JSON.stringify({ accessKey, secretKey }), "utf-8");
@@ -1236,9 +1331,17 @@ app.post("/api/onshape/parts", async (req, res) => {
   const creds = loadOnshapeCreds();
   if (!creds) { res.status(401).json({ error: "Onshape not configured" }); return; }
 
+  if (!validateBody(req, res, { url: "string" })) return;
   const { url: urlStr } = req.body;
   const ref = parseOnshapeUrl(urlStr);
-  if (!ref) { res.status(400).json({ error: "Invalid Onshape URL" }); return; }
+  if (!ref) {
+    res.status(400).json({
+      error: "Invalid Onshape URL",
+      field: "url",
+      hint:  "expected https://cad.onshape.com/documents/{did}/w/{wid}/e/{eid}",
+    });
+    return;
+  }
 
   try {
     // Reuse the same signed-request path as exportPartStudioAsStep — the
@@ -1272,13 +1375,15 @@ app.post("/api/onshape/import", async (req, res) => {
     return;
   }
 
+  if (!validateBody(req, res, { url: "string", "partId?": "string" })) return;
   const { url: urlStr, partId } = req.body;
-  if (!urlStr) { res.status(400).json({ error: "url required" }); return; }
 
   const ref = parseOnshapeUrl(urlStr);
   if (!ref) {
     res.status(400).json({
-      error: "Could not parse Onshape URL. Expected: https://cad.onshape.com/documents/{did}/w/{wid}/e/{eid}"
+      error: "Could not parse Onshape URL",
+      field: "url",
+      hint:  "expected https://cad.onshape.com/documents/{did}/w/{wid}/e/{eid}",
     });
     return;
   }
@@ -1365,6 +1470,50 @@ app.delete("/api/onshape/credentials", (_req, res) => {
     if (fs.existsSync(ONSHAPE_CREDS_PATH)) fs.unlinkSync(ONSHAPE_CREDS_PATH);
     res.json({ cleared: true });
   } catch { res.json({ cleared: true }); }
+});
+
+// ── Fallback error handler ────────────────────────────────────────────────────
+// Catches errors raised by middleware before any route runs (malformed JSON
+// from body-parser, multer file-filter rejections, CORS denials) and errors
+// thrown synchronously inside routes, so that EVERY error response uses the
+// same { error, field?, hint? } envelope instead of Express's HTML error page.
+app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (res.headersSent) { next(err); return; }
+  const e = err as { type?: string; message?: string; status?: number };
+  if (e?.type === "entity.parse.failed") {
+    res.status(400).json({
+      error: "Malformed JSON body",
+      hint:  e.message ?? "the request body could not be parsed as JSON",
+    });
+    return;
+  }
+  if (e?.type === "entity.too.large") {
+    res.status(413).json({
+      error: "Request body too large",
+      hint:  "the JSON body limit is 50 MB",
+    });
+    return;
+  }
+  const message = e?.message ?? String(err);
+  if ((err as { name?: string })?.name === "MulterError") {
+    // Upload errors (unexpected field name, too many files, file too large).
+    const code = (err as { code?: string }).code;
+    res.status(code === "LIMIT_FILE_SIZE" ? 413 : 400).json({
+      error: `Upload rejected: ${message}`,
+      field: "file",
+      hint:  code === "LIMIT_FILE_SIZE"
+        ? "the upload limit is 50 MB — decimate the mesh in your CAD/slicer tool and re-export"
+        : "send a single multipart/form-data part named 'file'",
+    });
+    return;
+  }
+  if (/^CORS:/.test(message))   { res.status(403).json({ error: message }); return; }
+  if (/Unsupported file type/.test(message)) {
+    res.status(400).json({ error: message, field: "file", hint: "only .stl, .step and .stp files are accepted" });
+    return;
+  }
+  console.error("[unhandled route error]", err);
+  res.status(typeof e?.status === "number" ? e.status : 500).json({ error: message });
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────

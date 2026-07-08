@@ -3138,6 +3138,21 @@ async function startNewFile() {
   location.reload();
 }
 
+// Server errors use the uniform envelope { error, field?, hint? } (issue #106).
+// Turn the raw response text into a readable one-line message; non-JSON text
+// (proxy errors, plain-text responses) passes through unchanged.
+function formatErrorEnvelope(text) {
+  try {
+    const env = JSON.parse(text);
+    if (env && env.error) {
+      return env.error
+        + (env.field && !String(env.error).includes(env.field) ? ` (field: ${env.field})` : '')
+        + (env.hint ? ' — ' + env.hint : '');
+    }
+  } catch (_) { /* not JSON */ }
+  return text;
+}
+
 async function handleFile(file) {
   if (!file) return;
   const name = file.name.toLowerCase();
@@ -3169,7 +3184,7 @@ async function handleFile(file) {
 
     AudioManager.playUploadStart();
     const resp = await fetch('/api/upload', { method: 'POST', body: form });
-    if (!resp.ok) throw new Error(await resp.text());
+    if (!resp.ok) throw new Error(formatErrorEnvelope(await resp.text()));
     const data = await resp.json();
     const wasSessionRestore = S.fileData?._sessionRestored;
     const savedBolts  = wasSessionRestore ? S.bolts  : [];
@@ -5031,7 +5046,12 @@ async function runAnalysis() {
     // Actionable error messages — each gives a specific fix, not just a label
     let friendlyErr, friendlyFix;
 
-    if (errMsg.includes('TetGen') || errMsg.includes('tetgen') || errMsg.includes('mesh')) {
+    if (errMsg.startsWith('Invalid request')) {
+      // 400 from the server-side shape checker: the request never reached the
+      // solver. The message already names the offending field and a hint.
+      friendlyErr = 'Request rejected before solving';
+      friendlyFix = `${errMsg}. Refresh the page and re-run the analysis; if this persists, the client and server versions may be out of sync — restart the server (start.bat or npm start).`;
+    } else if (errMsg.includes('TetGen') || errMsg.includes('tetgen') || errMsg.includes('mesh')) {
       friendlyErr = 'Mesh generation failed';
       friendlyFix = 'Try reducing mesh quality one level in Settings → Print Settings. If that fails, re-export your STL and check for non-manifold edges or self-intersections using Meshmixer or PrusaSlicer.';
     } else if (errMsg.includes('Gmsh') || errMsg.includes('gmsh')) {

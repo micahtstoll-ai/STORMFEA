@@ -42,7 +42,17 @@ self.onmessage = async (event) => {
 
     if (!response.ok) {
       const errorText = await response.text();
-      const errorMsg = response.status === 0 ? 'Network error or worker terminated' : errorText;
+      let errorMsg = response.status === 0 ? 'Network error or worker terminated' : errorText;
+      // Server errors use the uniform envelope { error, field?, hint? }
+      // (issue #106) — render it as a readable message, not raw JSON.
+      try {
+        const env = JSON.parse(errorText);
+        if (env && env.error) {
+          errorMsg = env.error
+            + (env.field && !String(env.error).includes(env.field) ? ` (field: ${env.field})` : '')
+            + (env.hint ? ` — ${env.hint}` : '');
+        }
+      } catch (_) { /* not JSON — keep raw text */ }
       self.postMessage({
         type: 'error',
         id,
