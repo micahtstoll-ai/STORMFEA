@@ -40,6 +40,7 @@
 import type { TetMesh, IsotropicMaterial, AnyMaterial, SolverResult } from "./types.js";
 import { isOrthotropic } from "./types.js";
 import { buildAnyConstitutiveMatrix, computeGeometry, buildB, buildB_c3d10, C3D10_GAUSS } from "./element.js";
+import { buildNodeElementLists } from "./adjacency.js";
 
 // ─── Typed-array helper ────────────────────────────────────────────────────────
 function f64(arr: Float64Array, i: number): number {
@@ -397,19 +398,10 @@ export function sprSmoothedStress(
   const nodeStress = new Float64Array(mesh.nodeCount);
   const nodeCount  = new Int32Array(mesh.nodeCount);
 
-  // Build node → element connectivity
-  // For C3D10, we only associate corner nodes (0-3) with each element.
-  // Midside nodes (4-9) also get entries, but their patches may be small.
+  // Build node → element connectivity (shared helper — issue #104).
+  // Uses all nodes (corner + midside) — SPR handles small patches via fallback.
   const npe = mesh.nodesPerElem ?? 4;
-  const nodeElements: number[][] = Array.from({ length: mesh.nodeCount }, () => []);
-  for (let e = 0; e < mesh.elementCount; e++) {
-    const base = e * npe;
-    // Use all nodes (corner + midside) — SPR handles small patches via fallback
-    for (let ni = 0; ni < npe; ni++) {
-      const nodeIdx = mesh.elements[base + ni] ?? 0;
-      nodeElements[nodeIdx]!.push(e);
-    }
-  }
+  const nodeElements = buildNodeElementLists(mesh);
 
   // Compute element centroid coordinates.
   // Stride by nodesPerElem (4 or 10) — a hardcoded stride of 4 read node
@@ -558,14 +550,7 @@ export function sprSmoothedStress6(
 
   // Build node → element connectivity (all nodes, same as sprSmoothedStress)
   const npe = mesh.nodesPerElem ?? 4;
-  const nodeElements: number[][] = Array.from({ length: NC }, () => []);
-  for (let e = 0; e < mesh.elementCount; e++) {
-    const base = e * npe;
-    for (let ni = 0; ni < npe; ni++) {
-      const nodeIdx = mesh.elements[base + ni] ?? 0;
-      nodeElements[nodeIdx]!.push(e);
-    }
-  }
+  const nodeElements = buildNodeElementLists(mesh);
 
   // Compute element centroids (corner-node average; stride by npe — issue #96)
   const elemCentX = new Float64Array(mesh.elementCount);
@@ -821,16 +806,6 @@ export function computeZZErrorEstimate(
     elemCentX[e] = cx / 4;
     elemCentY[e] = cy / 4;
     elemCentZ[e] = cz / 4;
-  }
-
-  // Build node → element connectivity (same pattern as SPR)
-  const nodeElements: number[][] = Array.from({ length: mesh.nodeCount }, () => []);
-  for (let e = 0; e < mesh.elementCount; e++) {
-    const base = e * npe;
-    for (let ni = 0; ni < npe; ni++) {
-      const nodeIdx = mesh.elements[base + ni] ?? 0;
-      nodeElements[nodeIdx]!.push(e);
-    }
   }
 
   // If SPR stress not provided, fall back to direct averaging (lower accuracy)

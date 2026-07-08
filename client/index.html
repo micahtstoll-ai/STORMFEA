@@ -2108,11 +2108,11 @@ function analyzeWithWorker(body) {
     const id = `analyse-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const worker = getSolverWorker();
 
-    // 600s timeout matching server-side ANALYSE_TIMEOUT_MS
+    // 120s timeout matching server-side ANALYSE_TIMEOUT_MS
     const timeout = setTimeout(() => {
       pendingRequests.delete(id);
-      reject(new Error('Solver timed out after 600s. Server may be unresponsive.'));
-    }, 600_000);
+      reject(new Error('Solver timed out after 120s. Server may be unresponsive.'));
+    }, 120_000);
 
     pendingRequests.set(id, { resolve, reject, timeout });
     worker.postMessage({ type: 'analyzeRequest', payload: body, id });

@@ -20,6 +20,7 @@ import { runLinearStatic, runLinearStaticWithK } from "./solver/pipeline.js";
 import { runModalAnalysis }                from "./solver/modal.js";
 import { runLinearBuckling }              from "./solver/buckling.js";
 import { assembleK, assembleKsigma, buildSparsityPattern } from "./solver/assembly.js";
+import { buildNodeElementAdjacency }       from "./solver/adjacency.js";
 import { applyDirichletBC }    from "./solver/boundary.js";
 import { assembleForceVector } from "./solver/load.js";
 import type { ModalAnalysisResult }        from "./solver/types.js";
@@ -1753,6 +1754,129 @@ function mapStressToSTLVertices(
   return result;
 }
 
+// ─── Error-estimate vertex mapping ────────────────────────────────────────────
+/**
+ * Map per-element ZZ error estimates to display-mesh surface vertices.
+ *
+ * For each surface vertex: find FEA nodes within R3D via a spatial grid, then
+ * consider only the elements ADJACENT to those nodes (node → element adjacency
+ * built once per call, O(elementCount × npe)). The nearest element centroid
+ * within R3D wins; if none is in range, fall back to a global centroid scan.
+ *
+ * Adjacency uses corner nodes only (first 4 of each element) — midside nodes
+ * of C3D10 elements are skipped, matching the previous brute-force behaviour.
+ *
+ * This replaces an O(V × nearbyNodes × elementCount) brute-force scan that
+ * dominated analysis wall time (issue #104: ~98% of a 6.5-minute analysis).
+ * Output is identical to the brute-force version (same visit order, same
+ * floating-point operations) — see server/tests/unit/error-mapping.test.ts.
+ */
+export function mapErrorEstimateToVertices(
+  mesh:          import("./solver/types.js").TetMesh,
+  errorEstimate: Float32Array | Float64Array,
+  positions:     Float32Array,
+  vertCount:     number,
+): Float32Array {
+  const out = new Float32Array(vertCount);
+  const R3D = 3.0;
+  const CELL3 = R3D;
+  const R2 = R3D * R3D;
+  const npe = mesh.nodesPerElem ?? 4;
+
+  // ── Spatial grid over FEA nodes (same layout as the stress-mapping grid) ──
+  let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity, zMin = Infinity, zMax = -Infinity;
+  for (let n = 0; n < mesh.nodeCount; n++) {
+    const x = mesh.nodes[n*3] ?? 0, y = mesh.nodes[n*3+1] ?? 0, z = mesh.nodes[n*3+2] ?? 0;
+    if (x < xMin) xMin = x; if (x > xMax) xMax = x;
+    if (y < yMin) yMin = y; if (y > yMax) yMax = y;
+    if (z < zMin) zMin = z; if (z > zMax) zMax = z;
+  }
+  const gW = Math.ceil((xMax - xMin) / CELL3) + 1;
+  const gH = Math.ceil((yMax - yMin) / CELL3) + 1;
+  const gD = Math.ceil((zMax - zMin) / CELL3) + 1;
+  const grid = new Map<number, number[]>();
+  for (let n = 0; n < mesh.nodeCount; n++) {
+    const ci = Math.floor(((mesh.nodes[n*3]   ?? 0) - xMin) / CELL3);
+    const cj = Math.floor(((mesh.nodes[n*3+1] ?? 0) - yMin) / CELL3);
+    const ck = Math.floor(((mesh.nodes[n*3+2] ?? 0) - zMin) / CELL3);
+    const key = ci*gH*gD + cj*gD + ck;
+    let cell = grid.get(key); if (!cell) { cell = []; grid.set(key, cell); }
+    cell.push(n);
+  }
+
+  // ── Node → element adjacency (corner nodes only), built ONCE ──────────────
+  const { ptr: adjPtr, list: adjList } = buildNodeElementAdjacency(mesh, Math.min(4, npe));
+
+  // ── Element centroids (corner-node average), computed ONCE ────────────────
+  const centX = new Float64Array(mesh.elementCount);
+  const centY = new Float64Array(mesh.elementCount);
+  const centZ = new Float64Array(mesh.elementCount);
+  for (let e = 0; e < mesh.elementCount; e++) {
+    const base = e * npe;
+    let cx = 0, cy = 0, cz = 0;
+    for (let ni = 0; ni < 4; ni++) {
+      const nodeIdx = mesh.elements[base + ni] ?? 0;
+      cx += mesh.nodes[nodeIdx * 3]     ?? 0;
+      cy += mesh.nodes[nodeIdx * 3 + 1] ?? 0;
+      cz += mesh.nodes[nodeIdx * 3 + 2] ?? 0;
+    }
+    centX[e] = cx / 4; centY[e] = cy / 4; centZ[e] = cz / 4;
+  }
+
+  // Element-visited stamps: stamp[e] === vertexEpoch ⇒ already checked for this
+  // vertex. Avoids allocating a fresh Set per vertex.
+  const stamp = new Int32Array(mesh.elementCount).fill(-1);
+
+  for (let v = 0; v < vertCount; v++) {
+    const vx = positions[v*3] ?? 0, vy = positions[v*3+1] ?? 0, vz = positions[v*3+2] ?? 0;
+    let bestDist2 = Infinity, bestError = 0;
+
+    const ci = Math.floor((vx - xMin) / CELL3);
+    const cj = Math.floor((vy - yMin) / CELL3);
+    const ck = Math.floor((vz - zMin) / CELL3);
+
+    for (let di = -1; di <= 1; di++) {
+      for (let dj = -1; dj <= 1; dj++) {
+        for (let dk = -1; dk <= 1; dk++) {
+          const ni2 = ci + di, nj2 = cj + dj, nk2 = ck + dk;
+          if (ni2 < 0 || ni2 >= gW || nj2 < 0 || nj2 >= gH || nk2 < 0 || nk2 >= gD) continue;
+          const cell = grid.get(ni2*gH*gD + nj2*gD + nk2);
+          if (!cell) continue;
+          for (const n of cell) {
+            const aStart = adjPtr[n] ?? 0, aEnd = adjPtr[n+1] ?? 0;
+            for (let a = aStart; a < aEnd; a++) {
+              const e = adjList[a] ?? 0;
+              if (stamp[e] === v) continue;
+              stamp[e] = v;
+              const dx = (centX[e] ?? 0) - vx, dy = (centY[e] ?? 0) - vy, dz = (centZ[e] ?? 0) - vz;
+              const d2 = dx*dx + dy*dy + dz*dz;
+              if (d2 < R2 && d2 < bestDist2) {
+                bestDist2 = d2;
+                bestError = errorEstimate[e] ?? 0;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Fallback: global centroid scan if nothing within R3D
+    if (bestDist2 === Infinity) {
+      for (let e = 0; e < mesh.elementCount; e++) {
+        const dx = (centX[e] ?? 0) - vx, dy = (centY[e] ?? 0) - vy, dz = (centZ[e] ?? 0) - vz;
+        const d2 = dx*dx + dy*dy + dz*dz;
+        if (d2 < bestDist2) {
+          bestDist2 = d2;
+          bestError = errorEstimate[e] ?? 0;
+        }
+      }
+    }
+    out[v] = bestError;
+  }
+
+  return out;
+}
+
 // ─── Main analysis function ───────────────────────────────────────────────────
 /**
  * runAnalysis — Main analysis pipeline.
@@ -2366,91 +2490,15 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   }
 
   // ── Error estimate vertex mapping ────────────────────────────────────────────
-  // Map element-level error estimates to surface vertices using the same
-  // nearest-node grid. For each surface vertex, find the nearest element and
-  // use its error estimate (interpolated from element centroid).
-  const vertexErrorEstimate = result.errorEstimate ? new Float32Array(vertCount) : undefined;
-  if (vertexErrorEstimate && result.errorEstimate) {
-    // Build element → node connectivity for error mapping
-    // For each surface vertex, find the nearest FEA element and use its error
-    function nearestElementError(vx: number, vy: number, vz: number): number {
-      let bestDist2 = Infinity, bestError = 0;
-      const R2 = R3D * R3D;
-      // Check nearby nodes for their adjacent elements
-      const ci = Math.floor((vx - nxMin) / CELL3);
-      const cj = Math.floor((vy - nyMin) / CELL3);
-      const ck = Math.floor((vz - nzMin) / CELL3);
-
-      const checkedElems = new Set<number>();
-      for (let di = -1; di <= 1; di++) {
-        for (let dj = -1; dj <= 1; dj++) {
-          for (let dk = -1; dk <= 1; dk++) {
-            const ni2 = ci + di, nj2 = cj + dj, nk2 = ck + dk;
-            if (ni2 < 0 || ni2 >= gW3 || nj2 < 0 || nj2 >= gH3 || nk2 < 0 || nk2 >= gD3) continue;
-            const cell = grid3.get(ni2 * gH3 * gD3 + nj2 * gD3 + nk2);
-            if (!cell) continue;
-            for (const n of cell) {
-              // Find elements containing this node
-              const npe = mesh.nodesPerElem ?? 4;
-              for (let e = 0; e < mesh.elementCount; e++) {
-                if (checkedElems.has(e)) continue;
-                const base = e * npe;
-                let hasNode = false;
-                for (let ni = 0; ni < Math.min(4, npe); ni++) {
-                  if ((mesh.elements[base + ni] ?? 0) === n) { hasNode = true; break; }
-                }
-                if (!hasNode) continue;
-                checkedElems.add(e);
-
-                // Compute element centroid distance
-                let cx = 0, cy = 0, cz = 0;
-                for (let ni = 0; ni < 4; ni++) {
-                  const nodeIdx = mesh.elements[base + ni] ?? 0;
-                  cx += mesh.nodes[nodeIdx * 3] ?? 0;
-                  cy += mesh.nodes[nodeIdx * 3 + 1] ?? 0;
-                  cz += mesh.nodes[nodeIdx * 3 + 2] ?? 0;
-                }
-                cx /= 4; cy /= 4; cz /= 4;
-                const dx = cx - vx, dy = cy - vy, dz = cz - vz;
-                const d2 = dx * dx + dy * dy + dz * dz;
-                if (d2 < R2 && d2 < bestDist2) {
-                  bestDist2 = d2;
-                  bestError = (result.errorEstimate![e] ?? 0);
-                }
-              }
-            }
-          }
-        }
-      }
-      // Fallback: global scan if none found within R3D
-      if (bestDist2 === Infinity) {
-        for (let e = 0; e < mesh.elementCount; e++) {
-          const npe = mesh.nodesPerElem ?? 4;
-          const base = e * npe;
-          let cx = 0, cy = 0, cz = 0;
-          for (let ni = 0; ni < 4; ni++) {
-            const nodeIdx = mesh.elements[base + ni] ?? 0;
-            cx += mesh.nodes[nodeIdx * 3] ?? 0;
-            cy += mesh.nodes[nodeIdx * 3 + 1] ?? 0;
-            cz += mesh.nodes[nodeIdx * 3 + 2] ?? 0;
-          }
-          cx /= 4; cy /= 4; cz /= 4;
-          const dx = cx - vx, dy = cy - vy, dz = cz - vz;
-          const d2 = dx * dx + dy * dy + dz * dz;
-          if (d2 < bestDist2) {
-            bestDist2 = d2;
-            bestError = (result.errorEstimate![e] ?? 0);
-          }
-        }
-      }
-      return bestError;
-    }
-    for (let v = 0; v < vertCount; v++) {
-      vertexErrorEstimate[v] = nearestElementError(
-        req.positions[v * 3] ?? 0, req.positions[v * 3 + 1] ?? 0, req.positions[v * 3 + 2] ?? 0
-      );
-    }
-  }
+  // Map element-level error estimates to surface vertices. Uses a node→element
+  // adjacency list built once per mesh (issue #104 — the previous inline
+  // implementation scanned ALL elements per nearby node per vertex,
+  // O(V × nodes × elements), which was ~98% of analysis wall time).
+  _snapAnalysis("before error-estimate mapping");
+  const vertexErrorEstimate = result.errorEstimate
+    ? mapErrorEstimateToVertices(mesh, result.errorEstimate, req.positions, vertCount)
+    : undefined;
+  _snapAnalysis("after error-estimate mapping");
 
   // ── Nodal displacement vertex mapping ───────────────────────────────────────
   // Map nodal displacements (ux, uy, uz) to surface vertices.
