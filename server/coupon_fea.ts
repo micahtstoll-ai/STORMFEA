@@ -12,7 +12,7 @@
  * lap-shear or bearing coupons, whose load paths concentrate stress at overlap
  * ends and hole edges.
  *
- * Why it matters: StressForm predicts real parts with FEA, which reports the
+ * Why it matters: STORMFEA predicts real parts with FEA, which reports the
  * PEAK stress (including concentrations). If the material allowable was derived
  * from NOMINAL stress (F/A) but parts are checked against PEAK stress, the two
  * are measured differently and shear/bearing-governed predictions come out

@@ -159,7 +159,7 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
   // Warn (but don't throw) if CG didn't converge — let caller inspect result
   if (!cg.converged) {
     console.warn(
-      `[StressForm] CG did not converge after ${cg.iterations} iterations. ` +
+      `[STORMFEA] CG did not converge after ${cg.iterations} iterations. ` +
       `Relative residual = ${cg.finalRelativeResidual.toExponential(3)}. ` +
       `Results may be inaccurate.`
     );

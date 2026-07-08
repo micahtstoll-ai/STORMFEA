@@ -1,7 +1,8 @@
 /**
  * index.ts
  * --------
- * StressForm local server.
+ * STORMFEA local server. (Formerly branded "StressForm" — on-disk file names
+ * and env vars keep the legacy stressform naming for backward compatibility.)
  * Runs on http://localhost:3000
  *
  * Routes:
@@ -73,6 +74,8 @@ function validateBody(req: express.Request, res: express.Response, spec: Spec): 
 // ── Serve the UI ──────────────────────────────────────────────────────────────
 // STRESSFORM_CLIENT_DIR env var is set by Electron to point to the
 // bundled client. Falls back to local dist/client for npm start usage.
+// (The env var keeps the legacy "STRESSFORM" name so existing launchers keep
+// working; the user-facing product name is STORMFEA.)
 const clientDir = process.env["STRESSFORM_CLIENT_DIR"]
   ?? path.join(__dirname, "client");
 app.use(express.static(clientDir));
@@ -1234,7 +1237,7 @@ app.post("/api/export-zip", async (req, res) => {
     const bundle = {
       version:    "1.0",
       exportedAt: new Date().toISOString(),
-      tool:       "StressForm v1.0 — Nordic Storm FTC 5962",
+      tool:       "STORMFEA — Nordic Storm FTC 5962",
       session:    session ?? null,
       calibrationProfile: calibProfile ?? null,
       // HTML report embedded as base64
@@ -1601,7 +1604,7 @@ const PORT = 3000;
 app.listen(PORT, async () => {
   console.log("");
   console.log("  ╔══════════════════════════════════════╗");
-  console.log("  ║   STRESSFORM  —  local server        ║");
+  console.log("  ║   STORMFEA  —  local server          ║");
   console.log("  ╚══════════════════════════════════════╝");
   console.log("");
   console.log(`  Open your browser at:  http://localhost:${PORT}`);

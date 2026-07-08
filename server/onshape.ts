@@ -1,7 +1,7 @@
 /**
  * onshape.ts
  * ----------
- * Onshape REST API integration for StressForm.
+ * Onshape REST API integration for STORMFEA.
  *
  * Allows fetching a Part Studio directly from Onshape by URL,
  * exporting it as STEP, and piping it into the analysis pipeline.
