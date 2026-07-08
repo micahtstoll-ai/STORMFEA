@@ -306,3 +306,80 @@ describe("CLT rotation formula (Jones 1999 eq. 2.82 spot-checks)", () => {
     expect(mat.nu_xy).toBeLessThan(0.49);
   });
 });
+
+// ─── Test group 6: [0/90] A-matrix inversion vs FULLY hand-calculated values ──
+//
+// Issue #63 benchmark. Unlike the groups above (which recompute Q via a helper
+// mirroring the implementation), this group uses ONLY literal numbers derived
+// by hand, so it independently pins down the A-matrix assembly AND inversion.
+//
+// Bead properties chosen for clean rational arithmetic:
+//   E1 = 4000 MPa, E2 = 1000 MPa, ν12 = 0.25, G12 = 800 MPa
+//
+// Step 1 — reduced stiffness Q (Jones 1999 eq. 2.63):
+//   ν21   = ν12·E2/E1        = 0.25·1000/4000 = 0.0625
+//   denom = 1 − ν12·ν21      = 1 − 0.015625   = 0.984375  (= 63/64)
+//   Q11 = E1/denom       = 4000·64/63 = 256000/63 = 4063.492063 MPa
+//   Q22 = E2/denom       = 1000·64/63 =  64000/63 = 1015.873016 MPa
+//   Q12 = ν12·E2/denom   =  250·64/63 =  16000/63 =  253.968254 MPa
+//   Q66 = G12                                     =  800        MPa
+//
+// Step 2 — A-matrix for [0/90], equal fractions (t = 0.5 each), 100% infill:
+//   Q̄(0°) = Q;  Q̄(90°) swaps 11↔22 entries: Q̄11 = Q22, Q̄22 = Q11,
+//   Q̄12 = Q12 and Q̄66 = Q66 unchanged; all coupling terms (16, 26) are 0.
+//   A11 = A22 = (Q11 + Q22)/2 = (256000 + 64000)/(2·63) = 160000/63
+//             = 2539.682540 MPa
+//   A12 = Q12 = 16000/63 = 253.968254 MPa
+//   A16 = A26 = 0,  A66 = Q66 = 800 MPa
+//
+// Step 3 — invert A (normal 2×2 block decouples from A66):
+//   det  = A11·A22 − A12² = (160000² − 16000²)/63² = 25344000000/3969
+//   a11  = A22/det → E_x = 1/a11 = (A11² − A12²)/A11 = A11 − A12²/A11
+//        = 160000/63 − (16000/63)²·(63/160000)
+//        = 160000/63 − 1600/63 = 158400/63 = 17600/7 = 2514.285714 MPa
+//   E_y  = E_x (layup symmetric under 90° rotation) → E_xy = (E_x + E_y)/2
+//        = 2514.285714 MPa
+//   ν_xy = −a12/a11 = A12/A11 = 16000/160000 = 0.100000 (exact)
+//   G_xy = 1/a66 = A66 = 800 MPa (exact)
+describe("CLT [0/90] A-matrix inversion vs hand-calculated benchmark (issue #63)", () => {
+  const BEAD: BeadProperties = { E1: 4000, E2: 1000, nu12: 0.25, G12: 800 };
+
+  const mat = buildLaminateCMatrix(
+    BEAD,
+    [0, 90],
+    [0.5, 0.5],
+    1.0,                       // 100% infill: no density scaling
+    Z_PROPS.E_z, Z_PROPS.nu_xz, Z_PROPS.G_xz,
+    50, 29, "hand-calc",
+  );
+
+  it("effective E_x = E_y = E_xy = 17600/7 = 2514.285714 MPa", () => {
+    expect(mat.E_xy).toBeCloseTo(2514.285714, 3);
+  });
+
+  it("effective nu_xy = A12/A11 = 0.1 exactly", () => {
+    expect(mat.nu_xy).toBeCloseTo(0.1, 9);
+  });
+
+  it("effective G_xy = 1/a66 = A66 = 800 MPa exactly", () => {
+    expect(mat.G_xy).toBeCloseTo(800, 6);
+  });
+
+  it("Z-direction properties are passed through untouched by CLT", () => {
+    expect(mat.E_z).toBe(Z_PROPS.E_z);
+    expect(mat.nu_xz).toBe(Z_PROPS.nu_xz);
+    expect(mat.G_xz).toBe(Z_PROPS.G_xz);
+  });
+
+  it("50% infill scales A by ρ=0.5: E_xy = 1257.142857 MPa, G_xy = 400 MPa, nu_xy unchanged", () => {
+    // A → 0.5·A ⇒ compliance a = A⁻¹ doubles ⇒ all stiffnesses halve;
+    // ν_xy = A12/A11 is a ratio, so the 0.5 factor cancels.
+    const mat50 = buildLaminateCMatrix(
+      BEAD, [0, 90], [0.5, 0.5], 0.5,
+      Z_PROPS.E_z, Z_PROPS.nu_xz, Z_PROPS.G_xz, 50, 29, "hand-calc-50",
+    );
+    expect(mat50.E_xy).toBeCloseTo(1257.142857, 3);
+    expect(mat50.G_xy).toBeCloseTo(400, 6);
+    expect(mat50.nu_xy).toBeCloseTo(0.1, 9);
+  });
+});
