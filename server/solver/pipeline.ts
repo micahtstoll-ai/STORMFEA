@@ -38,6 +38,15 @@ export interface SolverInput {
   readonly cgTolerance?:   number;
   readonly cgMaxIter?:     number;
   readonly preconditioner?: 'jacobi' | 'ic0';
+  /**
+   * Keep a pristine (pre-Dirichlet-penalty) copy of K's value array in the
+   * returned StaticSolveIntermediate.K0data (issue #100). Downstream consumers
+   * that need K WITHOUT the static penalty BCs — modal (diagonal-scaling
+   * penalty) and buckling (fresh Dirichlet penalty on a copy) — reuse it
+   * instead of re-assembling K from scratch. Off by default: it costs one
+   * extra Float64Array(nnz) copy.
+   */
+  readonly keepPristineK?: boolean;
 }
 
 /**
@@ -79,8 +88,14 @@ export async function runLinearStatic(input: SolverInput): Promise<SolverResult>
 
 export interface StaticSolveIntermediate {
   result:  SolverResult;
+  /** K with Dirichlet penalty BCs applied (as solved). */
   K:       CSRMatrix;
   diagIdx: Int32Array;
+  /**
+   * Pristine K value array (NO boundary conditions), present only when
+   * SolverInput.keepPristineK was set. Shares K's rowPtr/colIdx/diagIdx.
+   */
+  K0data?: Float64Array;
 }
 
 /**
@@ -130,6 +145,10 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
   // Save a copy of f_ext BEFORE BC modification — needed for reaction recovery
   const f_ext = new Float64Array(f);
 
+  // Save a pristine copy of K's values BEFORE BC modification when requested
+  // (issue #100: reused by modal/buckling, which apply their own BC flavors).
+  const K0data = input.keepPristineK ? K.data.slice() : undefined;
+
   // applyDirichletBC modifies K and f in-place (penalty method)
   applyDirichletBC(K, f, diagIdx, constraints);
   _snap("after applyDirichletBC");
@@ -158,6 +177,7 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
     result: { ...result, boltReactions, meshQualityReport },
     K,
     diagIdx,
+    K0data,
   };
 }
 

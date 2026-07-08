@@ -254,6 +254,11 @@ export interface CGResult {
  * @param preconditioner Which preconditioner to use: 'ic0' (default) or 'jacobi'.
  *                       IC(0) typically converges in 3-10x fewer iterations.
  *                       Falls back to Jacobi if IC(0) factorization fails.
+ * @param prebuiltFactor Optional prebuilt IC(0) factor of K (from buildIC0).
+ *                       When solving many right-hand sides against the SAME
+ *                       matrix (e.g. modal subspace iteration), factor once and
+ *                       pass it here instead of re-factorizing on every call
+ *                       (issue #100). Only used when preconditioner==='ic0'.
  */
 export function solvePCG(
   K:        CSRMatrix,
@@ -262,6 +267,7 @@ export function solvePCG(
   tol       = 1e-8,
   maxIter?: number,
   preconditioner: 'jacobi' | 'ic0' = 'ic0',
+  prebuiltFactor?: IC0Factor | null,
 ): CGResult {
   const n    = K.n;
   // Hard cap at 5 000 iterations regardless of DOF count.
@@ -285,7 +291,14 @@ export function solvePCG(
   let LrowPtr: Int32Array   | null = null;
   let LdiagIdx: Int32Array  | null = null;
 
-  if (useIC0) {
+  if (useIC0 && prebuiltFactor) {
+    // Reuse a caller-supplied factorization — the matrix is unchanged across
+    // solves, so re-factorizing per RHS would be pure waste (issue #100).
+    Ldata    = prebuiltFactor.Ldata;
+    LcolIdx  = prebuiltFactor.LcolIdx;
+    LrowPtr  = prebuiltFactor.LrowPtr;
+    LdiagIdx = prebuiltFactor.diagIdx;
+  } else if (useIC0) {
     try {
       const tFactor = benchPrecond ? Date.now() : 0;
       const L = buildIC0(K, diagIdx);

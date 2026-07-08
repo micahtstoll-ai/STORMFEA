@@ -10,7 +10,7 @@
  */
 
 import type { TetMesh, CSRMatrix, AnyMaterial } from "./types.js";
-import { buildSparsityPattern } from "./assembly.js";
+import { buildSparsityPattern, type SparsityPattern } from "./assembly.js";
 
 // Default mass density for PLA in kg/m³
 const DEFAULT_MASS_RHO_KG_M3 = 1240;
@@ -63,16 +63,18 @@ function findEntry(colIdx: Int32Array, rowPtr: Int32Array, row: number, col: num
  *
  * For C3D10: exact analytical formula using pre-computed reference mass matrix entries.
  *
- * Sparsity pattern is identical to K (same mesh connectivity).
+ * Sparsity pattern is identical to K (same mesh connectivity) — pass K's
+ * pattern via `pattern` to skip rebuilding it (issue #100).
  */
 export function assembleM(
   mesh: TetMesh,
   rho:  number,
+  pattern?: SparsityPattern,
 ): { M: CSRMatrix; diagIdx: Int32Array } {
   const n   = mesh.nodeCount * 3;
   const npe = mesh.nodesPerElem;
 
-  const { rowPtr, colIdx, diagIdx } = buildSparsityPattern(mesh);
+  const { rowPtr, colIdx, diagIdx } = pattern ?? buildSparsityPattern(mesh);
   const nnz = rowPtr[n] ?? 0;
   const data = new Float64Array(nnz);
 
@@ -258,6 +260,7 @@ function hrzLumpedC3D10(mesh: TetMesh, rho: number): Float64Array {
  * @param type     - 'consistent' → full CSR matrix; 'lumped' → diagonal Float64Array
  *                   (row-sum for C3D4, HRZ diagonal scaling for C3D10 — row-sum
  *                   produces NEGATIVE corner masses for C3D10)
+ * @param pattern  - optional prebuilt sparsity pattern (share K's — issue #100)
  *
  * Density conversion: rho_solver = massRho × 1e-12  (kg/m³ → t/mm³)
  * This gives ω² in rad²/s² directly in the N·mm·tonne unit system.
@@ -266,6 +269,7 @@ export function assembleMass(
   mesh:     TetMesh,
   material: AnyMaterial,
   type:     'consistent' | 'lumped',
+  pattern?: SparsityPattern,
 ): { M: CSRMatrix; diagIdx: Int32Array } | Float64Array {
   const massRhoKg = (material as { massRho?: number }).massRho ?? DEFAULT_MASS_RHO_KG_M3;
   const rho = massRhoKg * KG_M3_TO_T_MM3;
@@ -276,7 +280,7 @@ export function assembleMass(
     return hrzLumpedC3D10(mesh, rho);
   }
 
-  const { M, diagIdx } = assembleM(mesh, rho);
+  const { M, diagIdx } = assembleM(mesh, rho, pattern);
 
   if (type === 'consistent') {
     return { M, diagIdx };

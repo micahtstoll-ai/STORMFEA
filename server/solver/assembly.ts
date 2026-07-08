@@ -330,6 +330,16 @@ async function assembleK_parallel(
 // ─── Global assembly (public API) ──────────────────────────────────────────────
 
 /**
+ * CSR sparsity pattern of a mesh (as returned by buildSparsityPattern).
+ * Depends only on mesh connectivity — shareable across K, M and Kσ.
+ */
+export type SparsityPattern = {
+  rowPtr:  Int32Array;
+  colIdx:  Int32Array;
+  diagIdx: Int32Array;
+};
+
+/**
  * Assemble the global stiffness matrix K and return it as a CSRMatrix.
  *
  * Supports both C3D4 (linear, 4 nodes, 12 DOF) and C3D10 (quadratic, 10 nodes, 30 DOF).
@@ -349,11 +359,16 @@ async function assembleK_parallel(
  *             'serial'/'parallel': force a path (used by the parallel-vs-serial
  *             equivalence test; 'parallel' still falls back to serial if the
  *             worker script is missing or a worker errors).
+ * @param pattern Optional prebuilt sparsity pattern for this mesh (from
+ *             buildSparsityPattern). The pattern depends only on mesh
+ *             connectivity, so K, M and Kσ for the same mesh can share one
+ *             pattern instead of rebuilding it per matrix (issue #100).
  */
 export async function assembleK(
   mesh: TetMesh,
   mat:  AnyMaterial,
   mode: 'auto' | 'serial' | 'parallel' = 'auto',
+  pattern?: SparsityPattern,
 ): Promise<{
   K:       CSRMatrix;
   diagIdx: Int32Array;
@@ -364,7 +379,7 @@ export async function assembleK(
   const npe = mesh.nodesPerElem;
   const C   = buildAnyConstitutiveMatrix(mat);
 
-  const { rowPtr, colIdx, diagIdx } = buildSparsityPattern(mesh);
+  const { rowPtr, colIdx, diagIdx } = pattern ?? buildSparsityPattern(mesh);
   const nnz = rowPtr[n] ?? 0;
   const data = new Float64Array(nnz);
 
