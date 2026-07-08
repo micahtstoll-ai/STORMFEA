@@ -131,11 +131,16 @@ function parseNodeFile(text: string): Float64Array {
 // TetGen uses 1-based indices by default — subtract 1 if the first index is 1.
 //
 // TetGen's C3D10 edge-midpoint ordering (0-based .ele positions 4–9), VERIFIED
-// EMPIRICALLY against TetGen 1.5 (1.5.1-beta1 source, "Version 1.5, May 31,
-// 2014" banner) by meshing unit-cube and skewed-hexahedron OFF files with -o2
-// and matching each higher-order node's coordinates to the midpoint of a
-// corner pair. Consistent across every element of every run, with and without
-// quality refinement (-pQ, -pq1.4Q, -pq1.4a0.1Q):
+// EMPIRICALLY against TetGen 1.5 by meshing box / unit-cube / skewed-hexahedron
+// OFF files with -o2 and matching each higher-order node's coordinates to the
+// midpoint of a corner pair. Confirmed against two builds — the 1.5.1-beta1
+// source ("Version 1.5, May 31, 2014" banner) and the Debian/Ubuntu package
+// tetgen 1.5.0-5build1 (issue #66, re-run 2026-07 via
+// scripts/verify_tetgen_c3d10.mjs, which observed slots 4..9 emit edges
+// 2-3, 0-3, 0-1, 1-2, 1-3, 0-2 — deriving exactly the C3D10_REORDER below —
+// and a cantilever check at δ/δ_EB = 0.984). Consistent across every element
+// of every run, with and without quality refinement (-pQ, -pq1.4Q,
+// -pq1.4a0.1Q, -pq1.4a10Q):
 //   TetGen:   4=mid(2,3), 5=mid(0,3), 6=mid(0,1), 7=mid(1,2), 8=mid(1,3), 9=mid(0,2)
 //   STORMFEA: 4=mid(0,1), 5=mid(1,2), 6=mid(0,2), 7=mid(0,3), 8=mid(1,3), 9=mid(2,3)
 // (STORMFEA's convention comes from element.ts c3d10ShapeFunctions:
