@@ -136,12 +136,19 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
       // positions, which is what originally produced a ~4.5x-inflated
       // radius despite identifySurfaces itself being correct.
       const holes = Array.from(gmsh.holeWallNodes.entries()).map(([id, nodeIndices]) => {
+        // Hole centre = mean of the wall-node positions on all three axes,
+        // matching the Onshape import path below. The z component was
+        // previously hardcoded to 2.0 (half a nominal 4 mm plate), which
+        // skewed the constraint node search and edge-distance checks for any
+        // STEP part thicker than 4 mm (issue #111).
         const xs = nodeIndices.map(n => nodes[n*3]??0);
         const ys = nodeIndices.map(n => nodes[n*3+1]??0);
+        const zs = nodeIndices.map(n => nodes[n*3+2]??0);
         const cx = xs.reduce((a,b)=>a+b,0)/xs.length;
         const cy = ys.reduce((a,b)=>a+b,0)/ys.length;
+        const cz = zs.reduce((a,b)=>a+b,0)/zs.length;
         const r = gmsh.holeRadius.get(id) ?? 0;
-        return { id, centre:[cx,cy,2.0] as [number,number,number],
+        return { id, centre:[cx,cy,cz] as [number,number,number],
           normal:[0,0,1] as [number,number,number],
           radius:+r.toFixed(4), diameter:+(r*2).toFixed(4),
           confidence:1.0, edgeCount:nodeIndices.length };
@@ -454,8 +461,30 @@ import type { CalibrationProfile } from "./analysis.js";
 import fs   from "fs";
 import os   from "os";
 
-// Store calibration profiles in a JSON file in user's home directory
+// Store calibration profiles in a JSON file in user's home directory.
+// (File name keeps the legacy "stressform" prefix — the tool's user-facing
+// name is STORMFEA, but renaming the on-disk stores would orphan every
+// existing user's saved data. Same applies to the other ~/.stressform_*
+// paths below and the STRESSFORM_CLIENT_DIR env var above.)
 const CALIB_PATH = path.join(os.homedir(), ".stressform_calibrations.json");
+
+/**
+ * Atomic write for the user-data stores (issue #111): write to `path + ".tmp"`
+ * then rename over the target. rename() is atomic on the same filesystem, so
+ * a crash mid-write leaves the previous store intact instead of a truncated,
+ * unparseable JSON file (which the loaders would silently treat as empty —
+ * losing the team's calibration/validation history). `mode` restricts
+ * permissions on the temp file BEFORE it becomes visible at the target path
+ * (used for the Onshape credentials file).
+ */
+function writeFileAtomic(filePath: string, data: string, mode?: number): void {
+  const tmpPath = filePath + ".tmp";
+  fs.writeFileSync(tmpPath, data, "utf-8");
+  if (mode !== undefined) {
+    try { fs.chmodSync(tmpPath, mode); } catch { /* windows: no-op */ }
+  }
+  fs.renameSync(tmpPath, filePath);
+}
 
 function loadProfiles(): CalibrationProfile[] {
   try {
@@ -467,7 +496,7 @@ function loadProfiles(): CalibrationProfile[] {
 }
 
 function saveProfiles(profiles: CalibrationProfile[]): void {
-  fs.writeFileSync(CALIB_PATH, JSON.stringify(profiles, null, 2), "utf-8");
+  writeFileAtomic(CALIB_PATH, JSON.stringify(profiles, null, 2));
 }
 
 // GET /api/calibration — list all profiles + coupon dimensions
@@ -595,7 +624,7 @@ function loadValidations(): ValidationCase[] {
 }
 
 function saveValidations(cases: ValidationCase[]): void {
-  fs.writeFileSync(VALIDATION_PATH, JSON.stringify(cases, null, 2), "utf-8");
+  writeFileAtomic(VALIDATION_PATH, JSON.stringify(cases, null, 2));
 }
 
 // GET /api/validation — all cases (each with derived fields) + aggregate stats
@@ -1172,7 +1201,7 @@ app.post("/api/session", (req, res) => {
     // Session payload is intentionally free-form client state — only require
     // that it IS an object, so a corrupted request can't store e.g. `null`.
     if (!validateBody(req, res, "object")) return;
-    fs.writeFileSync(SESSION_PATH, JSON.stringify(req.body), "utf-8");
+    writeFileAtomic(SESSION_PATH, JSON.stringify(req.body));
     res.json({ saved: true });
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -1293,7 +1322,9 @@ app.post("/api/onshape/credentials", (req, res) => {
     return;
   }
   try {
-    fs.writeFileSync(ONSHAPE_CREDS_PATH, JSON.stringify({ accessKey, secretKey }), "utf-8");
+    // Atomic write (issue #111); 0o600 is applied to the temp file before the
+    // rename so the credentials are never world-readable, even transiently.
+    writeFileAtomic(ONSHAPE_CREDS_PATH, JSON.stringify({ accessKey, secretKey }), 0o600);
     // Restrict credentials file to owner-only.
     // On POSIX (macOS/Linux): chmod 600 works natively.
     // On Windows: chmod is a no-op, so use icacls to strip inherited ACEs and
