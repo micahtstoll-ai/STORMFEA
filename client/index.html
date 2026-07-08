@@ -5377,7 +5377,7 @@ function showResults(s) {
       <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
         <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">SAFETY FACTOR</div>
         <div style="font-size:18px;font-weight:500;color:${sfColor}">${s.safetyFactor.toFixed(2)}×</div>
-        <div style="font-size:10px;color:var(--text-lo);margin-top:2px">yield / peak</div>
+        <div style="font-size:10px;color:var(--text-lo);margin-top:2px" title="${s.sfCriterion === 'hill' ? `Hill (1948) anisotropic yield criterion — accounts for the weaker inter-layer (Z) direction. Von Mises SF on the same stress field: ${s.vonMisesSafetyFactor != null ? s.vonMisesSafetyFactor.toFixed(2) + '×' : 'n/a'}.` : 'Von Mises equivalent stress vs effective yield.'}">${s.sfCriterion === 'hill' ? 'Hill 1948 anisotropic yield' : 'von Mises yield / peak'}</div>
         <div style="font-size:9px;color:var(--text-lo);margin-top:3px">Recommended minimum: 2×</div>
         ${s.safetyfactorLow !== undefined ? (() => {
           const lo = s.safetyfactorLow, hi = s.safetyFactorHigh ?? s.safetyfactorLow, mid = s.safetyFactor;
@@ -8307,7 +8307,7 @@ function drawSummaryCanvas() {
 
       ctx.fillStyle = TEXT_MID;
       ctx.font = '9px monospace';
-      ctx.fillText('SAFETY FACTOR', RX, RY);
+      ctx.fillText('SAFETY FACTOR' + (s.sfCriterion === 'hill' ? ' (HILL 1948 ANISOTROPIC)' : ' (VON MISES)'), RX, RY);
       RY += 6;
 
       ctx.fillStyle = sfCol;
