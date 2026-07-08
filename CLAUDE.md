@@ -1,7 +1,7 @@
 # STORMFEA Project Guidelines for Claude AI
 
 ## Project Overview
-STORMFEA is an FDM-aware finite element analysis tool built with TypeScript/Node.js and React. The project uses npm for dependency management and runs automated tests via GitHub Actions.
+STORMFEA is an FDM-aware finite element analysis tool built with TypeScript/Node.js (server) and a single-file vanilla-JS client. The project uses npm for dependency management and runs automated tests via GitHub Actions.
 
 ## Critical Files & Safety Rules
 
@@ -58,7 +58,7 @@ git push origin your-branch
 
 ## Project Structure
 - `server/` - Node.js backend (TypeScript)
-- `client/` - React frontend (TypeScript)
+- `client/` - Single-file frontend (vanilla JS + Three.js)
 - `server/tests/` - Test files
 - `.github/workflows/` - CI/CD pipeline definitions
 - `package.json` - Project dependencies
@@ -66,18 +66,11 @@ git push origin your-branch
 - `tsconfig.json` - TypeScript configuration
 
 ## GitHub Actions Workflows
-1. **test.yml** - Runs on every push/PR to main
+1. **test.yml** - Runs on every push/PR to main (the only workflow)
    - Installs dependencies via `npm ci`
    - Compiles TypeScript
-   - Runs solver validation tests
-
-2. **design-research.yml** - Weekly AI design research
-   - Requires ANTHROPIC_API_KEY secret
-   - Runs design analysis and improvements
-
-3. **nightly-design-loop.yml** - Nightly automated design loop
-   - Requires ANTHROPIC_API_KEY and GITHUB_TOKEN
-   - Creates design improvement PRs
+   - Runs the full test suite (vitest units, solver validation, parallel
+     assembly equivalence, client logic checks)
 
 ## Prevention Guidelines for Automated Commits
 When making automated PRs or commits:

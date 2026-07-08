@@ -1,7 +1,7 @@
 /**
  * analysis.ts
  * -----------
- * The core analysis pipeline for the local StressForm server.
+ * The core analysis pipeline for the local STORMFEA server.
  *
  * Takes:
  *   - STL positions (Float32Array)
@@ -467,7 +467,7 @@ export function backCalculateProfile(params: {
   /**
    * Stress-concentration factors from FEA-in-the-loop (see coupon_fea.ts).
    * Kt = peak/nominal stress for that coupon's geometry. Converts the nominal
-   * F/A strength into a PEAK-based allowable consistent with how StressForm
+   * F/A strength into a PEAK-based allowable consistent with how STORMFEA
    * evaluates real parts. Omit (or 1.0) to fall back to plain nominal F/A.
    *
    * Tensile is intentionally NOT corrected: its gauge is uniform by design, so
@@ -1199,7 +1199,7 @@ export interface IsotropicComparison {
   isoMaxVonMisesMPa:  number;
   /** How much more optimistic the isotropic model is, as a % */
   optimismPct:        number;
-  /** Whether the isotropic model would call this part safe (SF >= 1) when StressForm says it fails */
+  /** Whether the isotropic model would call this part safe (SF >= 1) when STORMFEA says it fails */
   falseSafe:          boolean;
   /** Short plain-English explanation for the judge panel */
   explanation:        string;
@@ -3050,7 +3050,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // for the same mesh/BCs) — it is the YIELD CRITERION.
   //
   // Isotropic FEA: SF = yieldStrength / vonMises  (applies same yield in all directions)
-  // StressForm:    SF = yieldXY / σ_hill  (Hill 1948 quadratic criterion)
+  // STORMFEA:    SF = yieldXY / σ_hill  (Hill 1948 quadratic criterion)
   //
   // For flat prints under through-thickness load: yieldZ = 0.58 × yieldXY.
   // This means the orthotropic SF can be 42% lower than the isotropic SF
@@ -3062,7 +3062,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   try {
     // Isotropic SF: apply full yieldXY uniformly (no Z-direction penalty)
     // This is what every conventional FEA tool computes.
-    // Using the same stress field as StressForm so the comparison is purely
+    // Using the same stress field as STORMFEA so the comparison is purely
     // about the yield criterion, not mesh/solver differences.
     const orthoMat = material as import("./solver/types.js").OrthotropicMaterial;
     const yieldXY = isOrthotropic(material) ? orthoMat.yieldXY : effectiveYield;
@@ -3089,19 +3089,19 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     let explanation: string;
     if (falseSafe) {
       explanation = `Conventional FEA: SF ${isoSF.toFixed(2)}× — part appears SAFE. ` +
-        `StressForm: SF ${sf.toFixed(2)}× — part FAILS. ` +
+        `STORMFEA: SF ${sf.toFixed(2)}× — part FAILS. ` +
         `Reason: this is a ${directionWord} part. ` +
         `Inter-layer bond yield is only ${(yieldZ/yieldXY*100).toFixed(0)}% of in-plane yield (${yieldZ.toFixed(1)} vs ${yieldXY.toFixed(1)} MPa). ` +
         `Conventional FEA applies in-plane yield everywhere — it cannot see this failure mode.`;
     } else if (optimismPct > 5) {
-      explanation = `Conventional FEA predicts SF ${isoSF.toFixed(2)}× — ${optimismPct}% more optimistic than StressForm's ${sf.toFixed(2)}×. ` +
+      explanation = `Conventional FEA predicts SF ${isoSF.toFixed(2)}× — ${optimismPct}% more optimistic than STORMFEA's ${sf.toFixed(2)}×. ` +
         `The gap comes from the yield criterion: conventional tools apply in-plane yield (${yieldXY.toFixed(1)} MPa) uniformly. ` +
-        `StressForm uses the Hill criterion, which accounts for the weaker through-layer direction ` +
+        `STORMFEA uses the Hill criterion, which accounts for the weaker through-layer direction ` +
         `(${yieldZ.toFixed(1)} MPa — ${yieldPenaltyPct}% lower). ` +
         `For a ${directionWord} part, the inter-layer bonds govern failure first.`;
     } else {
       const wouldGap = (1/FDM_ORTHO_RATIOS.yieldZ_over_yieldXY - 1) * 100;
-      explanation = `Both predictions agree closely (conventional ${isoSF.toFixed(2)}× vs StressForm ${sf.toFixed(2)}×). ` +
+      explanation = `Both predictions agree closely (conventional ${isoSF.toFixed(2)}× vs STORMFEA ${sf.toFixed(2)}×). ` +
         `The governing stress here is predominantly in-plane, where both use yield_XY (${yieldXY.toFixed(1)} MPa). ` +
         `Note: for parts where Z-direction tension governs (pure pull-through loading), the gap would be ~${wouldGap.toFixed(0)}% — ` +
         `conventional FEA would be optimistic because it ignores inter-layer yield (${yieldZ.toFixed(1)} MPa vs ${yieldXY.toFixed(1)} MPa in-plane).`;
