@@ -5051,6 +5051,11 @@ async function runAnalysis() {
       // solver. The message already names the offending field and a hint.
       friendlyErr = 'Request rejected before solving';
       friendlyFix = `${errMsg}. Refresh the page and re-run the analysis; if this persists, the client and server versions may be out of sync — restart the server (start.bat or npm start).`;
+    } else if (errMsg.includes('TetGen not found')) {
+      // 503 from the server: the mesher binary is absent. Setup problem —
+      // do NOT tell the user their geometry is broken (issue #106).
+      friendlyErr = 'TetGen is not installed';
+      friendlyFix = 'STL meshing needs the TetGen binary, and the server could not find it — your part is fine. Install TetGen (Windows: place <code>tetgen.exe</code> next to <code>start.bat</code> · macOS: <code>brew install tetgen</code> · Linux: <code>sudo apt-get install tetgen</code>), then restart the server. The server console prints the same instructions at startup.';
     } else if (errMsg.includes('TetGen') || errMsg.includes('tetgen') || errMsg.includes('mesh')) {
       friendlyErr = 'Mesh generation failed';
       friendlyFix = 'Try reducing mesh quality one level in Settings → Print Settings. If that fails, re-export your STL and check for non-manifold edges or self-intersections using Meshmixer or PrusaSlicer.';
