@@ -12,7 +12,7 @@
  *   { type: 'error', id: string, message: string }
  */
 
-const SOLVER_TIMEOUT_MS = 600_000;
+const SOLVER_TIMEOUT_MS = 120_000;
 const abortControllers = new Map();
 
 self.onmessage = async (event) => {

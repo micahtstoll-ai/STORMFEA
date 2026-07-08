@@ -283,7 +283,7 @@ async function assembleK_parallel(
         const timeout = setTimeout(() => {
           worker.terminate();
           reject(new Error(`Worker timeout for elements ${chunk.start}–${chunk.end}`));
-        }, 180_000);  // 3 minute timeout (fine C3D10 chunks can exceed 60s on slow hardware)
+        }, 60_000);  // 60 second timeout
 
         worker.on("message", (msg: any) => {
           clearTimeout(timeout);
