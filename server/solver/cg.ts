@@ -260,6 +260,18 @@ export interface CGResult {
  *                       pass it here instead of re-factorizing on every call
  *                       (issue #100). Only used when preconditioner==='ic0'.
  */
+/**
+ * Optional progress/abort hooks (issue #109). Passed only by the streaming
+ * analysis path; all other callers (modal, buckling, tests) omit it and are
+ * unaffected.
+ */
+export interface SolvePCGOpts {
+  /** Checked at CG checkpoints; when aborted, solvePCG throws (name === 'AnalysisAbortError'). */
+  signal?: AbortSignal;
+  /** Invoked at CG residual checkpoints with (iteration, relativeResidual). */
+  onProgress?: (iteration: number, relativeResidual: number) => void;
+}
+
 export function solvePCG(
   K:        CSRMatrix,
   f:        Float64Array,
@@ -268,6 +280,7 @@ export function solvePCG(
   maxIter?: number,
   preconditioner: 'jacobi' | 'ic0' = 'ic0',
   prebuiltFactor?: IC0Factor | null,
+  opts?: SolvePCGOpts,
 ): CGResult {
   const n    = K.n;
   // Hard cap at 5 000 iterations regardless of DOF count.
@@ -402,6 +415,15 @@ export function solvePCG(
       residualCheckpoints.push({ iteration: iter, relativeResidual: relRes });
       if (debugCG) {
         console.log(`[cg] iter ${iter}: relRes=${relRes.toExponential(3)} (initial=${initialRelRes.toExponential(3)})`);
+      }
+      // Live progress + cooperative abort (issue #109). onProgress streams the
+      // residual to the client; the signal check bails out of a solve the
+      // caller has cancelled. Both are no-ops unless opts was supplied.
+      if (opts?.onProgress) opts.onProgress(iter, relRes);
+      if (opts?.signal?.aborted) {
+        const e = new Error(`PCG aborted by caller at iteration ${iter}`);
+        e.name = 'AnalysisAbortError';
+        throw e;
       }
       nextLogIter = iter < 256 ? iter * 2 : iter + 256;
     }

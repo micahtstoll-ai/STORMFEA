@@ -20,8 +20,8 @@ import { fileURLToPath } from "url";
 import { spawn }         from "child_process";
 import { parseSTL }      from "./stl.js";
 import { detectHoles }   from "./holes.js";
-import { runAnalysis }   from "./analysis.js";
-import type { ForceSpec, PrintSettings } from "./analysis.js";
+import { runAnalysis, AnalysisAbortError }   from "./analysis.js";
+import type { ForceSpec, PrintSettings, AnalysisResult } from "./analysis.js";
 import { expect as expectShape, ValidationError } from "./validate.js";
 import type { Spec } from "./validate.js";
 
@@ -284,43 +284,26 @@ app.post("/api/analyse", async (req, res) => {
 
     console.log(`[analyse] fileType=${body.fileType} bolts=[${body.boltHoleIds}] forces=${body.forces.length} mesh=${body.meshQuality}`);
 
-    // ── Solver timeout guard ──────────────────────────────────────────────────
-    // Note: runAnalysis is synchronous/CPU-bound for the PCG solve, so
-    // Promise.race cannot interrupt it mid-loop. The real hang-prevention is
-    // the 5 000-iteration cap in cg.ts. This timeout catches the async parts
-    // (TetGen/Gmsh subprocess calls, file I/O) which can hang if a binary is
-    // missing or a pipe stalls, and gives the browser a proper error response
-    // instead of an open connection.
+    // ── Assemble runAnalysis arguments (shared by both response modes) ──────────
     const ANALYSE_TIMEOUT_MS = 120_000;
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(
-        `Solver timed out after ${ANALYSE_TIMEOUT_MS / 1000}s. ` +
-        `TetGen or Gmsh may be unresponsive — check that both binaries are on PATH.`
-      )), ANALYSE_TIMEOUT_MS)
-    );
+    const runArgs = {
+      positions,
+      stepBuffer,
+      fileType:      (body.fileType ?? "stl") as "stl" | "step",
+      triangleCount: body.triangleCount,
+      bounds:        body.bounds,
+      holes,
+      boltHoleIds:   body.boltHoleIds,
+      ...(((body as any).boltFasteners) ? { boltFasteners: (body as any).boltFasteners } : {}),
+      forces:        body.forces,
+      print:         body.print,
+      meshQuality:   body.meshQuality,
+      analysisType:  ((body as any).analysisType ?? 'linear_static') as 'linear_static' | 'modal',
+    };
 
-    const result = await Promise.race([
-      runAnalysis({
-        positions,
-        stepBuffer,
-        fileType:      body.fileType ?? "stl",
-        triangleCount: body.triangleCount,
-        bounds:        body.bounds,
-        holes,
-        boltHoleIds:   body.boltHoleIds,
-        ...(((body as any).boltFasteners) ? { boltFasteners: (body as any).boltFasteners } : {}),
-        forces:        body.forces,
-        print:         body.print,
-        meshQuality:   body.meshQuality,
-        analysisType:  (body as any).analysisType ?? 'linear_static',
-      }),
-      timeoutPromise,
-    ]);
-
-    console.log(`[analyse] done in ${result.solverMs}ms: maxVM=${result.maxVonMisesMPa.toFixed(2)}MPa SF=${result.safetyFactor !== null ? result.safetyFactor.toFixed(2) : '(unavailable)'} converged=${result.converged}`);
-
-    // Send back summary + per-vertex stress and displacement as base64
-    res.json({
+    // Build the full JSON response payload from a completed analysis. Shared by
+    // the blocking JSON path (res.json) and the SSE "result" event (issue #109).
+    const buildPayload = (result: AnalysisResult) => ({
       summary: {
         maxVonMisesMPa:       +result.maxVonMisesMPa.toFixed(4),
         maxDisplacementMm:    +result.maxDisplacementMm.toFixed(6),
@@ -383,6 +366,93 @@ app.post("/api/analyse", async (req, res) => {
         })),
       } : null,
     });
+
+    // ── SSE streaming mode (issue #109) ────────────────────────────────────────
+    // Opt-in via ?stream=1 or Accept: text/event-stream. Emits ordered phase
+    // events (mesh → constraints → assembly → solve → recovery → mapping), shows
+    // mesh size the moment meshing completes, streams CG residual checkpoints,
+    // and wires the request 'close' event to an AbortSignal — so closing the tab
+    // or clicking Cancel stops the server-side solve at the next phase boundary
+    // instead of burning full CPU on an abandoned result. The blocking JSON path
+    // below is unchanged, so existing callers and integration tests still work.
+    const wantsSSE = req.query["stream"] === "1"
+      || (req.headers.accept ?? "").includes("text/event-stream");
+
+    if (wantsSSE) {
+      res.status(200);
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");   // disable proxy buffering
+      res.flushHeaders?.();
+
+      const ac = new AbortController();
+      let aborted = false;
+      const abort = (why: string): void => {
+        if (aborted) return;
+        aborted = true;
+        ac.abort();
+        console.log(`[analyse:sse] ${why} — aborting solve`);
+      };
+      // Detect a real client disconnect via the RESPONSE 'close' event, not
+      // req 'close': in Node 18+ the request stream emits 'close' as soon as its
+      // body has been fully consumed (which express.json already did), which
+      // would fire a false abort immediately. res 'close' only fires when the
+      // connection actually goes away; if that happens before we res.end(), the
+      // client is gone (tab closed / Cancel) and we abort the solve.
+      res.on("close", () => { if (!res.writableEnded) abort("client disconnected"); });
+      const timeoutId = setTimeout(
+        () => abort(`timed out after ${ANALYSE_TIMEOUT_MS / 1000}s`),
+        ANALYSE_TIMEOUT_MS,
+      );
+
+      const sse = (event: string, data: unknown): void => {
+        if (res.writableEnded) return;
+        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      };
+
+      try {
+        const result = await runAnalysis({
+          ...runArgs,
+          signal:  ac.signal,
+          onPhase: (ev) => sse("phase", ev),
+        });
+        clearTimeout(timeoutId);
+        console.log(`[analyse:sse] done in ${result.solverMs}ms: maxVM=${result.maxVonMisesMPa.toFixed(2)}MPa converged=${result.converged}`);
+        sse("result", buildPayload(result));
+        if (!res.writableEnded) res.end();
+      } catch (err) {
+        clearTimeout(timeoutId);
+        if (aborted || err instanceof AnalysisAbortError || (err as { name?: string })?.name === "AnalysisAbortError") {
+          console.log("[analyse:sse] solve aborted before completion — no result sent");
+          if (!res.writableEnded) res.end();
+          return;
+        }
+        console.error("[analyse:sse error]", err);
+        const msg  = err instanceof Error ? err.message : String(err);
+        const hint = err instanceof TetGenNotFoundError ? err.hint : undefined;
+        sse("error", { error: msg, ...(hint ? { hint } : {}) });
+        if (!res.writableEnded) res.end();
+      }
+      return;
+    }
+
+    // ── Blocking JSON mode (default; backward compatible) ───────────────────────
+    // runAnalysis is synchronous/CPU-bound for the PCG solve, so Promise.race
+    // cannot interrupt it mid-loop. The real hang-prevention is the 5 000-
+    // iteration cap in cg.ts; this timeout catches the async parts (TetGen/Gmsh
+    // subprocess calls, file I/O) so a stalled binary yields an error response
+    // instead of an open connection.
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(
+        `Solver timed out after ${ANALYSE_TIMEOUT_MS / 1000}s. ` +
+        `TetGen or Gmsh may be unresponsive — check that both binaries are on PATH.`
+      )), ANALYSE_TIMEOUT_MS)
+    );
+
+    const result = await Promise.race([ runAnalysis(runArgs), timeoutPromise ]);
+    console.log(`[analyse] done in ${result.solverMs}ms: maxVM=${result.maxVonMisesMPa.toFixed(2)}MPa SF=${result.safetyFactor !== null ? result.safetyFactor.toFixed(2) : '(unavailable)'} converged=${result.converged}`);
+    res.json(buildPayload(result));
 
   } catch (err) {
     console.error("[analyse error]", err);

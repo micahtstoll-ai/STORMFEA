@@ -47,6 +47,16 @@ export interface SolverInput {
    * extra Float64Array(nnz) copy.
    */
   readonly keepPristineK?: boolean;
+  /**
+   * Optional abort signal (issue #109). Forwarded to solvePCG, which checks it
+   * at CG iteration checkpoints and throws if the caller has cancelled.
+   */
+  readonly signal?: AbortSignal;
+  /**
+   * Optional CG progress callback (issue #109). Invoked at CG residual
+   * checkpoints with (iteration, relativeResidual) for live progress streaming.
+   */
+  readonly onCgProgress?: (iteration: number, relativeResidual: number) => void;
 }
 
 /**
@@ -153,7 +163,10 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
   applyDirichletBC(K, f, diagIdx, constraints);
   _snap("after applyDirichletBC");
 
-  const cg = solvePCG(K, f, diagIdx, tol, maxIter, preconditioner);
+  const cg = solvePCG(K, f, diagIdx, tol, maxIter, preconditioner, null, {
+    signal:     input.signal,
+    onProgress: input.onCgProgress,
+  });
   _snap("after solvePCG");
 
   // Warn (but don't throw) if CG didn't converge — let caller inspect result
