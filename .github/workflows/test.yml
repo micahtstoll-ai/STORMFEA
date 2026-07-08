@@ -23,6 +23,20 @@ jobs:
         fi
         echo "✓ package-lock.json found"
 
+    - name: Install meshing binaries (TetGen + Gmsh)
+      # Issue #108: without the real meshers on PATH, no test exercises the
+      # primary STL→TetGen (C3D10) or STEP→Gmsh paths — which is exactly how the
+      # #66 midnode-permutation bug shipped undetected. The Ubuntu runner ships
+      # both in its default repos; update the index first so the install is
+      # robust against a stale cache. With these present the mesher integration
+      # tests (server/tests/unit/mesher-integration.test.ts) and the #66
+      # verification gate below EXECUTE instead of self-skipping.
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends tetgen gmsh
+        echo "tetgen: $(command -v tetgen)"
+        echo "gmsh:   $(gmsh --version 2>&1)"
+
     - name: Set up Node.js environment
       uses: actions/setup-node@v4
       with:
@@ -38,6 +52,19 @@ jobs:
 
     - name: Compile TypeScript and run solver validation suite
       run: npm run test -- --verbose
+
+    - name: Verify TetGen -o2 → C3D10 midnode permutation (issue #66 regression gate)
+      # Empirically re-derives the TetGen -o2 midside-node ordering from whatever
+      # tetgen binary is on PATH and confirms C3D10_REORDER maps it to STORMFEA's
+      # element.ts convention, then runs a cantilever bending check (δ within
+      # ~15% of Euler-Bernoulli). This is the regression gate for #66 — it fails
+      # the build if a future TetGen version reorders its midnodes or if
+      # C3D10_REORDER is edited incorrectly. Requires the tetgen installed above;
+      # npm test already compiled dist/, but build again so this step is
+      # self-contained if the pipeline is reordered.
+      run: |
+        npm run build
+        node scripts/verify_tetgen_c3d10.mjs
 
     - name: Upload dist directory on failure
       if: failure()
