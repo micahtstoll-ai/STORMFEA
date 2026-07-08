@@ -572,10 +572,39 @@ function buildOrthotropicMaterialCLT(
   );
 
   if (orientation === "upright") {
+    // UPRIGHT ORIENTATION — SCALAR-SWAP APPROXIMATION (issue #101)
+    // ------------------------------------------------------------
+    // Physically, an upright print has its layer normal along a HORIZONTAL
+    // axis in the analysis frame: one in-plane direction is weak (across
+    // layers) and the other in-plane direction plus Z are strong (in-layer).
+    // The exact model is a 90° rotation of the full 6×6 C (Bond transform),
+    // which yields a material that is transversely isotropic about a
+    // horizontal axis — NOT about Z.
+    //
+    // The solver's OrthotropicMaterial type only supports transverse isotropy
+    // about global Z, so we approximate by swapping scalars: E_z takes the
+    // strong in-layer modulus (the load axis faces the strong direction) and
+    // BOTH horizontal directions take the weak through-layer modulus. This is
+    // conservative for in-plane loads (one horizontal direction is actually
+    // strong) and exact for the vertical modulus. See the SOURCES tab
+    // ("upright_swap" entry) and server/tests/unit/upright-swap.test.ts,
+    // which benchmarks this swap against the full tensor rotation.
+    //
+    // Shear moduli after the swap:
+    //   G_xy (global XY plane): this plane contains the layer normal, so
+    //     shearing it slides layers over each other → the inter-layer shear
+    //     G_xz, NOT the CLT in-plane 1/A66 (and not the isotropic fallback
+    //     E_xy/(2(1+ν)) that the constitutive builder would derive if G_xy
+    //     were omitted — that was the dropped-G_xy bug this fixes).
+    //   G_xz (planes containing global Z): the true rotated values are
+    //     G_xy (in-layer) for one plane and G_xz (inter-layer) for the other;
+    //     the transversely-isotropic type forces them equal, so keep the
+    //     conservative inter-layer value G_xz.
     return {
       kind: "orthotropic",
       E_xy: mat.E_z, E_z: mat.E_xy,
-      nu_xy: mat.nu_xy, nu_xz: mat.nu_xz, G_xz: mat.G_xz,
+      nu_xy: mat.nu_xy, nu_xz: mat.nu_xz,
+      G_xy: mat.G_xz, G_xz: mat.G_xz,
       yieldXY: mat.yieldZ, yieldZ: mat.yieldXY,
       label: mat.label.replace(`, ${orientation}`, ", upright"),
     };
@@ -612,10 +641,20 @@ function buildOrthotropicMaterial(
   const src = calibration ? `calibrated:${calibration.id}` : "literature";
 
   if (orientation === "upright") {
+    // Scalar-swap approximation for upright prints — same reasoning as the
+    // CLT branch above (see the long comment in buildOrthotropicMaterialCLT
+    // and the "upright_swap" SOURCES entry): the swapped material keeps
+    // transverse isotropy about global Z, which makes BOTH horizontal
+    // directions weak (conservative; the real part is weak in only one).
+    // G_xy is set explicitly to the inter-layer shear modulus G_xz because
+    // the global XY plane contains the layer normal after the swap — without
+    // this the constitutive builder would silently derive an in-layer-like
+    // G_xy = E_xy/(2(1+ν)) from the swapped (weak) modulus (issue #101).
     return {
       kind: "orthotropic",
       E_xy: E_z, E_z: E_xy,
-      nu_xy, nu_xz, G_xz,
+      nu_xy, nu_xz,
+      G_xy: G_xz, G_xz,
       yieldXY: yieldZ, yieldZ: yieldXY,
       label: `${base.label} (orthotropic, upright, lh=${layerHeightMm}mm, ${src})`,
     };
