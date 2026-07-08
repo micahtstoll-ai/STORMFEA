@@ -47,24 +47,42 @@ export interface BucklingResult {
   readonly iterations: number;
   /** True if the stress state is predominantly tensile (no compressive Kσ energy). */
   readonly tensileDominated: boolean;
+  /**
+   * True if the iteration (including one deflated restart) could not find a
+   * POSITIVE eigenvalue. Power iteration converges to the largest-MAGNITUDE
+   * eigenvalue of K⁻¹·(−Kσ); with mixed tension/compression that can be a
+   * negative (non-physical) one even when a positive buckling mode exists.
+   * When true, `blf` must NOT be reported to the user as a buckling factor.
+   */
+  readonly indeterminate: boolean;
+}
+
+interface PowerIterationOutcome {
+  blf:            number;
+  converged:      boolean;
+  iterations:     number;
+  sawCompression: boolean;
+  /** Converged (normalized) iterate — the approximate dominant eigenvector. */
+  mode:           Float64Array;
 }
 
 /**
- * Compute the smallest positive Buckling Load Factor via inverse power iteration.
+ * One run of inverse power iteration on K⁻¹·(−Kσ).
  *
- * @param K      Global elastic stiffness (with Dirichlet BCs applied, n×n CSR)
- * @param Ksigma Global geometric stiffness (same sparsity as K, assembled from pre-stress)
- * @param diagIdx Diagonal index array for K (needed by PCG preconditioner)
- * @param maxIter Maximum power iterations (default 80)
- * @param tol     Relative convergence tolerance (default 1e-4)
+ * @param deflate Optional previously-converged eigenvector φ to project out.
+ *                Eigenvectors of the pencil (−Kσ, K) are K-orthogonal, so the
+ *                projection uses the K inner product:
+ *                  x ← x − (φᵀK·x / φᵀK·φ)·φ
+ *                applied every iteration (exact deflation for symmetric pencils).
  */
-export async function runLinearBuckling(
+function powerIteration(
   K:        CSRMatrix,
   Ksigma:   CSRMatrix,
   diagIdx:  Int32Array,
-  maxIter = 80,
-  tol     = 1e-4,
-): Promise<BucklingResult> {
+  maxIter:  number,
+  tol:      number,
+  deflate:  Float64Array | null,
+): PowerIterationOutcome {
   const n = K.n;
 
   // Initial vector: must NOT be a rigid-body motion (uniform translation lies in
@@ -77,9 +95,31 @@ export async function runLinearBuckling(
     const h = ((i * 1664525 + 1013904223) >>> 0) / 4294967296;
     x[i] = h - 0.5;   // values in [-0.5, 0.5]
   }
+
+  // Precompute K·φ and φᵀK·φ for the K-orthogonal deflation projector.
+  let Kphi: Float64Array | null = null;
+  let phiKphi = 0;
+  if (deflate) {
+    Kphi = matvec(K, deflate);
+    for (let i = 0; i < n; i++) phiKphi += (deflate[i] ?? 0) * (Kphi[i] ?? 0);
+    if (Math.abs(phiKphi) < 1e-300) { Kphi = null; }
+  }
+
+  const project = (vec: Float64Array): void => {
+    if (!deflate || !Kphi) return;
+    let c = 0;
+    for (let i = 0; i < n; i++) c += (Kphi[i] ?? 0) * (vec[i] ?? 0);
+    c /= phiKphi;
+    for (let i = 0; i < n; i++) vec[i] = (vec[i] ?? 0) - c * (deflate[i] ?? 0);
+  };
+
+  project(x);
   let xNorm = 0;
   for (let i = 0; i < n; i++) xNorm += x[i]! * x[i]!;
   xNorm = Math.sqrt(xNorm);
+  if (xNorm < 1e-30) {
+    return { blf: 0, converged: false, iterations: 0, sawCompression: false, mode: x };
+  }
   for (let i = 0; i < n; i++) x[i] = x[i]! / xNorm;
 
   // Scratch buffers
@@ -111,6 +151,10 @@ export async function runLinearBuckling(
     const cg = solvePCG(K, new Float64Array(v), diagIdx, 1e-8, 2000);
     const y = cg.u;
 
+    // Deflate previously-found mode before the Rayleigh quotient so the
+    // quotient measures the deflated operator, not a re-grown component.
+    project(y);
+
     // Step 3: Rayleigh quotient λ = yᵀ·v / yᵀ·(-Kσ·y)
     //   yᵀ·v ≈ yᵀ·K·y (since K·y = v exactly at convergence)
     let yTv = 0;
@@ -137,5 +181,72 @@ export async function runLinearBuckling(
     if (err < tol) { converged = true; break; }
   }
 
-  return { blf, converged, iterations, tensileDominated: !sawCompression };
+  return { blf, converged, iterations, sawCompression, mode: x };
+}
+
+/**
+ * Compute the smallest positive Buckling Load Factor via inverse power iteration.
+ *
+ * Power iteration is sign-blind: it converges to the largest-MAGNITUDE
+ * eigenvalue of K⁻¹·(−Kσ). Under mixed tension/compression pre-stress the
+ * dominant eigenvalue can be NEGATIVE (a tension-driven, non-physical mode)
+ * while a physical positive buckling mode still exists. If the first run
+ * converges to λ ≤ 0, we restart once with that mode deflated (projected out
+ * in the K inner product, which is exact for the symmetric pencil (−Kσ, K)).
+ * If the restart still fails to find a positive eigenvalue the result is
+ * flagged `indeterminate` — callers must report "indeterminate" rather than
+ * quoting `blf` as a buckling factor.
+ *
+ * @param K      Global elastic stiffness (with Dirichlet BCs applied, n×n CSR)
+ * @param Ksigma Global geometric stiffness (same sparsity as K, assembled from pre-stress)
+ * @param diagIdx Diagonal index array for K (needed by PCG preconditioner)
+ * @param maxIter Maximum power iterations per run (default 80)
+ * @param tol     Relative convergence tolerance (default 1e-4)
+ */
+export async function runLinearBuckling(
+  K:        CSRMatrix,
+  Ksigma:   CSRMatrix,
+  diagIdx:  Int32Array,
+  maxIter = 80,
+  tol     = 1e-4,
+): Promise<BucklingResult> {
+  const first = powerIteration(K, Ksigma, diagIdx, maxIter, tol, null);
+
+  if (!first.sawCompression) {
+    // Predominantly tensile stress state — no buckling mode to find.
+    return {
+      blf: first.blf, converged: first.converged, iterations: first.iterations,
+      tensileDominated: true, indeterminate: false,
+    };
+  }
+
+  if (first.blf > 0) {
+    return {
+      blf: first.blf, converged: first.converged, iterations: first.iterations,
+      tensileDominated: false, indeterminate: false,
+    };
+  }
+
+  // Converged (or stalled) on a non-positive eigenvalue: the dominant mode is
+  // tension-driven. Deflate it and retry once to expose a positive mode.
+  console.warn(
+    `[buckling] dominant eigenvalue non-positive (λ=${first.blf.toExponential(3)}) — ` +
+    `restarting with tensile mode deflated`
+  );
+  const second = powerIteration(K, Ksigma, diagIdx, maxIter, tol, first.mode);
+  const iterations = first.iterations + second.iterations;
+
+  if (second.sawCompression && second.blf > 0) {
+    return {
+      blf: second.blf, converged: second.converged, iterations,
+      tensileDominated: false, indeterminate: false,
+    };
+  }
+
+  // Still no positive eigenvalue — report indeterminate instead of a number.
+  return {
+    blf: second.sawCompression ? second.blf : first.blf,
+    converged: false, iterations,
+    tensileDominated: false, indeterminate: true,
+  };
 }

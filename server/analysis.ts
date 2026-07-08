@@ -1974,6 +1974,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   let bucklingBLF: number | undefined;
   let bucklingConverged = false;
   let bucklingTensile   = false;
+  let bucklingIndeterminate = false;
   if (mesh.nodesPerElem === 4 && result.elemStress6) {
     try {
       // Rebuild K with BCs for the buckling solve (same assembly as static).
@@ -1983,10 +1984,12 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
 
       const Ksigma = assembleKsigma(mesh, result.elemStress6, Kbuck.rowPtr, Kbuck.colIdx);
       const bResult = await runLinearBuckling(Kbuck, Ksigma, buckDiagIdx);
-      bucklingBLF       = bResult.blf;
-      bucklingConverged = bResult.converged;
-      bucklingTensile   = bResult.tensileDominated;
-      console.log(`[buckling] BLF=${bResult.blf.toFixed(3)} converged=${bResult.converged} iters=${bResult.iterations} tensile=${bResult.tensileDominated}`);
+      bucklingConverged     = bResult.converged;
+      bucklingTensile       = bResult.tensileDominated;
+      bucklingIndeterminate = bResult.indeterminate;
+      // Do NOT surface a non-physical (indeterminate) eigenvalue as a BLF.
+      if (!bResult.indeterminate) bucklingBLF = bResult.blf;
+      console.log(`[buckling] BLF=${bResult.blf.toFixed(3)} converged=${bResult.converged} iters=${bResult.iterations} tensile=${bResult.tensileDominated} indeterminate=${bResult.indeterminate}`);
     } catch (err) {
       console.warn(`[buckling] Analysis failed (non-fatal): ${err}`);
     }
@@ -2584,6 +2587,20 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         note:        `BLF ${blf.toFixed(2)}× → ${blfVerdict}. Linear buckling overestimates real BLF by 10–40% for ` +
                      `imperfect FDM geometry. Critical for thin walls, channels, and gussets. Verdict thresholds ` +
                      `(FAIL <1.5×, MARGINAL <3.0×) are STORMFEA design-basis values — see SOURCES tab.${convergeNote}`,
+      });
+    } else if (bucklingIndeterminate) {
+      // Eigensolver converged only to a negative (tension-driven) eigenvalue,
+      // even after a deflated restart — a positive BLF may exist but was not
+      // found. Report indeterminate rather than a misleading number.
+      allFailureModes.push({
+        mode:       "Linear buckling (BLF)",
+        sf:          0,
+        failForceN:  0,
+        checked:     false,
+        confidence:  "unchecked",
+        note:        "Buckling factor indeterminate: mixed tension/compression pre-stress — " +
+                     "the eigensolver found only a non-physical (negative) mode. " +
+                     "Treat buckling as UNCHECKED for this load case.",
       });
     } else {
       // Buckling not available (C3D10 mesh, or solver failure)

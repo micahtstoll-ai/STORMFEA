@@ -61,9 +61,6 @@
 import type { CSRMatrix } from "./types.js";
 import { matvec } from "./assembly.js";
 
-// NOTE: axpby is kept for external callers that may import it, but is no longer
-// used inside solvePCG (replaced by the in-place update below for zero allocation).
-
 // ─── Vector operations ────────────────────────────────────────────────────────
 
 function dot(a: Float64Array, b: Float64Array): number {
@@ -81,15 +78,6 @@ function daxpy(alpha: number, x: Float64Array, y: Float64Array): void {
   for (let i = 0; i < x.length; i++) {
     y[i] = (y[i] ?? 0) + alpha * (x[i] ?? 0);
   }
-}
-
-/** z = alpha*x + beta*y */
-function axpby(alpha: number, x: Float64Array, beta: number, y: Float64Array): Float64Array {
-  const z = new Float64Array(x.length);
-  for (let i = 0; i < x.length; i++) {
-    z[i] = alpha * (x[i] ?? 0) + beta * (y[i] ?? 0);
-  }
-  return z;
 }
 
 // ─── IC(0) incomplete Cholesky factorization ─────────────────────────────────
