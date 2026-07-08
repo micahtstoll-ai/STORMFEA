@@ -534,13 +534,15 @@ export function backCalculateProfile(params: {
 }
 
 // ─── Base properties (solid, 100% infill, isotropic approximation) ─────────
-const MATERIALS: Record<string, { E: number; nu: number; yieldMPa: number; label: string }> = {
-  pla:   { E: 3500,  nu: 0.36, yieldMPa: 50,  label: "PLA"   },
-  petg:  { E: 2100,  nu: 0.38, yieldMPa: 45,  label: "PETG"  },
-  abs:   { E: 2300,  nu: 0.35, yieldMPa: 40,  label: "ABS"   },
-  tpu:   { E:  200,  nu: 0.48, yieldMPa: 15,  label: "TPU"   },
-  pa12:  { E: 1700,  nu: 0.40, yieldMPa: 48,  label: "PA12 (Nylon)" },
-  asa:   { E: 2100,  nu: 0.35, yieldMPa: 40,  label: "ASA"   },
+// densityKgM3: solid (100% dense) mass density in kg/m³ — used with
+// effectiveVolumeFraction() to set massRho for modal analysis (issue #99).
+const MATERIALS: Record<string, { E: number; nu: number; yieldMPa: number; densityKgM3: number; label: string }> = {
+  pla:   { E: 3500,  nu: 0.36, yieldMPa: 50,  densityKgM3: 1240, label: "PLA"   },
+  petg:  { E: 2100,  nu: 0.38, yieldMPa: 45,  densityKgM3: 1270, label: "PETG"  },
+  abs:   { E: 2300,  nu: 0.35, yieldMPa: 40,  densityKgM3: 1050, label: "ABS"   },
+  tpu:   { E:  200,  nu: 0.48, yieldMPa: 15,  densityKgM3: 1200, label: "TPU"   },
+  pa12:  { E: 1700,  nu: 0.40, yieldMPa: 48,  densityKgM3: 1010, label: "PA12 (Nylon)" },
+  asa:   { E: 2100,  nu: 0.35, yieldMPa: 40,  densityKgM3: 1070, label: "ASA"   },
 };
 
 /**
@@ -795,6 +797,34 @@ export function effectiveStrengthMultiplier(
                    : 0.75;
 
   return combined * patternMul * orientMul;
+}
+
+/**
+ * First-order solid-volume fraction of an FDM part (issue #99).
+ *
+ * Used to scale the SOLID material density into an effective mass density
+ * (massRho) for modal analysis, so that mass tracks infill the same way
+ * stiffness already does. Without this a 20%-infill part carried full solid
+ * density against infill-scaled stiffness, underestimating frequencies ~2×.
+ *
+ * Model: deliberately the SAME load-bearing-section model that
+ * effectiveStrengthMultiplier uses for its combined infill+wall term
+ * (infillStrengthCurve linear term + 0.10 per extra perimeter, clamped at
+ * 1.0). That model already interprets its coefficients as the fraction of
+ * solid, load-carrying cross-section (shells fully dense, interior at the
+ * infill ratio); to first order the solid VOLUME fraction equals that solid
+ * SECTION fraction. The pattern and orientation multipliers are strength
+ * adjustments, not density adjustments, so they are excluded here.
+ *
+ * Limitations (documented, accepted at first order): the true shell fraction
+ * depends on part surface-to-volume ratio and wall width, and infill patterns
+ * differ a few percent in material use at equal percentage. Both effects are
+ * far smaller than the 5× mass error this replaces.
+ */
+export function effectiveVolumeFraction(infillPct: number, wallCount: number): number {
+  const infillFrac = infillStrengthCurve(infillPct);       // 0.30 → 1.0 linear
+  const wallBonus  = (wallCount - 1) * 0.10;
+  return Math.min(1.0, infillFrac + wallBonus);
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -1764,7 +1794,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // Use orthotropic material model — accurately captures the anisotropy of FDM parts.
   // For flat prints: E_z ≈ 0.45 × E_xy, G_xz ≈ 0.40 × G_xy (Ahn et al. 2002)
   // For upright prints: axes are swapped — the strong direction faces the load
-  const material: AnyMaterial = req.print.useCLT
+  const builtMaterial: AnyMaterial = req.print.useCLT
     ? buildOrthotropicMaterialCLT(
         req.print.materialId,
         req.print.infillPct,
@@ -1782,6 +1812,15 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         req.print.layerHeightMm ?? 0.2,
         req.calibration ?? null,
       );
+
+  // Effective mass density (issue #99): solid density × first-order solid
+  // volume fraction (infill % + fully-dense perimeters). Consumed by
+  // assembleMass in the modal path so the mass matrix tracks infill the same
+  // way the stiffness matrix already does.
+  const material: AnyMaterial = {
+    ...builtMaterial,
+    massRho: baseMat.densityKgM3 * effectiveVolumeFraction(req.print.infillPct, req.print.wallCount),
+  };
 
   // ── Build volume mesh ──────────────────────────────────────────────────────
   let mesh: import("./solver/types.js").TetMesh;
