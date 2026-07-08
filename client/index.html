@@ -1144,6 +1144,13 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <div id="overlay-bar-wrap" style="display:none;width:160px;height:2px;background:var(--border);border-radius:1px;overflow:hidden">
         <div id="overlay-bar" style="height:100%;width:0%;background:var(--gold);border-radius:1px;transition:width 0.4s ease"></div>
       </div>
+      <!-- Live mesh size, shown as soon as meshing completes (issue #109) -->
+      <div id="overlay-mesh" style="display:none;font-size:9px;color:var(--text-mid);letter-spacing:.08em;margin-top:10px;font-family:'DM Mono',monospace"></div>
+      <!-- Live CG residual sparkline (issue #109) -->
+      <canvas id="overlay-spark" width="160" height="34" style="display:none;margin-top:8px;background:var(--bg-card);border:1px solid var(--border);border-radius:2px"></canvas>
+      <!-- Cancel button — aborts the streaming fetch, which closes the socket and
+           stops the server-side solve at the next phase boundary (issue #109). -->
+      <button id="overlay-cancel" onclick="cancelAnalysis()" style="display:none;margin-top:16px;padding:5px 16px;font-size:10px;letter-spacing:.06em;background:transparent;border:1px solid var(--border-mid);color:var(--text-mid);border-radius:3px;cursor:pointer;font-family:inherit">CANCEL</button>
     </div>
 
     <!-- Fastener picker popup — shown after clicking a hole in bolt mode -->
@@ -2221,6 +2228,127 @@ window.addEventListener('beforeunload', () => {
     pendingRequests.clear();
   }
 });
+
+// ─── Streaming analyse over SSE (issue #109) ──────────────────────────────────
+// POSTs the analysis body to /api/analyse?stream=1 and reads Server-Sent Events
+// so the overlay reflects REAL solver phases (mesh → constraints → assembly →
+// CG → recovery → mapping) instead of a fake timer, shows mesh size as soon as
+// meshing completes, and — via the AbortSignal — lets the user cancel: aborting
+// the fetch closes the socket, which the server turns into an AbortSignal that
+// stops the solve at the next phase boundary. Resolves with the same payload
+// shape the blocking JSON path returns, so downstream result handling is
+// unchanged. The Web-Worker JSON path (analyzeWithWorker) remains for the
+// convergence study and A/B comparison.
+let _analyseAbort = null;
+
+async function analyzeStreaming(body, { onPhase } = {}) {
+  const ctrl = new AbortController();
+  _analyseAbort = ctrl;
+  let resp;
+  try {
+    resp = await fetch('/api/analyse?stream=1', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+      body:    JSON.stringify(body),
+      signal:  ctrl.signal,
+    });
+  } catch (e) {
+    if (e && e.name === 'AbortError') { const err = new Error('Analysis cancelled'); err.cancelled = true; throw err; }
+    throw e;
+  }
+
+  if (!resp.ok || !resp.body) {
+    // Server rejected before streaming (e.g. 400 validation / 503 no mesher):
+    // body is a normal JSON error envelope, not an event stream.
+    const txt = await resp.text().catch(() => '');
+    throw new Error(formatErrorEnvelope(txt) || ('HTTP ' + resp.status));
+  }
+
+  const reader  = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '', result = null, errored = null;
+
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let sep;
+      while ((sep = buf.indexOf('\n\n')) >= 0) {
+        const raw = buf.slice(0, sep);
+        buf = buf.slice(sep + 2);
+        let event = 'message', data = '';
+        for (const line of raw.split('\n')) {
+          if (line.startsWith('event:'))     event = line.slice(6).trim();
+          else if (line.startsWith('data:')) data += line.slice(5).trim();
+        }
+        if (!data) continue;
+        let parsed;
+        try { parsed = JSON.parse(data); } catch { continue; }
+        if      (event === 'phase')  { if (onPhase) { try { onPhase(parsed); } catch(_e){} } }
+        else if (event === 'result') { result = parsed; }
+        else if (event === 'error')  { errored = parsed; }
+      }
+    }
+  } catch (e) {
+    if (e && e.name === 'AbortError') { const err = new Error('Analysis cancelled'); err.cancelled = true; throw err; }
+    throw e;
+  }
+
+  if (errored) throw new Error(errored.error + (errored.hint ? ' — ' + errored.hint : ''));
+  if (!result) { const err = new Error('Analysis cancelled'); err.cancelled = true; throw err; }
+  return result;
+}
+
+// Cancel button on the solve overlay — aborts the in-flight streaming fetch.
+function cancelAnalysis() {
+  if (_analyseAbort) {
+    _analyseAbort.abort();
+    _analyseAbort = null;
+  }
+  const btn = document.getElementById('overlay-cancel');
+  if (btn) btn.textContent = 'CANCELLING…';
+}
+
+// Map a server phase event onto the solve overlay (label, sub-text, progress
+// bar, mesh-size line, live CG iteration/residual). Issue #109.
+const _ANALYSE_PHASE_PCT = { mesh: 15, constraints: 30, assembly: 45, solve: 62, modal: 80, buckling: 84, recovery: 88, mapping: 94 };
+const _ANALYSE_PHASE_LABEL = {
+  mesh: 'Meshing…', constraints: 'Applying constraints…', assembly: 'Assembling K matrix…',
+  solve: 'Solving K·u = F…', modal: 'Modal analysis…', buckling: 'Buckling analysis…',
+  recovery: 'Recovering stress…', mapping: 'Mapping to surface…',
+};
+function applyAnalysePhase(ev) {
+  if (!ev || !ev.phase) return;
+  const label = _ANALYSE_PHASE_LABEL[ev.phase] || 'Working…';
+  let sub = ev.message || '';
+  const pct = _ANALYSE_PHASE_PCT[ev.phase] ?? null;
+
+  // Mesh size — display the instant meshing completes.
+  if (ev.phase === 'mesh' && ev.nodeCount != null) {
+    const mel = document.getElementById('overlay-mesh');
+    if (mel) {
+      mel.style.display = 'block';
+      const dof = ev.dof != null ? ev.dof : ev.nodeCount * 3;
+      mel.textContent =
+        `${(ev.nodeCount).toLocaleString()} nodes · ${(ev.elementCount||0).toLocaleString()} elements · ${dof.toLocaleString()} DOF`;
+    }
+  }
+
+  // Live CG iteration + residual.
+  if (ev.phase === 'solve' && ev.iteration != null) {
+    const rr = (ev.relativeResidual != null) ? ev.relativeResidual.toExponential(2) : '';
+    sub = `CG iteration ${ev.iteration}${rr ? ' · residual ' + rr : ''}`;
+    _pushLiveResidual(ev.iteration, ev.relativeResidual);
+  }
+
+  setOverlayPhase(label, sub, pct);
+}
+
+// Live residual sparkline hooks — populated in the sparkline follow-on. Kept as
+// no-ops here so applyAnalysePhase/runAnalysis never throw before it lands.
+function _pushLiveResidual(_iter, _relRes) { /* sparkline follow-on (issue #109) */ }
+function _resetLiveResidual() { /* sparkline follow-on (issue #109) */ }
 
 // ─── Three.js setup ───────────────────────────────────────────────────────────
 let scene, camera, renderer, mesh3d, animId;
@@ -5056,19 +5184,17 @@ async function runAnalysis() {
   // still where the full failure-mode table, heatmap controls, and export
   // buttons live, for when that level of detail is actually wanted.
 
-  // Phase labels advance on a timer while the server works.
-  // Timings are conservative estimates — the overlay snaps to the real phase
-  // when the response arrives regardless of where the timer is.
-  const isStep = S.fileData?.fileType === 'step';
-  runOverlayPhases([
-    { msg: 'Meshing...',                 sub: isStep ? 'Gmsh curvature-based refinement' : 'TetGen Delaunay tetrahedralisation', pct: 15,  ms: 800  },
-    { msg: 'Applying constraints...',    sub: 'Locating bolt wall nodes and load faces',                                          pct: 30,  ms: 2200 },
-    { msg: 'Assembling K matrix...',     sub: 'Building global stiffness matrix from element contributions',                      pct: 45,  ms: 1500 },
-    { msg: 'Solving K·u = F...',         sub: 'Conjugate gradient iteration',                                                     pct: 60,  ms: 2000 },
-    { msg: 'Computing stress...',        sub: 'Strain-stress via constitutive matrix, Hill 1948 anisotropy',                      pct: 78,  ms: 1800 },
-    { msg: 'Mapping to surface...',      sub: '3D nearest-node stress projection',                                                pct: 90,  ms: 1200 },
-    { msg: 'Almost done...',             sub: 'Smoothing and safety factor computation',                                          pct: 97,  ms: 1000 },
-  ]);
+  // Overlay is now driven by REAL solver-phase events streamed over SSE
+  // (issue #109) rather than a fake timer, and a Cancel button lets the user
+  // abort the server-side solve. Reset the overlay's live regions and show the
+  // progress bar + Cancel affordance.
+  clearOverlayTimer();
+  setOverlayPhase('Meshing…', 'Preparing geometry for meshing', 8);
+  const _meshEl = document.getElementById('overlay-mesh');
+  if (_meshEl) { _meshEl.style.display = 'none'; _meshEl.textContent = ''; }
+  const _cancelBtn = document.getElementById('overlay-cancel');
+  if (_cancelBtn) { _cancelBtn.style.display = 'block'; _cancelBtn.textContent = 'CANCEL'; }
+  _resetLiveResidual();
 
   // ── Phase 1: standard mesh — show results immediately ────────────────────
   const bodyStd = buildAnalyseBody('standard');
@@ -5077,8 +5203,8 @@ async function runAnalysis() {
   try {
     document.getElementById('analyse-status').textContent = 'Solving...';
     AudioManager.playSolveStart();
-    setOverlayPhase('Mapping stress...', 'Projecting onto render mesh and smoothing', 97);
-    dataStd = await analyzeWithWorker(bodyStd);
+    dataStd = await analyzeStreaming(bodyStd, { onPhase: applyAnalysePhase });
+    if (_cancelBtn) _cancelBtn.style.display = 'none';
     S.results = dataStd;
     syncResultsUI();
 
@@ -5141,6 +5267,18 @@ async function runAnalysis() {
     updateHintBar();
     updateAnalyseButton();
   } catch (e) {
+    const _cb = document.getElementById('overlay-cancel');
+    if (_cb) _cb.style.display = 'none';
+    // User-initiated cancel (issue #109) is not an error — the server has
+    // already been told to stop. Just close the overlay quietly.
+    if (e && e.cancelled) {
+      hideOverlay();
+      updateAnalyseButton();
+      document.getElementById('analyse-status').textContent = 'Analysis cancelled';
+      showSessionToast('Analysis cancelled');
+      _analyseAbort = null;
+      return;
+    }
     hideOverlay();
     updateAnalyseButton();
     document.getElementById('results-content').style.display = 'none';
@@ -6047,6 +6185,11 @@ function hideOverlay() {
   if (subEl) subEl.textContent = '';
   const bar  = document.getElementById('overlay-bar-wrap');
   if (bar) bar.style.display = 'none';
+  // Hide issue #109 live regions (mesh size, residual sparkline, Cancel).
+  for (const id of ['overlay-mesh', 'overlay-spark', 'overlay-cancel']) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  }
 }
 
 // Timed phase sequencer — advances through phases while server is busy

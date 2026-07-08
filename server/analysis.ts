@@ -909,6 +909,38 @@ export function threadLayerPenalty(pitchMm: number, layerHeightMm: number): numb
   return Math.max(0.50, penalty);
 }
 
+/**
+ * Thrown by runAnalysis when its AbortSignal fires at a phase boundary
+ * (issue #109). The /api/analyse SSE handler catches this to stop cleanly
+ * without sending a bogus result when the client has disconnected/cancelled.
+ */
+export class AnalysisAbortError extends Error {
+  constructor(message = "analysis aborted") {
+    super(message);
+    this.name = "AnalysisAbortError";
+  }
+}
+
+/**
+ * Progress event emitted at each solver phase boundary (issue #109). Streamed
+ * to the client as SSE so the overlay reflects real solver phases instead of a
+ * timer, and shows mesh size the moment meshing completes.
+ */
+export interface AnalysisPhaseEvent {
+  phase: "mesh" | "constraints" | "assembly" | "solve" | "recovery" | "mapping" | "modal" | "buckling";
+  message?: string;
+  /** Present on the post-mesh "mesh" event. */
+  nodeCount?:    number;
+  elementCount?: number;
+  nodesPerElem?: number;
+  dof?:          number;
+  /** Present on live "solve" (CG) progress events. */
+  iteration?:         number;
+  relativeResidual?:  number;
+  converged?:         boolean;
+  iterations?:        number;
+}
+
 export interface AnalysisRequest {
   /** Raw STL vertex positions — 9 floats per triangle (used when fileType = "stl") */
   positions:     Float32Array;
@@ -943,6 +975,19 @@ export interface AnalysisRequest {
    * the central SF regardless of this field — it is reserved for future single-mode runs.
    */
   uncertaintyMode?: 'central' | 'conservative' | 'optimistic';
+  /**
+   * Optional progress callback (issue #109). Invoked at each phase boundary and,
+   * when the solve streams, at CG residual checkpoints. Non-serializable, so it
+   * is only ever set by the SSE server path — the blocking JSON path and all
+   * tests leave it undefined and are unaffected.
+   */
+  onPhase?: (ev: AnalysisPhaseEvent) => void;
+  /**
+   * Optional abort signal (issue #109). Checked at each phase boundary; when
+   * aborted (client disconnected or clicked Cancel), runAnalysis throws
+   * AnalysisAbortError instead of burning CPU on a result nobody will read.
+   */
+  signal?: AbortSignal;
 }
 
 export interface PrintRecommendation {
@@ -1986,6 +2031,20 @@ export function mapErrorEstimateToVertices(
 export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult> {
   const t0 = Date.now();
 
+  // ── Progress + cancellation plumbing (issue #109) ──────────────────────────
+  // emit() forwards phase events to the SSE client (no-op on the JSON path).
+  // checkAbort() throws AnalysisAbortError at a phase boundary if the client
+  // has disconnected/cancelled, so the expensive solve never runs for an
+  // abandoned request. A callback that throws must not corrupt the solve, so
+  // emit() swallows callback errors.
+  const emit = (ev: AnalysisPhaseEvent): void => {
+    if (!req.onPhase) return;
+    try { req.onPhase(ev); } catch { /* progress reporting must never break the solve */ }
+  };
+  const checkAbort = (): void => {
+    if (req.signal?.aborted) throw new AnalysisAbortError();
+  };
+
   // ── Material + print settings ───────────────────────────────────────────────
   const baseMat = MATERIALS[req.print.materialId] ?? MATERIALS["pla"]!;
   const strengthMul = effectiveStrengthMultiplier(
@@ -2028,6 +2087,8 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   };
 
   // ── Build volume mesh ──────────────────────────────────────────────────────
+  checkAbort();
+  emit({ phase: "mesh", message: req.fileType === "step" ? "Meshing (Gmsh)…" : "Meshing (TetGen)…" });
   let mesh: import("./solver/types.js").TetMesh;
   let surfaceToNode: Int32Array;
   let gmshResult: import("./gmsh_mesh.js").GmshMeshResult | null = null;
@@ -2085,7 +2146,21 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     }
   }
 
+  // Mesh built — report size to the client immediately (issue #109) and honor
+  // an abort that arrived while the (async) mesher was running, so the solve
+  // never starts for a request the client already abandoned.
+  checkAbort();
+  emit({
+    phase: "mesh",
+    message: "Mesh built",
+    nodeCount:    mesh.nodeCount,
+    elementCount: mesh.elementCount,
+    nodesPerElem: mesh.nodesPerElem,
+    dof:          mesh.nodeCount * 3,
+  });
+
   // ── Constraints: bolt hole physics ────────────────────────────────────────
+  emit({ phase: "constraints", message: "Applying constraints…" });
   const boltedHoles = req.holes.filter(h => req.boltHoleIds.includes(h.id));
   const constraints: { nodeIndices: number[] }[] = [];
 
@@ -2259,6 +2334,11 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     console.log(`[analysis] rigid-body-mode warning: ${rigidBodyMode.message}`);
   }
 
+  // Assembly + solve boundary — last cheap chance to bail before the expensive
+  // stiffness assembly and CG solve (issue #109).
+  checkAbort();
+  emit({ phase: "assembly", message: "Assembling stiffness matrix…" });
+
   // ── Solve ──────────────────────────────────────────────────────────────────
   // K is assembled ONCE (issue #100). Modal and buckling both need K WITHOUT
   // the static Dirichlet penalties (modal applies a diagonal-scaling penalty,
@@ -2274,9 +2354,15 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     constraints,
     forces: effectiveForces,
     keepPristineK: wantsModal || mayBuckle,
+    signal: req.signal,
+    onCgProgress: req.onPhase
+      ? (iteration, relativeResidual) => emit({ phase: "solve", iteration, relativeResidual })
+      : undefined,
   };
 
+  emit({ phase: "solve", message: "Solving K·u = F (conjugate gradient)…" });
   const intermediate = await runLinearStaticWithK(input);
+  checkAbort();
   const result: import("./solver/types.js").SolverResult = intermediate.result;
   let modalResult: ModalAnalysisResult | undefined;
 
@@ -2356,6 +2442,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // especially at stress concentrations near holes.
   // Falls back to direct averaging for under-determined patches (<4 elements).
   // Reference: Zienkiewicz & Zhu (1992) Int J Numer Methods Eng 33(7).
+  emit({ phase: "recovery", message: "Recovering nodal stress (SPR)…" });
   _snapAnalysis("before sprSmoothedStress");
   const nodeStress = sprSmoothedStress(mesh, result.vonMises);
   _snapAnalysis("after sprSmoothedStress");
@@ -2399,6 +2486,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   }
 
   // ── Map stress back to surface vertices ────────────────────────────────────
+  emit({ phase: "mapping", message: "Mapping stress to surface…" });
   // Vertex count must match the CLIENT's display mesh (req.positions /
   // req.triangleCount), not the server's internal analysis mesh — the
   // client's mesh3d geometry (and its color attribute buffer) was built
