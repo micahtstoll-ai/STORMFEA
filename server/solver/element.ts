@@ -69,16 +69,28 @@ export function buildConstitutiveMatrix(mat: IsotropicMaterial): Float64Array {
  * The XY plane is the isotropic plane (layers lie in XY, Z is through-thickness).
  * Voigt ordering: [εxx, εyy, εzz, γxy, γyz, γxz]
  *
+ * POISSON-RATIO CONVENTION (issue #102)
+ * -------------------------------------
+ * Input `nu_xz` follows the STANDARD engineering convention:
+ *   ν_ij = −ε_j / ε_i under uniaxial stress along i, so S_ij = −ν_ij / E_i.
+ * `nu_xz` is therefore the contraction along Z per unit strain along an
+ * in-plane (X) load direction, and its compliance entry is
+ *   s13 = −ν_xz / E_xy      (load in the isotropy plane, E_x = E_xy).
+ * The reciprocal ratio is derived from symmetry of S (Maxwell relation
+ * ν_ij/E_i = ν_ji/E_j):
+ *   ν_zx = ν_xz × E_z / E_xy   (so s31 = −ν_zx/E_z = s13).
+ * This matches the convention of the cited measurement (Casavola et al. 2016)
+ * from which FDM_ORTHO_RATIOS.nu_xz = 0.30 is taken.
+ *
  * Compliance matrix S = C⁻¹:
- *   [ 1/E_xy   -nu_xy/E_xy  -nu_xz/E_z   0        0        0     ]
- *   [-nu_xy/E_xy  1/E_xy    -nu_xz/E_z   0        0        0     ]
- *   [-nu_zx/E_xy -nu_zx/E_xy  1/E_z      0        0        0     ]
+ *   [ 1/E_xy   -nu_xy/E_xy  -nu_xz/E_xy   0        0        0     ]
+ *   [-nu_xy/E_xy  1/E_xy    -nu_xz/E_xy   0        0        0     ]
+ *   [-nu_xz/E_xy -nu_xz/E_xy  1/E_z       0        0        0     ]
  *   [  0          0           0        1/G_xy    0        0     ]
  *   [  0          0           0          0      1/G_xz    0     ]
  *   [  0          0           0          0        0      1/G_xz]
  *
- * Where nu_zx = nu_xz × E_xy / E_z  (Maxwell reciprocal relation)
- * And   G_xy  = E_xy / (2 × (1 + nu_xy))
+ * When G_xy is absent: G_xy = E_xy / (2 × (1 + nu_xy))
  *
  * We invert S analytically to get C.
  *
@@ -94,12 +106,15 @@ export function buildOrthotropicConstitutiveMatrix(mat: OrthotropicMaterial): Fl
 
   // Use explicitly set G_xy (e.g. from CLT 1/A66) when available; fall back to isotropic approximation.
   const G_xy = mat.G_xy ?? E_xy / (2 * (1 + nu_xy));
-  const nu_zx = nu_xz * E_xy / E_z;          // reciprocal Poisson (Maxwell relation)
+  // Reciprocal (minor) Poisson ratio from compliance symmetry:
+  //   ν_zx / E_z = ν_xz / E_xy   →   ν_zx = ν_xz × E_z / E_xy
+  const nu_zx = nu_xz * E_z / E_xy;
 
-  // Check stability: denominator Δ must be > 0
-  // For transverse isotropy: Δ = (1 - nu_xy²) × (1 - 2×nu_xz×nu_zx) - 2×nu_xz×nu_zx×(1 + nu_xy)
-  // Simplified: Δ = 1 - nu_xy² - 2×nu_xz²×(E_xy/E_z) - 2×nu_xy×nu_xz²×(E_xy/E_z)
-  const delta = (1 - nu_xy*nu_xy) - (2 * nu_xz * nu_zx) - (2 * nu_xy * nu_xz * nu_zx);
+  // Thermodynamic stability (positive-definite S) for transverse isotropy with
+  // the standard convention. The 3×3 normal-block determinant factors as
+  //   det(S) = (1+ν_xy) / (E_xy²·E_z) × [ (1−ν_xy) − 2·ν_xz·ν_zx ]
+  // Since (1+ν_xy) > 0 for ν_xy ∈ [0, 0.5), positive-definiteness reduces to Δ > 0:
+  const delta = (1 - nu_xy) - 2 * nu_xz * nu_zx;
   if (delta <= 0) {
     throw new Error(
       `Orthotropic material is not positive definite (Δ=${delta.toFixed(6)}). ` +
@@ -107,24 +122,18 @@ export function buildOrthotropicConstitutiveMatrix(mat: OrthotropicMaterial): Fl
     );
   }
 
-  // Stiffness matrix entries (from inversion of compliance, Reddy §2.4):
-  //
-  // C11 = C22 = E_xy × (1 - nu_xz × nu_zx) / (Δ × E_z)
-  // C33       = E_z  × (1 - nu_xy²)         / (Δ × E_xy) × E_xy  [simplifies]
-  // C12       = E_xy × (nu_xy + nu_xz × nu_zx) / (Δ × E_z)
-  // C13 = C23 = E_z  × (nu_xz + nu_xy × nu_xz) / Δ × (E_xy/E_z) [simplifies]
-  //
-  // Let's derive directly from the compliance inverse for clarity.
-  // Compliance block for normal stresses (3×3 submatrix):
-  //   S = [ 1/E_xy      -nu_xy/E_xy  -nu_zx/E_xy ]
-  //       [-nu_xy/E_xy   1/E_xy      -nu_zx/E_xy ]
-  //       [-nu_xz/E_z   -nu_xz/E_z    1/E_z      ]
+  // Derive C directly from the compliance inverse.
+  // Compliance block for normal stresses (3×3 submatrix), standard convention:
+  //   S = [ 1/E_xy      -nu_xy/E_xy  -nu_xz/E_xy ]
+  //       [-nu_xy/E_xy   1/E_xy      -nu_xz/E_xy ]
+  //       [-nu_xz/E_xy  -nu_xz/E_xy   1/E_z      ]
+  // (row 3 uses s31 = s13 = -nu_xz/E_xy = -nu_zx/E_z by the Maxwell relation)
   //
   // Inverted using cofactor expansion:
 
   const s11 =  1 / E_xy;
   const s12 = -nu_xy / E_xy;
-  const s13 = -nu_zx / E_xy;   // = -nu_xz / E_z  by reciprocal
+  const s13 = -nu_xz / E_xy;   // standard convention: = -nu_zx / E_z  by reciprocity
   const s33 =  1 / E_z;
 
   // Invert the 3×3 normal-stress compliance block directly (transverse isotropy):
