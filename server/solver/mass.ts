@@ -208,12 +208,56 @@ export function assembleM(
   };
 }
 
+// ─── HRZ diagonal-scaling lumping for C3D10 ───────────────────────────────────
+//
+// Row-sum lumping is INVALID for C3D10: the consistent corner-node row sums
+// are negative (−ρ·6Ve/120 per direction), so a row-summed lumped matrix has
+// negative diagonal entries and is not positive definite (issue #103).
+//
+// HRZ (Hinton-Rock-Zienkiewicz 1976) lumping instead takes the DIAGONAL of
+// the consistent element matrix and scales it so the diagonal sums to the
+// total element mass. All consistent diagonal entries are positive, so the
+// lumped masses are positive, and total mass is preserved by construction.
+//
+// Reference diagonal entries (unit tet, ρ=1, V_ref=1/6; see assembleM):
+//   corner:  1/420   (×4 nodes)          midside: 8/630   (×6 nodes)
+//   Σ diag = 4/420 + 48/630 = 3/35   per direction
+// HRZ scale factor = V_ref / Σdiag = (1/6)/(3/35) = 35/18, so with the
+// physical element scale ρ·6Ve:
+//   corner  lumped mass = ρ·6Ve × (1/420) × (35/18) = ρ·Ve / 36
+//   midside lumped mass = ρ·6Ve × (8/630) × (35/18) = 4·ρ·Ve / 27
+// Check: 4×(1/36) + 6×(4/27) = 1/9 + 8/9 = 1  →  Σ = ρ·Ve per direction. ✓
+const HRZ_C3D10_CORNER  = 1.0 / 36.0;
+const HRZ_C3D10_MIDSIDE = 4.0 / 27.0;
+
+function hrzLumpedC3D10(mesh: TetMesh, rho: number): Float64Array {
+  const lumped = new Float64Array(mesh.nodeCount * 3);
+  for (let e = 0; e < mesh.elementCount; e++) {
+    const base = e * 10;
+    const n0 = mesh.elements[base]   ?? 0;
+    const n1 = mesh.elements[base+1] ?? 0;
+    const n2 = mesh.elements[base+2] ?? 0;
+    const n3 = mesh.elements[base+3] ?? 0;
+    const mVe = rho * tetVolume(mesh.nodes, n0, n1, n2, n3);
+    for (let a = 0; a < 10; a++) {
+      const na = mesh.elements[base + a] ?? 0;
+      const mval = mVe * (a < 4 ? HRZ_C3D10_CORNER : HRZ_C3D10_MIDSIDE);
+      lumped[na*3]   = (lumped[na*3]   ?? 0) + mval;
+      lumped[na*3+1] = (lumped[na*3+1] ?? 0) + mval;
+      lumped[na*3+2] = (lumped[na*3+2] ?? 0) + mval;
+    }
+  }
+  return lumped;
+}
+
 /**
  * High-level mass assembly entry point.
  *
  * @param mesh     - tetrahedral mesh (C3D4 or C3D10)
  * @param material - any solver material; massRho (kg/m³) is read if present, else 1240 kg/m³
- * @param type     - 'consistent' → full CSR matrix; 'lumped' → diagonal Float64Array (row-sum)
+ * @param type     - 'consistent' → full CSR matrix; 'lumped' → diagonal Float64Array
+ *                   (row-sum for C3D4, HRZ diagonal scaling for C3D10 — row-sum
+ *                   produces NEGATIVE corner masses for C3D10)
  *
  * Density conversion: rho_solver = massRho × 1e-12  (kg/m³ → t/mm³)
  * This gives ω² in rad²/s² directly in the N·mm·tonne unit system.
@@ -226,13 +270,20 @@ export function assembleMass(
   const massRhoKg = (material as { massRho?: number }).massRho ?? DEFAULT_MASS_RHO_KG_M3;
   const rho = massRhoKg * KG_M3_TO_T_MM3;
 
+  if (type === 'lumped' && mesh.nodesPerElem === 10) {
+    // HRZ lumping — positive-definite by construction, preserves total mass.
+    // (No CSR assembly needed for the diagonal.)
+    return hrzLumpedC3D10(mesh, rho);
+  }
+
   const { M, diagIdx } = assembleM(mesh, rho);
 
   if (type === 'consistent') {
     return { M, diagIdx };
   }
 
-  // Lumped: row-sum of consistent mass matrix
+  // Lumped (C3D4): row-sum of consistent mass matrix. Valid because all C3D4
+  // consistent entries are non-negative → row sums are positive.
   const n = M.n;
   const lumped = new Float64Array(n);
   for (let row = 0; row < n; row++) {
