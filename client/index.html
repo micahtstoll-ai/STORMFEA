@@ -102,7 +102,7 @@
       _dropped++;
     }
     if (_dropped > 0) {
-      var msg = 'and ' + _dropped + ' more error' + (_dropped !== 1 ? 's' : '') + ' — open the Debug tab for the full log';
+      var msg = 'and ' + _dropped + ' more error' + (_dropped !== 1 ? 's' : '') + ' — open the DBG tab for the full log';
       var h = host();
       var existCons = h.querySelector('[data-sf-consolidation]');
       if (existCons) {
@@ -907,7 +907,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
   </div>
   <!-- Cross-reference -->
   <div style="border-top:1px solid var(--border);padding-top:8px;font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);text-align:center;line-height:1.6">
-    More settings available from the Start Screen.
+    Audio feedback settings are in the PREFS tab · print &amp; solver settings in the MATERIAL tab.
   </div>
 </div>
 
@@ -1522,7 +1522,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
                 padding:1px 6px;margin-left:8px;white-space:nowrap"></span>
         </div>
         <div style="font-size:10px;color:var(--text-lo);margin-top:5px;line-height:1.5">
-          Set the bed face in the Orientation tab, then add forces — orientation is computed automatically from the angle between your forces and layer direction.
+          Set the bed face in the ORIENT tab, then add forces — orientation is computed automatically from the angle between your forces and layer direction.
         </div>
         <div id="orient-derived-nav" style="font-size:10px;margin-top:4px;display:none"></div>
       </div>
@@ -1630,7 +1630,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       </div>
       <!-- Cross-reference -->
       <div style="margin-top:16px;padding-top:10px;border-top:1px solid var(--border);font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);text-align:center;line-height:1.6">
-        More settings available from the Start Screen.
+        Display settings (colormap, units, split view) are in the gear panel at the top right.
       </div>
     </div>  <!-- end tab-prefs -->
 
@@ -3349,12 +3349,12 @@ function updateHintBar() {
       if (S.results) {
         setHint(
           'Analysis complete — drag to rotate, scroll to zoom',
-          'Press R to reset view · Tab 5 for full results · Ctrl+P to export PDF'
+          'Press R to reset view · 5 for the RESULTS tab · Ctrl+P to export PDF'
         );
       } else if (nBolts === 0 && nForces === 0) {
         setHint(
-          'Part loaded — switch to Constraints tab to add bolts and forces',
-          'Press 3 to jump to Constraints · B for bolt mode · F for force mode'
+          'Part loaded — open the LOADS tab to add bolts and forces',
+          'Press 3 for the LOADS tab · F for force mode'
         );
       } else if (nBolts > 0 && nForces === 0) {
         setHint(
@@ -3364,7 +3364,7 @@ function updateHintBar() {
       } else if (nBolts === 0 && nForces > 0) {
         setHint(
           `${nForces} force${nForces > 1 ? 's' : ''} applied — now add at least one bolt constraint`,
-          'Press B to enter Bolt mode · click a highlighted hole'
+          'Open the LOADS tab · click + Add Bolt next to a detected hole'
         );
       } else {
         setHint(
@@ -3918,8 +3918,8 @@ function finishManualHole() {
   switchTab('loads');
   updateHolesList();
   setHint(
-    `Hole added: ø${U.lenStr(fit.radius * 2)} — switch to Constraints to add a bolt`,
-    'Press 3 to jump to Constraints · B for Bolt mode'
+    `Hole added: ø${U.lenStr(fit.radius * 2)} — add a bolt to it in the LOADS tab`,
+    'Press 3 for the LOADS tab · click + Add Bolt on the hole row'
   );
 }
 
@@ -4326,7 +4326,7 @@ function updateBoltList() {
   const el = document.getElementById('bolt-list');
   document.getElementById('badge-bolts').innerHTML = `<svg width="11" height="11" viewBox="0 0 11 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5.5" cy="5.5" r="4"/><circle cx="5.5" cy="5.5" r="1.5" fill="currentColor" stroke="none"/></svg> ${S.bolts.length} bolt${S.bolts.length!==1?'s':''}`;
   if (!S.bolts.length) {
-    el.innerHTML = '<div style="font-size:11px;color:var(--text-mid);padding:12px;border:1px dashed var(--border);border-radius:3px;text-align:center">No bolts placed yet. Switch to Bolt mode and click a hole.</div>';
+    el.innerHTML = '<div style="font-size:11px;color:var(--text-mid);padding:12px;border:1px dashed var(--border);border-radius:3px;text-align:center">No bolts placed yet. Click + Add Bolt next to a detected hole above.</div>';
     return;
   }
   el.innerHTML = S.bolts.map((b,i) => `
@@ -4350,7 +4350,7 @@ function updateForceList() {
   const el = document.getElementById('force-list');
   document.getElementById('badge-forces').innerHTML = `<svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> ${S.forces.length} force${S.forces.length!==1?'s':''}`;
   if (!S.forces.length) {
-    el.innerHTML = '<div style="font-size:11px;color:var(--text-mid);padding:12px;border:1px dashed var(--border);border-radius:3px;text-align:center">No forces placed yet. Switch to Force mode and click the mesh.</div>';
+    el.innerHTML = '<div style="font-size:11px;color:var(--text-mid);padding:12px;border:1px dashed var(--border);border-radius:3px;text-align:center">No forces placed yet. Click + Place Force (or press F), then click the model.</div>';
     return;
   }
   const dirLabel = d => {
@@ -4804,7 +4804,7 @@ function updateOrientDerivedDisplay() {
   }
 
   if (!S.bedNormal && !S.bedFaceName) {
-    labelEl.textContent = 'Set bed face in Orientation tab first';
+    labelEl.textContent = 'Set bed face in the ORIENT tab first';
     labelEl.style.color = 'var(--warn)';
     if (badgeEl) { badgeEl.textContent = ''; }
     _setNav('<button onclick="switchTab(\'orient\')" style="background:none;border:none;padding:0;cursor:pointer;color:var(--gold);font-size:10px;font-family:inherit;text-decoration:underline">← Set in Orient</button>');
@@ -5058,7 +5058,7 @@ async function runAnalysis() {
       friendlyFix = 'STL meshing needs the TetGen binary, and the server could not find it — your part is fine. Install TetGen (Windows: place <code>tetgen.exe</code> next to <code>start.bat</code> · macOS: <code>brew install tetgen</code> · Linux: <code>sudo apt-get install tetgen</code>), then restart the server. The server console prints the same instructions at startup.';
     } else if (errMsg.includes('TetGen') || errMsg.includes('tetgen') || errMsg.includes('mesh')) {
       friendlyErr = 'Mesh generation failed';
-      friendlyFix = 'Try reducing mesh quality one level in Settings → Print Settings. If that fails, re-export your STL and check for non-manifold edges or self-intersections using Meshmixer or PrusaSlicer.';
+      friendlyFix = 'Try reducing mesh quality one level in the MATERIAL tab → Mesh quality. If that fails, re-export your STL and check for non-manifold edges or self-intersections using Meshmixer or PrusaSlicer.';
     } else if (errMsg.includes('Gmsh') || errMsg.includes('gmsh')) {
       friendlyErr = 'STEP meshing failed';
       friendlyFix = 'Check that Gmsh is installed: run <code>winget install Gmsh.Gmsh</code> in a terminal, then restart the server. If already installed, try exporting the file as STL from your CAD tool instead.';
@@ -5067,16 +5067,16 @@ async function runAnalysis() {
       friendlyFix = 'Your constraint setup may be under-constrained — check that bolts are placed on holes that are actually fixing the part. Try a coarser mesh (lower mesh quality) or add an additional bolt constraint.';
     } else if (errMsg.includes('401') || errMsg.includes('Unauthorized')) {
       friendlyErr = 'Authentication failed';
-      friendlyFix = 'Your Onshape API key has expired or is incorrect. Go to the Start Screen → Calibrate → update your API key, or generate a new key at dev-portal.onshape.com/keys.';
+      friendlyFix = 'Your Onshape API key has expired or is incorrect. Go to the SETUP tab → Import from Onshape and update your API key (gear button), or generate a new key at dev-portal.onshape.com/keys.';
     } else if (errMsg.includes('Failed to fetch') || errMsg.includes('NetworkError') || errMsg.includes('ECONNREFUSED')) {
       friendlyErr = 'Cannot reach the STORMFEA server';
       friendlyFix = 'The Node.js server is not running. Open a terminal in the stormfea-local folder and run: <code>npm start</code>. Then refresh this page.';
     } else if (errMsg.includes('no bolts') || errMsg.includes('bolt') && errMsg.includes('0')) {
       friendlyErr = 'No bolt constraints found';
-      friendlyFix = 'Switch to the Constraints tab, enter Bolt mode (B), and click at least one hole to fix it. A part with no fixed points cannot be solved.';
+      friendlyFix = 'Open the LOADS tab and click + Add Bolt next to at least one detected hole to fix it. A part with no fixed points cannot be solved.';
     } else if (errMsg.includes('no force') || errMsg.includes('force') && errMsg.includes('0')) {
       friendlyErr = 'No forces applied';
-      friendlyFix = 'Switch to the Constraints tab, enter Force mode (F), and click the part to place at least one force.';
+      friendlyFix = 'Open the LOADS tab and click + Place Force (or press F), then click the part to place at least one force.';
     } else {
       friendlyErr = 'Analysis failed';
       friendlyFix = errMsg;
@@ -5223,13 +5223,13 @@ function showConvergenceBadge(state, changePct, nodesStd, nodesFine) {
       color: 'var(--warn)', bg: 'var(--bg-card)', border: 'var(--gold)33',
       icon: '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="currentColor"><polygon points="5,1 9.5,9 0.5,9"/><rect x="4.4" y="4.2" width="1.2" height="2.8" fill="var(--bg-base)"/><rect x="4.4" y="7.5" width="1.2" height="1.2" fill="var(--bg-base)"/></svg>',
       text: `C3D4 mesh, SF > 3.0 — fine mesh skipped, but C3D4 may underpredict bending stress`,
-      sub: `Linear C3D4 tetrahedra underpredict bending deflection and stress by ~55% at practical mesh densities due to shear locking. The reported SF may be higher than the true value for bending-loaded geometry. Use C3D10 (STEP files, Settings → Element order) for accurate bending analysis.`,
+      sub: `Linear C3D4 tetrahedra underpredict bending deflection and stress by ~55% at practical mesh densities due to shear locking. The reported SF may be higher than the true value for bending-loaded geometry. Switch to C3D10 in the MATERIAL tab → Element order for accurate bending analysis.`,
     },
     c3d4_stable: {
       color: 'var(--warn)', bg: 'var(--bg-card)', border: 'var(--gold)33',
       icon: '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="currentColor"><polygon points="5,1 9.5,9 0.5,9"/><rect x="4.4" y="4.2" width="1.2" height="2.8" fill="var(--bg-base)"/><rect x="4.4" y="7.5" width="1.2" height="1.2" fill="var(--bg-base)"/></svg>',
       text: `C3D4 mesh stable within ${changePct?.toFixed(1)}% — but this is not convergence`,
-      sub: `Standard and fine C3D4 meshes agree because both are equally locked, not because they are correct. C3D4 underpredicts bending stress by ~55% at practical mesh densities. Switch to C3D10 in Settings → Element order (STEP files) for bending-loaded geometry.`,
+      sub: `Standard and fine C3D4 meshes agree because both are equally locked, not because they are correct. C3D4 underpredicts bending stress by ~55% at practical mesh densities. Switch to C3D10 in the MATERIAL tab → Element order for bending-loaded geometry.`,
     },
     converged: {
       color: 'var(--success)', bg: 'var(--gold-faint)', border: 'var(--gold-glow)',
@@ -6070,7 +6070,7 @@ function computeWorkflowState() {
       status: nForces > 0 ? 'done' : 'todo',
       sub: !hasFile ? 'Upload first.'
          : nForces > 0 ? `${nForces} force${nForces>1?'s':''} applied.`
-         : 'Enter Force mode, click the part, set direction + magnitude.',
+         : 'Click FORCE in the toolbar (F), click the part, set direction + magnitude.',
     },
     {
       key:'settings', n:'05', t:'Print settings', tab:'material', mandatory:false,
@@ -10610,7 +10610,7 @@ const CHECKLIST = [
   { id:'upload_stl',   label:'STL upload — drag or click, model appears in viewer' },
   { id:'upload_step',  label:'STEP upload — model appears, holes detected automatically' },
   { id:'bed_orient',   label:'Bed orientation — click <svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="1.5" y="1.5" width="7" height="7" rx="1"/><rect x="3.5" y="3.5" width="3" height="3"/></svg> BED, click a face, layer rings appear' },
-  { id:'add_bolt',     label:'Add bolt — Constraints tab -> + Add Bolt -> blue dot appears' },
+  { id:'add_bolt',     label:'Add bolt — Loads tab -> + Add Bolt -> blue dot appears' },
   { id:'bolt_override',label:'Bolt type override — dropdown on hole row works' },
   { id:'add_force',    label:'Add force — + Place Force -> gold arrow appears on model' },
   { id:'force_preset', label:'FTC load preset — show presets -> click Apply -> force populated' },
