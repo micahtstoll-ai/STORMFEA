@@ -16,7 +16,7 @@
  */
 
 import { generateBoxMesh }                  from "./solver/meshgen.js";
-import { runLinearStatic, runLinearStaticWithK } from "./solver/pipeline.js";
+import { runLinearStaticWithK }            from "./solver/pipeline.js";
 import { runModalAnalysis }                from "./solver/modal.js";
 import { runLinearBuckling }              from "./solver/buckling.js";
 import { assembleK, assembleKsigma, buildSparsityPattern } from "./solver/assembly.js";
@@ -2254,21 +2254,27 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   }
 
   // ── Solve ──────────────────────────────────────────────────────────────────
+  // K is assembled ONCE (issue #100). Modal and buckling both need K WITHOUT
+  // the static Dirichlet penalties (modal applies a diagonal-scaling penalty,
+  // buckling applies a fresh Dirichlet penalty), so the pipeline keeps a
+  // pristine copy of K's value array; each consumer applies its own BC flavor
+  // to its own copy. rowPtr/colIdx/diagIdx (the sparsity pattern) depend only
+  // on mesh connectivity and are shared by K, M and Kσ.
+  const wantsModal = req.analysisType === 'modal';
+  const mayBuckle  = mesh.nodesPerElem === 4;
   const input: SolverInput = {
     mesh,
     material,
     constraints,
     forces: effectiveForces,
+    keepPristineK: wantsModal || mayBuckle,
   };
 
-  let result: import("./solver/types.js").SolverResult;
+  const intermediate = await runLinearStaticWithK(input);
+  const result: import("./solver/types.js").SolverResult = intermediate.result;
   let modalResult: ModalAnalysisResult | undefined;
 
-  if (req.analysisType === 'modal') {
-    // Run static + keep K for modal reuse
-    const intermediate = await runLinearStaticWithK(input);
-    result = intermediate.result;
-
+  if (wantsModal) {
     // Collect fixed node indices from constraints
     const fixedNodes: number[] = [];
     for (const cs of constraints) {
@@ -2281,14 +2287,19 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         material,
         fixedNodes,
         nModes: 10,
+        // Reuse the statically-assembled K (pristine values + shared pattern)
+        prebuiltK: intermediate.K0data ? {
+          Kdata:   intermediate.K0data,
+          rowPtr:  intermediate.K.rowPtr,
+          colIdx:  intermediate.K.colIdx,
+          diagIdx: intermediate.diagIdx,
+        } : undefined,
       });
       console.log(`[analyse] modal: ${modalResult.modes.length} modes, f1=${modalResult.modes.find(m => m.frequencyHz > 1)?.frequencyHz.toFixed(1) ?? '?'}Hz`);
     } catch (err) {
       console.warn(`[analyse] modal solve failed (static result preserved): ${err}`);
       modalResult = undefined;
     }
-  } else {
-    result = await runLinearStatic(input);
   }
 
   // ── Linear buckling analysis ───────────────────────────────────────────────
@@ -2302,8 +2313,22 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   let bucklingIndeterminate = false;
   if (mesh.nodesPerElem === 4 && result.elemStress6) {
     try {
-      // Rebuild K with BCs for the buckling solve (same assembly as static).
-      const { K: Kbuck, diagIdx: buckDiagIdx } = await assembleK(mesh, material);
+      // Apply BCs to a fresh copy of the pristine assembled K (issue #100 —
+      // previously this re-ran the full element assembly). Falls back to
+      // re-assembly if the pristine copy is unavailable.
+      let Kbuck: import("./solver/types.js").CSRMatrix;
+      let buckDiagIdx: Int32Array;
+      if (intermediate.K0data) {
+        Kbuck = {
+          n:      intermediate.K.n,
+          data:   intermediate.K0data.slice(),
+          colIdx: intermediate.K.colIdx,
+          rowPtr: intermediate.K.rowPtr,
+        };
+        buckDiagIdx = intermediate.diagIdx;
+      } else {
+        ({ K: Kbuck, diagIdx: buckDiagIdx } = await assembleK(mesh, material));
+      }
       const fDummy = assembleForceVector(mesh.nodeCount, effectiveForces);
       applyDirichletBC(Kbuck, fDummy, buckDiagIdx, constraints);
 
