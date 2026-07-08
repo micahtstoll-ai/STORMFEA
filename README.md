@@ -89,7 +89,7 @@ npm start
 # Open http://localhost:3000
 ```
 
-> **Offline use:** the PDF export is fully client-side. No internet connection needed after install.
+> **Offline use:** the entire app runs with no internet connection after install. The 3-D viewer's Three.js runtime and all UI fonts are vendored locally under `client/vendor/` (no CDN or Google Fonts calls), and PDF export is fully client-side. Nothing is fetched from an external host at runtime.
 
 ---
 
