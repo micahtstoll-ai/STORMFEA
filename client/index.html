@@ -2345,10 +2345,46 @@ function applyAnalysePhase(ev) {
   setOverlayPhase(label, sub, pct);
 }
 
-// Live residual sparkline hooks — populated in the sparkline follow-on. Kept as
-// no-ops here so applyAnalysePhase/runAnalysis never throw before it lands.
-function _pushLiveResidual(_iter, _relRes) { /* sparkline follow-on (issue #109) */ }
-function _resetLiveResidual() { /* sparkline follow-on (issue #109) */ }
+// Live CG residual sparkline (issue #109). Fed by streamed solve-phase events
+// (relative residual per checkpoint) and drawn on the overlay canvas on a
+// log10 scale so the convergence trend is visible while the solve runs.
+let _liveResidualPts = [];
+function _resetLiveResidual() {
+  _liveResidualPts = [];
+  const c = document.getElementById('overlay-spark');
+  if (c) {
+    c.style.display = 'none';
+    const ctx = c.getContext('2d');
+    if (ctx) ctx.clearRect(0, 0, c.width, c.height);
+  }
+}
+function _pushLiveResidual(iter, relRes) {
+  if (relRes == null || !isFinite(relRes) || relRes <= 0) return;
+  _liveResidualPts.push({ iter, r: relRes });
+  const c = document.getElementById('overlay-spark');
+  if (!c) return;
+  c.style.display = 'block';
+  const ctx = c.getContext('2d');
+  if (!ctx) return;
+  const W = c.width, H = c.height, pad = 3;
+  ctx.clearRect(0, 0, W, H);
+  const pts = _liveResidualPts;
+  if (pts.length < 2) return;
+  const logs = pts.map(p => Math.log10(p.r));
+  let lmin = Math.min(...logs), lmax = Math.max(...logs);
+  if (lmax - lmin < 1e-6) lmax = lmin + 1;   // avoid divide-by-zero on a flat run
+  const n = pts.length;
+  const gold = (getComputedStyle(document.documentElement).getPropertyValue('--gold') || '').trim() || '#C9A227';
+  ctx.strokeStyle = gold;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = pad + (W - 2 * pad) * (n === 1 ? 0 : i / (n - 1));
+    const y = pad + (H - 2 * pad) * (1 - (logs[i] - lmin) / (lmax - lmin));  // higher residual = higher
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
 
 // ─── Three.js setup ───────────────────────────────────────────────────────────
 let scene, camera, renderer, mesh3d, animId;
