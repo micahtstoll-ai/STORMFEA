@@ -1683,7 +1683,13 @@ function generateTopologySuggestions(
 }
 
 // ─── Find nodes near a hole wall ──────────────────────────────────────────────
-function findHoleWallNodes(
+/**
+ * 3-D cylinder test: a node belongs to the hole wall iff BOTH
+ *   - its axial offset from the hole centre is within ±2.5·radius, AND
+ *   - its radial distance from the hole axis is within ±tolerance of radius.
+ * Works for arbitrary hole axes (hole.normal must be unit length).
+ */
+export function findHoleWallNodes(
   nodes:     Float64Array,
   nodeCount: number,
   hole:      HoleFeature,
@@ -1708,6 +1714,81 @@ function findHoleWallNodes(
     }
   }
   return result;
+}
+
+/**
+ * Select the nodes to rigidly constrain for a bolted hole on the STL path
+ * (issue #105).
+ *
+ * Previous behaviour selected by 2-D radial distance only (0.9r < r_xy < 1.15r
+ * with NO bound along the hole axis) — every node anywhere in the part whose
+ * XY projection landed in that ring was fixed (28.5% of all nodes on the demo
+ * bracket for a single Ø5 hole). This over-constrains the model and inflates
+ * bolt-area load capacity.
+ *
+ * Now unified on the 3-D cylinder test (findHoleWallNodes): axial extent is
+ * bounded to ±2.5·radius around the hole centre, radial band is ±15% of the
+ * radius. Fallbacks (in order):
+ *   1. < 3 wall nodes → interior nodes of the bounded cylinder (r_rad < 0.9r)
+ *   2. still none     → single node closest to the hole centre
+ *
+ * STL hole detection (holes.ts) only produces Z-axis holes today; arbitrary
+ * axes are handled correctly by the cylinder test, but a non-Z (or degenerate)
+ * axis is logged since it means the hole came from an unexpected source.
+ */
+export function findStlBoltConstraintNodes(
+  nodes:     Float64Array,
+  nodeCount: number,
+  hole:      HoleFeature,
+): number[] {
+  const r = hole.radius;
+
+  // Normalize the hole axis; fall back to Z (the only axis STL detection
+  // produces) if degenerate, and warn on non-Z axes.
+  let [ax, ay, az] = hole.normal;
+  const alen = Math.sqrt(ax*ax + ay*ay + az*az);
+  if (alen < 1e-9) {
+    console.warn(
+      `[analysis] hole ${hole.id}: degenerate axis (${hole.normal.join(", ")}) — defaulting to Z`,
+    );
+    ax = 0; ay = 0; az = 1;
+  } else {
+    ax /= alen; ay /= alen; az /= alen;
+    if (Math.abs(az) < 0.999) {
+      console.warn(
+        `[analysis] hole ${hole.id}: non-Z axis (${ax.toFixed(3)}, ${ay.toFixed(3)}, ${az.toFixed(3)}) — ` +
+        `STL hole detection normally produces Z-axis holes; constraining along the provided axis`,
+      );
+    }
+  }
+  const unitAxisHole: HoleFeature = { ...hole, normal: [ax, ay, az] };
+
+  // Primary: wall nodes via the bounded 3-D cylinder test (radial band ±15%).
+  const wallNodes = findHoleWallNodes(nodes, nodeCount, unitAxisHole, r * 0.15);
+  if (wallNodes.length >= 3) return wallNodes;
+
+  // Fallback 1: interior nodes of the SAME bounded cylinder (coarse meshes may
+  // have no node near the wall but one on/near the axis).
+  const [hx, hy, hz] = unitAxisHole.centre;
+  const halfLen = r * 2.5;
+  const interiorNodes: number[] = [];
+  for (let n = 0; n < nodeCount; n++) {
+    const x = nodes[n*3]??0, y = nodes[n*3+1]??0, z = nodes[n*3+2]??0;
+    const dx = x-hx, dy = y-hy, dz = z-hz;
+    const t  = dx*ax + dy*ay + dz*az;
+    if (Math.abs(t) > halfLen) continue;
+    const radX = dx - t*ax, radY = dy - t*ay, radZ = dz - t*az;
+    const radDist = Math.sqrt(radX*radX + radY*radY + radZ*radZ);
+    if (radDist < r * 0.9) interiorNodes.push(n);
+  }
+  // Prefer interior nodes over an under-populated wall set (mirrors the old
+  // behaviour); fall back to whatever wall nodes exist (1-2) before resorting
+  // to the single-closest-node fallback.
+  if (interiorNodes.length > 0) return interiorNodes;
+  if (wallNodes.length > 0) return wallNodes;
+
+  // Fallback 2: single closest node to the hole centre.
+  return [closestNode(nodes, nodeCount, hx, hy, hz)];
 }
 
 // ─── Find closest node to a 3D point ─────────────────────────────────────────
@@ -2021,30 +2102,16 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       }
     }
   } else {
-    // STL path: geometric search for hole wall nodes
+    // STL path: geometric search for hole wall nodes.
+    // Uses the bounded 3-D cylinder test (issue #105) — the previous XY-only
+    // annulus fixed every node in the part whose XY projection landed in the
+    // ring, regardless of its position along the hole axis.
     for (const hole of boltedHoles) {
-      const [hx, hy] = hole.centre;
-      const r = hole.radius;
-
-      const holeWallNodes: number[] = [];
-      const holeInteriorNodes: number[] = [];
-      for (let n = 0; n < mesh.nodeCount; n++) {
-        const x = mesh.nodes[n*3]??0, y = mesh.nodes[n*3+1]??0;
-        const radDist = Math.sqrt((x-hx)**2 + (y-hy)**2);
-        if (radDist < r * 0.9) {
-          holeInteriorNodes.push(n);
-        } else if (radDist < r * 1.15) {
-          holeWallNodes.push(n);
-        }
-      }
-
-      const holeNodes = holeWallNodes.length >= 3 ? holeWallNodes : holeInteriorNodes;
-      console.log(`[analysis] hole ${hole.id}: ${holeNodes.length} wall nodes (r=${r.toFixed(2)}±15%)`);
-
-      if (holeNodes.length === 0) {
-        holeNodes.push(closestNode(mesh.nodes, mesh.nodeCount, hx, hy, hole.centre[2]));
-      }
-
+      const holeNodes = findStlBoltConstraintNodes(mesh.nodes, mesh.nodeCount, hole);
+      console.log(
+        `[analysis] hole ${hole.id}: ${holeNodes.length} wall nodes ` +
+        `(r=${hole.radius.toFixed(2)}±15%, axial ±${(hole.radius*2.5).toFixed(2)}mm)`,
+      );
       constraints.push({ nodeIndices: holeNodes });
     }
   }
