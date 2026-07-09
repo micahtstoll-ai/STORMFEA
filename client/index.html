@@ -1083,6 +1083,17 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <label id="deform-exag-label" for="deform-exag" style="display:none;font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);letter-spacing:.04em;align-items:center;gap:4px">×<span id="deform-exag-val" style="color:var(--text-mid);min-width:20px;display:inline-block">auto</span><input type="range" id="deform-exag" min="0" max="100" value="0" step="1" oninput="onDeformExagInput(this.value)" style="width:70px;vertical-align:middle" title="Exaggeration factor. 0 = auto (peak deflection scaled to ~12% of part size)."></label>
         <button class="btn" id="btn-deform-anim" onclick="toggleDeformAnim()" style="display:none;font-size:10px;padding:4px 8px;align-items:center" title="Animate the deflection (0 → peak → 0)">▶</button>
       </div>
+      <!-- Section / cutting-plane controls (shown after solve) -->
+      <div id="clip-wrap" style="display:none;border-left:1px solid var(--border);margin-left:2px;padding-left:6px;gap:5px;align-items:center">
+        <button class="btn" id="btn-clip" onclick="toggleClip()" style="font-size:10px;padding:4px 8px;display:flex;flex-direction:column;align-items:center;gap:1px" title="Cut the part with a plane to inspect stress on internal / occluded surfaces. Drag the slider to move the cut; ⇄ flips which half is kept."><span style="font-weight:700">SECTION</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Cut view</span></button>
+        <span id="clip-controls" style="display:none;gap:3px;align-items:center">
+          <button class="btn" id="clip-x" onclick="setClipAxis('x')" style="font-size:10px;padding:4px 7px" title="Cut along the X axis">X</button>
+          <button class="btn" id="clip-y" onclick="setClipAxis('y')" style="font-size:10px;padding:4px 7px" title="Cut along the Y axis">Y</button>
+          <button class="btn" id="clip-z" onclick="setClipAxis('z')" style="font-size:10px;padding:4px 7px" title="Cut along the Z axis">Z</button>
+          <input type="range" id="clip-pos" min="0" max="100" value="50" step="1" oninput="onClipPosInput(this.value)" style="width:70px;vertical-align:middle" title="Position of the cutting plane along the chosen axis">
+          <button class="btn" id="clip-flip" onclick="toggleClipFlip()" style="font-size:11px;padding:4px 7px" title="Flip which half of the part is kept">⇄</button>
+        </span>
+      </div>
     </div>
 
     <!-- Top-right toggles -->
@@ -2442,6 +2453,7 @@ function initThree() {
   updateCamera();
 
   renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.localClippingEnabled = true;   // per-material section/cutting plane
   renderer.domElement.setAttribute('role', 'img');
   renderer.domElement.setAttribute('aria-label', '3D stress visualization — rotate with mouse drag, zoom with scroll wheel');
   renderer.domElement.setAttribute('tabindex', '0');
@@ -2467,6 +2479,9 @@ function initThree() {
   renderer.setClearColor(isDark ? 0x070604 : 0xeeeae3, 0);
   const loop = () => {
     animId = requestAnimationFrame(loop);
+    // The section plane is defined in the part's local frame, so re-derive it in
+    // world space each frame to track orbit rotation.
+    if (S.clipActive) _updateClipPlane();
     if (_splitActive) {
       renderSplitFrame();
     } else {
@@ -2966,7 +2981,9 @@ function loadMeshFromPositions(posB64) {
   // invalidates any prior deflected-shape view.
   S.basePositions = geo.attributes.position.array.slice();
   S._modelSizeMax = Math.max(sz.x, sz.y, sz.z);
+  S._modelSize    = sz.clone();   // per-axis extents for the section plane
   resetDeform();
+  resetClip();
 
   // Fit camera to part: orbit center at part mid-height, zoom to fit
   const partSize = Math.max(sz.x, sz.y, sz.z) * scale;
@@ -3296,6 +3313,8 @@ function applyStressColors(stressB64, maxStress, principalStressB64, errorEstima
   if (smWrap) smWrap.style.display = 'flex';
   const dfWrap = document.getElementById('deform-wrap');
   if (dfWrap) dfWrap.style.display = (S.displacements ? 'flex' : 'none');
+  const clWrap = document.getElementById('clip-wrap');
+  if (clWrap) clWrap.style.display = 'flex';
 
   // Update legend labels
   const labels = document.getElementById('legend-val-stack');
@@ -10518,6 +10537,91 @@ function updateModeButtons() {
   S.modeShapes.forEach((_, k) => {
     const b = document.getElementById('mode-btn-' + k);
     if (b) b.className = 'btn' + (S.activeMode === k ? ' active' : '');
+  });
+}
+
+// ─── Section / cutting-plane view ────────────────────────────────────────────
+// A single clipping plane defined in the part's local frame (geometry is
+// centered at origin). Each render frame it is re-derived into world space via
+// the mesh's world matrix, so the cut follows the part as it orbits. The display
+// mesh is a surface shell, so this reveals stress on internal / occluded
+// surfaces rather than a filled volumetric slice; the material switches to
+// double-sided while cut so those interior faces render.
+
+function resetClip() {
+  S.clipActive = false;
+  S.clipAxis   = 'x';
+  S.clipPos    = 50;
+  S.clipFlip   = false;
+  if (mesh3d && mesh3d.material) {
+    mesh3d.material.clippingPlanes = [];
+    mesh3d.material.side = THREE.FrontSide;
+    mesh3d.material.needsUpdate = true;
+  }
+  _syncClipUI();
+}
+
+function toggleClip() {
+  if (!mesh3d) return;
+  S.clipActive = !S.clipActive;
+  const mat = mesh3d.material;
+  if (S.clipActive) {
+    if (!S._clipPlane) S._clipPlane = new THREE.Plane();
+    mat.clippingPlanes = [S._clipPlane];
+    mat.side = THREE.DoubleSide;
+    _updateClipPlane();
+  } else {
+    mat.clippingPlanes = [];
+    mat.side = THREE.FrontSide;
+  }
+  mat.needsUpdate = true;
+  _syncClipUI();
+}
+
+function setClipAxis(axis) {
+  S.clipAxis = axis;
+  if (S.clipActive) _updateClipPlane();
+  _syncClipUI();
+}
+
+function onClipPosInput(v) {
+  S.clipPos = Math.max(0, Math.min(100, +v || 0));
+  if (S.clipActive) _updateClipPlane();
+}
+
+function toggleClipFlip() {
+  S.clipFlip = !S.clipFlip;
+  if (S.clipActive) _updateClipPlane();
+  _syncClipUI();
+}
+
+// Rebuild the world-space clipping plane from the current axis/position/flip.
+function _updateClipPlane() {
+  if (!mesh3d || !S._clipPlane || !S._modelSize) return;
+  const sz  = S._modelSize;
+  const ext = S.clipAxis === 'x' ? sz.x : S.clipAxis === 'y' ? sz.y : sz.z;
+  const off = -ext / 2 + (S.clipPos / 100) * ext;            // local coord of the cut
+  const n   = S.clipAxis === 'x' ? new THREE.Vector3(1, 0, 0)
+            : S.clipAxis === 'y' ? new THREE.Vector3(0, 1, 0)
+            :                      new THREE.Vector3(0, 0, 1);
+  const sign = S.clipFlip ? -1 : 1;                          // which half is kept
+  S._clipPlane.set(n.multiplyScalar(sign), -sign * off);    // keep {axis} ≷ off
+  mesh3d.updateMatrixWorld();
+  S._clipPlane.applyMatrix4(mesh3d.matrixWorld);            // local → world
+}
+
+function _syncClipUI() {
+  const btn      = document.getElementById('btn-clip');
+  const controls = document.getElementById('clip-controls');
+  const flip     = document.getElementById('clip-flip');
+  const slider   = document.getElementById('clip-pos');
+  if (btn)      btn.className = 'btn' + (S.clipActive ? ' active' : '');
+  if (controls) controls.style.display = S.clipActive ? 'inline-flex' : 'none';
+  if (flip)     flip.className = 'btn' + (S.clipFlip ? ' active' : '');
+  if (slider)   slider.value = S.clipPos;
+  ['x', 'y', 'z'].forEach(a => {
+    const b = document.getElementById('clip-' + a);
+    if (b) b.className = 'btn' + (S.clipAxis === a ? ' active' : '');
   });
 }
 
