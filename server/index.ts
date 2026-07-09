@@ -234,6 +234,7 @@ const ANALYSE_SPEC: Spec = {
   "analysisType?": "string",
   "computeBuckling?": "boolean",
   "gravity?":      "object",
+  "pressures?":    [{ magnitude: "number", direction: "vec3" }],
   "calibration?":  "object",
 };
 
@@ -308,6 +309,9 @@ app.post("/api/analyse", async (req, res) => {
               g: (body as any).gravity.g,
               direction: (body as any).gravity.direction as [number, number, number],
             } }
+        : {}),
+      ...(Array.isArray((body as any).pressures)
+        ? { pressures: (body as any).pressures as { magnitude: number; direction: [number, number, number] }[] }
         : {}),
     };
 

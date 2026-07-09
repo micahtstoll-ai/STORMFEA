@@ -1310,6 +1310,103 @@ console.log("\n[21] Body force — consistent nodal load sums to ρ·V·a");
   }
 }
 
+// ── Test group 22: Surface pressure / traction load ──────────────────────────
+console.log("\n[22] Surface pressure — consistent traction resultant + patch test");
+{
+  const { assembleSurfaceTraction } = await import("../solver/load.js");
+  const { runLinearStaticWithK } = await import("../solver/pipeline.js");
+
+  // Extract surface triangles (corner-node triples) from a tet mesh: a boundary
+  // face appears in exactly one element. Corners are the first 4 local nodes for
+  // both C3D4 and C3D10.
+  function boundaryFaces(m: import("../solver/types.js").TetMesh): Int32Array {
+    const npe = m.nodesPerElem;
+    const F = [[0,1,2],[0,1,3],[0,2,3],[1,2,3]];
+    const count = new Map<string, number>(), rep = new Map<string, [number,number,number]>();
+    for (let e=0;e<m.elementCount;e++){
+      const base=e*npe;
+      for (const fa of F){
+        const tri: [number,number,number] = [m.elements[base+fa[0]!]!, m.elements[base+fa[1]!]!, m.elements[base+fa[2]!]!];
+        const key = [...tri].sort((a,b)=>a-b).join(",");
+        count.set(key,(count.get(key)??0)+1);
+        if(!rep.has(key)) rep.set(key, tri);
+      }
+    }
+    const out:number[]=[];
+    for (const [key,c] of count) if(c===1){ const t=rep.get(key)!; out.push(t[0],t[1],t[2]); }
+    return new Int32Array(out);
+  }
+
+  const L=10, P=2.0;   // cube, pressure 2 MPa in +z on the top face
+  const mesh = generateBoxMesh(0,0,0, L,L,L, 4,4,4);
+  const faces = boundaryFaces(mesh);
+  const triCount = faces.length/3;
+  const isLoaded:boolean[] = new Array(triCount);
+  for (let t=0;t<triCount;t++){
+    const a=faces[t*3]!, b=faces[t*3+1]!, c=faces[t*3+2]!;
+    isLoaded[t] = (mesh.nodes[a*3+2]!>L-1e-6)&&(mesh.nodes[b*3+2]!>L-1e-6)&&(mesh.nodes[c*3+2]!>L-1e-6);
+  }
+  const pf = assembleSurfaceTraction(mesh.nodes, faces, isLoaded, [0,0,P]);
+  let sz=0; for(let n=0;n<mesh.nodeCount;n++) sz+=pf[n*3+2]??0;
+  test("[22.1] traction resultant = P·A", Math.abs(sz - P*L*L) < 1e-6*(P*L*L),
+    `Σfz=${sz.toFixed(4)} expected=${(P*L*L).toFixed(4)}`);
+
+  // Patch solve: fix z=0 face (all DOF), pressure on top → volume-mean σ_zz ≈ P.
+  const mat = { E:3500, nu:0.36, yieldStrength:50, label:"pla" };
+  const fixed:number[]=[]; for(let n=0;n<mesh.nodeCount;n++) if((mesh.nodes[n*3+2]??0)<1e-6) fixed.push(n);
+  const forces:{nodeIndex:number;forceN:[number,number,number]}[]=[];
+  for(let n=0;n<mesh.nodeCount;n++){ const fz=pf[n*3+2]??0; if(fz!==0) forces.push({nodeIndex:n,forceN:[0,0,fz]}); }
+  try {
+    const inter = await runLinearStaticWithK({ mesh, material:mat, constraints:[{nodeIndices:fixed}], forces });
+    const es6 = inter.result.elemStress6!;
+    let sum=0; for(let e=0;e<mesh.elementCount;e++) sum += es6[e*6+2]??0;
+    const meanSzz = sum/mesh.elementCount;
+    test("[22.2] patch: mean σ_zz ≈ P (within 5%)", near(meanSzz, P, 0.05*P),
+      `σ_zz=${meanSzz.toFixed(4)} P=${P}`);
+    console.log(`    resultant=${sz.toFixed(2)}N, mean σ_zz=${meanSzz.toFixed(4)} MPa`);
+  } catch (err) {
+    test("[22.2] patch test did not throw", false, String(err));
+  }
+}
+
+// ── Test group 23: Orthotropic directional stiffness ─────────────────────────
+console.log("\n[23] Orthotropic directional stiffness — δ_z/δ_x ≈ E_xy/E_z");
+{
+  const { runLinearStaticWithK } = await import("../solver/pipeline.js");
+  const E_xy=3500, ratio=0.65, E_z=E_xy*ratio;
+  const G = E_xy/(2*(1+0.36));
+  const mat = { kind:"orthotropic" as const, E_xy, E_z, nu_xy:0.36, nu_xz:0.30,
+    G_xz: 0.4*G, yieldXY:50, yieldZ:29, label:"ortho" };
+
+  // Axial deflection of a slender bar under tip load along its long axis.
+  // Same L, A, F for both bars; only the loaded axis (X vs Z) differs.
+  async function axialDelta(long:"x"|"z"): Promise<number> {
+    const S=4, Lb=40, F=200;
+    const [lx,ly,lz] = long==="x" ? [Lb,S,S] : [S,S,Lb];
+    const [nx,ny,nz] = long==="x" ? [20,2,2] : [2,2,20];
+    const m = generateBoxMesh(0,0,0, lx,ly,lz, nx,ny,nz);
+    const ax = long==="x" ? 0 : 2;          // loaded-axis coordinate index
+    const fixed:number[]=[], tip:number[]=[];
+    for(let n=0;n<m.nodeCount;n++){ const p=m.nodes[n*3+ax]??0; if(p<1e-6) fixed.push(n); if(p>Lb-1e-6) tip.push(n); }
+    const fPer=F/tip.length;
+    const forces = tip.map(n=>({nodeIndex:n, forceN:(long==="x"?[fPer,0,0]:[0,0,fPer]) as [number,number,number]}));
+    const inter = await runLinearStaticWithK({ mesh:m, material:mat, constraints:[{nodeIndices:fixed}], forces });
+    const u = inter.result.displacement;
+    let d=0; for(const n of tip) d += Math.abs(u[n*3+ax]??0); return d/tip.length;
+  }
+  try {
+    const dx = await axialDelta("x");
+    const dz = await axialDelta("z");
+    const measured = dz/dx, expected = E_xy/E_z;   // = 1/0.65 ≈ 1.538
+    const relErr = Math.abs(measured-expected)/expected;
+    test("[23] δ_z/δ_x ≈ E_xy/E_z (within 6%)", relErr < 0.06,
+      `measured=${measured.toFixed(4)} expected=${expected.toFixed(4)} relErr=${(relErr*100).toFixed(2)}%`);
+    console.log(`    δ_x=${dx.toExponential(3)} δ_z=${dz.toExponential(3)} ratio=${measured.toFixed(4)} (expect ${expected.toFixed(4)})`);
+  } catch (err) {
+    test("[23] orthotropic directional test did not throw", false, String(err));
+  }
+}
+
 // ── Summary ───────────────────────────────────────────────────────────────────
 // Runs at the END of the async IIFE, after every test group above has
 // completed. (A previous setTimeout(0) variant fired as soon as the event

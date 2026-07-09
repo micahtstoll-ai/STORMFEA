@@ -22,7 +22,7 @@ import { runLinearBuckling }              from "./solver/buckling.js";
 import { assembleK, assembleKsigma, buildSparsityPattern } from "./solver/assembly.js";
 import { buildNodeElementAdjacency }       from "./solver/adjacency.js";
 import { applyDirichletBC }    from "./solver/boundary.js";
-import { assembleForceVector, assembleBodyForce } from "./solver/load.js";
+import { assembleForceVector, assembleBodyForce, assembleSurfaceTraction } from "./solver/load.js";
 import type { ModalAnalysisResult }        from "./solver/types.js";
 import {
   buildLaminateCMatrix,
@@ -983,6 +983,13 @@ export interface AnalysisRequest {
    * Uses the material's (infill-scaled) mass density.
    */
   gravity?: { g: number; direction: [number, number, number] };
+  /**
+   * Optional uniform surface pressure / traction loads. Each applies a traction
+   * t = magnitude·direction (magnitude in MPa = N/mm²) over the surface
+   * triangles of the extreme face in `direction`, as consistent tributary-area
+   * nodal forces. Ignored on the box-fallback mesh (no surface connectivity).
+   */
+  pressures?: { magnitude: number; direction: [number, number, number] }[];
   /**
    * Material uncertainty mode. When 'central' (default) the solver uses the literature
    * central estimates. The server always computes sfConservative and sfOptimistic alongside
@@ -2116,6 +2123,9 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   emit({ phase: "mesh", message: req.fileType === "step" ? "Meshing (Gmsh)…" : "Meshing (TetGen)…" });
   let mesh: import("./solver/types.js").TetMesh;
   let surfaceToNode: Int32Array;
+  // Surface triangles as mesh-node triples, for consistent pressure/traction
+  // loads. Null on the box-fallback path (no surface connectivity).
+  let surfaceFaces: Int32Array | null = null;
   let gmshResult: import("./gmsh_mesh.js").GmshMeshResult | null = null;
   let meshFallback = false;
 
@@ -2132,6 +2142,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     console.log("[analysis] meshing STEP with Gmsh...");
     gmshResult = await meshStepWithGmsh(req.stepBuffer, { ...opts, elementOrder });
     mesh = gmshResult.mesh;
+    surfaceFaces = gmshResult.surfaceTriangles;
     _snapAnalysis("after Gmsh mesh");
     surfaceToNode = new Int32Array(gmshResult.surfaceTriangles.length);
     for (let i = 0; i < gmshResult.surfaceTriangles.length; i++) {
@@ -2153,6 +2164,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       const tetResult = await meshWithTetGen(req.positions, req.triangleCount, tetOrder, tetMaxVol);
       mesh          = tetResult.mesh;
       surfaceToNode = tetResult.surfaceToNode;
+      surfaceFaces  = tetResult.surfaceFaces;
       console.log(`[analysis] TetGen mesh: ${mesh.nodeCount} nodes, ${mesh.elementCount} elements (${mesh.nodesPerElem}-node)`);
       _snapAnalysis("after TetGen mesh");
     } catch (err) {
@@ -2380,6 +2392,55 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     }
     console.log(`[analysis] self-weight ${req.gravity.g}g: ${loaded} loaded nodes, ` +
       `resultant=${Math.hypot(totX, totY, totZ).toFixed(3)}N`);
+  }
+
+  // ── Surface pressure / traction loads ──────────────────────────────────────
+  // A uniform traction t = P·d (P in MPa = N/mm²) applied over the surface
+  // triangles of the extreme face in direction d, distributed as consistent
+  // (tributary-area) nodal forces. Requires surface connectivity (unavailable
+  // on the box-fallback path).
+  if (req.pressures && req.pressures.length > 0) {
+    if (!surfaceFaces) {
+      console.warn("[analysis] surface pressure ignored — no surface connectivity (box-mesh fallback).");
+    } else {
+      const triCount = Math.floor(surfaceFaces.length / 3);
+      for (const p of req.pressures) {
+        if (!(p.magnitude > 0)) continue;
+        const [dx, dy, dz] = p.direction;
+        const dl = Math.hypot(dx, dy, dz) || 1;
+        const ux = dx/dl, uy = dy/dl, uz = dz/dl;
+        // Extreme face in direction d: max projection over all mesh nodes.
+        let maxProj = -Infinity;
+        for (let n = 0; n < mesh.nodeCount; n++) {
+          const proj = (mesh.nodes[n*3]??0)*ux + (mesh.nodes[n*3+1]??0)*uy + (mesh.nodes[n*3+2]??0)*uz;
+          if (proj > maxProj) maxProj = proj;
+        }
+        // A triangle is loaded if its centroid lies within the face band.
+        const isLoaded: boolean[] = new Array(triCount);
+        let nLoaded = 0;
+        for (let t = 0; t < triCount; t++) {
+          const a = surfaceFaces[t*3]??0, b = surfaceFaces[t*3+1]??0, c = surfaceFaces[t*3+2]??0;
+          const cxp = ((mesh.nodes[a*3]??0)+(mesh.nodes[b*3]??0)+(mesh.nodes[c*3]??0))/3;
+          const cyp = ((mesh.nodes[a*3+1]??0)+(mesh.nodes[b*3+1]??0)+(mesh.nodes[c*3+1]??0))/3;
+          const czp = ((mesh.nodes[a*3+2]??0)+(mesh.nodes[b*3+2]??0)+(mesh.nodes[c*3+2]??0))/3;
+          const proj = cxp*ux + cyp*uy + czp*uz;
+          isLoaded[t] = (maxProj - proj) < 0.5;
+          if (isLoaded[t]) nLoaded++;
+        }
+        const traction: [number,number,number] = [p.magnitude*ux, p.magnitude*uy, p.magnitude*uz];
+        const pf = assembleSurfaceTraction(mesh.nodes, surfaceFaces, isLoaded, traction);
+        let resN = 0;
+        for (let n = 0; n < mesh.nodeCount; n++) {
+          const fx = pf[n*3]??0, fy = pf[n*3+1]??0, fz = pf[n*3+2]??0;
+          if (fx !== 0 || fy !== 0 || fz !== 0) {
+            solverForces.push({ nodeIndex: n, forceN: [fx, fy, fz] });
+            resN += Math.hypot(fx, fy, fz);
+          }
+        }
+        console.log(`[analysis] pressure ${p.magnitude}MPa in (${ux.toFixed(2)},${uy.toFixed(2)},${uz.toFixed(2)}): ` +
+          `${nLoaded} loaded triangles, |resultant|~${resN.toFixed(2)}N`);
+      }
+    }
   }
 
   const effectiveForces = solverForces;
