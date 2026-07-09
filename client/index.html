@@ -1519,6 +1519,32 @@ body:not(.has-results) #btn-stress { display: none !important; }
         </div>
       </div>
 
+      <!-- Surface pressure / traction load -->
+      <div style="margin-bottom:16px;padding-top:14px;border-top:1px solid var(--border)">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:6px">
+          <input type="checkbox" id="s-pressure" style="width:auto;margin:0" onchange="updatePressureUI()">
+          <span style="font-size:11px;letter-spacing:.04em;color:var(--text-label)">SURFACE PRESSURE</span>
+        </label>
+        <div id="pressure-controls" style="display:none;padding-left:22px">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <label style="font-size:10px;color:var(--text-lo);display:flex;align-items:center;gap:4px">Magnitude
+              <input type="number" id="s-pressure-mpa" value="1" min="0" step="0.5" style="width:60px"><span style="font-family:'DM Mono',monospace;font-size:10px">MPa</span>
+            </label>
+            <label style="font-size:10px;color:var(--text-lo);display:flex;align-items:center;gap:4px">On face toward
+              <select id="s-pressure-dir">
+                <option value="0,0,1" selected>+Z</option>
+                <option value="0,0,-1">−Z</option>
+                <option value="0,1,0">+Y</option>
+                <option value="0,-1,0">−Y</option>
+                <option value="1,0,0">+X</option>
+                <option value="-1,0,0">−X</option>
+              </select>
+            </label>
+          </div>
+          <div style="font-size:10px;color:var(--text-lo);margin-top:6px;line-height:1.5">Uniform traction (MPa) applied over the extreme face in the chosen direction, as a consistent surface load. Needs a solid mesh (unavailable on the box-mesh fallback).</div>
+        </div>
+      </div>
+
 
       <!-- Next step CTA — updated by updateNextButtons() -->
       <div id="next-loads-wrap" class="tab-cta">
@@ -7625,7 +7651,25 @@ function buildAnalyseBody(quality, opts) {
     meshQuality:  quality || document.getElementById('s-mesh')?.value || 'standard',
     calibration:  getActiveProfile(),
     ...(gravityRequest() ? { gravity: gravityRequest() } : {}),
+    ...(pressureRequest() ? { pressures: [pressureRequest()] } : {}),
   };
+}
+
+// Read the surface-pressure control into a request entry, or null when disabled.
+// Included on every solve variant (it is a load, like gravity).
+function pressureRequest() {
+  if (!document.getElementById('s-pressure')?.checked) return null;
+  const m = +(document.getElementById('s-pressure-mpa')?.value ?? 1);
+  if (!(m > 0)) return null;
+  const dir = (document.getElementById('s-pressure-dir')?.value ?? '0,0,1')
+    .split(',').map(Number);
+  return { magnitude: m, direction: [dir[0] || 0, dir[1] || 0, dir[2] || 0] };
+}
+
+function updatePressureUI() {
+  const on = !!document.getElementById('s-pressure')?.checked;
+  const c = document.getElementById('pressure-controls');
+  if (c) c.style.display = on ? 'block' : 'none';
 }
 
 // Read the self-weight / acceleration control into a request payload, or null

@@ -140,3 +140,55 @@ export function assembleBodyForce(
 
   return f;
 }
+
+/**
+ * Assemble consistent nodal forces for a uniform surface traction (pressure)
+ * over a subset of surface triangles.
+ *
+ *   f_i = ∫_A N_i · t dA        (per surface node i, per DOF)
+ *
+ * where t = [tx, ty, tz] is the traction in N/mm² (MPa) — for a pressure P
+ * along direction d, t = P·d. Over a triangle of area A the integral of each
+ * linear corner shape function is A/3, so each of the three corner nodes
+ * receives t·A/3 (tributary-area lumping). For C3D10 surface faces only the
+ * corner nodes are available from the boundary triangle list, so the load is
+ * lumped on corners — the standard, safe consistent-load approximation while
+ * the interior solve stays fully quadratic.
+ *
+ * @param nodes    mesh node coordinates [x0,y0,z0, …]
+ * @param faces    surface triangles as node triples [a0,b0,c0, a1,b1,c1, …]
+ * @param loaded   isLoaded[t] = true → triangle t receives the traction
+ * @param traction [tx, ty, tz] in N/mm² (MPa)
+ * @returns Float64Array of length nodeCount × 3
+ */
+export function assembleSurfaceTraction(
+  nodes:    Float64Array,
+  faces:    Int32Array,
+  loaded:   readonly boolean[],
+  traction: readonly [number, number, number],
+): Float64Array {
+  const f = new Float64Array(nodes.length);
+  const [tx, ty, tz] = traction;
+  const triCount = Math.floor(faces.length / 3);
+
+  for (let t = 0; t < triCount; t++) {
+    if (!loaded[t]) continue;
+    const a = faces[t*3] ?? 0, b = faces[t*3+1] ?? 0, c = faces[t*3+2] ?? 0;
+    const ax = nodes[a*3] ?? 0, ay = nodes[a*3+1] ?? 0, az = nodes[a*3+2] ?? 0;
+    const bx = nodes[b*3] ?? 0, by = nodes[b*3+1] ?? 0, bz = nodes[b*3+2] ?? 0;
+    const cx = nodes[c*3] ?? 0, cy = nodes[c*3+1] ?? 0, cz = nodes[c*3+2] ?? 0;
+    // Area = ½‖(b−a)×(c−a)‖
+    const ux = bx-ax, uy = by-ay, uz = bz-az;
+    const vx = cx-ax, vy = cy-ay, vz = cz-az;
+    const nx = uy*vz - uz*vy, ny = uz*vx - ux*vz, nz = ux*vy - uy*vx;
+    const area = 0.5 * Math.hypot(nx, ny, nz);
+    const w = area / 3;
+    for (const n of [a, b, c]) {
+      f[n*3]   = (f[n*3]   ?? 0) + tx * w;
+      f[n*3+1] = (f[n*3+1] ?? 0) + ty * w;
+      f[n*3+2] = (f[n*3+2] ?? 0) + tz * w;
+    }
+  }
+
+  return f;
+}

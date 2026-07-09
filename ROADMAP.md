@@ -140,29 +140,39 @@
 - [x] Inline code comments throughout solver files
 - [x] Module docblocks for element.ts, assembly.ts, cg.ts
 
+### Advanced Analysis & Visualization
+- [x] Deflected-shape view — warp the mesh by the displacement field, exaggeration
+      slider + animation; stress heatmap follows the deformed surface
+- [x] Modal analysis (opt-in) — natural frequencies + animated mode shapes
+- [x] Linear buckling (opt-in) — BLF with C3D10 geometric stiffness, so buckling
+      runs on the default quadratic mesh (not C3D4-only); animated buckling mode.
+      Validated vs Euler column (C3D10 1.08% at 288 elems, `solver_validation` [16.5–16.8])
+- [x] Section / cutting-plane view — X/Y/Z slice to inspect internal/occluded stress
+- [x] Self-weight / acceleration body-force loads (multiples of g, infill-scaled mass);
+      consistent-load resultant validated (`solver_validation` [21])
+- [x] Surface pressure / traction loads — consistent tributary-area distribution;
+      pressure patch test σ_zz = P (`solver_validation` [22])
+- [x] STL mesh-quality control now honoured — coarse/standard/fine map to TetGen `-a`
+- [x] Orthotropic directional-stiffness benchmark δ_z/δ_x = E_xy/E_z (`solver_validation` [23])
+
+### Previously "next" — now shipped
+- [x] Stress invariants — principal σ1/σ2/σ3 + signed von Mises heatmap modes with viewer toggle
+- [x] Anisotropic damage indicator — per-vertex XY vs Z utilization (U_XY / U_Z view modes)
+- [x] Material-property uncertainty bands — SF conservative/central/optimistic range bar
+- [x] Non-uniform force distribution — cosine-bearing (distance-weighted) bolt loading
+
 ---
 
 ## IN PROGRESS / NEXT
 
-### Stress Invariant Visualization Options
-- [ ] Principal stress (σ1, σ2, σ3) heatmap mode
-- [ ] Signed von Mises (tension=positive, compression=negative)
-- [ ] Toggle between visualization modes in viewer
+### Hole-in-plate Kt benchmark
+- [ ] Numeric stress-concentration validation (Kt ≈ 3.0) — needs a reliably
+      meshable watertight plate-with-hole fixture (the simplified coupon hole is
+      non-manifold for TetGen); deferred from the validation-benchmark work
 
-### Anisotropic Damage Indicator
-- [ ] Separate utilization ratios for XY and Z directions per vertex
-- [ ] Color map showing which direction is critical
-- [ ] More informative than single SF number
-
-### Material Property Uncertainty Bands
-- [ ] SF_conservative and SF_optimistic alongside central estimate
-- [ ] Based on literature uncertainty ranges for each constant
-- [ ] Displayed as range bar rather than single value
-
-### Non-Uniform Force Distribution
-- [ ] Distance-weighted loading — nodes near hole edge load heavier
-- [ ] More physically accurate for bolt pull-through
-- [ ] Currently distributes force equally over face
+### True pressure normal-to-surface
+- [ ] Per-triangle outward-normal traction option (current pressure applies a
+      uniform traction along a chosen direction over the extreme face)
 
 ---
 

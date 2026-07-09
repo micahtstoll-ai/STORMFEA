@@ -212,6 +212,13 @@ export interface TetGenResult {
   mesh: TetMesh;
   /** surfaceToNode[i] = index of STL surface vertex i in mesh.nodes */
   surfaceToNode: Int32Array;
+  /**
+   * Surface triangles as mesh-node triples [a0,b0,c0, a1,b1,c1, …]. These are
+   * the welded boundary triangles; boundary vertices are the first N mesh nodes
+   * in order (see surfaceToNode), so these indices point directly into
+   * mesh.nodes. Used to apply consistent surface tractions (pressure loads).
+   */
+  surfaceFaces: Int32Array;
   /** Number of Steiner points TetGen added (should be 0 with -Y) */
   steinerCount: number;
 }
@@ -334,6 +341,7 @@ export async function meshWithTetGen(
       nodesPerElem,
     },
     surfaceToNode,
+    surfaceFaces: weld.faces,
     steinerCount: nodeCount - weld.vertCount,
   };
 }
