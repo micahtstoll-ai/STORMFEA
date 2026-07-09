@@ -1077,6 +1077,12 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <button class="btn"        id="btn-zutil"  onclick="setStressMode('zutil')"  style="font-size:10px;padding:4px 8px;display:none;flex-direction:column;align-items:center;gap:1px" title="Z out-of-plane utilization — max(|σzz|, √3·√(σyz²+σxz²)) / yieldZ. Red at 1.0 = at inter-layer yield. High → reorient or add walls."><span style="font-weight:700">U<sub>Z</sub></span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Z-layer use</span></button>
         <button class="btn"        id="btn-error"  onclick="setStressMode('error')"  style="font-size:10px;padding:4px 8px;display:none;flex-direction:column;align-items:center;gap:1px" title="Error estimate η — Zienkiewicz-Zhu mesh quality metric (0–1), identifies under-resolved elements"><span style="font-weight:700">η</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Mesh quality</span></button>
       </div>
+      <!-- Deformation (deflected-shape) controls (shown after solve) -->
+      <div id="deform-wrap" style="display:none;border-left:1px solid var(--border);margin-left:2px;padding-left:6px;gap:5px;align-items:center">
+        <button class="btn" id="btn-deform" onclick="toggleDeform()" style="font-size:10px;padding:4px 8px;display:flex;flex-direction:column;align-items:center;gap:1px" title="Warp the mesh by the computed nodal displacement to show the deflected shape (exaggerated). Stress colors follow the deformed surface."><span style="font-weight:700">DEFORM</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Deflected</span></button>
+        <label id="deform-exag-label" for="deform-exag" style="display:none;font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);letter-spacing:.04em;align-items:center;gap:4px">×<span id="deform-exag-val" style="color:var(--text-mid);min-width:20px;display:inline-block">auto</span><input type="range" id="deform-exag" min="0" max="100" value="0" step="1" oninput="onDeformExagInput(this.value)" style="width:70px;vertical-align:middle" title="Exaggeration factor. 0 = auto (peak deflection scaled to ~12% of part size)."></label>
+        <button class="btn" id="btn-deform-anim" onclick="toggleDeformAnim()" style="display:none;font-size:10px;padding:4px 8px;align-items:center" title="Animate the deflection (0 → peak → 0)">▶</button>
+      </div>
     </div>
 
     <!-- Top-right toggles -->
@@ -1609,6 +1615,18 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <div id="s-mesh-order-hint" style="font-size:10px;color:var(--text-lo);margin-top:4px;line-height:1.6">
           C3D10 uses 10-node quadratic tetrahedra — eliminates shear locking for more accurate bending and stress concentrations near holes.
           <span style="color:var(--text-mid);display:block;margin-top:3px">Changing this affects result accuracy — leave as default unless you know what this means.</span>
+        </div>
+      </div>
+
+      <div style="margin-bottom:16px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="s-modal" style="width:auto;margin:0">
+          <span>Compute natural frequencies (modal)</span>
+        </label>
+        <div style="font-size:10px;color:var(--text-lo);margin-top:4px;line-height:1.6">
+          Runs a modal analysis alongside the stress solve, adding vibration mode
+          shapes and natural frequencies to the results. Adds solve time — leave off
+          unless you need it.
         </div>
       </div>
 
@@ -2943,6 +2961,13 @@ function loadMeshFromPositions(posB64) {
   mesh3d.rotation.set(0, 0, 0);
   scene.add(mesh3d);
 
+  // Deformation baseline: the centered position array the warp will mutate, plus
+  // the model-space max extent used to auto-scale the exaggeration. A new mesh
+  // invalidates any prior deflected-shape view.
+  S.basePositions = geo.attributes.position.array.slice();
+  S._modelSizeMax = Math.max(sz.x, sz.y, sz.z);
+  resetDeform();
+
   // Fit camera to part: orbit center at part mid-height, zoom to fit
   const partSize = Math.max(sz.x, sz.y, sz.z) * scale;
   S._partSize = partSize;  // stored for zoom clamping
@@ -3269,6 +3294,8 @@ function applyStressColors(stressB64, maxStress, principalStressB64, errorEstima
   // Show stress mode buttons
   const smWrap = document.getElementById('stress-mode-wrap');
   if (smWrap) smWrap.style.display = 'flex';
+  const dfWrap = document.getElementById('deform-wrap');
+  if (dfWrap) dfWrap.style.display = (S.displacements ? 'flex' : 'none');
 
   // Update legend labels
   const labels = document.getElementById('legend-val-stack');
@@ -5233,7 +5260,7 @@ async function runAnalysis() {
   _resetLiveResidual();
 
   // ── Phase 1: standard mesh — show results immediately ────────────────────
-  const bodyStd = buildAnalyseBody('standard');
+  const bodyStd = buildAnalyseBody('standard', { modal: !!document.getElementById('s-modal')?.checked });
   let dataStd;
 
   try {
@@ -5259,6 +5286,10 @@ async function runAnalysis() {
         }
       }
     }
+
+    // Decode and store modal results (present only when modal was requested).
+    // Mode shapes use the same per-vertex Float32 base64 layout as displacements.
+    storeModalResult(dataStd.modalResult, dataStd.vertexModeShapesB64);
 
     applyStressColors(dataStd.vertexStressB64, dataStd.summary.maxVonMisesMPa, dataStd.vertexPrincipalStressB64, null, dataStd.vertexPrincipalStress2B64, dataStd.vertexPrincipalStress3B64, dataStd.vertexXyUtilB64, dataStd.vertexZUtilB64, dataStd.vertexSignedVonMisesB64);
     showResults(dataStd.summary);
@@ -5758,6 +5789,25 @@ function showResults(s) {
       </details>`;
     })() : ''}
 
+    ${S.modal && S.modal.modes && S.modal.modes.length ? (() => {
+      const rows = S.modal.modes.map((m, k) => {
+        const rigid = m.frequencyHz < 1.0;
+        const hz = m.frequencyHz < 10 ? m.frequencyHz.toFixed(2) : m.frequencyHz.toFixed(1);
+        const canView = !!(S.modeShapes && S.modeShapes[k]);
+        return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px solid var(--border)">
+          <span style="font-family:'DM Mono',monospace;font-size:9px;letter-spacing:.06em;color:var(--text-lo)">MODE ${k + 1}${rigid ? ' <span style="color:var(--text-lo)">· rigid body</span>' : ''}</span>
+          <span style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text-hi)">${hz} <span style="font-size:8px;color:var(--text-label)">Hz</span></span>
+          <button class="btn" id="mode-btn-${k}" onclick="viewModeShape(${k})" style="font-size:9px;padding:2px 8px"${canView ? '' : ' disabled'}>View</button>
+        </div>`;
+      }).join('');
+      return `
+      <div style="border-left:2px solid var(--gold);background:var(--bg-input);padding:10px 14px;margin-bottom:12px">
+        <div style="font-family:'Rajdhani',sans-serif;font-size:13px;letter-spacing:.08em;color:var(--text-mid);margin-bottom:6px">NATURAL FREQUENCIES</div>
+        ${rows}
+        <div style="font-size:9px;color:var(--text-lo);margin-top:6px;line-height:1.5">Mode shapes show relative amplitude (unit-normalized eigenvectors), not physical deflection. Click View to animate a mode in the viewer.</div>
+      </div>`;
+    })() : ''}
+
     ${s.residualCheckpoints && s.residualCheckpoints.length > 0 ? `
     <div style="margin-bottom:16px">
       <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:8px">CG SOLVER CONVERGENCE</div>
@@ -6191,6 +6241,8 @@ function switchTab(name) {
   } else if (name !== 'orient' && S.mode === 'bed') {
     setMode('view');
   }
+  // Pause deflection/mode animation when the viewer isn't the focus.
+  if (name !== 'results' && S.deformAnimating) { _stopDeformAnim(); _syncDeformUI(); }
 }
 
 // ─── Overlay helpers ──────────────────────────────────────────────────────────
@@ -7444,9 +7496,12 @@ function deriveOrientString() {
   if (maxDot < 0.3)  return 'upright';
   return 'angled';
 }
-function buildAnalyseBody(quality) {
+function buildAnalyseBody(quality, opts) {
   if (!S.fileData) return null;
   return {
+    // Modal is opt-in (adds solve cost) and only requested on the primary solve —
+    // not the background fine-mesh convergence check or A/B comparison runs.
+    analysisType:  (opts && opts.modal) ? 'modal' : 'linear_static',
     positionsB64:  S.fileData.positionsB64,
     stepB64:       S.fileData.stepB64 || null,
     fileType:      S.fileData.fileType || 'stl',
@@ -10283,6 +10338,189 @@ async function importFromOnshape() {
 
 // Init Onshape status on load
 setTimeout(initOnshapeStatus, 200);
+
+// ─── Deflected-shape & mode-shape visualization ──────────────────────────────
+// The solver returns per-surface-vertex displacements (and, when modal is
+// requested, per-mode shape vectors) in the same layout as the display mesh's
+// position attribute. Warping = base position + exaggeration × field. A
+// displacement is a delta, so it composes correctly with the mesh's centering
+// and uniform view scale. Colors live in a separate attribute, so the active
+// heatmap keeps working on the deformed surface. The main render loop draws
+// every frame, so animation only needs to mutate the geometry.
+
+function _prefersReducedMotion() {
+  return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+}
+
+// Full reset of deflected-shape / modal viewer state — called when a mesh loads.
+function resetDeform() {
+  _stopDeformAnim();
+  S.deformActive = false;
+  S.activeMode   = null;
+  S.deformExag   = 0;
+  S.deformPeakMag = 0;
+  S.modal        = null;
+  S.modeShapes   = null;
+  if (mesh3d && S.basePositions) _warpMesh(null, 0);
+  _syncDeformUI();
+}
+
+// Warp the live position buffer to base + scale·field (null/0 ⇒ undeformed).
+function _warpMesh(field, scale) {
+  if (!mesh3d || !S.basePositions) return;
+  const pos  = mesh3d.geometry.attributes.position;
+  const arr  = pos.array;
+  const base = S.basePositions;
+  if (!field || !scale) {
+    arr.set(base);
+  } else {
+    const n = Math.min(arr.length, base.length, field.length);
+    for (let i = 0; i < n; i++) arr[i] = base[i] + scale * field[i];
+  }
+  pos.needsUpdate = true;
+  mesh3d.geometry.computeVertexNormals();
+}
+
+// Peak per-vertex vector magnitude of a field (model units, pre view-scale).
+function _peakFieldMag(field) {
+  let max = 0;
+  if (!field) return 0;
+  for (let i = 0; i + 2 < field.length; i += 3) {
+    const m = Math.hypot(field[i], field[i + 1], field[i + 2]);
+    if (m > max) max = m;
+  }
+  return max;
+}
+
+// Exaggeration factor that scales a field's peak deflection to ~12% of part
+// size, clamped to the slider's 1–100 range.
+function _autoExag(peakMag) {
+  if (!peakMag || !S._modelSizeMax) return 1;
+  return Math.max(1, Math.min(100, Math.round((0.12 * S._modelSizeMax) / peakMag)));
+}
+
+// The field currently driving the warp: an active mode shape, else the static
+// displacement field, else none.
+function _currentDeformField() {
+  if (S.activeMode != null && S.modeShapes) return S.modeShapes[S.activeMode] || null;
+  if (S.deformActive) return S.displacements || null;
+  return null;
+}
+
+function _applyDeformStatic() {
+  const field = _currentDeformField();
+  if (!field) { _warpMesh(null, 0); return; }
+  _warpMesh(field, S.deformExag);
+}
+
+function _startDeformAnim() {
+  _stopDeformAnim();
+  const field = _currentDeformField();
+  if (!field) return;
+  if (_prefersReducedMotion()) { S.deformAnimating = false; _applyDeformStatic(); return; }
+  S.deformAnimating = true;
+  const t0 = performance.now();
+  const isMode = S.activeMode != null;
+  const step = () => {
+    if (!S.deformAnimating) return;
+    const f = _currentDeformField();
+    if (!f) { S.deformAnimating = false; return; }
+    const phase = ((performance.now() - t0) / 1000) * (2 * Math.PI / 1.6); // 1.6 s period
+    // Static deflection swings 0→peak→0; a mode shape swings −peak→+peak.
+    const cyc = isMode ? Math.sin(phase) : (0.5 - 0.5 * Math.cos(phase));
+    _warpMesh(f, S.deformExag * cyc);
+    S._deformRaf = requestAnimationFrame(step);
+  };
+  S._deformRaf = requestAnimationFrame(step);
+}
+
+function _stopDeformAnim() {
+  S.deformAnimating = false;
+  if (S._deformRaf) { cancelAnimationFrame(S._deformRaf); S._deformRaf = null; }
+}
+
+// DEFORM toolbar toggle — warp by the static nodal-displacement field.
+function toggleDeform() {
+  if (!S.displacements) return;
+  S.activeMode = null;                 // leave any mode view
+  S.deformActive = !S.deformActive;
+  _stopDeformAnim();
+  if (S.deformActive) {
+    S.deformPeakMag = S.results?.summary?.maxDisplacementMm || _peakFieldMag(S.displacements);
+    S.deformExag = _autoExag(S.deformPeakMag);
+    _applyDeformStatic();
+  } else {
+    _warpMesh(null, 0);
+  }
+  _syncDeformUI();
+  updateModeButtons();
+}
+
+function toggleDeformAnim() {
+  if (!S.deformActive && S.activeMode == null) return;
+  if (S.deformAnimating) { _stopDeformAnim(); _applyDeformStatic(); }
+  else _startDeformAnim();
+  _syncDeformUI();
+}
+
+function onDeformExagInput(v) {
+  S.deformExag = Math.max(1, +v || 1);
+  const val = document.getElementById('deform-exag-val');
+  if (val) val.textContent = '×' + S.deformExag;
+  if (!S.deformAnimating) _applyDeformStatic();
+}
+
+// Animate a natural-vibration mode shape (called from the results MODAL card).
+function viewModeShape(k) {
+  if (!S.modeShapes || !S.modeShapes[k]) return;
+  S.activeMode   = k;
+  S.deformActive = false;
+  S.deformPeakMag = _peakFieldMag(S.modeShapes[k]);
+  S.deformExag   = _autoExag(S.deformPeakMag);
+  _startDeformAnim();                  // modes read best animated
+  _syncDeformUI();
+  updateModeButtons();
+}
+
+// Decode + store modal results returned by the solver (Float32 per-vertex, same
+// base64 layout as displacements). Absent modalResult clears any prior modal.
+function storeModalResult(modalResult, modeShapesB64) {
+  S.modal = (modalResult && modalResult.modes && modalResult.modes.length) ? modalResult : null;
+  S.modeShapes = null;
+  S.activeMode = null;
+  if (S.modal && Array.isArray(modeShapesB64)) {
+    S.modeShapes = modeShapesB64.map(b => decodeDisplacementB64(b));
+  }
+}
+
+// Reflect current deform state onto the toolbar controls.
+function _syncDeformUI() {
+  const active = S.deformActive || S.activeMode != null;
+  const btn    = document.getElementById('btn-deform');
+  const lbl    = document.getElementById('deform-exag-label');
+  const anim   = document.getElementById('btn-deform-anim');
+  const slider = document.getElementById('deform-exag');
+  const val    = document.getElementById('deform-exag-val');
+  if (btn)    btn.className = 'btn' + (S.deformActive ? ' active' : '');
+  if (lbl)    lbl.style.display  = active ? 'inline-flex' : 'none';
+  if (anim) {
+    anim.style.display = active ? 'inline-flex' : 'none';
+    anim.textContent   = S.deformAnimating ? '❚❚' : '▶';
+    anim.className      = 'btn' + (S.deformAnimating ? ' active' : '');
+  }
+  if (slider) slider.value = Math.min(100, S.deformExag || 0);
+  if (val)    val.textContent = '×' + (S.deformExag || 0);
+}
+
+// Highlight whichever mode's "View" button is active in the results card.
+function updateModeButtons() {
+  if (!S.modeShapes) return;
+  S.modeShapes.forEach((_, k) => {
+    const b = document.getElementById('mode-btn-' + k);
+    if (b) b.className = 'btn' + (S.activeMode === k ? ' active' : '');
+  });
+}
+
 // ── Stress visualization modes ────────────────────────────────────────────────
 function setStressMode(mode) {
   S.stressMode = mode;
