@@ -1493,6 +1493,32 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <div id="load-case-list" style="display:none"></div>
       </div>
 
+      <!-- Self-weight / acceleration (gravity body load) -->
+      <div style="margin-bottom:16px;padding-top:14px;border-top:1px solid var(--border)">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:6px">
+          <input type="checkbox" id="s-gravity" style="width:auto;margin:0" onchange="updateGravityUI()">
+          <span style="font-size:11px;letter-spacing:.04em;color:var(--text-label)">SELF-WEIGHT / ACCELERATION</span>
+        </label>
+        <div id="gravity-controls" style="display:none;padding-left:22px">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <label style="font-size:10px;color:var(--text-lo);display:flex;align-items:center;gap:4px">Magnitude
+              <input type="number" id="s-gravity-g" value="1" min="0" step="0.5" style="width:56px"><span style="font-family:'DM Mono',monospace;font-size:10px">g</span>
+            </label>
+            <label style="font-size:10px;color:var(--text-lo);display:flex;align-items:center;gap:4px">Direction
+              <select id="s-gravity-dir">
+                <option value="0,0,-1" selected>−Z (down)</option>
+                <option value="0,0,1">+Z</option>
+                <option value="0,-1,0">−Y</option>
+                <option value="0,1,0">+Y</option>
+                <option value="-1,0,0">−X</option>
+                <option value="1,0,0">+X</option>
+              </select>
+            </label>
+          </div>
+          <div style="font-size:10px;color:var(--text-lo);margin-top:6px;line-height:1.5">Adds a body-force load using the part's (infill-scaled) mass. 1g = self-weight; use a higher value for robot acceleration or impact (e.g. 5g).</div>
+        </div>
+      </div>
+
 
       <!-- Next step CTA — updated by updateNextButtons() -->
       <div id="next-loads-wrap" class="tab-cta">
@@ -7598,7 +7624,26 @@ function buildAnalyseBody(quality, opts) {
     },
     meshQuality:  quality || document.getElementById('s-mesh')?.value || 'standard',
     calibration:  getActiveProfile(),
+    ...(gravityRequest() ? { gravity: gravityRequest() } : {}),
   };
+}
+
+// Read the self-weight / acceleration control into a request payload, or null
+// when disabled. Included on every solve variant (it is a load, not an opt-in
+// analysis), so it also participates in the fine-mesh and A/B runs.
+function gravityRequest() {
+  if (!document.getElementById('s-gravity')?.checked) return null;
+  const g = +(document.getElementById('s-gravity-g')?.value ?? 1);
+  if (!(g > 0)) return null;
+  const dir = (document.getElementById('s-gravity-dir')?.value ?? '0,0,-1')
+    .split(',').map(Number);
+  return { g, direction: [dir[0] || 0, dir[1] || 0, dir[2] || 0] };
+}
+
+function updateGravityUI() {
+  const on = !!document.getElementById('s-gravity')?.checked;
+  const c = document.getElementById('gravity-controls');
+  if (c) c.style.display = on ? 'block' : 'none';
 }
 
 // ─── Theme toggle ────────────────────────────────────────────────────────────

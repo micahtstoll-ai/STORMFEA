@@ -22,7 +22,7 @@ import { runLinearBuckling }              from "./solver/buckling.js";
 import { assembleK, assembleKsigma, buildSparsityPattern } from "./solver/assembly.js";
 import { buildNodeElementAdjacency }       from "./solver/adjacency.js";
 import { applyDirichletBC }    from "./solver/boundary.js";
-import { assembleForceVector } from "./solver/load.js";
+import { assembleForceVector, assembleBodyForce } from "./solver/load.js";
 import type { ModalAnalysisResult }        from "./solver/types.js";
 import {
   buildLaminateCMatrix,
@@ -975,6 +975,14 @@ export interface AnalysisRequest {
    * for both C3D4 and C3D10 meshes.
    */
   computeBuckling?: boolean;
+  /**
+   * Optional uniform body-force (self-weight / robot acceleration) load.
+   *   g         — acceleration magnitude in multiples of standard gravity
+   *               (1 = 9.80665 m/s²); e.g. 5 for a 5g impact case.
+   *   direction — load direction in the part frame (need not be unit length).
+   * Uses the material's (infill-scaled) mass density.
+   */
+  gravity?: { g: number; direction: [number, number, number] };
   /**
    * Material uncertainty mode. When 'central' (default) the solver uses the literature
    * central estimates. The server always computes sfConservative and sfOptimistic alongside
@@ -2135,8 +2143,14 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     try {
       _snapAnalysis("before TetGen mesh");
       const tetOrder = (req.print.meshOrder ?? 2) as 1 | 2;
-      console.log(`[analysis] meshing with TetGen (order=${tetOrder})...`);
-      const tetResult = await meshWithTetGen(req.positions, req.triangleCount, tetOrder);
+      // Map the coarse/standard/fine selector to TetGen's max-volume (-a) switch
+      // so the control actually affects STL mesh density. 'standard' keeps the
+      // historical 10 mm³. (Previously the selector only affected the STEP path.)
+      const tetMaxVol = req.meshQuality === "fine" ? 3
+                      : req.meshQuality === "coarse" ? 30
+                      : 10;
+      console.log(`[analysis] meshing with TetGen (order=${tetOrder}, maxVol=${tetMaxVol}mm³, quality=${req.meshQuality})...`);
+      const tetResult = await meshWithTetGen(req.positions, req.triangleCount, tetOrder, tetMaxVol);
       mesh          = tetResult.mesh;
       surfaceToNode = tetResult.surfaceToNode;
       console.log(`[analysis] TetGen mesh: ${mesh.nodeCount} nodes, ${mesh.elementCount} elements (${mesh.nodesPerElem}-node)`);
@@ -2337,6 +2351,35 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         solverForces.push({ nodeIndex: n, forceN: [fx/k, fy/k, fz/k] });
       }
     }
+  }
+
+  // ── Self-weight / body-force load (gravity or robot acceleration) ──────────
+  // When requested, add a consistent body-force load. b = ρ·a in N/mm³, where
+  //   ρ = material.massRho[kg/m³] × 1e-12  (→ tonne/mm³, already infill-scaled #99)
+  //   a = g × 9806.65 mm/s² along the normalised direction
+  // and 1 tonne·mm/s² = 1 N, so the resulting nodal loads are in N and add
+  // directly to the point-force list feeding the solve (and buckling pre-stress).
+  if (req.gravity && req.gravity.g) {
+    const dir  = req.gravity.direction;
+    const dlen = Math.hypot(dir[0], dir[1], dir[2]) || 1;
+    const rhoTMm3 = ((material as { massRho?: number }).massRho ?? 1240) * 1e-12;
+    const a = req.gravity.g * 9806.65;
+    const b: [number, number, number] = [
+      rhoTMm3 * a * (dir[0] / dlen),
+      rhoTMm3 * a * (dir[1] / dlen),
+      rhoTMm3 * a * (dir[2] / dlen),
+    ];
+    const bodyF = assembleBodyForce(mesh, b);
+    let loaded = 0, totX = 0, totY = 0, totZ = 0;
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      const fx = bodyF[n*3] ?? 0, fy = bodyF[n*3+1] ?? 0, fz = bodyF[n*3+2] ?? 0;
+      if (fx !== 0 || fy !== 0 || fz !== 0) {
+        solverForces.push({ nodeIndex: n, forceN: [fx, fy, fz] });
+        loaded++; totX += fx; totY += fy; totZ += fz;
+      }
+    }
+    console.log(`[analysis] self-weight ${req.gravity.g}g: ${loaded} loaded nodes, ` +
+      `resultant=${Math.hypot(totX, totY, totZ).toFixed(3)}N`);
   }
 
   const effectiveForces = solverForces;

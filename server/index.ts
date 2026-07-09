@@ -233,6 +233,7 @@ const ANALYSE_SPEC: Spec = {
   "meshQuality?":  "coarse|standard|fine",
   "analysisType?": "string",
   "computeBuckling?": "boolean",
+  "gravity?":      "object",
   "calibration?":  "object",
 };
 
@@ -301,6 +302,13 @@ app.post("/api/analyse", async (req, res) => {
       meshQuality:   body.meshQuality,
       analysisType:  ((body as any).analysisType ?? 'linear_static') as 'linear_static' | 'modal',
       computeBuckling: (body as any).computeBuckling === true,
+      ...(((body as any).gravity && typeof (body as any).gravity.g === 'number'
+          && Array.isArray((body as any).gravity.direction))
+        ? { gravity: {
+              g: (body as any).gravity.g,
+              direction: (body as any).gravity.direction as [number, number, number],
+            } }
+        : {}),
     };
 
     // Build the full JSON response payload from a completed analysis. Shared by
