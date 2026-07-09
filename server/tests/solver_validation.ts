@@ -925,6 +925,45 @@ console.log("\n[16] Linear buckling — Euler column (clamped-free cantilever)")
     test("[16.3] Not tensile-dominated", false);
     test("[16.4] BLF within 15% of Euler", false);
   }
+
+  // Same Euler column, now with C3D10 quadratic elements. C3D10 does not
+  // shear-lock, so a much coarser mesh (nx=12, 288 elements) reaches tighter
+  // accuracy than the C3D4 nx=80 (6400 element) case above — exercising the
+  // C3D10 geometric-stiffness path (c3d10ElementGeometricStiffness).
+  const meshQ = generateBoxMeshC3D10(0, 0, 0, L, b, b, 12, 2, 2);
+  const fixedQ: number[] = [], tipQ: number[] = [];
+  for (let n = 0; n < meshQ.nodeCount; n++) {
+    const x = meshQ.nodes[n*3] ?? 0;
+    if (x < 0.01) fixedQ.push(n);
+    if (x > L - 0.01) tipQ.push(n);
+  }
+  const fPerNodeQ = P_cr_euler / tipQ.length;
+  const forces16Q = tipQ.map(n => ({ nodeIndex: n, forceN: [-fPerNodeQ, 0, 0] as [number, number, number] }));
+  try {
+    const interQ = await runLinearStaticWithK({
+      mesh: meshQ, material: mat, constraints: [{ nodeIndices: fixedQ }], forces: forces16Q,
+    });
+    const elemStress6Q = interQ.result.elemStress6;
+    if (!elemStress6Q) throw new Error("elemStress6 not returned (C3D10)");
+    const { K: KbuckQ, diagIdx: diagIdxQ } = await assembleK(meshQ, mat);
+    const fDummyQ = assembleForceVector(meshQ.nodeCount, forces16Q);
+    applyDirichletBC(KbuckQ, fDummyQ, diagIdxQ, [{ nodeIndices: fixedQ }]);
+    const KsigmaQ = assembleKsigma(meshQ, elemStress6Q, KbuckQ.rowPtr, KbuckQ.colIdx);
+    const bResultQ = await runLinearBuckling(KbuckQ, KsigmaQ, diagIdxQ);
+    const relErrQ = Math.abs(bResultQ.blf - 1.0);
+    test("[16.5] C3D10 buckling converged",       bResultQ.converged,        `iters=${bResultQ.iterations}`);
+    test("[16.6] C3D10 BLF positive",             bResultQ.blf > 0,          `blf=${bResultQ.blf.toFixed(4)}`);
+    test("[16.7] C3D10 BLF within 3% of Euler",   relErrQ < 0.03,
+      `BLF=${bResultQ.blf.toFixed(4)} relErr=${(relErrQ*100).toFixed(2)}%`);
+    test("[16.8] C3D10 mode shape returned",      bResultQ.modeShape.length === meshQ.nodeCount * 3,
+      `len=${bResultQ.modeShape.length} expected=${meshQ.nodeCount*3}`);
+    console.log(`    C3D10 nx=12: BLF=${bResultQ.blf.toFixed(4)}, error=${(relErrQ*100).toFixed(2)}%`);
+  } catch (err) {
+    test("[16.5] C3D10 buckling did not throw", false, String(err));
+    test("[16.6] C3D10 BLF positive", false);
+    test("[16.7] C3D10 BLF within 3% of Euler", false);
+    test("[16.8] C3D10 mode shape returned", false);
+  }
 }
 
 // ── Test group 17: Simply-supported beam ─────────────────────────────────────

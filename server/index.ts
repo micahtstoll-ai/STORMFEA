@@ -232,6 +232,7 @@ const ANALYSE_SPEC: Spec = {
   },
   "meshQuality?":  "coarse|standard|fine",
   "analysisType?": "string",
+  "computeBuckling?": "boolean",
   "calibration?":  "object",
 };
 
@@ -299,6 +300,7 @@ app.post("/api/analyse", async (req, res) => {
       print:         body.print,
       meshQuality:   body.meshQuality,
       analysisType:  ((body as any).analysisType ?? 'linear_static') as 'linear_static' | 'modal',
+      computeBuckling: (body as any).computeBuckling === true,
     };
 
     // Build the full JSON response payload from a completed analysis. Shared by
