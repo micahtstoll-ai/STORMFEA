@@ -39,7 +39,8 @@
 
 import type { TetMesh, IsotropicMaterial, AnyMaterial, SolverResult } from "./types.js";
 import { isOrthotropic } from "./types.js";
-import { buildAnyConstitutiveMatrix, computeGeometry, buildB, buildB_c3d10 } from "./element.js";
+import { buildAnyConstitutiveMatrix, computeGeometry, buildB, buildB_c3d10, C3D10_GAUSS } from "./element.js";
+import { buildNodeElementLists } from "./adjacency.js";
 
 // ─── Typed-array helper ────────────────────────────────────────────────────────
 function f64(arr: Float64Array, i: number): number {
@@ -191,13 +192,9 @@ export function recoverElementStress(
   let maxVM = 0;
   let minSF = 999;
 
-  // 4-point Gauss quadrature points for tetrahedron (same as C3D10_GAUSS in element.ts)
-  const GAUSS_PTS = [
-    { xi:0.1381966, eta:0.1381966, zeta:0.1381966 },
-    { xi:0.5854102, eta:0.1381966, zeta:0.1381966 },
-    { xi:0.1381966, eta:0.5854102, zeta:0.1381966 },
-    { xi:0.1381966, eta:0.1381966, zeta:0.5854102 },
-  ];
+  // 4-point Gauss quadrature points for tetrahedron — shared with element
+  // stiffness integration (single source of truth in element.ts).
+  const GAUSS_PTS = C3D10_GAUSS;
 
   let _lastSig: [number, number, number] = [0, 0, 0];
 
@@ -401,26 +398,21 @@ export function sprSmoothedStress(
   const nodeStress = new Float64Array(mesh.nodeCount);
   const nodeCount  = new Int32Array(mesh.nodeCount);
 
-  // Build node → element connectivity
-  // For C3D10, we only associate corner nodes (0-3) with each element.
-  // Midside nodes (4-9) also get entries, but their patches may be small.
+  // Build node → element connectivity (shared helper — issue #104).
+  // Uses all nodes (corner + midside) — SPR handles small patches via fallback.
   const npe = mesh.nodesPerElem ?? 4;
-  const nodeElements: number[][] = Array.from({ length: mesh.nodeCount }, () => []);
-  for (let e = 0; e < mesh.elementCount; e++) {
-    const base = e * npe;
-    // Use all nodes (corner + midside) — SPR handles small patches via fallback
-    for (let ni = 0; ni < npe; ni++) {
-      const nodeIdx = mesh.elements[base + ni] ?? 0;
-      nodeElements[nodeIdx]!.push(e);
-    }
-  }
+  const nodeElements = buildNodeElementLists(mesh);
 
-  // Compute element centroid coordinates
+  // Compute element centroid coordinates.
+  // Stride by nodesPerElem (4 or 10) — a hardcoded stride of 4 read node
+  // indices from the WRONG element for C3D10 meshes (issue #96). The centroid
+  // itself is the average of the 4 corner nodes, which are the first 4 entries
+  // for both C3D4 and C3D10 (midside nodes are linear combinations of corners).
   const elemCentX = new Float64Array(mesh.elementCount);
   const elemCentY = new Float64Array(mesh.elementCount);
   const elemCentZ = new Float64Array(mesh.elementCount);
   for (let e = 0; e < mesh.elementCount; e++) {
-    const base = e * 4;
+    const base = e * npe;
     let cx = 0, cy = 0, cz = 0;
     for (let ni = 0; ni < 4; ni++) {
       const n = mesh.elements[base + ni] ?? 0;
@@ -558,21 +550,14 @@ export function sprSmoothedStress6(
 
   // Build node → element connectivity (all nodes, same as sprSmoothedStress)
   const npe = mesh.nodesPerElem ?? 4;
-  const nodeElements: number[][] = Array.from({ length: NC }, () => []);
-  for (let e = 0; e < mesh.elementCount; e++) {
-    const base = e * npe;
-    for (let ni = 0; ni < npe; ni++) {
-      const nodeIdx = mesh.elements[base + ni] ?? 0;
-      nodeElements[nodeIdx]!.push(e);
-    }
-  }
+  const nodeElements = buildNodeElementLists(mesh);
 
-  // Compute element centroids
+  // Compute element centroids (corner-node average; stride by npe — issue #96)
   const elemCentX = new Float64Array(mesh.elementCount);
   const elemCentY = new Float64Array(mesh.elementCount);
   const elemCentZ = new Float64Array(mesh.elementCount);
   for (let e = 0; e < mesh.elementCount; e++) {
-    const base = e * 4;
+    const base = e * npe;
     let cx = 0, cy = 0, cz = 0;
     for (let ni = 0; ni < 4; ni++) {
       const n = mesh.elements[base + ni] ?? 0;
@@ -800,17 +785,17 @@ export function computeZZErrorEstimate(
   const nu = 'kind' in mat ? (mat as import("./types.js").OrthotropicMaterial).nu_xy
                            : (mat as IsotropicMaterial).nu;
 
-  // Energy-norm normalization constants
-  const invE = 1.0 / E;
-  const factor1 = (1 + nu) * invE;
-  const factor2 = -nu * invE / (1 + nu);
+  // Energy-norm normalization constant
+  const factor1 = (1 + nu) / E;
 
-  // Compute element centroid coordinates (reuse from sprSmoothedStress pattern)
+  const npe = mesh.nodesPerElem ?? 4;
+
+  // Compute element centroid coordinates (corner-node average; stride by npe — issue #96)
   const elemCentX = new Float64Array(mesh.elementCount);
   const elemCentY = new Float64Array(mesh.elementCount);
   const elemCentZ = new Float64Array(mesh.elementCount);
   for (let e = 0; e < mesh.elementCount; e++) {
-    const base = e * 4;
+    const base = e * npe;
     let cx = 0, cy = 0, cz = 0;
     for (let ni = 0; ni < 4; ni++) {
       const n = mesh.elements[base + ni] ?? 0;
@@ -823,28 +808,16 @@ export function computeZZErrorEstimate(
     elemCentZ[e] = cz / 4;
   }
 
-  // Build node → element connectivity (same pattern as SPR)
-  const npe = mesh.nodesPerElem ?? 4;
-  const nodeElements: number[][] = Array.from({ length: mesh.nodeCount }, () => []);
-  for (let e = 0; e < mesh.elementCount; e++) {
-    const base = e * npe;
-    for (let ni = 0; ni < npe; ni++) {
-      const nodeIdx = mesh.elements[base + ni] ?? 0;
-      nodeElements[nodeIdx]!.push(e);
-    }
-  }
-
   // If SPR stress not provided, fall back to direct averaging (lower accuracy)
   const nodeSprStress = sprStress ?? nodeAveragedStress(mesh, vonMises);
 
   // Interpolate SPR stress to element centroids using patch-weighted average
   for (let e = 0; e < mesh.elementCount; e++) {
-    const npe4 = mesh.nodesPerElem ?? 4;
-    const base = e * npe4;
+    const base = e * npe;
 
-    // Get element nodes
+    // Get element corner nodes (first 4 entries for both C3D4 and C3D10)
     const elemNodes: number[] = [];
-    for (let ni = 0; ni < Math.min(4, npe4); ni++) {
+    for (let ni = 0; ni < Math.min(4, npe); ni++) {
       elemNodes.push(mesh.elements[base + ni] ?? 0);
     }
 

@@ -44,7 +44,7 @@ STORMFEA models the anisotropic reality.
 - **Onshape integration** — import directly from Part Studio via REST API, no export step
 - **Client-side PDF export** — full report generated in-browser, works offline at competition venues
 - **Automatic mesh convergence** — fine mesh runs in the background; you get a result and then it quietly improves
-- **Accessible audio feedback** — per-stage tones for upload → mesh → solve → completion, with volume control and disable toggle. Especially useful in loud lab/competition environments. Enable/disable in Settings tab
+- **Accessible audio feedback** — per-stage tones for upload → mesh → solve → completion, with volume control and disable toggle. Especially useful in loud lab/competition environments. Enable/disable in the PREFS tab
 
 ---
 
@@ -69,7 +69,7 @@ STORMFEA models the anisotropic reality.
 | Tool | Version | Install |
 |------|---------|---------|
 | Node.js | 20+ | [nodejs.org](https://nodejs.org) |
-| TetGen | 1.5.1 | [GitHub release](https://github.com/emersonkeenan/tetgen1.5.1-beta1) — rename to `tetgen.exe`, place in project root |
+| TetGen | 1.5.x | Linux: `sudo apt-get install tetgen` · macOS: `brew install tetgen` · Windows: [GitHub release](https://github.com/emersonkeenan/tetgen1.5.1-beta1) — rename to `tetgen.exe`, place in project root |
 | Gmsh | 4.x | `winget install Gmsh.Gmsh` (Windows) or [gmsh.info](https://gmsh.info) |
 
 ### Install & Run
@@ -89,7 +89,7 @@ npm start
 # Open http://localhost:3000
 ```
 
-> **Offline use:** the PDF export is fully client-side. No internet connection needed after install.
+> **Offline use:** the entire app runs with no internet connection after install. The 3-D viewer's Three.js runtime and all UI fonts are vendored locally under `client/vendor/` (no CDN or Google Fonts calls), and PDF export is fully client-side. Nothing is fetched from an external host at runtime.
 
 ---
 
@@ -222,7 +222,7 @@ stormfea/
 - **Fatigue confidence: LOW** — sparse FDM S-N curve data; estimate only
 - **Filament color** affects strength (η² = 97.3% in one study) — not modeled
 - **Layer height correction** is a linear approximation; valid within ±0.15 mm of nominal
-- **STL uploads use C3D4 only** — STEP uploads default to C3D10 (quadratic, accurate bending). STL uploads are currently locked to C3D4 (linear, shear-locking-prone) because TetGen's quadratic element output (`-o2`) is implemented but its node-ordering permutation has not been verified against a TetGen binary. C3D4 underpredicts bending stress by ~55%; prefer STEP when bending is the governing load case.
+- **Element order** — both STL (TetGen `-o2`) and STEP (Gmsh) uploads default to quadratic C3D10 elements; TetGen's mid-node ordering permutation is verified empirically and pinned by a regression test (`server/tests/unit/tetgen-c3d10.test.ts`). Linear C3D4 is selectable in the MATERIAL tab for faster solves, but underpredicts bending stress by ~55% due to shear locking.
 - **Closely-spaced holes (STEP):** if Gmsh merges two hole surfaces, detected radius can be wrong — use `start-debug.bat` and check `[gmsh-debug]` lines if hole geometry looks off
 
 ---
@@ -247,7 +247,7 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the ful
 
 1. Fork → create a branch (`git checkout -b fix/my-fix`)
 2. Make changes; if touching physics, verify the 65% stiffness / 58% bond constants are unchanged
-3. Run `npm run test` — all solver validation tests must pass (67 tests in `solver_validation.ts` + 69 vitest unit tests across 6 files)
+3. Run `npm run test` — everything must pass: 225 vitest unit tests across 24 files, 86 solver validation tests in `solver_validation.ts`, the parallel-assembly equivalence suite, and 41 client logic checks (a few vitest tests self-skip where the TetGen binary is absent)
 4. Open a pull request using the provided template
 
 ---

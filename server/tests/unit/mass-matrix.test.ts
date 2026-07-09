@@ -1,14 +1,17 @@
 /**
  * mass-matrix.test.ts
  * -------------------
- * Validates assembleMass for C3D4 elements:
+ * Validates assembleMass for C3D4 and C3D10 elements:
  *   1. total mass = ρ × volume  (consistent and lumped)
- *   2. consistent and lumped give identical total mass (row-sum property)
+ *   2. consistent and lumped give identical total mass
  *   3. consistent M is positive definite (Cholesky check on small mesh)
+ *   4. C3D10 lumped (HRZ) masses are ALL POSITIVE — row-sum lumping produces
+ *      negative corner masses for C3D10 (issue #103) and must not be used.
  */
 
 import { describe, it, expect } from "vitest";
 import { assembleMass, assembleM } from "../../solver/mass.js";
+import { generateBoxMeshC3D10 } from "../../solver/meshgen.js";
 import type { TetMesh, IsotropicMaterial, CSRMatrix } from "../../solver/types.js";
 
 // ─── Unit-cube C3D4 mesh (6 tets from a subdivided unit cube) ──────────────
@@ -163,6 +166,88 @@ describe("assembleMass — consistent vs lumped total mass equality", () => {
     for (let i = 0; i < lumped.length;  i++) lumpTotal += lumped[i]  ?? 0;
 
     expect(lumpTotal).toBeCloseTo(consTotal, 20);
+  });
+});
+
+// ─── C3D10 (quadratic tet) lumped mass — HRZ diagonal scaling ───────────────
+// Row-sum lumping of the C3D10 consistent matrix gives NEGATIVE corner masses
+// (corner row sum = −ρ·6Ve/120 per direction). assembleMass(…, 'lumped') must
+// use HRZ diagonal scaling for npe=10: all masses positive, total preserved.
+
+// Single straight-sided C3D10 tet: corners (2,0,0),(0,2,0),(0,0,2),(0,0,0),
+// midside nodes at edge midpoints (EDGE_PAIRS ordering [0,1],[1,2],[0,2],[0,3],[1,3],[2,3]).
+// Volume = |det|/6 = 8/6 = 4/3 mm³.
+const TET10_NODES = new Float64Array([
+  2,0,0,  0,2,0,  0,0,2,  0,0,0,
+  1,1,0,  0,1,1,  1,0,1,  1,0,0,  0,1,0,  0,0,1,
+]);
+const TET10_MESH: TetMesh = {
+  nodes:        TET10_NODES,
+  elements:     new Int32Array([0,1,2,3,4,5,6,7,8,9]),
+  nodeCount:    10,
+  elementCount: 1,
+  nodesPerElem: 10,
+};
+const TET10_VOLUME = 4 / 3;
+
+describe("assembleMass C3D10 — lumped (HRZ)", () => {
+  const lumped = assembleMass(TET10_MESH, PLA_MAT, 'lumped') as Float64Array;
+
+  it("returns Float64Array of length n = nodeCount × 3", () => {
+    expect(lumped).toBeInstanceOf(Float64Array);
+    expect(lumped.length).toBe(TET10_MESH.nodeCount * 3);
+  });
+
+  it("all lumped masses are strictly positive (issue #103 regression)", () => {
+    for (let i = 0; i < lumped.length; i++) {
+      expect(lumped[i] ?? 0).toBeGreaterThan(0);
+    }
+  });
+
+  it("total lumped mass equals ρ × V (mass preserved)", () => {
+    let total = 0;
+    for (let i = 0; i < lumped.length; i++) total += lumped[i] ?? 0;
+    expect(total).toBeCloseTo(3 * RHO_SOLVER * TET10_VOLUME, 20);
+  });
+
+  it("HRZ split: corner mass = ρV/36, midside mass = 4ρV/27 per direction", () => {
+    const mCorner  = RHO_SOLVER * TET10_VOLUME / 36;
+    const mMidside = 4 * RHO_SOLVER * TET10_VOLUME / 27;
+    for (let a = 0; a < 4;  a++) expect(lumped[a * 3]).toBeCloseTo(mCorner, 22);
+    for (let a = 4; a < 10; a++) expect(lumped[a * 3]).toBeCloseTo(mMidside, 22);
+  });
+
+  it("lumped total matches consistent total (row-sum of consistent M)", () => {
+    const conResult = assembleMass(TET10_MESH, PLA_MAT, 'consistent') as { M: CSRMatrix };
+    expect(csrTotalSum(conResult.M)).toBeCloseTo(
+      Array.from(lumped).reduce((a, b) => a + b, 0), 20);
+  });
+
+  it("documents WHY HRZ is needed: consistent corner row-sums are negative", () => {
+    const conResult = assembleMass(TET10_MESH, PLA_MAT, 'consistent') as { M: CSRMatrix };
+    const rowSums = csrRowSums(conResult.M);
+    // Corner node rows (nodes 0-3, x-DOF) sum to −ρ·6Ve/120 < 0
+    for (let a = 0; a < 4; a++) {
+      expect(rowSums[a * 3] ?? 0).toBeLessThan(0);
+    }
+  });
+});
+
+describe("assembleMass C3D10 — lumped on multi-element box mesh", () => {
+  // 2×2×2 mm box, 2×2×2 divisions → 48 quadratic tets, V = 8 mm³
+  const mesh = generateBoxMeshC3D10(0, 0, 0, 2, 2, 2, 2, 2, 2);
+  const lumped = assembleMass(mesh, PLA_MAT, 'lumped') as Float64Array;
+
+  it("all lumped masses positive on a real multi-element mesh", () => {
+    for (let i = 0; i < lumped.length; i++) {
+      expect(lumped[i] ?? 0).toBeGreaterThan(0);
+    }
+  });
+
+  it("total lumped mass equals ρ × V_box", () => {
+    let total = 0;
+    for (let i = 0; i < lumped.length; i++) total += lumped[i] ?? 0;
+    expect(total).toBeCloseTo(3 * RHO_SOLVER * 8.0, 18);
   });
 });
 

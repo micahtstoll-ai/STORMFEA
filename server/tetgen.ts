@@ -131,11 +131,16 @@ function parseNodeFile(text: string): Float64Array {
 // TetGen uses 1-based indices by default — subtract 1 if the first index is 1.
 //
 // TetGen's C3D10 edge-midpoint ordering (0-based .ele positions 4–9), VERIFIED
-// EMPIRICALLY against TetGen 1.5 (1.5.1-beta1 source, "Version 1.5, May 31,
-// 2014" banner) by meshing unit-cube and skewed-hexahedron OFF files with -o2
-// and matching each higher-order node's coordinates to the midpoint of a
-// corner pair. Consistent across every element of every run, with and without
-// quality refinement (-pQ, -pq1.4Q, -pq1.4a0.1Q):
+// EMPIRICALLY against TetGen 1.5 by meshing box / unit-cube / skewed-hexahedron
+// OFF files with -o2 and matching each higher-order node's coordinates to the
+// midpoint of a corner pair. Confirmed against two builds — the 1.5.1-beta1
+// source ("Version 1.5, May 31, 2014" banner) and the Debian/Ubuntu package
+// tetgen 1.5.0-5build1 (issue #66, re-run 2026-07 via
+// scripts/verify_tetgen_c3d10.mjs, which observed slots 4..9 emit edges
+// 2-3, 0-3, 0-1, 1-2, 1-3, 0-2 — deriving exactly the C3D10_REORDER below —
+// and a cantilever check at δ/δ_EB = 0.984). Consistent across every element
+// of every run, with and without quality refinement (-pQ, -pq1.4Q,
+// -pq1.4a0.1Q, -pq1.4a10Q):
 //   TetGen:   4=mid(2,3), 5=mid(0,3), 6=mid(0,1), 7=mid(1,2), 8=mid(1,3), 9=mid(0,2)
 //   STORMFEA: 4=mid(0,1), 5=mid(1,2), 6=mid(0,2), 7=mid(0,3), 8=mid(1,3), 9=mid(2,3)
 // (STORMFEA's convention comes from element.ts c3d10ShapeFunctions:
@@ -181,6 +186,27 @@ function parseEleFile(text: string): { elements: Int32Array; nodesPerElem: numbe
   return { elements, nodesPerElem };
 }
 
+// ─── Missing-binary error ─────────────────────────────────────────────────────
+/**
+ * Thrown when the TetGen binary itself is absent (spawn ENOENT), as opposed
+ * to TetGen running and failing on the geometry. Callers must NOT treat this
+ * as a geometry problem: the fix is installing TetGen, not re-exporting the
+ * STL. analysis.ts rethrows it instead of falling back to the box mesh, and
+ * /api/analyse maps it to a 503 with the install hint (issue #106).
+ */
+export class TetGenNotFoundError extends Error {
+  readonly hint: string;
+  constructor(binPath: string) {
+    const install = process.platform === "win32"
+      ? "download tetgen.exe and place it next to start.bat"
+      : process.platform === "darwin"
+        ? "run: brew install tetgen"
+        : "run: sudo apt-get install tetgen";
+    super(`TetGen not found (looked for '${binPath}') — STL meshing requires it. This is a setup problem, not a problem with your model.`);
+    this.hint = `Install TetGen (${install}), then restart the server. The server console prints the same instructions at startup.`;
+  }
+}
+
 // ─── Main entry point ─────────────────────────────────────────────────────────
 export interface TetGenResult {
   mesh: TetMesh;
@@ -195,6 +221,13 @@ export async function meshWithTetGen(
   triangleCount: number,
   elementOrder:  1 | 2 = 2,
 ): Promise<TetGenResult> {
+
+  // ── 0. Known-missing fast path ────────────────────────────────────────────
+  // The startup probe (probeTetGen) already determined whether the binary is
+  // runnable. If it is known to be absent, fail immediately with the honest
+  // cause — before welding vertices, writing the OFF file, or burning four
+  // pointless switch-set retries that each ENOENT (issue #106).
+  if (tetgenKnownMissing) throw new TetGenNotFoundError(TETGEN_BIN);
 
   // ── 1. Weld + write OFF ───────────────────────────────────────────────────
   const weld = weldVertices(stlPositions, triangleCount);
@@ -231,11 +264,20 @@ export async function meshWithTetGen(
 
   let meshed = false;
   for (const switches of switchSets) {
-    const ok = await tryTetGen(offPath, switches);
-    if (ok) {
+    const outcome = await tryTetGen(offPath, switches);
+    if (outcome === "ok") {
       console.log(`[tetgen] succeeded with switches: ${switches.join(" ")}`);
       meshed = true;
       break;
+    }
+    if (outcome === "missing") {
+      // The binary itself is absent (ENOENT) — retrying with different
+      // switches cannot help, and this must not be reported as a geometry
+      // problem. Remember it so later analyses fail before doing any work.
+      tetgenKnownMissing = true;
+      console.error(`[tetgen] binary not found (looked for '${TETGEN_BIN}') — skipping fallback switch sets`);
+      await unlink(offPath).catch(() => {});
+      throw new TetGenNotFoundError(TETGEN_BIN);
     }
     console.log(`[tetgen] failed with ${switches.join(" ")}, trying fallback...`);
   }
@@ -319,6 +361,15 @@ function findTetGen(): string {
 const TETGEN_BIN = findTetGen();
 
 /**
+ * Whether we know the TetGen binary is absent. Set by probeTetGen at startup
+ * and by an ENOENT during an actual meshing attempt; cleared when a probe
+ * finds the binary again (e.g. installed and the probe re-run). Lets every
+ * subsequent analysis fail fast with the real cause instead of re-discovering
+ * the missing binary through four ENOENT retries per run (issue #106).
+ */
+let tetgenKnownMissing = false;
+
+/**
  * Probe whether the TetGen binary is actually runnable, for a loud startup
  * check. Runs it with no args (TetGen prints usage and exits) and classifies
  * the outcome: an ENOENT spawn error means the binary is absent; any other
@@ -327,24 +378,30 @@ const TETGEN_BIN = findTetGen();
 export async function probeTetGen(): Promise<{ found: boolean; path: string }> {
   try {
     await execFileAsync(TETGEN_BIN, [], { timeout: 10_000 });
+    tetgenKnownMissing = false;
     return { found: true, path: TETGEN_BIN };
   } catch (err: unknown) {
     const code = (err as NodeJS.ErrnoException)?.code;
     // ENOENT = binary not found on disk / PATH. Anything else (non-zero exit
     // from a usage message, etc.) means it ran — so it IS present.
-    return { found: code !== "ENOENT", path: TETGEN_BIN };
+    const found = code !== "ENOENT";
+    tetgenKnownMissing = !found;
+    return { found, path: TETGEN_BIN };
   }
 }
 
 // ─── Helper: try TetGen with given switches ───────────────────────────────────
-async function tryTetGen(offPath: string, switches: string[]): Promise<boolean> {
+// "missing" = the binary itself could not be spawned (ENOENT); "fail" = it ran
+// but rejected the geometry/switches. The distinction matters: only "fail" is
+// worth retrying with more permissive switches.
+async function tryTetGen(offPath: string, switches: string[]): Promise<"ok" | "fail" | "missing"> {
   try {
     await execFileAsync(TETGEN_BIN, [...switches, offPath], {
-      timeout: 600_000,
+      timeout: 120_000,
       maxBuffer: 10 * 1024 * 1024,
     });
-    return true;
-  } catch {
-    return false;
+    return "ok";
+  } catch (err: unknown) {
+    return (err as NodeJS.ErrnoException)?.code === "ENOENT" ? "missing" : "fail";
   }
 }

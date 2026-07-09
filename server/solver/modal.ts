@@ -23,11 +23,19 @@
  */
 
 import type { CSRMatrix, TetMesh, AnyMaterial, ModalAnalysisResult, ModeResult } from "./types.js";
-import { assembleK, matvec } from "./assembly.js";
-import { assembleM } from "./mass.js";
-import { solvePCG } from "./cg.js";
+import { assembleK, matvec, type SparsityPattern } from "./assembly.js";
+import { assembleM, assembleMass } from "./mass.js";
+import { solvePCG, buildIC0, type IC0Factor } from "./cg.js";
 
-// ─── Density lookup table (tonne/mm³) ────────────────────────────────────────
+// ─── Density lookup table (tonne/mm³) — FALLBACK ONLY ─────────────────────────
+//
+// Issue #99: this label-substring lookup is a legacy fallback used only when
+// the material carries no massRho. It knows nothing about infill/walls (it
+// returns SOLID density), so frequencies computed through it are wrong for
+// sparse-infill parts. analysis.ts always sets massRho (solid density ×
+// effective volume fraction); the proper path is assembleMass(mesh, material).
+// Entries are ordered most-specific-first: "pa12" must precede "nylon" so
+// "PA12 (Nylon)" resolves to the PA12 density, not generic nylon.
 
 const DENSITY_T_MM3: Array<[string, number]> = [
   ["steel",  7.85e-9],
@@ -37,9 +45,9 @@ const DENSITY_T_MM3: Array<[string, number]> = [
   ["ti-",    4.51e-9],
   ["copper", 8.96e-9],
   ["brass",  8.50e-9],
-  ["nylon",  1.15e-9],
-  ["pa12",   1.01e-9],
+  ["pa12",   1.01e-9],   // before "nylon": "PA12 (Nylon)" must match pa12
   ["pa6",    1.13e-9],
+  ["nylon",  1.15e-9],
   ["petg",   1.27e-9],
   ["abs",    1.05e-9],
   ["tpu",    1.20e-9],
@@ -50,6 +58,7 @@ const DENSITY_T_MM3: Array<[string, number]> = [
   ["hips",   1.05e-9],
 ];
 
+/** @deprecated Fallback for materials without massRho — assumes SOLID density. */
 function getDensityFromLabel(label: string): number {
   const lower = label.toLowerCase();
   for (const [key, rho] of DENSITY_T_MM3) {
@@ -60,6 +69,22 @@ function getDensityFromLabel(label: string): number {
 }
 
 // ─── Exported interface ───────────────────────────────────────────────────────
+
+/**
+ * Pristine (NO boundary conditions applied) prebuilt stiffness matrix pieces
+ * for reuse across solves on the same mesh (issue #100). The static pipeline
+ * applies Dirichlet penalties to ITS copy of the value array; modal applies
+ * its own diagonal-scaling penalty to a fresh copy of Kdata, so the two BC
+ * flavors never collide. rowPtr/colIdx/diagIdx depend only on connectivity
+ * and are shared read-only (they double as the sparsity pattern for M).
+ */
+export interface ModalPrebuiltK {
+  /** Pristine K value array — runModalAnalysis copies it before penalizing. */
+  readonly Kdata:   Float64Array;
+  readonly rowPtr:  Int32Array;
+  readonly colIdx:  Int32Array;
+  readonly diagIdx: Int32Array;
+}
 
 export interface ModalInput {
   readonly mesh:      TetMesh;
@@ -76,6 +101,9 @@ export interface ModalInput {
   readonly cgTol?:    number;
   /** Spectral shift σ (rad²/s²). Default: 1.0 */
   readonly sigma?:    number;
+  /** Optional pristine prebuilt K — skips re-assembling K and rebuilding the
+   *  sparsity pattern for M (issue #100). */
+  readonly prebuiltK?: ModalPrebuiltK;
 }
 
 // ─── Vector helpers ───────────────────────────────────────────────────────────
@@ -428,6 +456,16 @@ function subspaceIterate(
   const Y  = new Float64Array(n * p);
   const MY = new Float64Array(n * p);
 
+  // Factor Kσ ONCE (issue #100). Kσ never changes across the p × maxIter inner
+  // PCG solves, but solvePCG used to rebuild the IC(0) factorization on every
+  // call — up to p × maxIter redundant factorizations per modal run.
+  let ic0: IC0Factor | null = null;
+  try {
+    ic0 = buildIC0(Ksigma, diagIdxKs);
+  } catch (e) {
+    console.warn(`[modal] IC(0) factorization of Kσ failed (${e instanceof Error ? e.message : e}) — using Jacobi preconditioner`);
+  }
+
   let prevEigvals: Float64Array = new Float64Array(nModes).fill(Infinity);
   let eigenvalues: Float64Array = new Float64Array(p);
   let eigenvectors: Float64Array = new Float64Array(p * p);
@@ -438,13 +476,16 @@ function subspaceIterate(
     iterations = iter + 1;
 
     // Step a: Solve Ksigma·Y[:,j] = MX[:,j] for each j
+    // (reusing the single IC(0) factor built before the iteration loop)
     for (let j = 0; j < p; j++) {
       const rhs = MX.subarray(j * n, (j+1) * n);
       let cgResult;
       try {
-        cgResult = solvePCG(Ksigma, rhs, diagIdxKs, cgTol, 5000, 'ic0');
+        cgResult = ic0
+          ? solvePCG(Ksigma, rhs, diagIdxKs, cgTol, 5000, 'ic0', ic0)
+          : solvePCG(Ksigma, rhs, diagIdxKs, cgTol, 5000, 'jacobi');
       } catch {
-        // Fallback to Jacobi if IC0 fails
+        // Fallback to Jacobi if the preconditioned solve fails
         try {
           cgResult = solvePCG(Ksigma, rhs, diagIdxKs, cgTol * 10, 5000, 'jacobi');
         } catch (e2) {
@@ -575,12 +616,44 @@ export async function runModalAnalysis(input: ModalInput): Promise<ModalAnalysis
   const p = Math.min(Math.max(2 * nModes, nModes + 8), n);
   if (p <= nModes) throw new Error(`runModalAnalysis: subspace size p=${p} must be > nModes=${nModes}`);
 
-  // Get density
-  const rho = getDensityFromLabel(material.label);
-
-  // Assemble K and M
-  const { K, diagIdx: kDiagIdx } = await assembleK(mesh, material);
-  const { M, diagIdx: mDiagIdx } = assembleM(mesh, rho);
+  // Obtain K (pristine) and M.
+  // K path (issue #100): when the caller already assembled K for the static
+  // solve, reuse its pristine value array (copied — the penalty below must not
+  // leak into the caller's copy) and its sparsity pattern instead of running a
+  // full re-assembly + pattern rebuild.
+  // Mass path (issue #99): use the material's massRho via assembleMass — set by
+  // analysis.ts to solid density × effective volume fraction (infill + walls),
+  // so mass tracks infill the same way stiffness does. The label-based lookup
+  // is a legacy fallback that assumes SOLID density and is labelled as such.
+  let K: CSRMatrix;
+  let kDiagIdx: Int32Array;
+  if (input.prebuiltK) {
+    const pb = input.prebuiltK;
+    if (pb.rowPtr.length - 1 !== n) {
+      throw new Error(`runModalAnalysis: prebuiltK size mismatch — rowPtr implies n=${pb.rowPtr.length - 1}, mesh implies n=${n}`);
+    }
+    K = { n, data: pb.Kdata.slice(), colIdx: pb.colIdx, rowPtr: pb.rowPtr };
+    kDiagIdx = pb.diagIdx;
+  } else {
+    const asm = await assembleK(mesh, material);
+    K = asm.K;
+    kDiagIdx = asm.diagIdx;
+  }
+  // M shares K's sparsity pattern (same mesh connectivity) — build it once.
+  const pattern: SparsityPattern = { rowPtr: K.rowPtr, colIdx: K.colIdx, diagIdx: kDiagIdx };
+  let M: CSRMatrix;
+  if ((material as { massRho?: number }).massRho !== undefined) {
+    const massResult = assembleMass(mesh, material, 'consistent', pattern) as { M: CSRMatrix; diagIdx: Int32Array };
+    M = massResult.M;
+  } else {
+    console.warn(
+      `[modal] material "${material.label}" has no massRho — falling back to ` +
+      `label-based SOLID density (infill/wall mass reduction NOT applied; ` +
+      `frequencies will be underestimated for sparse-infill parts)`,
+    );
+    const rho = getDensityFromLabel(material.label);
+    M = assembleM(mesh, rho, pattern).M;
+  }
 
   // Apply penalty to constrained DOFs in K only.
   // For constrained DOF: ω²_constrained = K_penalty/M_diag = PENALTY*K_orig/M_orig >> structural modes.

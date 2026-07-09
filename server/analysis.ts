@@ -1,7 +1,7 @@
 /**
  * analysis.ts
  * -----------
- * The core analysis pipeline for the local StressForm server.
+ * The core analysis pipeline for the local STORMFEA server.
  *
  * Takes:
  *   - STL positions (Float32Array)
@@ -16,10 +16,11 @@
  */
 
 import { generateBoxMesh }                  from "./solver/meshgen.js";
-import { runLinearStatic, runLinearStaticWithK } from "./solver/pipeline.js";
+import { runLinearStaticWithK }            from "./solver/pipeline.js";
 import { runModalAnalysis }                from "./solver/modal.js";
 import { runLinearBuckling }              from "./solver/buckling.js";
 import { assembleK, assembleKsigma, buildSparsityPattern } from "./solver/assembly.js";
+import { buildNodeElementAdjacency }       from "./solver/adjacency.js";
 import { applyDirichletBC }    from "./solver/boundary.js";
 import { assembleForceVector } from "./solver/load.js";
 import type { ModalAnalysisResult }        from "./solver/types.js";
@@ -44,11 +45,11 @@ function _snapAnalysis(label: string): void {
 }
 import type { SolverInput }                 from "./solver/pipeline.js";
 import type { IsotropicMaterial, AnyMaterial, OrthotropicMaterial } from "./solver/types.js";
-import { isOrthotropic } from "./solver/types.js";
+import { isOrthotropic, isOrthotropicLike } from "./solver/types.js";
 import { recoverElementStressComponents }   from "./solver/stress_detail.js";
 import { sprSmoothedStress, sprSmoothedStress6, recoverElementStress, nodeAveragedPrincipalStress } from "./solver/stress.js";
 import type { HoleFeature }                 from "./holes.js";
-import { meshWithTetGen }                   from "./tetgen.js";
+import { meshWithTetGen, TetGenNotFoundError } from "./tetgen.js";
 import { meshStepWithGmsh }                 from "./gmsh_mesh.js";
 
 // ─── Standard bolt database ───────────────────────────────────────────────────
@@ -193,6 +194,44 @@ export interface FailureModeResult {
 }
 
 /**
+ * Headline "bulk yield" safety factor for the verdict (issue #97).
+ *
+ * For orthotropic/gyroid materials the solver already evaluates the Hill
+ * (1948) anisotropic criterion per element (recoverElementStress →
+ * SolverResult.minSafetyFactor, using the calibrated yieldXY/yieldZ of the
+ * material actually solved). That is the number that must drive the verdict:
+ * the von Mises SF (effectiveYield / maxVM) applies the in-plane yield in all
+ * directions and overestimates the margin of Z-dominated stress states by up
+ * to yieldXY/yieldZ (~1.7×).
+ *
+ * The von Mises SF is still returned for display/comparison.
+ */
+export function computeBulkSF(params: {
+  /** SolverResult.minSafetyFactor — Hill-based for orthotropic materials */
+  minSafetyFactor:   number;
+  /** SolverResult.maxVonMisesMPa */
+  maxVonMisesMPa:    number;
+  /** Scalar effective yield (literature × print multipliers), MPa */
+  effectiveYieldMPa: number;
+  /** The material the solver actually ran with */
+  material:          AnyMaterial;
+}): { sf: number; criterion: "hill" | "von-mises"; vonMisesSF: number } {
+  const { minSafetyFactor, maxVonMisesMPa, effectiveYieldMPa, material } = params;
+  const vonMisesSF = effectiveYieldMPa / (maxVonMisesMPa || 0.001);
+  // Only OrthotropicMaterial gets the Hill criterion in recoverElementStress
+  // (GyroidOrthotropic falls back to von Mises there, but against the
+  // material's own yield — still preferable to the literature-only scalar).
+  if (isOrthotropicLike(material) && isFinite(minSafetyFactor)) {
+    return {
+      sf:        minSafetyFactor,
+      criterion: isOrthotropic(material) ? "hill" : "von-mises",
+      vonMisesSF,
+    };
+  }
+  return { sf: vonMisesSF, criterion: "von-mises", vonMisesSF };
+}
+
+/**
  * Check all applicable failure modes for a bolted hole connection.
  *
  * Modes checked:
@@ -210,8 +249,15 @@ export function checkFailureModes(params: {
   edgeDistMm:       number;
   holeSeparationMm: number;
   appliedForceN:    number;
+  /**
+   * Scalar in-plane yield of the material actually solved (MPa) — should
+   * include coupon calibration and CLT adjustments, not just literature
+   * values (issue #97). Used by the analytic (non-FEM) checks below.
+   */
   effectiveYieldMPa: number;
   bulkSF:           number;
+  /** Which criterion produced bulkSF — labels the "Bulk yield" entry. */
+  bulkCriterion?:   "hill" | "von-mises";
   orientation:      string;
   layerHeightMm:    number;
   calibratedBearingStrMPa?: number | null;
@@ -221,6 +267,7 @@ export function checkFailureModes(params: {
           appliedForceN, effectiveYieldMPa, bulkSF, orientation,
           layerHeightMm, calibratedBearingStrMPa } = params;
   const bearingStressMult = params.bearingStressMult ?? 1.0;
+  const bulkCriterion     = params.bulkCriterion ?? "von-mises";
 
   const results: FailureModeResult[] = [];
   const bolt = holeClass.bolt;
@@ -248,7 +295,9 @@ export function checkFailureModes(params: {
     failForceN:  F * bulkSF,
     checked:     true,
     confidence:  "high",
-    note:        "Von Mises stress from FEM vs effective yield. Most reliable result.",
+    note:        bulkCriterion === "hill"
+      ? "Hill (1948) anisotropic yield criterion from FEM — accounts for the weaker inter-layer (Z) direction. Most reliable result."
+      : "Von Mises stress from FEM vs effective yield. Most reliable result.",
   });
 
   // ── 2. Net-section tension ─────────────────────────────────────────────────
@@ -418,7 +467,7 @@ export function backCalculateProfile(params: {
   /**
    * Stress-concentration factors from FEA-in-the-loop (see coupon_fea.ts).
    * Kt = peak/nominal stress for that coupon's geometry. Converts the nominal
-   * F/A strength into a PEAK-based allowable consistent with how StressForm
+   * F/A strength into a PEAK-based allowable consistent with how STORMFEA
    * evaluates real parts. Omit (or 1.0) to fall back to plain nominal F/A.
    *
    * Tensile is intentionally NOT corrected: its gauge is uniform by design, so
@@ -486,13 +535,15 @@ export function backCalculateProfile(params: {
 }
 
 // ─── Base properties (solid, 100% infill, isotropic approximation) ─────────
-const MATERIALS: Record<string, { E: number; nu: number; yieldMPa: number; label: string }> = {
-  pla:   { E: 3500,  nu: 0.36, yieldMPa: 50,  label: "PLA"   },
-  petg:  { E: 2100,  nu: 0.38, yieldMPa: 45,  label: "PETG"  },
-  abs:   { E: 2300,  nu: 0.35, yieldMPa: 40,  label: "ABS"   },
-  tpu:   { E:  200,  nu: 0.48, yieldMPa: 15,  label: "TPU"   },
-  pa12:  { E: 1700,  nu: 0.40, yieldMPa: 48,  label: "PA12 (Nylon)" },
-  asa:   { E: 2100,  nu: 0.35, yieldMPa: 40,  label: "ASA"   },
+// densityKgM3: solid (100% dense) mass density in kg/m³ — used with
+// effectiveVolumeFraction() to set massRho for modal analysis (issue #99).
+const MATERIALS: Record<string, { E: number; nu: number; yieldMPa: number; densityKgM3: number; label: string }> = {
+  pla:   { E: 3500,  nu: 0.36, yieldMPa: 50,  densityKgM3: 1240, label: "PLA"   },
+  petg:  { E: 2100,  nu: 0.38, yieldMPa: 45,  densityKgM3: 1270, label: "PETG"  },
+  abs:   { E: 2300,  nu: 0.35, yieldMPa: 40,  densityKgM3: 1050, label: "ABS"   },
+  tpu:   { E:  200,  nu: 0.48, yieldMPa: 15,  densityKgM3: 1200, label: "TPU"   },
+  pa12:  { E: 1700,  nu: 0.40, yieldMPa: 48,  densityKgM3: 1010, label: "PA12 (Nylon)" },
+  asa:   { E: 2100,  nu: 0.35, yieldMPa: 40,  densityKgM3: 1070, label: "ASA"   },
 };
 
 /**
@@ -572,10 +623,39 @@ function buildOrthotropicMaterialCLT(
   );
 
   if (orientation === "upright") {
+    // UPRIGHT ORIENTATION — SCALAR-SWAP APPROXIMATION (issue #101)
+    // ------------------------------------------------------------
+    // Physically, an upright print has its layer normal along a HORIZONTAL
+    // axis in the analysis frame: one in-plane direction is weak (across
+    // layers) and the other in-plane direction plus Z are strong (in-layer).
+    // The exact model is a 90° rotation of the full 6×6 C (Bond transform),
+    // which yields a material that is transversely isotropic about a
+    // horizontal axis — NOT about Z.
+    //
+    // The solver's OrthotropicMaterial type only supports transverse isotropy
+    // about global Z, so we approximate by swapping scalars: E_z takes the
+    // strong in-layer modulus (the load axis faces the strong direction) and
+    // BOTH horizontal directions take the weak through-layer modulus. This is
+    // conservative for in-plane loads (one horizontal direction is actually
+    // strong) and exact for the vertical modulus. See the SOURCES tab
+    // ("upright_swap" entry) and server/tests/unit/upright-swap.test.ts,
+    // which benchmarks this swap against the full tensor rotation.
+    //
+    // Shear moduli after the swap:
+    //   G_xy (global XY plane): this plane contains the layer normal, so
+    //     shearing it slides layers over each other → the inter-layer shear
+    //     G_xz, NOT the CLT in-plane 1/A66 (and not the isotropic fallback
+    //     E_xy/(2(1+ν)) that the constitutive builder would derive if G_xy
+    //     were omitted — that was the dropped-G_xy bug this fixes).
+    //   G_xz (planes containing global Z): the true rotated values are
+    //     G_xy (in-layer) for one plane and G_xz (inter-layer) for the other;
+    //     the transversely-isotropic type forces them equal, so keep the
+    //     conservative inter-layer value G_xz.
     return {
       kind: "orthotropic",
       E_xy: mat.E_z, E_z: mat.E_xy,
-      nu_xy: mat.nu_xy, nu_xz: mat.nu_xz, G_xz: mat.G_xz,
+      nu_xy: mat.nu_xy, nu_xz: mat.nu_xz,
+      G_xy: mat.G_xz, G_xz: mat.G_xz,
       yieldXY: mat.yieldZ, yieldZ: mat.yieldXY,
       label: mat.label.replace(`, ${orientation}`, ", upright"),
     };
@@ -612,10 +692,20 @@ function buildOrthotropicMaterial(
   const src = calibration ? `calibrated:${calibration.id}` : "literature";
 
   if (orientation === "upright") {
+    // Scalar-swap approximation for upright prints — same reasoning as the
+    // CLT branch above (see the long comment in buildOrthotropicMaterialCLT
+    // and the "upright_swap" SOURCES entry): the swapped material keeps
+    // transverse isotropy about global Z, which makes BOTH horizontal
+    // directions weak (conservative; the real part is weak in only one).
+    // G_xy is set explicitly to the inter-layer shear modulus G_xz because
+    // the global XY plane contains the layer normal after the swap — without
+    // this the constitutive builder would silently derive an in-layer-like
+    // G_xy = E_xy/(2(1+ν)) from the swapped (weak) modulus (issue #101).
     return {
       kind: "orthotropic",
       E_xy: E_z, E_z: E_xy,
-      nu_xy, nu_xz, G_xz,
+      nu_xy, nu_xz,
+      G_xy: G_xz, G_xz,
       yieldXY: yieldZ, yieldZ: yieldXY,
       label: `${base.label} (orthotropic, upright, lh=${layerHeightMm}mm, ${src})`,
     };
@@ -710,6 +800,34 @@ export function effectiveStrengthMultiplier(
   return combined * patternMul * orientMul;
 }
 
+/**
+ * First-order solid-volume fraction of an FDM part (issue #99).
+ *
+ * Used to scale the SOLID material density into an effective mass density
+ * (massRho) for modal analysis, so that mass tracks infill the same way
+ * stiffness already does. Without this a 20%-infill part carried full solid
+ * density against infill-scaled stiffness, underestimating frequencies ~2×.
+ *
+ * Model: deliberately the SAME load-bearing-section model that
+ * effectiveStrengthMultiplier uses for its combined infill+wall term
+ * (infillStrengthCurve linear term + 0.10 per extra perimeter, clamped at
+ * 1.0). That model already interprets its coefficients as the fraction of
+ * solid, load-carrying cross-section (shells fully dense, interior at the
+ * infill ratio); to first order the solid VOLUME fraction equals that solid
+ * SECTION fraction. The pattern and orientation multipliers are strength
+ * adjustments, not density adjustments, so they are excluded here.
+ *
+ * Limitations (documented, accepted at first order): the true shell fraction
+ * depends on part surface-to-volume ratio and wall width, and infill patterns
+ * differ a few percent in material use at equal percentage. Both effects are
+ * far smaller than the 5× mass error this replaces.
+ */
+export function effectiveVolumeFraction(infillPct: number, wallCount: number): number {
+  const infillFrac = infillStrengthCurve(infillPct);       // 0.30 → 1.0 linear
+  const wallBonus  = (wallCount - 1) * 0.10;
+  return Math.min(1.0, infillFrac + wallBonus);
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 export interface ForceSpec {
   /** Force magnitude in Newtons */
@@ -791,6 +909,38 @@ export function threadLayerPenalty(pitchMm: number, layerHeightMm: number): numb
   return Math.max(0.50, penalty);
 }
 
+/**
+ * Thrown by runAnalysis when its AbortSignal fires at a phase boundary
+ * (issue #109). The /api/analyse SSE handler catches this to stop cleanly
+ * without sending a bogus result when the client has disconnected/cancelled.
+ */
+export class AnalysisAbortError extends Error {
+  constructor(message = "analysis aborted") {
+    super(message);
+    this.name = "AnalysisAbortError";
+  }
+}
+
+/**
+ * Progress event emitted at each solver phase boundary (issue #109). Streamed
+ * to the client as SSE so the overlay reflects real solver phases instead of a
+ * timer, and shows mesh size the moment meshing completes.
+ */
+export interface AnalysisPhaseEvent {
+  phase: "mesh" | "constraints" | "assembly" | "solve" | "recovery" | "mapping" | "modal" | "buckling";
+  message?: string;
+  /** Present on the post-mesh "mesh" event. */
+  nodeCount?:    number;
+  elementCount?: number;
+  nodesPerElem?: number;
+  dof?:          number;
+  /** Present on live "solve" (CG) progress events. */
+  iteration?:         number;
+  relativeResidual?:  number;
+  converged?:         boolean;
+  iterations?:        number;
+}
+
 export interface AnalysisRequest {
   /** Raw STL vertex positions — 9 floats per triangle (used when fileType = "stl") */
   positions:     Float32Array;
@@ -825,6 +975,19 @@ export interface AnalysisRequest {
    * the central SF regardless of this field — it is reserved for future single-mode runs.
    */
   uncertaintyMode?: 'central' | 'conservative' | 'optimistic';
+  /**
+   * Optional progress callback (issue #109). Invoked at each phase boundary and,
+   * when the solve streams, at CG residual checkpoints. Non-serializable, so it
+   * is only ever set by the SSE server path — the blocking JSON path and all
+   * tests leave it undefined and are unaffected.
+   */
+  onPhase?: (ev: AnalysisPhaseEvent) => void;
+  /**
+   * Optional abort signal (issue #109). Checked at each phase boundary; when
+   * aborted (client disconnected or clicked Cancel), runAnalysis throws
+   * AnalysisAbortError instead of burning CPU on a result nobody will read.
+   */
+  signal?: AbortSignal;
 }
 
 export interface PrintRecommendation {
@@ -1081,7 +1244,7 @@ export interface IsotropicComparison {
   isoMaxVonMisesMPa:  number;
   /** How much more optimistic the isotropic model is, as a % */
   optimismPct:        number;
-  /** Whether the isotropic model would call this part safe (SF >= 1) when StressForm says it fails */
+  /** Whether the isotropic model would call this part safe (SF >= 1) when STORMFEA says it fails */
   falseSafe:          boolean;
   /** Short plain-English explanation for the judge panel */
   explanation:        string;
@@ -1098,6 +1261,14 @@ export interface AnalysisResult {
   maxDisplacementMm:      number;
   effectiveYieldMPa:      number;
   safetyFactor:           number | null;
+  /** Which yield criterion produced the headline safetyFactor (issue #97) */
+  sfCriterion:            "hill" | "von-mises";
+  /**
+   * Von Mises SF (effectiveYield / maxVM) — what a conventional isotropic
+   * check gives on the same stress field. Kept for display/comparison next
+   * to the Hill-based headline SF.
+   */
+  vonMisesSafetyFactor:   number | null;
   estimatedFailForce:     number;
   /** Conservative SF using lower bound of literature uncertainty range */
   safetyfactorLow:        number | null;
@@ -1557,7 +1728,13 @@ function generateTopologySuggestions(
 }
 
 // ─── Find nodes near a hole wall ──────────────────────────────────────────────
-function findHoleWallNodes(
+/**
+ * 3-D cylinder test: a node belongs to the hole wall iff BOTH
+ *   - its axial offset from the hole centre is within ±2.5·radius, AND
+ *   - its radial distance from the hole axis is within ±tolerance of radius.
+ * Works for arbitrary hole axes (hole.normal must be unit length).
+ */
+export function findHoleWallNodes(
   nodes:     Float64Array,
   nodeCount: number,
   hole:      HoleFeature,
@@ -1582,6 +1759,81 @@ function findHoleWallNodes(
     }
   }
   return result;
+}
+
+/**
+ * Select the nodes to rigidly constrain for a bolted hole on the STL path
+ * (issue #105).
+ *
+ * Previous behaviour selected by 2-D radial distance only (0.9r < r_xy < 1.15r
+ * with NO bound along the hole axis) — every node anywhere in the part whose
+ * XY projection landed in that ring was fixed (28.5% of all nodes on the demo
+ * bracket for a single Ø5 hole). This over-constrains the model and inflates
+ * bolt-area load capacity.
+ *
+ * Now unified on the 3-D cylinder test (findHoleWallNodes): axial extent is
+ * bounded to ±2.5·radius around the hole centre, radial band is ±15% of the
+ * radius. Fallbacks (in order):
+ *   1. < 3 wall nodes → interior nodes of the bounded cylinder (r_rad < 0.9r)
+ *   2. still none     → single node closest to the hole centre
+ *
+ * STL hole detection (holes.ts) only produces Z-axis holes today; arbitrary
+ * axes are handled correctly by the cylinder test, but a non-Z (or degenerate)
+ * axis is logged since it means the hole came from an unexpected source.
+ */
+export function findStlBoltConstraintNodes(
+  nodes:     Float64Array,
+  nodeCount: number,
+  hole:      HoleFeature,
+): number[] {
+  const r = hole.radius;
+
+  // Normalize the hole axis; fall back to Z (the only axis STL detection
+  // produces) if degenerate, and warn on non-Z axes.
+  let [ax, ay, az] = hole.normal;
+  const alen = Math.sqrt(ax*ax + ay*ay + az*az);
+  if (alen < 1e-9) {
+    console.warn(
+      `[analysis] hole ${hole.id}: degenerate axis (${hole.normal.join(", ")}) — defaulting to Z`,
+    );
+    ax = 0; ay = 0; az = 1;
+  } else {
+    ax /= alen; ay /= alen; az /= alen;
+    if (Math.abs(az) < 0.999) {
+      console.warn(
+        `[analysis] hole ${hole.id}: non-Z axis (${ax.toFixed(3)}, ${ay.toFixed(3)}, ${az.toFixed(3)}) — ` +
+        `STL hole detection normally produces Z-axis holes; constraining along the provided axis`,
+      );
+    }
+  }
+  const unitAxisHole: HoleFeature = { ...hole, normal: [ax, ay, az] };
+
+  // Primary: wall nodes via the bounded 3-D cylinder test (radial band ±15%).
+  const wallNodes = findHoleWallNodes(nodes, nodeCount, unitAxisHole, r * 0.15);
+  if (wallNodes.length >= 3) return wallNodes;
+
+  // Fallback 1: interior nodes of the SAME bounded cylinder (coarse meshes may
+  // have no node near the wall but one on/near the axis).
+  const [hx, hy, hz] = unitAxisHole.centre;
+  const halfLen = r * 2.5;
+  const interiorNodes: number[] = [];
+  for (let n = 0; n < nodeCount; n++) {
+    const x = nodes[n*3]??0, y = nodes[n*3+1]??0, z = nodes[n*3+2]??0;
+    const dx = x-hx, dy = y-hy, dz = z-hz;
+    const t  = dx*ax + dy*ay + dz*az;
+    if (Math.abs(t) > halfLen) continue;
+    const radX = dx - t*ax, radY = dy - t*ay, radZ = dz - t*az;
+    const radDist = Math.sqrt(radX*radX + radY*radY + radZ*radZ);
+    if (radDist < r * 0.9) interiorNodes.push(n);
+  }
+  // Prefer interior nodes over an under-populated wall set (mirrors the old
+  // behaviour); fall back to whatever wall nodes exist (1-2) before resorting
+  // to the single-closest-node fallback.
+  if (interiorNodes.length > 0) return interiorNodes;
+  if (wallNodes.length > 0) return wallNodes;
+
+  // Fallback 2: single closest node to the hole centre.
+  return [closestNode(nodes, nodeCount, hx, hy, hz)];
 }
 
 // ─── Find closest node to a 3D point ─────────────────────────────────────────
@@ -1628,6 +1880,129 @@ function mapStressToSTLVertices(
   return result;
 }
 
+// ─── Error-estimate vertex mapping ────────────────────────────────────────────
+/**
+ * Map per-element ZZ error estimates to display-mesh surface vertices.
+ *
+ * For each surface vertex: find FEA nodes within R3D via a spatial grid, then
+ * consider only the elements ADJACENT to those nodes (node → element adjacency
+ * built once per call, O(elementCount × npe)). The nearest element centroid
+ * within R3D wins; if none is in range, fall back to a global centroid scan.
+ *
+ * Adjacency uses corner nodes only (first 4 of each element) — midside nodes
+ * of C3D10 elements are skipped, matching the previous brute-force behaviour.
+ *
+ * This replaces an O(V × nearbyNodes × elementCount) brute-force scan that
+ * dominated analysis wall time (issue #104: ~98% of a 6.5-minute analysis).
+ * Output is identical to the brute-force version (same visit order, same
+ * floating-point operations) — see server/tests/unit/error-mapping.test.ts.
+ */
+export function mapErrorEstimateToVertices(
+  mesh:          import("./solver/types.js").TetMesh,
+  errorEstimate: Float32Array | Float64Array,
+  positions:     Float32Array,
+  vertCount:     number,
+): Float32Array {
+  const out = new Float32Array(vertCount);
+  const R3D = 3.0;
+  const CELL3 = R3D;
+  const R2 = R3D * R3D;
+  const npe = mesh.nodesPerElem ?? 4;
+
+  // ── Spatial grid over FEA nodes (same layout as the stress-mapping grid) ──
+  let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity, zMin = Infinity, zMax = -Infinity;
+  for (let n = 0; n < mesh.nodeCount; n++) {
+    const x = mesh.nodes[n*3] ?? 0, y = mesh.nodes[n*3+1] ?? 0, z = mesh.nodes[n*3+2] ?? 0;
+    if (x < xMin) xMin = x; if (x > xMax) xMax = x;
+    if (y < yMin) yMin = y; if (y > yMax) yMax = y;
+    if (z < zMin) zMin = z; if (z > zMax) zMax = z;
+  }
+  const gW = Math.ceil((xMax - xMin) / CELL3) + 1;
+  const gH = Math.ceil((yMax - yMin) / CELL3) + 1;
+  const gD = Math.ceil((zMax - zMin) / CELL3) + 1;
+  const grid = new Map<number, number[]>();
+  for (let n = 0; n < mesh.nodeCount; n++) {
+    const ci = Math.floor(((mesh.nodes[n*3]   ?? 0) - xMin) / CELL3);
+    const cj = Math.floor(((mesh.nodes[n*3+1] ?? 0) - yMin) / CELL3);
+    const ck = Math.floor(((mesh.nodes[n*3+2] ?? 0) - zMin) / CELL3);
+    const key = ci*gH*gD + cj*gD + ck;
+    let cell = grid.get(key); if (!cell) { cell = []; grid.set(key, cell); }
+    cell.push(n);
+  }
+
+  // ── Node → element adjacency (corner nodes only), built ONCE ──────────────
+  const { ptr: adjPtr, list: adjList } = buildNodeElementAdjacency(mesh, Math.min(4, npe));
+
+  // ── Element centroids (corner-node average), computed ONCE ────────────────
+  const centX = new Float64Array(mesh.elementCount);
+  const centY = new Float64Array(mesh.elementCount);
+  const centZ = new Float64Array(mesh.elementCount);
+  for (let e = 0; e < mesh.elementCount; e++) {
+    const base = e * npe;
+    let cx = 0, cy = 0, cz = 0;
+    for (let ni = 0; ni < 4; ni++) {
+      const nodeIdx = mesh.elements[base + ni] ?? 0;
+      cx += mesh.nodes[nodeIdx * 3]     ?? 0;
+      cy += mesh.nodes[nodeIdx * 3 + 1] ?? 0;
+      cz += mesh.nodes[nodeIdx * 3 + 2] ?? 0;
+    }
+    centX[e] = cx / 4; centY[e] = cy / 4; centZ[e] = cz / 4;
+  }
+
+  // Element-visited stamps: stamp[e] === vertexEpoch ⇒ already checked for this
+  // vertex. Avoids allocating a fresh Set per vertex.
+  const stamp = new Int32Array(mesh.elementCount).fill(-1);
+
+  for (let v = 0; v < vertCount; v++) {
+    const vx = positions[v*3] ?? 0, vy = positions[v*3+1] ?? 0, vz = positions[v*3+2] ?? 0;
+    let bestDist2 = Infinity, bestError = 0;
+
+    const ci = Math.floor((vx - xMin) / CELL3);
+    const cj = Math.floor((vy - yMin) / CELL3);
+    const ck = Math.floor((vz - zMin) / CELL3);
+
+    for (let di = -1; di <= 1; di++) {
+      for (let dj = -1; dj <= 1; dj++) {
+        for (let dk = -1; dk <= 1; dk++) {
+          const ni2 = ci + di, nj2 = cj + dj, nk2 = ck + dk;
+          if (ni2 < 0 || ni2 >= gW || nj2 < 0 || nj2 >= gH || nk2 < 0 || nk2 >= gD) continue;
+          const cell = grid.get(ni2*gH*gD + nj2*gD + nk2);
+          if (!cell) continue;
+          for (const n of cell) {
+            const aStart = adjPtr[n] ?? 0, aEnd = adjPtr[n+1] ?? 0;
+            for (let a = aStart; a < aEnd; a++) {
+              const e = adjList[a] ?? 0;
+              if (stamp[e] === v) continue;
+              stamp[e] = v;
+              const dx = (centX[e] ?? 0) - vx, dy = (centY[e] ?? 0) - vy, dz = (centZ[e] ?? 0) - vz;
+              const d2 = dx*dx + dy*dy + dz*dz;
+              if (d2 < R2 && d2 < bestDist2) {
+                bestDist2 = d2;
+                bestError = errorEstimate[e] ?? 0;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Fallback: global centroid scan if nothing within R3D
+    if (bestDist2 === Infinity) {
+      for (let e = 0; e < mesh.elementCount; e++) {
+        const dx = (centX[e] ?? 0) - vx, dy = (centY[e] ?? 0) - vy, dz = (centZ[e] ?? 0) - vz;
+        const d2 = dx*dx + dy*dy + dz*dz;
+        if (d2 < bestDist2) {
+          bestDist2 = d2;
+          bestError = errorEstimate[e] ?? 0;
+        }
+      }
+    }
+    out[v] = bestError;
+  }
+
+  return out;
+}
+
 // ─── Main analysis function ───────────────────────────────────────────────────
 /**
  * runAnalysis — Main analysis pipeline.
@@ -1656,6 +2031,20 @@ function mapStressToSTLVertices(
 export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult> {
   const t0 = Date.now();
 
+  // ── Progress + cancellation plumbing (issue #109) ──────────────────────────
+  // emit() forwards phase events to the SSE client (no-op on the JSON path).
+  // checkAbort() throws AnalysisAbortError at a phase boundary if the client
+  // has disconnected/cancelled, so the expensive solve never runs for an
+  // abandoned request. A callback that throws must not corrupt the solve, so
+  // emit() swallows callback errors.
+  const emit = (ev: AnalysisPhaseEvent): void => {
+    if (!req.onPhase) return;
+    try { req.onPhase(ev); } catch { /* progress reporting must never break the solve */ }
+  };
+  const checkAbort = (): void => {
+    if (req.signal?.aborted) throw new AnalysisAbortError();
+  };
+
   // ── Material + print settings ───────────────────────────────────────────────
   const baseMat = MATERIALS[req.print.materialId] ?? MATERIALS["pla"]!;
   const strengthMul = effectiveStrengthMultiplier(
@@ -1669,7 +2058,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // Use orthotropic material model — accurately captures the anisotropy of FDM parts.
   // For flat prints: E_z ≈ 0.45 × E_xy, G_xz ≈ 0.40 × G_xy (Ahn et al. 2002)
   // For upright prints: axes are swapped — the strong direction faces the load
-  const material: AnyMaterial = req.print.useCLT
+  const builtMaterial: AnyMaterial = req.print.useCLT
     ? buildOrthotropicMaterialCLT(
         req.print.materialId,
         req.print.infillPct,
@@ -1688,7 +2077,18 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         req.calibration ?? null,
       );
 
+  // Effective mass density (issue #99): solid density × first-order solid
+  // volume fraction (infill % + fully-dense perimeters). Consumed by
+  // assembleMass in the modal path so the mass matrix tracks infill the same
+  // way the stiffness matrix already does.
+  const material: AnyMaterial = {
+    ...builtMaterial,
+    massRho: baseMat.densityKgM3 * effectiveVolumeFraction(req.print.infillPct, req.print.wallCount),
+  };
+
   // ── Build volume mesh ──────────────────────────────────────────────────────
+  checkAbort();
+  emit({ phase: "mesh", message: req.fileType === "step" ? "Meshing (Gmsh)…" : "Meshing (TetGen)…" });
   let mesh: import("./solver/types.js").TetMesh;
   let surfaceToNode: Int32Array;
   let gmshResult: import("./gmsh_mesh.js").GmshMeshResult | null = null;
@@ -1725,6 +2125,12 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       console.log(`[analysis] TetGen mesh: ${mesh.nodeCount} nodes, ${mesh.elementCount} elements (${mesh.nodesPerElem}-node)`);
       _snapAnalysis("after TetGen mesh");
     } catch (err) {
+      // A missing binary is an environment problem, not a geometry problem —
+      // don't degrade to the box mesh (which the UI explains as "your STL may
+      // be broken"). Surface the real cause with its install hint instead
+      // (issue #106). The box fallback below remains for genuine meshing
+      // failures where TetGen ran and rejected the geometry.
+      if (err instanceof TetGenNotFoundError) throw err;
       console.warn("[analysis] TetGen failed, falling back to C3D4 box mesh (C3D10 not available in fallback):", err);
       meshFallback = true;
       const { minX, maxX, minY, maxY, minZ, maxZ } = req.bounds;
@@ -1740,7 +2146,21 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     }
   }
 
+  // Mesh built — report size to the client immediately (issue #109) and honor
+  // an abort that arrived while the (async) mesher was running, so the solve
+  // never starts for a request the client already abandoned.
+  checkAbort();
+  emit({
+    phase: "mesh",
+    message: "Mesh built",
+    nodeCount:    mesh.nodeCount,
+    elementCount: mesh.elementCount,
+    nodesPerElem: mesh.nodesPerElem,
+    dof:          mesh.nodeCount * 3,
+  });
+
   // ── Constraints: bolt hole physics ────────────────────────────────────────
+  emit({ phase: "constraints", message: "Applying constraints…" });
   const boltedHoles = req.holes.filter(h => req.boltHoleIds.includes(h.id));
   const constraints: { nodeIndices: number[] }[] = [];
 
@@ -1763,30 +2183,16 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       }
     }
   } else {
-    // STL path: geometric search for hole wall nodes
+    // STL path: geometric search for hole wall nodes.
+    // Uses the bounded 3-D cylinder test (issue #105) — the previous XY-only
+    // annulus fixed every node in the part whose XY projection landed in the
+    // ring, regardless of its position along the hole axis.
     for (const hole of boltedHoles) {
-      const [hx, hy] = hole.centre;
-      const r = hole.radius;
-
-      const holeWallNodes: number[] = [];
-      const holeInteriorNodes: number[] = [];
-      for (let n = 0; n < mesh.nodeCount; n++) {
-        const x = mesh.nodes[n*3]??0, y = mesh.nodes[n*3+1]??0;
-        const radDist = Math.sqrt((x-hx)**2 + (y-hy)**2);
-        if (radDist < r * 0.9) {
-          holeInteriorNodes.push(n);
-        } else if (radDist < r * 1.15) {
-          holeWallNodes.push(n);
-        }
-      }
-
-      const holeNodes = holeWallNodes.length >= 3 ? holeWallNodes : holeInteriorNodes;
-      console.log(`[analysis] hole ${hole.id}: ${holeNodes.length} wall nodes (r=${r.toFixed(2)}±15%)`);
-
-      if (holeNodes.length === 0) {
-        holeNodes.push(closestNode(mesh.nodes, mesh.nodeCount, hx, hy, hole.centre[2]));
-      }
-
+      const holeNodes = findStlBoltConstraintNodes(mesh.nodes, mesh.nodeCount, hole);
+      console.log(
+        `[analysis] hole ${hole.id}: ${holeNodes.length} wall nodes ` +
+        `(r=${hole.radius.toFixed(2)}±15%, axial ±${(hole.radius*2.5).toFixed(2)}mm)`,
+      );
       constraints.push({ nodeIndices: holeNodes });
     }
   }
@@ -1928,22 +2334,39 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     console.log(`[analysis] rigid-body-mode warning: ${rigidBodyMode.message}`);
   }
 
+  // Assembly + solve boundary — last cheap chance to bail before the expensive
+  // stiffness assembly and CG solve (issue #109).
+  checkAbort();
+  emit({ phase: "assembly", message: "Assembling stiffness matrix…" });
+
   // ── Solve ──────────────────────────────────────────────────────────────────
+  // K is assembled ONCE (issue #100). Modal and buckling both need K WITHOUT
+  // the static Dirichlet penalties (modal applies a diagonal-scaling penalty,
+  // buckling applies a fresh Dirichlet penalty), so the pipeline keeps a
+  // pristine copy of K's value array; each consumer applies its own BC flavor
+  // to its own copy. rowPtr/colIdx/diagIdx (the sparsity pattern) depend only
+  // on mesh connectivity and are shared by K, M and Kσ.
+  const wantsModal = req.analysisType === 'modal';
+  const mayBuckle  = mesh.nodesPerElem === 4;
   const input: SolverInput = {
     mesh,
     material,
     constraints,
     forces: effectiveForces,
+    keepPristineK: wantsModal || mayBuckle,
+    signal: req.signal,
+    onCgProgress: req.onPhase
+      ? (iteration, relativeResidual) => emit({ phase: "solve", iteration, relativeResidual })
+      : undefined,
   };
 
-  let result: import("./solver/types.js").SolverResult;
+  emit({ phase: "solve", message: "Solving K·u = F (conjugate gradient)…" });
+  const intermediate = await runLinearStaticWithK(input);
+  checkAbort();
+  const result: import("./solver/types.js").SolverResult = intermediate.result;
   let modalResult: ModalAnalysisResult | undefined;
 
-  if (req.analysisType === 'modal') {
-    // Run static + keep K for modal reuse
-    const intermediate = await runLinearStaticWithK(input);
-    result = intermediate.result;
-
+  if (wantsModal) {
     // Collect fixed node indices from constraints
     const fixedNodes: number[] = [];
     for (const cs of constraints) {
@@ -1956,14 +2379,19 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         material,
         fixedNodes,
         nModes: 10,
+        // Reuse the statically-assembled K (pristine values + shared pattern)
+        prebuiltK: intermediate.K0data ? {
+          Kdata:   intermediate.K0data,
+          rowPtr:  intermediate.K.rowPtr,
+          colIdx:  intermediate.K.colIdx,
+          diagIdx: intermediate.diagIdx,
+        } : undefined,
       });
       console.log(`[analyse] modal: ${modalResult.modes.length} modes, f1=${modalResult.modes.find(m => m.frequencyHz > 1)?.frequencyHz.toFixed(1) ?? '?'}Hz`);
     } catch (err) {
       console.warn(`[analyse] modal solve failed (static result preserved): ${err}`);
       modalResult = undefined;
     }
-  } else {
-    result = await runLinearStatic(input);
   }
 
   // ── Linear buckling analysis ───────────────────────────────────────────────
@@ -1974,19 +2402,36 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   let bucklingBLF: number | undefined;
   let bucklingConverged = false;
   let bucklingTensile   = false;
+  let bucklingIndeterminate = false;
   if (mesh.nodesPerElem === 4 && result.elemStress6) {
     try {
-      // Rebuild K with BCs for the buckling solve (same assembly as static).
-      const { K: Kbuck, diagIdx: buckDiagIdx } = await assembleK(mesh, material);
+      // Apply BCs to a fresh copy of the pristine assembled K (issue #100 —
+      // previously this re-ran the full element assembly). Falls back to
+      // re-assembly if the pristine copy is unavailable.
+      let Kbuck: import("./solver/types.js").CSRMatrix;
+      let buckDiagIdx: Int32Array;
+      if (intermediate.K0data) {
+        Kbuck = {
+          n:      intermediate.K.n,
+          data:   intermediate.K0data.slice(),
+          colIdx: intermediate.K.colIdx,
+          rowPtr: intermediate.K.rowPtr,
+        };
+        buckDiagIdx = intermediate.diagIdx;
+      } else {
+        ({ K: Kbuck, diagIdx: buckDiagIdx } = await assembleK(mesh, material));
+      }
       const fDummy = assembleForceVector(mesh.nodeCount, effectiveForces);
       applyDirichletBC(Kbuck, fDummy, buckDiagIdx, constraints);
 
       const Ksigma = assembleKsigma(mesh, result.elemStress6, Kbuck.rowPtr, Kbuck.colIdx);
       const bResult = await runLinearBuckling(Kbuck, Ksigma, buckDiagIdx);
-      bucklingBLF       = bResult.blf;
-      bucklingConverged = bResult.converged;
-      bucklingTensile   = bResult.tensileDominated;
-      console.log(`[buckling] BLF=${bResult.blf.toFixed(3)} converged=${bResult.converged} iters=${bResult.iterations} tensile=${bResult.tensileDominated}`);
+      bucklingConverged     = bResult.converged;
+      bucklingTensile       = bResult.tensileDominated;
+      bucklingIndeterminate = bResult.indeterminate;
+      // Do NOT surface a non-physical (indeterminate) eigenvalue as a BLF.
+      if (!bResult.indeterminate) bucklingBLF = bResult.blf;
+      console.log(`[buckling] BLF=${bResult.blf.toFixed(3)} converged=${bResult.converged} iters=${bResult.iterations} tensile=${bResult.tensileDominated} indeterminate=${bResult.indeterminate}`);
     } catch (err) {
       console.warn(`[buckling] Analysis failed (non-fatal): ${err}`);
     }
@@ -1997,6 +2442,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // especially at stress concentrations near holes.
   // Falls back to direct averaging for under-determined patches (<4 elements).
   // Reference: Zienkiewicz & Zhu (1992) Int J Numer Methods Eng 33(7).
+  emit({ phase: "recovery", message: "Recovering nodal stress (SPR)…" });
   _snapAnalysis("before sprSmoothedStress");
   const nodeStress = sprSmoothedStress(mesh, result.vonMises);
   _snapAnalysis("after sprSmoothedStress");
@@ -2040,6 +2486,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   }
 
   // ── Map stress back to surface vertices ────────────────────────────────────
+  emit({ phase: "mapping", message: "Mapping stress to surface…" });
   // Vertex count must match the CLIENT's display mesh (req.positions /
   // req.triangleCount), not the server's internal analysis mesh — the
   // client's mesh3d geometry (and its color attribute buffer) was built
@@ -2229,91 +2676,15 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   }
 
   // ── Error estimate vertex mapping ────────────────────────────────────────────
-  // Map element-level error estimates to surface vertices using the same
-  // nearest-node grid. For each surface vertex, find the nearest element and
-  // use its error estimate (interpolated from element centroid).
-  const vertexErrorEstimate = result.errorEstimate ? new Float32Array(vertCount) : undefined;
-  if (vertexErrorEstimate && result.errorEstimate) {
-    // Build element → node connectivity for error mapping
-    // For each surface vertex, find the nearest FEA element and use its error
-    function nearestElementError(vx: number, vy: number, vz: number): number {
-      let bestDist2 = Infinity, bestError = 0;
-      const R2 = R3D * R3D;
-      // Check nearby nodes for their adjacent elements
-      const ci = Math.floor((vx - nxMin) / CELL3);
-      const cj = Math.floor((vy - nyMin) / CELL3);
-      const ck = Math.floor((vz - nzMin) / CELL3);
-
-      const checkedElems = new Set<number>();
-      for (let di = -1; di <= 1; di++) {
-        for (let dj = -1; dj <= 1; dj++) {
-          for (let dk = -1; dk <= 1; dk++) {
-            const ni2 = ci + di, nj2 = cj + dj, nk2 = ck + dk;
-            if (ni2 < 0 || ni2 >= gW3 || nj2 < 0 || nj2 >= gH3 || nk2 < 0 || nk2 >= gD3) continue;
-            const cell = grid3.get(ni2 * gH3 * gD3 + nj2 * gD3 + nk2);
-            if (!cell) continue;
-            for (const n of cell) {
-              // Find elements containing this node
-              const npe = mesh.nodesPerElem ?? 4;
-              for (let e = 0; e < mesh.elementCount; e++) {
-                if (checkedElems.has(e)) continue;
-                const base = e * npe;
-                let hasNode = false;
-                for (let ni = 0; ni < Math.min(4, npe); ni++) {
-                  if ((mesh.elements[base + ni] ?? 0) === n) { hasNode = true; break; }
-                }
-                if (!hasNode) continue;
-                checkedElems.add(e);
-
-                // Compute element centroid distance
-                let cx = 0, cy = 0, cz = 0;
-                for (let ni = 0; ni < 4; ni++) {
-                  const nodeIdx = mesh.elements[base + ni] ?? 0;
-                  cx += mesh.nodes[nodeIdx * 3] ?? 0;
-                  cy += mesh.nodes[nodeIdx * 3 + 1] ?? 0;
-                  cz += mesh.nodes[nodeIdx * 3 + 2] ?? 0;
-                }
-                cx /= 4; cy /= 4; cz /= 4;
-                const dx = cx - vx, dy = cy - vy, dz = cz - vz;
-                const d2 = dx * dx + dy * dy + dz * dz;
-                if (d2 < R2 && d2 < bestDist2) {
-                  bestDist2 = d2;
-                  bestError = (result.errorEstimate![e] ?? 0);
-                }
-              }
-            }
-          }
-        }
-      }
-      // Fallback: global scan if none found within R3D
-      if (bestDist2 === Infinity) {
-        for (let e = 0; e < mesh.elementCount; e++) {
-          const npe = mesh.nodesPerElem ?? 4;
-          const base = e * npe;
-          let cx = 0, cy = 0, cz = 0;
-          for (let ni = 0; ni < 4; ni++) {
-            const nodeIdx = mesh.elements[base + ni] ?? 0;
-            cx += mesh.nodes[nodeIdx * 3] ?? 0;
-            cy += mesh.nodes[nodeIdx * 3 + 1] ?? 0;
-            cz += mesh.nodes[nodeIdx * 3 + 2] ?? 0;
-          }
-          cx /= 4; cy /= 4; cz /= 4;
-          const dx = cx - vx, dy = cy - vy, dz = cz - vz;
-          const d2 = dx * dx + dy * dy + dz * dz;
-          if (d2 < bestDist2) {
-            bestDist2 = d2;
-            bestError = (result.errorEstimate![e] ?? 0);
-          }
-        }
-      }
-      return bestError;
-    }
-    for (let v = 0; v < vertCount; v++) {
-      vertexErrorEstimate[v] = nearestElementError(
-        req.positions[v * 3] ?? 0, req.positions[v * 3 + 1] ?? 0, req.positions[v * 3 + 2] ?? 0
-      );
-    }
-  }
+  // Map element-level error estimates to surface vertices. Uses a node→element
+  // adjacency list built once per mesh (issue #104 — the previous inline
+  // implementation scanned ALL elements per nearby node per vertex,
+  // O(V × nodes × elements), which was ~98% of analysis wall time).
+  _snapAnalysis("before error-estimate mapping");
+  const vertexErrorEstimate = result.errorEstimate
+    ? mapErrorEstimateToVertices(mesh, result.errorEstimate, req.positions, vertCount)
+    : undefined;
+  _snapAnalysis("after error-estimate mapping");
 
   // ── Nodal displacement vertex mapping ───────────────────────────────────────
   // Map nodal displacements (ux, uy, uz) to surface vertices.
@@ -2411,13 +2782,29 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
 
   // ── Summary ────────────────────────────────────────────────────────────────
   const maxVM = result.maxVonMisesMPa;
-  const sf    = effectiveYield / (maxVM || 0.001);
+  // Headline SF (issue #97): the solver's per-element Hill (1948) minimum SF —
+  // uses the calibrated, anisotropic yield of the material actually solved.
+  // The von Mises SF is kept alongside for display/comparison.
+  const bulk = computeBulkSF({
+    minSafetyFactor:   result.minSafetyFactor,
+    maxVonMisesMPa:    maxVM,
+    effectiveYieldMPa: effectiveYield,
+    material,
+  });
+  const sf         = bulk.sf;
+  const sfVonMises = bulk.vonMisesSF;
+
+  // Scalar in-plane yield of the material actually solved (includes coupon
+  // calibration and CLT adjustments). The analytic hole checks below must use
+  // this, not the literature-only effectiveYield (issue #97).
+  const solvedYieldXY = isOrthotropicLike(material) ? material.yieldXY : effectiveYield;
 
   // Estimate failure force: linear scaling from applied loads
   const totalAppliedForce = req.forces.reduce((sum, f) => sum + f.magnitude, 0) || 1;
   const estimatedFailForce = totalAppliedForce * sf;
 
-  const yielding = maxVM >= effectiveYield;
+  // Yielding per the same criterion that produced the headline SF
+  const yielding = sf < 1.0;
 
   const solverMs = Date.now() - t0;
 
@@ -2527,8 +2914,9 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       edgeDistMm,
       holeSeparationMm:  holeSepMm,
       appliedForceN:     totalForce2 / Math.max(1, holesForClassification.length),
-      effectiveYieldMPa: effectiveYield,
+      effectiveYieldMPa: solvedYieldXY,
       bulkSF:            sf,
+      bulkCriterion:     bulk.criterion,
       orientation:       req.print.orientation,
       layerHeightMm:     req.print.layerHeightMm ?? 0.2,
       calibratedBearingStrMPa: req.calibration?.bearingStr_MPa ?? null,
@@ -2584,6 +2972,20 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         note:        `BLF ${blf.toFixed(2)}× → ${blfVerdict}. Linear buckling overestimates real BLF by 10–40% for ` +
                      `imperfect FDM geometry. Critical for thin walls, channels, and gussets. Verdict thresholds ` +
                      `(FAIL <1.5×, MARGINAL <3.0×) are STORMFEA design-basis values — see SOURCES tab.${convergeNote}`,
+      });
+    } else if (bucklingIndeterminate) {
+      // Eigensolver converged only to a negative (tension-driven) eigenvalue,
+      // even after a deflated restart — a positive BLF may exist but was not
+      // found. Report indeterminate rather than a misleading number.
+      allFailureModes.push({
+        mode:       "Linear buckling (BLF)",
+        sf:          0,
+        failForceN:  0,
+        checked:     false,
+        confidence:  "unchecked",
+        note:        "Buckling factor indeterminate: mixed tension/compression pre-stress — " +
+                     "the eigensolver found only a non-physical (negative) mode. " +
+                     "Treat buckling as UNCHECKED for this load case.",
       });
     } else {
       // Buckling not available (C3D10 mesh, or solver failure)
@@ -2736,7 +3138,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // for the same mesh/BCs) — it is the YIELD CRITERION.
   //
   // Isotropic FEA: SF = yieldStrength / vonMises  (applies same yield in all directions)
-  // StressForm:    SF = yieldXY / σ_hill  (Hill 1948 quadratic criterion)
+  // STORMFEA:    SF = yieldXY / σ_hill  (Hill 1948 quadratic criterion)
   //
   // For flat prints under through-thickness load: yieldZ = 0.58 × yieldXY.
   // This means the orthotropic SF can be 42% lower than the isotropic SF
@@ -2748,7 +3150,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   try {
     // Isotropic SF: apply full yieldXY uniformly (no Z-direction penalty)
     // This is what every conventional FEA tool computes.
-    // Using the same stress field as StressForm so the comparison is purely
+    // Using the same stress field as STORMFEA so the comparison is purely
     // about the yield criterion, not mesh/solver differences.
     const orthoMat = material as import("./solver/types.js").OrthotropicMaterial;
     const yieldXY = isOrthotropic(material) ? orthoMat.yieldXY : effectiveYield;
@@ -2775,19 +3177,19 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     let explanation: string;
     if (falseSafe) {
       explanation = `Conventional FEA: SF ${isoSF.toFixed(2)}× — part appears SAFE. ` +
-        `StressForm: SF ${sf.toFixed(2)}× — part FAILS. ` +
+        `STORMFEA: SF ${sf.toFixed(2)}× — part FAILS. ` +
         `Reason: this is a ${directionWord} part. ` +
         `Inter-layer bond yield is only ${(yieldZ/yieldXY*100).toFixed(0)}% of in-plane yield (${yieldZ.toFixed(1)} vs ${yieldXY.toFixed(1)} MPa). ` +
         `Conventional FEA applies in-plane yield everywhere — it cannot see this failure mode.`;
     } else if (optimismPct > 5) {
-      explanation = `Conventional FEA predicts SF ${isoSF.toFixed(2)}× — ${optimismPct}% more optimistic than StressForm's ${sf.toFixed(2)}×. ` +
+      explanation = `Conventional FEA predicts SF ${isoSF.toFixed(2)}× — ${optimismPct}% more optimistic than STORMFEA's ${sf.toFixed(2)}×. ` +
         `The gap comes from the yield criterion: conventional tools apply in-plane yield (${yieldXY.toFixed(1)} MPa) uniformly. ` +
-        `StressForm uses the Hill criterion, which accounts for the weaker through-layer direction ` +
+        `STORMFEA uses the Hill criterion, which accounts for the weaker through-layer direction ` +
         `(${yieldZ.toFixed(1)} MPa — ${yieldPenaltyPct}% lower). ` +
         `For a ${directionWord} part, the inter-layer bonds govern failure first.`;
     } else {
       const wouldGap = (1/FDM_ORTHO_RATIOS.yieldZ_over_yieldXY - 1) * 100;
-      explanation = `Both predictions agree closely (conventional ${isoSF.toFixed(2)}× vs StressForm ${sf.toFixed(2)}×). ` +
+      explanation = `Both predictions agree closely (conventional ${isoSF.toFixed(2)}× vs STORMFEA ${sf.toFixed(2)}×). ` +
         `The governing stress here is predominantly in-plane, where both use yield_XY (${yieldXY.toFixed(1)} MPa). ` +
         `Note: for parts where Z-direction tension governs (pure pull-through loading), the gap would be ~${wouldGap.toFixed(0)}% — ` +
         `conventional FEA would be optimistic because it ignores inter-layer yield (${yieldZ.toFixed(1)} MPa vs ${yieldXY.toFixed(1)} MPa in-plane).`;
@@ -2878,6 +3280,8 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     maxDisplacementMm:  result.maxDisplacementMm,
     effectiveYieldMPa:  effectiveYield,
     safetyFactor:       meshFallback ? null : sf,
+    sfCriterion:        bulk.criterion,
+    vonMisesSafetyFactor: meshFallback ? null : sfVonMises,
     safetyfactorLow:    meshFallback ? null : sfLow,
     safetyFactorHigh:   meshFallback ? null : sfHigh,
     estimatedFailForce,

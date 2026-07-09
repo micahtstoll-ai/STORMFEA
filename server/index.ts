@@ -1,7 +1,8 @@
 /**
  * index.ts
  * --------
- * StressForm local server.
+ * STORMFEA local server. (Formerly branded "StressForm" — on-disk file names
+ * and env vars keep the legacy stressform naming for backward compatibility.)
  * Runs on http://localhost:3000
  *
  * Routes:
@@ -19,8 +20,10 @@ import { fileURLToPath } from "url";
 import { spawn }         from "child_process";
 import { parseSTL }      from "./stl.js";
 import { detectHoles }   from "./holes.js";
-import { runAnalysis }   from "./analysis.js";
-import type { ForceSpec, PrintSettings } from "./analysis.js";
+import { runAnalysis, AnalysisAbortError }   from "./analysis.js";
+import type { ForceSpec, PrintSettings, AnalysisResult } from "./analysis.js";
+import { expect as expectShape, ValidationError } from "./validate.js";
+import type { Spec } from "./validate.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app    = express();
@@ -49,9 +52,30 @@ app.use(cors({
 }));
 app.use(express.json({ limit: "50mb" }));
 
+// ── Request validation (issue #106) ───────────────────────────────────────────
+// Every error response across all routes uses the uniform envelope
+//   { error: string, field?: string, hint?: string }
+// POST routes validate their body shape with validateBody() BEFORE any heavy
+// work (base64 decode, meshing, solving), so a malformed request gets a 400
+// with the offending field path instead of an opaque mid-pipeline 500.
+function validateBody(req: express.Request, res: express.Response, spec: Spec): boolean {
+  try {
+    expectShape(req.body, spec);
+    return true;
+  } catch (e) {
+    if (e instanceof ValidationError) {
+      res.status(400).json({ error: e.message, field: e.field, hint: e.hint });
+      return false;
+    }
+    throw e;
+  }
+}
+
 // ── Serve the UI ──────────────────────────────────────────────────────────────
 // STRESSFORM_CLIENT_DIR env var is set by Electron to point to the
 // bundled client. Falls back to local dist/client for npm start usage.
+// (The env var keeps the legacy "STRESSFORM" name so existing launchers keep
+// working; the user-facing product name is STORMFEA.)
 const clientDir = process.env["STRESSFORM_CLIENT_DIR"]
   ?? path.join(__dirname, "client");
 app.use(express.static(clientDir));
@@ -67,7 +91,14 @@ app.get("/api/health", (_req, res) => {
 // ── Upload + parse STL or STEP ────────────────────────────────────────────────
 app.post("/api/upload", upload.single("file"), async (req, res) => {
   try {
-    if (!req.file) { res.status(400).json({ error: "No file uploaded" }); return; }
+    if (!req.file) {
+      res.status(400).json({
+        error: "No file uploaded",
+        field: "file",
+        hint:  "send multipart/form-data with a 'file' part containing an .stl, .step or .stp file",
+      });
+      return;
+    }
 
     const buffer   = req.file.buffer;
     const filename = (req.file.originalname ?? "").toLowerCase();
@@ -108,12 +139,19 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
       // positions, which is what originally produced a ~4.5x-inflated
       // radius despite identifySurfaces itself being correct.
       const holes = Array.from(gmsh.holeWallNodes.entries()).map(([id, nodeIndices]) => {
+        // Hole centre = mean of the wall-node positions on all three axes,
+        // matching the Onshape import path below. The z component was
+        // previously hardcoded to 2.0 (half a nominal 4 mm plate), which
+        // skewed the constraint node search and edge-distance checks for any
+        // STEP part thicker than 4 mm (issue #111).
         const xs = nodeIndices.map(n => nodes[n*3]??0);
         const ys = nodeIndices.map(n => nodes[n*3+1]??0);
+        const zs = nodeIndices.map(n => nodes[n*3+2]??0);
         const cx = xs.reduce((a,b)=>a+b,0)/xs.length;
         const cy = ys.reduce((a,b)=>a+b,0)/ys.length;
+        const cz = zs.reduce((a,b)=>a+b,0)/zs.length;
         const r = gmsh.holeRadius.get(id) ?? 0;
-        return { id, centre:[cx,cy,2.0] as [number,number,number],
+        return { id, centre:[cx,cy,cz] as [number,number,number],
           normal:[0,0,1] as [number,number,number],
           radius:+r.toFixed(4), diameter:+(r*2).toFixed(4),
           confidence:1.0, edgeCount:nodeIndices.length };
@@ -165,8 +203,42 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
 });
 
 // ── Run FEM analysis ──────────────────────────────────────────────────────────
+// Body shape checked BEFORE any decode/meshing/solve work — see validateBody().
+const ANALYSE_SPEC: Spec = {
+  positionsB64:     "string",
+  "stepB64?":       "string",
+  "fileType?":      "stl|step",
+  triangleCount:    "number",
+  bounds: {
+    minX: "number", maxX: "number",
+    minY: "number", maxY: "number",
+    minZ: "number", maxZ: "number",
+  },
+  holes: [{
+    id: "number", centre: "vec3", normal: "vec3", radius: "number",
+    "confidence?": "number", "edgeCount?": "number",
+    "rmsError?": "number", "maxDeviation?": "number",
+  }],
+  boltHoleIds: ["number"],
+  "boltFasteners?": [{ holeId: "number", "fastenerType?": "string", "washerOD?": "number" }],
+  forces: [{
+    magnitude: "number", direction: "vec3", position: "vec3",
+    "loadDistribution?": "uniform|cosine_bearing",
+  }],
+  print: {
+    materialId: "string", infillPct: "number", wallCount: "number",
+    pattern: "string", orientation: "string", layerHeightMm: "number",
+    "meshOrder?": "number", "useCLT?": "boolean", "beadProps?": "object",
+  },
+  "meshQuality?":  "coarse|standard|fine",
+  "analysisType?": "string",
+  "calibration?":  "object",
+};
+
 app.post("/api/analyse", async (req, res) => {
   try {
+    if (!validateBody(req, res, ANALYSE_SPEC)) return;
+
     const body = req.body as {
       positionsB64: string;
       stepB64?:     string;
@@ -190,7 +262,15 @@ app.post("/api/analyse", async (req, res) => {
     };
 
     // Decode positions
-    const posBuf   = Buffer.from(body.positionsB64, "base64");
+    const posBuf = Buffer.from(body.positionsB64, "base64");
+    if (posBuf.byteLength === 0 || posBuf.byteLength % 4 !== 0) {
+      res.status(400).json({
+        error: "Invalid request: positionsB64 does not decode to a float32 array",
+        field: "positionsB64",
+        hint:  `decoded to ${posBuf.byteLength} bytes — expected a non-empty multiple of 4 (use the positionsB64 returned by /api/upload)`,
+      });
+      return;
+    }
     const positions = new Float32Array(posBuf.buffer, posBuf.byteOffset, posBuf.byteLength / 4);
 
     // Decode STEP buffer if present
@@ -204,48 +284,33 @@ app.post("/api/analyse", async (req, res) => {
 
     console.log(`[analyse] fileType=${body.fileType} bolts=[${body.boltHoleIds}] forces=${body.forces.length} mesh=${body.meshQuality}`);
 
-    // ── Solver timeout guard ──────────────────────────────────────────────────
-    // Note: runAnalysis is synchronous/CPU-bound for the PCG solve, so
-    // Promise.race cannot interrupt it mid-loop. The real hang-prevention is
-    // the 5 000-iteration cap in cg.ts. This timeout catches the async parts
-    // (TetGen/Gmsh subprocess calls, file I/O) which can hang if a binary is
-    // missing or a pipe stalls, and gives the browser a proper error response
-    // instead of an open connection.
-    const ANALYSE_TIMEOUT_MS = 600_000;
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(
-        `Solver timed out after ${ANALYSE_TIMEOUT_MS / 1000}s. ` +
-        `TetGen or Gmsh may be unresponsive — check that both binaries are on PATH.`
-      )), ANALYSE_TIMEOUT_MS)
-    );
+    // ── Assemble runAnalysis arguments (shared by both response modes) ──────────
+    const ANALYSE_TIMEOUT_MS = 120_000;
+    const runArgs = {
+      positions,
+      stepBuffer,
+      fileType:      (body.fileType ?? "stl") as "stl" | "step",
+      triangleCount: body.triangleCount,
+      bounds:        body.bounds,
+      holes,
+      boltHoleIds:   body.boltHoleIds,
+      ...(((body as any).boltFasteners) ? { boltFasteners: (body as any).boltFasteners } : {}),
+      forces:        body.forces,
+      print:         body.print,
+      meshQuality:   body.meshQuality,
+      analysisType:  ((body as any).analysisType ?? 'linear_static') as 'linear_static' | 'modal',
+    };
 
-    const result = await Promise.race([
-      runAnalysis({
-        positions,
-        stepBuffer,
-        fileType:      body.fileType ?? "stl",
-        triangleCount: body.triangleCount,
-        bounds:        body.bounds,
-        holes,
-        boltHoleIds:   body.boltHoleIds,
-        ...(((body as any).boltFasteners) ? { boltFasteners: (body as any).boltFasteners } : {}),
-        forces:        body.forces,
-        print:         body.print,
-        meshQuality:   body.meshQuality,
-        analysisType:  (body as any).analysisType ?? 'linear_static',
-      }),
-      timeoutPromise,
-    ]);
-
-    console.log(`[analyse] done in ${result.solverMs}ms: maxVM=${result.maxVonMisesMPa.toFixed(2)}MPa SF=${result.safetyFactor !== null ? result.safetyFactor.toFixed(2) : '(unavailable)'} converged=${result.converged}`);
-
-    // Send back summary + per-vertex stress and displacement as base64
-    res.json({
+    // Build the full JSON response payload from a completed analysis. Shared by
+    // the blocking JSON path (res.json) and the SSE "result" event (issue #109).
+    const buildPayload = (result: AnalysisResult) => ({
       summary: {
         maxVonMisesMPa:       +result.maxVonMisesMPa.toFixed(4),
         maxDisplacementMm:    +result.maxDisplacementMm.toFixed(6),
         effectiveYieldMPa:    +result.effectiveYieldMPa.toFixed(2),
         safetyFactor:         result.safetyFactor !== null ? +result.safetyFactor.toFixed(3) : null,
+        sfCriterion:          result.sfCriterion,
+        vonMisesSafetyFactor: result.vonMisesSafetyFactor !== null ? +result.vonMisesSafetyFactor.toFixed(3) : null,
         safetyfactorLow:      result.safetyfactorLow,
         safetyFactorHigh:     result.safetyFactorHigh,
         estimatedFailForce:   +result.estimatedFailForce.toFixed(1),
@@ -302,9 +367,103 @@ app.post("/api/analyse", async (req, res) => {
       } : null,
     });
 
+    // ── SSE streaming mode (issue #109) ────────────────────────────────────────
+    // Opt-in via ?stream=1 or Accept: text/event-stream. Emits ordered phase
+    // events (mesh → constraints → assembly → solve → recovery → mapping), shows
+    // mesh size the moment meshing completes, streams CG residual checkpoints,
+    // and wires the request 'close' event to an AbortSignal — so closing the tab
+    // or clicking Cancel stops the server-side solve at the next phase boundary
+    // instead of burning full CPU on an abandoned result. The blocking JSON path
+    // below is unchanged, so existing callers and integration tests still work.
+    const wantsSSE = req.query["stream"] === "1"
+      || (req.headers.accept ?? "").includes("text/event-stream");
+
+    if (wantsSSE) {
+      res.status(200);
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");   // disable proxy buffering
+      res.flushHeaders?.();
+
+      const ac = new AbortController();
+      let aborted = false;
+      const abort = (why: string): void => {
+        if (aborted) return;
+        aborted = true;
+        ac.abort();
+        console.log(`[analyse:sse] ${why} — aborting solve`);
+      };
+      // Detect a real client disconnect via the RESPONSE 'close' event, not
+      // req 'close': in Node 18+ the request stream emits 'close' as soon as its
+      // body has been fully consumed (which express.json already did), which
+      // would fire a false abort immediately. res 'close' only fires when the
+      // connection actually goes away; if that happens before we res.end(), the
+      // client is gone (tab closed / Cancel) and we abort the solve.
+      res.on("close", () => { if (!res.writableEnded) abort("client disconnected"); });
+      const timeoutId = setTimeout(
+        () => abort(`timed out after ${ANALYSE_TIMEOUT_MS / 1000}s`),
+        ANALYSE_TIMEOUT_MS,
+      );
+
+      const sse = (event: string, data: unknown): void => {
+        if (res.writableEnded) return;
+        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      };
+
+      try {
+        const result = await runAnalysis({
+          ...runArgs,
+          signal:  ac.signal,
+          onPhase: (ev) => sse("phase", ev),
+        });
+        clearTimeout(timeoutId);
+        console.log(`[analyse:sse] done in ${result.solverMs}ms: maxVM=${result.maxVonMisesMPa.toFixed(2)}MPa converged=${result.converged}`);
+        sse("result", buildPayload(result));
+        if (!res.writableEnded) res.end();
+      } catch (err) {
+        clearTimeout(timeoutId);
+        if (aborted || err instanceof AnalysisAbortError || (err as { name?: string })?.name === "AnalysisAbortError") {
+          console.log("[analyse:sse] solve aborted before completion — no result sent");
+          if (!res.writableEnded) res.end();
+          return;
+        }
+        console.error("[analyse:sse error]", err);
+        const msg  = err instanceof Error ? err.message : String(err);
+        const hint = err instanceof TetGenNotFoundError ? err.hint : undefined;
+        sse("error", { error: msg, ...(hint ? { hint } : {}) });
+        if (!res.writableEnded) res.end();
+      }
+      return;
+    }
+
+    // ── Blocking JSON mode (default; backward compatible) ───────────────────────
+    // runAnalysis is synchronous/CPU-bound for the PCG solve, so Promise.race
+    // cannot interrupt it mid-loop. The real hang-prevention is the 5 000-
+    // iteration cap in cg.ts; this timeout catches the async parts (TetGen/Gmsh
+    // subprocess calls, file I/O) so a stalled binary yields an error response
+    // instead of an open connection.
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(
+        `Solver timed out after ${ANALYSE_TIMEOUT_MS / 1000}s. ` +
+        `TetGen or Gmsh may be unresponsive — check that both binaries are on PATH.`
+      )), ANALYSE_TIMEOUT_MS)
+    );
+
+    const result = await Promise.race([ runAnalysis(runArgs), timeoutPromise ]);
+    console.log(`[analyse] done in ${result.solverMs}ms: maxVM=${result.maxVonMisesMPa.toFixed(2)}MPa SF=${result.safetyFactor !== null ? result.safetyFactor.toFixed(2) : '(unavailable)'} converged=${result.converged}`);
+    res.json(buildPayload(result));
+
   } catch (err) {
     console.error("[analyse error]", err);
-    res.status(500).json({ error: String(err) });
+    if (err instanceof TetGenNotFoundError) {
+      // Environment problem, not a geometry or request problem: the mesher
+      // binary is absent. 503 = "service (meshing) unavailable"; the hint
+      // carries platform-specific install instructions (issue #106).
+      res.status(503).json({ error: err.message, hint: err.hint });
+      return;
+    }
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
@@ -375,8 +534,30 @@ import type { CalibrationProfile } from "./analysis.js";
 import fs   from "fs";
 import os   from "os";
 
-// Store calibration profiles in a JSON file in user's home directory
+// Store calibration profiles in a JSON file in user's home directory.
+// (File name keeps the legacy "stressform" prefix — the tool's user-facing
+// name is STORMFEA, but renaming the on-disk stores would orphan every
+// existing user's saved data. Same applies to the other ~/.stressform_*
+// paths below and the STRESSFORM_CLIENT_DIR env var above.)
 const CALIB_PATH = path.join(os.homedir(), ".stressform_calibrations.json");
+
+/**
+ * Atomic write for the user-data stores (issue #111): write to `path + ".tmp"`
+ * then rename over the target. rename() is atomic on the same filesystem, so
+ * a crash mid-write leaves the previous store intact instead of a truncated,
+ * unparseable JSON file (which the loaders would silently treat as empty —
+ * losing the team's calibration/validation history). `mode` restricts
+ * permissions on the temp file BEFORE it becomes visible at the target path
+ * (used for the Onshape credentials file).
+ */
+function writeFileAtomic(filePath: string, data: string, mode?: number): void {
+  const tmpPath = filePath + ".tmp";
+  fs.writeFileSync(tmpPath, data, "utf-8");
+  if (mode !== undefined) {
+    try { fs.chmodSync(tmpPath, mode); } catch { /* windows: no-op */ }
+  }
+  fs.renameSync(tmpPath, filePath);
+}
 
 function loadProfiles(): CalibrationProfile[] {
   try {
@@ -388,7 +569,7 @@ function loadProfiles(): CalibrationProfile[] {
 }
 
 function saveProfiles(profiles: CalibrationProfile[]): void {
-  fs.writeFileSync(CALIB_PATH, JSON.stringify(profiles, null, 2), "utf-8");
+  writeFileAtomic(CALIB_PATH, JSON.stringify(profiles, null, 2));
 }
 
 // GET /api/calibration — list all profiles + coupon dimensions
@@ -399,6 +580,14 @@ app.get("/api/calibration", (_req, res) => {
 // POST /api/calibration/calculate — back-calculate profile from coupon results
 app.post("/api/calibration/calculate", (req, res) => {
   try {
+    if (!validateBody(req, res, {
+      id: "string", label: "string", materialId: "string", layerHeightMm: "number",
+      // Coupon loads are nullable-by-design (null = coupon not tested), which
+      // the checker treats as absent — so they are declared optional here.
+      "tensileFailN?": "number", "lapShearFailN?": "number",
+      "bearingFailN?": "number", "tensileDeflMm?": "number",
+      "ktLapShear?": "number", "ktBearing?": "number",
+    })) return;
     const profile = backCalculateProfile(req.body);
     res.json({ profile });
   } catch (e) {
@@ -409,10 +598,8 @@ app.post("/api/calibration/calculate", (req, res) => {
 // POST /api/calibration/save — save a calibrated profile
 app.post("/api/calibration/save", (req, res) => {
   try {
+    if (!validateBody(req, res, { id: "string", materialId: "string" })) return;
     const profile = req.body as CalibrationProfile;
-    if (!profile.id || !profile.materialId) {
-      res.status(400).json({ error: "Missing id or materialId" }); return;
-    }
     const profiles = loadProfiles().filter(p => p.id !== profile.id);
     profiles.push(profile);
     saveProfiles(profiles);
@@ -461,12 +648,8 @@ app.get("/api/calibration/export-all", (_req, res) => {
 // that exists locally but wasn't part of the import.
 app.post("/api/calibration/import-all", (req, res) => {
   try {
-    const body = req.body as { profiles?: unknown };
-    const incoming = Array.isArray(body?.profiles) ? body.profiles : null;
-    if (!incoming) {
-      res.status(400).json({ error: "Expected { profiles: [...] } — is this a valid export file?" });
-      return;
-    }
+    if (!validateBody(req, res, { profiles: ["object"] })) return;
+    const incoming = (req.body as { profiles: unknown[] }).profiles;
 
     // Validate each incoming profile has the minimum required fields before
     // accepting it. Malformed entries are skipped (and reported) rather than
@@ -514,7 +697,7 @@ function loadValidations(): ValidationCase[] {
 }
 
 function saveValidations(cases: ValidationCase[]): void {
-  fs.writeFileSync(VALIDATION_PATH, JSON.stringify(cases, null, 2), "utf-8");
+  writeFileAtomic(VALIDATION_PATH, JSON.stringify(cases, null, 2));
 }
 
 // GET /api/validation — all cases (each with derived fields) + aggregate stats
@@ -529,9 +712,16 @@ app.get("/api/validation", (_req, res) => {
 // POST /api/validation/save — add or update a validation case
 app.post("/api/validation/save", (req, res) => {
   try {
+    if (!validateBody(req, res, {
+      id: "string", predictedFailN: "number", measuredFailN: "number",
+    })) return;
     const c = req.body as ValidationCase;
-    if (!c.id || !(c.measuredFailN > 0) || !(c.predictedFailN > 0)) {
-      res.status(400).json({ error: "Need id, positive predictedFailN and measuredFailN" });
+    if (!(c.measuredFailN > 0) || !(c.predictedFailN > 0)) {
+      res.status(400).json({
+        error: "Invalid request: predictedFailN and measuredFailN must be positive",
+        field: c.predictedFailN > 0 ? "measuredFailN" : "predictedFailN",
+        hint:  "enter the failure load in newtons (must be > 0)",
+      });
       return;
     }
     const cases = loadValidations().filter(v => v.id !== c.id);
@@ -650,6 +840,7 @@ app.get("/api/solver-tests", async (_req, res) => {
 // for lap-shear and bearing coupons, given material and layer height.
 app.post("/api/calibration/kt", async (req, res) => {
   try {
+    if (!validateBody(req, res, { materialId: "string", "layerHeightMm?": "number" })) return;
     const { materialId, layerHeightMm = 0.2 } = req.body as {
       materialId: string;
       layerHeightMm?: number;
@@ -1080,7 +1271,10 @@ app.get("/api/session", (_req, res) => {
 
 app.post("/api/session", (req, res) => {
   try {
-    fs.writeFileSync(SESSION_PATH, JSON.stringify(req.body), "utf-8");
+    // Session payload is intentionally free-form client state — only require
+    // that it IS an object, so a corrupted request can't store e.g. `null`.
+    if (!validateBody(req, res, "object")) return;
+    writeFileAtomic(SESSION_PATH, JSON.stringify(req.body));
     res.json({ saved: true });
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -1103,6 +1297,9 @@ import { pipeline }   from "stream/promises";
 
 app.post("/api/export-zip", async (req, res) => {
   try {
+    if (!validateBody(req, res, {
+      "session?": "object", "reportHtml?": "string", "calibProfile?": "object",
+    })) return;
     const { session, reportHtml, calibProfile } = req.body;
 
     // Build a simple .tar-like bundle as JSON (judges just need the data)
@@ -1110,7 +1307,7 @@ app.post("/api/export-zip", async (req, res) => {
     const bundle = {
       version:    "1.0",
       exportedAt: new Date().toISOString(),
-      tool:       "StressForm v1.0 — Nordic Storm FTC 5962",
+      tool:       "STORMFEA — Nordic Storm FTC 5962",
       session:    session ?? null,
       calibrationProfile: calibProfile ?? null,
       // HTML report embedded as base64
@@ -1132,8 +1329,11 @@ import { generateHtmlReport } from "./report.js";
 
 app.post("/api/report", async (req, res) => {
   try {
+    if (!validateBody(req, res, {
+      result: "object", "fileName?": "string",
+      "printSettings?": "object", "timestamp?": "string",
+    })) return;
     const { result, fileName, printSettings, timestamp } = req.body;
-    if (!result) { res.status(400).json({ error: "result required" }); return; }
     const html = generateHtmlReport(result, fileName || "part", printSettings || {}, timestamp || new Date().toLocaleString());
     res.setHeader("Content-Type", "text/html");
     res.send(html);
@@ -1184,12 +1384,20 @@ app.get("/api/onshape/status", (_req, res) => {
 
 // POST /api/onshape/credentials — save API key
 app.post("/api/onshape/credentials", (req, res) => {
+  if (!validateBody(req, res, { accessKey: "string", secretKey: "string" })) return;
   const { accessKey, secretKey } = req.body;
   if (!accessKey || !secretKey) {
-    res.status(400).json({ error: "accessKey and secretKey required" }); return;
+    res.status(400).json({
+      error: "Invalid request: accessKey and secretKey must be non-empty",
+      field: accessKey ? "secretKey" : "accessKey",
+      hint:  "copy both keys from dev-portal.onshape.com/keys",
+    });
+    return;
   }
   try {
-    fs.writeFileSync(ONSHAPE_CREDS_PATH, JSON.stringify({ accessKey, secretKey }), "utf-8");
+    // Atomic write (issue #111); 0o600 is applied to the temp file before the
+    // rename so the credentials are never world-readable, even transiently.
+    writeFileAtomic(ONSHAPE_CREDS_PATH, JSON.stringify({ accessKey, secretKey }), 0o600);
     // Restrict credentials file to owner-only.
     // On POSIX (macOS/Linux): chmod 600 works natively.
     // On Windows: chmod is a no-op, so use icacls to strip inherited ACEs and
@@ -1234,9 +1442,17 @@ app.post("/api/onshape/parts", async (req, res) => {
   const creds = loadOnshapeCreds();
   if (!creds) { res.status(401).json({ error: "Onshape not configured" }); return; }
 
+  if (!validateBody(req, res, { url: "string" })) return;
   const { url: urlStr } = req.body;
   const ref = parseOnshapeUrl(urlStr);
-  if (!ref) { res.status(400).json({ error: "Invalid Onshape URL" }); return; }
+  if (!ref) {
+    res.status(400).json({
+      error: "Invalid Onshape URL",
+      field: "url",
+      hint:  "expected https://cad.onshape.com/documents/{did}/w/{wid}/e/{eid}",
+    });
+    return;
+  }
 
   try {
     // Reuse the same signed-request path as exportPartStudioAsStep — the
@@ -1270,13 +1486,15 @@ app.post("/api/onshape/import", async (req, res) => {
     return;
   }
 
+  if (!validateBody(req, res, { url: "string", "partId?": "string" })) return;
   const { url: urlStr, partId } = req.body;
-  if (!urlStr) { res.status(400).json({ error: "url required" }); return; }
 
   const ref = parseOnshapeUrl(urlStr);
   if (!ref) {
     res.status(400).json({
-      error: "Could not parse Onshape URL. Expected: https://cad.onshape.com/documents/{did}/w/{wid}/e/{eid}"
+      error: "Could not parse Onshape URL",
+      field: "url",
+      hint:  "expected https://cad.onshape.com/documents/{did}/w/{wid}/e/{eid}",
     });
     return;
   }
@@ -1365,16 +1583,62 @@ app.delete("/api/onshape/credentials", (_req, res) => {
   } catch { res.json({ cleared: true }); }
 });
 
+// ── Fallback error handler ────────────────────────────────────────────────────
+// Catches errors raised by middleware before any route runs (malformed JSON
+// from body-parser, multer file-filter rejections, CORS denials) and errors
+// thrown synchronously inside routes, so that EVERY error response uses the
+// same { error, field?, hint? } envelope instead of Express's HTML error page.
+app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (res.headersSent) { next(err); return; }
+  const e = err as { type?: string; message?: string; status?: number };
+  if (e?.type === "entity.parse.failed") {
+    res.status(400).json({
+      error: "Malformed JSON body",
+      hint:  e.message ?? "the request body could not be parsed as JSON",
+    });
+    return;
+  }
+  if (e?.type === "entity.too.large") {
+    res.status(413).json({
+      error: "Request body too large",
+      hint:  "the JSON body limit is 50 MB",
+    });
+    return;
+  }
+  const message = e?.message ?? String(err);
+  if ((err as { name?: string })?.name === "MulterError") {
+    // Upload errors (unexpected field name, too many files, file too large).
+    const code = (err as { code?: string }).code;
+    res.status(code === "LIMIT_FILE_SIZE" ? 413 : 400).json({
+      error: `Upload rejected: ${message}`,
+      field: "file",
+      hint:  code === "LIMIT_FILE_SIZE"
+        ? "the upload limit is 50 MB — decimate the mesh in your CAD/slicer tool and re-export"
+        : "send a single multipart/form-data part named 'file'",
+    });
+    return;
+  }
+  if (/^CORS:/.test(message))   { res.status(403).json({ error: message }); return; }
+  if (/Unsupported file type/.test(message)) {
+    res.status(400).json({ error: message, field: "file", hint: "only .stl, .step and .stp files are accepted" });
+    return;
+  }
+  console.error("[unhandled route error]", err);
+  res.status(typeof e?.status === "number" ? e.status : 500).json({ error: message });
+});
+
 // ── Start ─────────────────────────────────────────────────────────────────────
-import { probeTetGen } from "./tetgen.js";
+import { probeTetGen, TetGenNotFoundError } from "./tetgen.js";
 import { probeGmsh }   from "./gmsh_mesh.js";
 
 /**
  * Check meshing binaries at startup and print a clear status banner. Without
- * TetGen, STL analysis silently falls back to a featureless box mesh (holes and
- * stress concentrations vanish); without Gmsh, STEP analysis can't run at all.
- * Making this loud at launch turns a confusing mid-analysis degradation into an
- * obvious "install this" message before the user wastes a run.
+ * TetGen, STL analyses fail fast with an install hint (issue #106 — they used
+ * to silently degrade to a featureless box mesh whose error message blamed the
+ * user's geometry); without Gmsh, STEP analysis can't run at all. Making this
+ * loud at launch surfaces the "install this" message before the user wastes a
+ * run. The probe result is also cached inside tetgen.ts so a missing binary is
+ * reported immediately, without retrying four switch sets per analysis.
  */
 async function checkMeshingBinaries(): Promise<void> {
   const [tet, gm] = await Promise.all([probeTetGen(), probeGmsh()]);
@@ -1384,8 +1648,8 @@ async function checkMeshingBinaries(): Promise<void> {
     console.log(`    ✓ TetGen  — found (${tet.path})`);
   } else {
     console.log(`    ✗ TetGen  — NOT FOUND (looked for '${tet.path}')`);
-    console.log(`              STL analysis will fall back to a solid box mesh —`);
-    console.log(`              holes & stress concentrations will NOT be modelled.`);
+    console.log(`              STL analyses will fail with an install hint until`);
+    console.log(`              TetGen is available.`);
     console.log(`              To install TetGen:`);
     if (process.platform === "win32") {
       console.log(`              Windows: Download tetgen.exe from`);
@@ -1410,7 +1674,7 @@ const PORT = 3000;
 app.listen(PORT, async () => {
   console.log("");
   console.log("  ╔══════════════════════════════════════╗");
-  console.log("  ║   STRESSFORM  —  local server        ║");
+  console.log("  ║   STORMFEA  —  local server          ║");
   console.log("  ╚══════════════════════════════════════╝");
   console.log("");
   console.log(`  Open your browser at:  http://localhost:${PORT}`);

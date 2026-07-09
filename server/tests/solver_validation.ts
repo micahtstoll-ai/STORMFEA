@@ -1137,19 +1137,128 @@ console.log("\n[18] IC(0) vs Jacobi: full displacement vector L2 comparison");
     `IC0=${r_ic0.maxDisplacementMm.toExponential(8)}, Jacobi=${r_jac.maxDisplacementMm.toExponential(8)}`);
 }
 
-})();  // End async IIFE
-// ── Summary ───────────────────────────────────────────────────────────────────
-// Deferred via setTimeout(0) so it runs as a macrotask AFTER every top-level
-// await (groups 6–8 use `await import`) has settled — and after any future
-// group appended below. This removes the file-ordering fragility entirely: the
-// count is always complete no matter where new groups are added.
-setTimeout(() => {
-  console.log(`\n${"─".repeat(52)}`);
-  console.log(`Validation: ${passed} passed, ${failed} failed`);
-  if (failed > 0) {
-    console.error("VALIDATION FAILED — check solver before release");
-    process.exit(1);
-  } else {
-    console.log("All validation tests passed ✓");
+// ── Test group 20: SPR linear-field exactness — C3D10 stride regression (#96) ─
+// SPR fits a LINEAR polynomial (basis [1, x, y, z]) to element-centroid
+// stresses in each nodal patch, so any exactly-linear stress field must be
+// reproduced EXACTLY at every node whose patch supports a full fit (≥ 4
+// elements). This held for C3D4 but silently broke for C3D10: the centroid
+// loops in sprSmoothedStress / sprSmoothedStress6 / computeZZErrorEstimate
+// hardcoded element stride 4 instead of nodesPerElem, so for C3D10 meshes
+// (stride 10) the "centroids" were computed from node indices belonging to
+// the WRONG elements. A uniform field can't catch that (constant fit is
+// insensitive to centroid positions); a linear field fails loudly.
+console.log("\n[20] SPR linear-field exactness — C3D4 and C3D10 (issue #96)");
+{
+  const { sprSmoothedStress6 } = await import("../solver/stress.js");
+  const lin = (x: number, y: number, z: number) => 5 + 0.3 * x + 0.2 * y + 0.1 * z;
+
+  const cases = [
+    { mesh: generateBoxMesh(0, 0, 0, 6, 6, 6, 3, 3, 3),      label: "C3D4"  },
+    { mesh: generateBoxMeshC3D10(0, 0, 0, 6, 6, 6, 3, 3, 3), label: "C3D10" },
+  ];
+
+  for (const { mesh, label } of cases) {
+    const npe = mesh.nodesPerElem ?? 4;
+
+    // Element stress = linear function evaluated at the TRUE centroid
+    // (average of the 4 corner nodes — first 4 entries for C3D4 and C3D10).
+    const vm = new Float64Array(mesh.elementCount);
+    for (let e = 0; e < mesh.elementCount; e++) {
+      let cx = 0, cy = 0, cz = 0;
+      for (let ni = 0; ni < 4; ni++) {
+        const n = mesh.elements[e * npe + ni] ?? 0;
+        cx += mesh.nodes[n * 3] ?? 0;
+        cy += mesh.nodes[n * 3 + 1] ?? 0;
+        cz += mesh.nodes[n * 3 + 2] ?? 0;
+      }
+      vm[e] = lin(cx / 4, cy / 4, cz / 4);
+    }
+
+    // Patch membership (node → elements, same connectivity SPR builds)
+    const patches: number[][] = Array.from({ length: mesh.nodeCount }, () => []);
+    for (let e = 0; e < mesh.elementCount; e++) {
+      for (let ni = 0; ni < npe; ni++) {
+        patches[mesh.elements[e * npe + ni] ?? 0]!.push(e);
+      }
+    }
+
+    // Element centroids (corner-node average) for the well-posedness check below
+    const centX = new Float64Array(mesh.elementCount);
+    const centY = new Float64Array(mesh.elementCount);
+    const centZ = new Float64Array(mesh.elementCount);
+    for (let e = 0; e < mesh.elementCount; e++) {
+      let cx = 0, cy = 0, cz = 0;
+      for (let ni = 0; ni < 4; ni++) {
+        const n = mesh.elements[e * npe + ni] ?? 0;
+        cx += mesh.nodes[n * 3] ?? 0; cy += mesh.nodes[n * 3 + 1] ?? 0; cz += mesh.nodes[n * 3 + 2] ?? 0;
+      }
+      centX[e] = cx / 4; centY[e] = cy / 4; centZ[e] = cz / 4;
+    }
+
+    // A node's SPR fit is only exact when the least-squares system is
+    // well-posed: patch ≥ 4 elements AND centroids spanning 3D. At the two
+    // box corners of a Kuhn (body-diagonal) subdivision all 6 patch centroids
+    // lie exactly on a x+y+z=const plane → rank-deficient fit → documented
+    // fallback to direct averaging, which is not exact for a linear field.
+    // Well-posedness check: determinant of the centered 3×3 scatter matrix.
+    const patchWellPosed = (patch: number[]): boolean => {
+      if (patch.length < 4) return false;
+      let mx = 0, my = 0, mz = 0;
+      for (const e of patch) { mx += centX[e]!; my += centY[e]!; mz += centZ[e]!; }
+      mx /= patch.length; my /= patch.length; mz /= patch.length;
+      let sxx = 0, sxy = 0, sxz = 0, syy = 0, syz = 0, szz = 0;
+      for (const e of patch) {
+        const dx = centX[e]! - mx, dy = centY[e]! - my, dz = centZ[e]! - mz;
+        sxx += dx*dx; sxy += dx*dy; sxz += dx*dz; syy += dy*dy; syz += dy*dz; szz += dz*dz;
+      }
+      const det = sxx*(syy*szz - syz*syz) - sxy*(sxy*szz - syz*sxz) + sxz*(sxy*syz - syy*sxz);
+      const scale = Math.pow((sxx + syy + szz) / 3, 3);
+      return det > 1e-9 * scale;
+    };
+
+    const spr = sprSmoothedStress(mesh, vm);
+    let maxErr = 0, checked = 0;
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      if (!patchWellPosed(patches[n]!)) continue;
+      const exact = lin(mesh.nodes[n*3] ?? 0, mesh.nodes[n*3+1] ?? 0, mesh.nodes[n*3+2] ?? 0);
+      const err = Math.abs((spr[n] ?? 0) - exact);
+      if (err > maxErr) maxErr = err;
+      checked++;
+    }
+    test(`[20] ${label}: SPR reproduces linear field exactly (maxErr < 1e-8)`,
+      checked > 0 && maxErr < 1e-8,
+      `nodesChecked=${checked}, maxErr=${maxErr.toExponential(2)}`);
+
+    // Same property for the 6-component tensor SPR (uses the same centroid code)
+    const es6 = new Float64Array(mesh.elementCount * 6);
+    for (let e = 0; e < mesh.elementCount; e++) es6[e * 6] = vm[e] ?? 0;  // σxx = linear field
+    const spr6 = sprSmoothedStress6(mesh, es6);
+    let maxErr6 = 0;
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      if (!patchWellPosed(patches[n]!)) continue;
+      const exact = lin(mesh.nodes[n*3] ?? 0, mesh.nodes[n*3+1] ?? 0, mesh.nodes[n*3+2] ?? 0);
+      maxErr6 = Math.max(maxErr6, Math.abs((spr6[n * 6] ?? 0) - exact));
+    }
+    test(`[20] ${label}: sprSmoothedStress6 reproduces linear σxx exactly`,
+      maxErr6 < 1e-8, `maxErr=${maxErr6.toExponential(2)}`);
   }
-}, 0);
+}
+
+// ── Summary ───────────────────────────────────────────────────────────────────
+// Runs at the END of the async IIFE, after every test group above has
+// completed. (A previous setTimeout(0) variant fired as soon as the event
+// loop first yielded — at the FIRST await — so it counted only the tests run
+// up to that point and never gated on later failures.)
+console.log(`\n${"─".repeat(52)}`);
+console.log(`Validation: ${passed} passed, ${failed} failed`);
+if (failed > 0) {
+  console.error("VALIDATION FAILED — check solver before release");
+  process.exit(1);
+} else {
+  console.log("All validation tests passed ✓");
+}
+
+})().catch((err) => {
+  console.error("VALIDATION SUITE CRASHED:", err);
+  process.exit(1);
+});  // End async IIFE
