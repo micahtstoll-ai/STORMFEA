@@ -1496,16 +1496,16 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <!-- Self-weight / acceleration (gravity body load) -->
       <div style="margin-bottom:16px;padding-top:14px;border-top:1px solid var(--border)">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:6px">
-          <input type="checkbox" id="s-gravity" style="width:auto;margin:0" onchange="updateGravityUI()">
+          <input type="checkbox" id="s-gravity" style="width:auto;margin:0" onchange="updateGravityUI();markSessionDirty()">
           <span style="font-size:11px;letter-spacing:.04em;color:var(--text-label)">SELF-WEIGHT / ACCELERATION</span>
         </label>
         <div id="gravity-controls" style="display:none;padding-left:22px">
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
             <label style="font-size:10px;color:var(--text-lo);display:flex;align-items:center;gap:4px">Magnitude
-              <input type="number" id="s-gravity-g" value="1" min="0" step="0.5" style="width:56px"><span style="font-family:'DM Mono',monospace;font-size:10px">g</span>
+              <input type="number" id="s-gravity-g" value="1" min="0" step="0.5" style="width:56px" onchange="markSessionDirty()"><span style="font-family:'DM Mono',monospace;font-size:10px">g</span>
             </label>
             <label style="font-size:10px;color:var(--text-lo);display:flex;align-items:center;gap:4px">Direction
-              <select id="s-gravity-dir">
+              <select id="s-gravity-dir" onchange="markSessionDirty()">
                 <option value="0,0,-1" selected>−Z (down)</option>
                 <option value="0,0,1">+Z</option>
                 <option value="0,-1,0">−Y</option>
@@ -1522,16 +1522,16 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <!-- Surface pressure / traction load -->
       <div style="margin-bottom:16px;padding-top:14px;border-top:1px solid var(--border)">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:6px">
-          <input type="checkbox" id="s-pressure" style="width:auto;margin:0" onchange="updatePressureUI()">
+          <input type="checkbox" id="s-pressure" style="width:auto;margin:0" onchange="updatePressureUI();markSessionDirty()">
           <span style="font-size:11px;letter-spacing:.04em;color:var(--text-label)">SURFACE PRESSURE</span>
         </label>
         <div id="pressure-controls" style="display:none;padding-left:22px">
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
             <label style="font-size:10px;color:var(--text-lo);display:flex;align-items:center;gap:4px">Magnitude
-              <input type="number" id="s-pressure-mpa" value="1" min="0" step="0.5" style="width:60px"><span style="font-family:'DM Mono',monospace;font-size:10px">MPa</span>
+              <input type="number" id="s-pressure-mpa" value="1" min="0" step="0.5" style="width:60px" onchange="markSessionDirty()"><span style="font-family:'DM Mono',monospace;font-size:10px">MPa</span>
             </label>
             <label style="font-size:10px;color:var(--text-lo);display:flex;align-items:center;gap:4px">On face toward
-              <select id="s-pressure-dir">
+              <select id="s-pressure-dir" onchange="markSessionDirty()">
                 <option value="0,0,1" selected>+Z</option>
                 <option value="0,0,-1">−Z</option>
                 <option value="0,1,0">+Y</option>
@@ -1683,7 +1683,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
 
       <div style="margin-bottom:16px">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-          <input type="checkbox" id="s-modal" style="width:auto;margin:0">
+          <input type="checkbox" id="s-modal" style="width:auto;margin:0" onchange="markSessionDirty()">
           <span>Compute natural frequencies (modal)</span>
         </label>
         <div style="font-size:10px;color:var(--text-lo);margin-top:4px;line-height:1.6">
@@ -1695,7 +1695,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
 
       <div style="margin-bottom:16px">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-          <input type="checkbox" id="s-buckling" style="width:auto;margin:0">
+          <input type="checkbox" id="s-buckling" style="width:auto;margin:0" onchange="markSessionDirty()">
           <span>Compute buckling (BLF)</span>
         </label>
         <div style="font-size:10px;color:var(--text-lo);margin-top:4px;line-height:1.6">
@@ -9689,6 +9689,15 @@ async function saveSession() {
       layerHeightMm: +(document.getElementById('s-lh')?.value ?? 20) / 100,
       meshOrder:     +(document.getElementById('s-mesh-order')?.value ?? 2),
     },
+    // Solver options + body/pressure loads so a resumed session keeps them
+    // (gravity/pressure return null when their control is off).
+    analysis: {
+      meshQuality: document.getElementById('s-mesh')?.value,
+      modal:       !!document.getElementById('s-modal')?.checked,
+      buckling:    !!document.getElementById('s-buckling')?.checked,
+      gravity:     gravityRequest(),
+      pressure:    pressureRequest(),
+    },
     calibrationId:     activeProfileId,
     holeTypeOverrides: S.holeTypeOverrides,
     bedNormal:         S.bedNormal,
@@ -9799,6 +9808,8 @@ async function loadSession() {
       if (p.wallCount)   document.getElementById('s-walls').value      = p.wallCount;
       if (p.pattern)     document.getElementById('s-pattern').value    = p.pattern;
       if (p.orientation) document.getElementById('s-orient').value     = p.orientation;
+      if (p.meshOrder && document.getElementById('s-mesh-order'))
+        document.getElementById('s-mesh-order').value = String(p.meshOrder);
       if (p.layerHeightMm) {
         const lhSlider = document.getElementById('s-lh');
         if (lhSlider) {
@@ -9807,6 +9818,30 @@ async function loadSession() {
         }
       }
       updateSettingsPreview();
+    }
+
+    // Restore solver options + body/pressure loads (issue #110 parity — these
+    // are inputs to the analysis just like forces, so a resumed session keeps
+    // them). Absent on older sessions → controls stay at their defaults.
+    if (session.analysis) {
+      const a = session.analysis;
+      const setVal = (id, v) => { const el = document.getElementById(id); if (el != null && v != null) el.value = String(v); };
+      const setChk = (id, on) => { const el = document.getElementById(id); if (el) el.checked = !!on; };
+      setVal('s-mesh', a.meshQuality);
+      setChk('s-modal', a.modal);
+      setChk('s-buckling', a.buckling);
+      if (a.gravity) {
+        setChk('s-gravity', true);
+        setVal('s-gravity-g', a.gravity.g);
+        setVal('s-gravity-dir', (a.gravity.direction || []).join(','));
+      } else { setChk('s-gravity', false); }
+      if (a.pressure) {
+        setChk('s-pressure', true);
+        setVal('s-pressure-mpa', a.pressure.magnitude);
+        setVal('s-pressure-dir', (a.pressure.direction || []).join(','));
+      } else { setChk('s-pressure', false); }
+      if (typeof updateGravityUI === 'function') updateGravityUI();
+      if (typeof updatePressureUI === 'function') updatePressureUI();
     }
 
     // Restore bolts + rebuild 3D markers
