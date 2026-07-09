@@ -19,7 +19,8 @@
  * face nodes.
  */
 
-import type { PointForce } from "./types.js";
+import type { PointForce, TetMesh } from "./types.js";
+import { computeGeometry, c3d10ShapeFunctions, buildB_c3d10, C3D10_GAUSS } from "./element.js";
 
 /**
  * Assemble the force vector for a list of point forces.
@@ -73,4 +74,69 @@ export function distributedFaceForce(
     nodeIndex: ni,
     forceN:    [fx, fy, fz] as const,
   }));
+}
+
+/**
+ * Assemble the consistent nodal force vector for a uniform body force
+ * (e.g. gravity / self-weight or a constant robot-acceleration load).
+ *
+ *   f_i = ∫_V N_i · b dV        (per node i, per DOF)
+ *
+ * where b = [bx, by, bz] is the body force PER UNIT VOLUME in N/mm³
+ * (b = ρ·a: density in tonne/mm³ times acceleration in mm/s², since
+ * 1 tonne·mm/s² = 1 N). Integrated exactly with the element's shape functions:
+ *   - C3D4  (linear):    ∫N_i dV = V/4 for each of the 4 nodes.
+ *   - C3D10 (quadratic): numerically via the same 4-point Gauss rule as the
+ *                        stiffness, using the shape-function values and |detJ|.
+ *
+ * Returns a Float64Array of length nodeCount × 3 that can be added directly to
+ * the global force vector (or converted to equivalent point forces).
+ */
+export function assembleBodyForce(
+  mesh:      TetMesh,
+  bodyForce: readonly [number, number, number],
+): Float64Array {
+  const [bx, by, bz] = bodyForce;
+  const f   = new Float64Array(mesh.nodeCount * 3);
+  const npe = mesh.nodesPerElem;
+
+  if (npe === 10) {
+    const coords = new Float64Array(30);
+    for (let e = 0; e < mesh.elementCount; e++) {
+      const base = e * 10;
+      for (let i = 0; i < 10; i++) {
+        const n = mesh.elements[base + i] ?? 0;
+        coords[i*3]   = mesh.nodes[n*3]   ?? 0;
+        coords[i*3+1] = mesh.nodes[n*3+1] ?? 0;
+        coords[i*3+2] = mesh.nodes[n*3+2] ?? 0;
+      }
+      for (const gp of C3D10_GAUSS) {
+        const { detJ } = buildB_c3d10(coords, gp.xi, gp.eta, gp.zeta);
+        const N = c3d10ShapeFunctions(gp.xi, gp.eta, gp.zeta);
+        const vol = Math.abs(detJ) * gp.w;
+        for (let i = 0; i < 10; i++) {
+          const n = mesh.elements[base + i] ?? 0;
+          const w = (N[i] ?? 0) * vol;
+          f[n*3]   = (f[n*3]   ?? 0) + bx * w;
+          f[n*3+1] = (f[n*3+1] ?? 0) + by * w;
+          f[n*3+2] = (f[n*3+2] ?? 0) + bz * w;
+        }
+      }
+    }
+  } else {
+    for (let e = 0; e < mesh.elementCount; e++) {
+      const base = e * 4;
+      const n0 = mesh.elements[base]   ?? 0, n1 = mesh.elements[base+1] ?? 0,
+            n2 = mesh.elements[base+2] ?? 0, n3 = mesh.elements[base+3] ?? 0;
+      const V = computeGeometry(mesh.nodes, n0, n1, n2, n3).V;
+      const w = V / 4;
+      for (const n of [n0, n1, n2, n3]) {
+        f[n*3]   = (f[n*3]   ?? 0) + bx * w;
+        f[n*3+1] = (f[n*3+1] ?? 0) + by * w;
+        f[n*3+2] = (f[n*3+2] ?? 0) + bz * w;
+      }
+    }
+  }
+
+  return f;
 }

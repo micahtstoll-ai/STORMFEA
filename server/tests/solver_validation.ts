@@ -1283,6 +1283,33 @@ console.log("\n[20] SPR linear-field exactness — C3D4 and C3D10 (issue #96)");
   }
 }
 
+// ── Test group 21: Body force (self-weight) resultant conservation ────────────
+console.log("\n[21] Body force — consistent nodal load sums to ρ·V·a");
+{
+  const { assembleBodyForce } = await import("../solver/load.js");
+  // Box 20×10×5 mm → V=1000 mm³. b = ρ·a downward (−Y). The consistent nodal
+  // forces must sum to the total weight ρ·V·a regardless of element order.
+  const Lx=20, Ly=10, Lz=5, Vbox = Lx*Ly*Lz;
+  const rho = 1240e-12;          // t/mm³ (PLA)
+  const a   = 9806.65;           // mm/s² (1 g)
+  const b: [number,number,number] = [0, -rho*a, 0];
+  const expected = rho * Vbox * a;   // N (= mass·g)
+
+  for (const [label, m] of [
+    ["C3D4",  generateBoxMesh(0,0,0, Lx,Ly,Lz, 8,4,2)],
+    ["C3D10", generateBoxMeshC3D10(0,0,0, Lx,Ly,Lz, 6,3,2)],
+  ] as const) {
+    const f = assembleBodyForce(m, b);
+    let sx=0, sy=0, sz=0;
+    for (let n=0; n<m.nodeCount; n++) { sx+=f[n*3]??0; sy+=f[n*3+1]??0; sz+=f[n*3+2]??0; }
+    const relErr = Math.abs(-sy - expected) / expected;
+    test(`[21] ${label} resultant = ρ·V·a (within 0.01%)`, relErr < 1e-4,
+      `Σfy=${sy.toExponential(4)} expected=${(-expected).toExponential(4)} relErr=${(relErr*100).toFixed(4)}%`);
+    test(`[21] ${label} no transverse resultant`, Math.abs(sx)+Math.abs(sz) < 1e-9 * expected,
+      `Σfx=${sx.toExponential(2)} Σfz=${sz.toExponential(2)}`);
+  }
+}
+
 // ── Summary ───────────────────────────────────────────────────────────────────
 // Runs at the END of the async IIFE, after every test group above has
 // completed. (A previous setTimeout(0) variant fired as soon as the event
