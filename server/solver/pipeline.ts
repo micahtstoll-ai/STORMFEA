@@ -26,7 +26,7 @@ import type { FixedNodeSet } from "./boundary.js";
 import { assembleK }           from "./assembly.js";
 import { applyDirichletBC }    from "./boundary.js";
 import { assembleForceVector } from "./load.js";
-import { solvePCG }            from "./cg.js";
+import { solvePCG, solvePCGStreaming } from "./cg.js";
 import { buildSolverResult }   from "./stress.js";
 import { computeMeshQuality }  from "./meshQuality.js";
 
@@ -38,6 +38,25 @@ export interface SolverInput {
   readonly cgTolerance?:   number;
   readonly cgMaxIter?:     number;
   readonly preconditioner?: 'jacobi' | 'ic0';
+  /**
+   * Keep a pristine (pre-Dirichlet-penalty) copy of K's value array in the
+   * returned StaticSolveIntermediate.K0data (issue #100). Downstream consumers
+   * that need K WITHOUT the static penalty BCs — modal (diagonal-scaling
+   * penalty) and buckling (fresh Dirichlet penalty on a copy) — reuse it
+   * instead of re-assembling K from scratch. Off by default: it costs one
+   * extra Float64Array(nnz) copy.
+   */
+  readonly keepPristineK?: boolean;
+  /**
+   * Optional abort signal (issue #109). Forwarded to solvePCG, which checks it
+   * at CG iteration checkpoints and throws if the caller has cancelled.
+   */
+  readonly signal?: AbortSignal;
+  /**
+   * Optional CG progress callback (issue #109). Invoked at CG residual
+   * checkpoints with (iteration, relativeResidual) for live progress streaming.
+   */
+  readonly onCgProgress?: (iteration: number, relativeResidual: number) => void;
 }
 
 /**
@@ -68,140 +87,31 @@ function _snap(label: string): void {
 }
 
 export async function runLinearStatic(input: SolverInput): Promise<SolverResult> {
-  const t0 = Date.now();
-
-  const { mesh, material, constraints, forces } = input;
-  const tol            = input.cgTolerance ?? 1e-8;
-  const maxIter        = input.cgMaxIter;
-  const preconditioner = input.preconditioner ?? 'ic0';
-
-  _snap("before mesh quality check");
-
-  // ── 0. Compute mesh quality metrics ────────────────────────────────────────
-  const meshQualityReport = computeMeshQuality(mesh);
-  const degeneratePercent = (meshQualityReport.degenerateCount / mesh.elementCount) * 100;
-  const poorQualityPercent = (meshQualityReport.poorQualityCount / mesh.elementCount) * 100;
-
-  if (degeneratePercent > 5) {
-    throw new Error(
-      `Mesh quality error: ${meshQualityReport.degenerateCount} elements (${degeneratePercent.toFixed(1)}%) ` +
-      `are degenerate (inverted or zero-volume). ` +
-      `Worst Jacobian: ${meshQualityReport.worstJacobianMin.toFixed(6)}. ` +
-      `Please re-mesh with higher quality settings or verify element connectivity.`
-    );
-  }
-
-  if (poorQualityPercent > 1) {
-    console.warn(
-      `[Mesh quality] ${meshQualityReport.poorQualityCount} elements (${poorQualityPercent.toFixed(1)}%) ` +
-      `have poor quality. Stress recovery may be less accurate. ` +
-      `Worst J_min: ${meshQualityReport.worstJacobianMin.toFixed(6)}, ` +
-      `worst AR: ${meshQualityReport.worstAspectRatio.toFixed(1)}, ` +
-      `worst dihedral: ${meshQualityReport.worstMinDihedralDeg.toFixed(1)}°.`
-    );
-  }
-
-  _snap("before assembleK");
-
-  // ── 1. Assemble global stiffness matrix ────────────────────────────────────
-  const { K, diagIdx } = await assembleK(mesh, material);
-
-  _snap("after assembleK");
-
-  // ── 2. Assemble force vector ───────────────────────────────────────────────
-  const f = assembleForceVector(mesh.nodeCount, forces);
-
-  // Save a copy of f_ext BEFORE BC modification — needed for reaction recovery
-  const f_ext = new Float64Array(f);
-
-  // ── 3. Apply Dirichlet boundary conditions ─────────────────────────────────
-  // applyDirichletBC modifies K and f in-place (penalty method)
-  applyDirichletBC(K, f, diagIdx, constraints);
-
-  _snap("after applyDirichletBC");
-
-  // ── 4. Solve K·u = f ──────────────────────────────────────────────────────
-  const cg = solvePCG(K, f, diagIdx, tol, maxIter, preconditioner);
-
-  _snap("after solvePCG");
-
-  // Warn (but don't throw) if CG didn't converge — let caller inspect result
-  if (!cg.converged) {
-    console.warn(
-      `[StressForm] CG did not converge after ${cg.iterations} iterations. ` +
-      `Relative residual = ${cg.finalRelativeResidual.toExponential(3)}. ` +
-      `Results may be inaccurate.`
-    );
-  }
-
-  // ── 5. Recover stresses and build result ───────────────────────────────────
-  const solverMs = Date.now() - t0;
-  _snap("before buildSolverResult");
-  const result = buildSolverResult(
-    mesh,
-    cg.u,
-    material,
-    cg.iterations,
-    cg.converged,
-    solverMs,
-    cg.residualCheckpoints,
-  );
-
-  _snap("after buildSolverResult");
-
-  // ── 6. Sanity checks ───────────────────────────────────────────────────────
-  validateResult(result, mesh);
-
-  // ── 7. Compute per-constraint reaction forces ─────────────────────────────
-  // Reaction recovery using the residual method:
-  //   f_reaction = K_modified × u - f_ext
-  // At constrained DOFs this gives the force the boundary exerts on the structure.
-  // K_modified × u is computed as a sparse row dot-product at the constrained DOF rows.
-  // This is O(nnz_at_constrained_rows) — fast even for large meshes.
-  const boltReactions: { nodeCount: number; Fx: number; Fy: number; Fz: number }[] = [];
-  const u = cg.u;
-  const { data, colIdx, rowPtr } = K;
-
-  for (const cs of constraints) {
-    let Fx = 0, Fy = 0, Fz = 0;
-    for (const nodeIdx of cs.nodeIndices) {
-      for (let dof = 0; dof < 3; dof++) {
-        const globalDof = nodeIdx * 3 + dof;
-        if (globalDof >= K.n) continue;
-        // Compute (K × u)[globalDof] — sparse row dot-product
-        let Ku_i = 0;
-        const rStart = rowPtr[globalDof]   ?? 0;
-        const rEnd   = rowPtr[globalDof+1] ?? 0;
-        for (let k = rStart; k < rEnd; k++) {
-          const col = colIdx[k];
-          if (col === undefined) continue;
-          Ku_i += (data[k] ?? 0) * (u[col] ?? 0);
-        }
-        // Reaction = (K×u - f_ext) at this DOF
-        const reaction = Ku_i - (f_ext[globalDof] ?? 0);
-        if (dof === 0) Fx += reaction;
-        else if (dof === 1) Fy += reaction;
-        else Fz += reaction;
-      }
-    }
-    boltReactions.push({ nodeCount: cs.nodeIndices.length, Fx, Fy, Fz });
-  }
-
-  // Attach reactions and mesh quality report to result (type allows optional fields)
-  return { ...result, boltReactions, meshQualityReport };
+  // Thin wrapper over runLinearStaticWithK — the full solve pipeline lives
+  // there (single implementation; previously ~100 lines were duplicated here,
+  // including a second copy of the bolt-reaction recovery).
+  const { result } = await runLinearStaticWithK(input);
+  return result;
 }
 
 // ─── StaticSolveIntermediate ──────────────────────────────────────────────────
 
 export interface StaticSolveIntermediate {
   result:  SolverResult;
+  /** K with Dirichlet penalty BCs applied (as solved). */
   K:       CSRMatrix;
   diagIdx: Int32Array;
+  /**
+   * Pristine K value array (NO boundary conditions), present only when
+   * SolverInput.keepPristineK was set. Shares K's rowPtr/colIdx/diagIdx.
+   */
+  K0data?: Float64Array;
 }
 
 /**
- * Like runLinearStatic, but also returns K and diagIdx for downstream reuse
- * (e.g. modal analysis). K has Dirichlet BCs already applied via the penalty method.
+ * Full linear static solve pipeline. Also returns K and diagIdx for downstream
+ * reuse (e.g. modal analysis). K has Dirichlet BCs already applied via the
+ * penalty method. runLinearStatic delegates here and discards K.
  */
 export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSolveIntermediate> {
   const t0 = Date.now();
@@ -210,6 +120,8 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
   const tol            = input.cgTolerance ?? 1e-8;
   const maxIter        = input.cgMaxIter;
   const preconditioner = input.preconditioner ?? 'ic0';
+
+  _snap("before mesh quality check");
 
   // Compute mesh quality metrics before assembly
   const meshQualityReport = computeMeshQuality(mesh);
@@ -235,18 +147,44 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
     );
   }
 
+  _snap("before assembleK");
   const { K, diagIdx } = await assembleK(mesh, material);
-  const f = assembleForceVector(mesh.nodeCount, forces);
-  const f_ext = new Float64Array(f);
-  applyDirichletBC(K, f, diagIdx, constraints);
-  const cg = solvePCG(K, f, diagIdx, tol, maxIter, preconditioner);
+  _snap("after assembleK");
 
+  const f = assembleForceVector(mesh.nodeCount, forces);
+  // Save a copy of f_ext BEFORE BC modification — needed for reaction recovery
+  const f_ext = new Float64Array(f);
+
+  // Save a pristine copy of K's values BEFORE BC modification when requested
+  // (issue #100: reused by modal/buckling, which apply their own BC flavors).
+  const K0data = input.keepPristineK ? K.data.slice() : undefined;
+
+  // applyDirichletBC modifies K and f in-place (penalty method)
+  applyDirichletBC(K, f, diagIdx, constraints);
+  _snap("after applyDirichletBC");
+
+  // Use the cooperative (event-loop-yielding) solver on the streaming analysis
+  // path so CG residuals stream live and a mid-solve abort is observed promptly
+  // (issue #109); the blocking path keeps the tight synchronous solver.
+  const cgOpts = { signal: input.signal, onProgress: input.onCgProgress };
+  const cg = (input.signal || input.onCgProgress)
+    ? await solvePCGStreaming(K, f, diagIdx, tol, maxIter, preconditioner, null, cgOpts)
+    : solvePCG(K, f, diagIdx, tol, maxIter, preconditioner);
+  _snap("after solvePCG");
+
+  // Warn (but don't throw) if CG didn't converge — let caller inspect result
   if (!cg.converged) {
-    console.warn(`[runLinearStaticWithK] CG did not converge after ${cg.iterations} iterations.`);
+    console.warn(
+      `[STORMFEA] CG did not converge after ${cg.iterations} iterations. ` +
+      `Relative residual = ${cg.finalRelativeResidual.toExponential(3)}. ` +
+      `Results may be inaccurate.`
+    );
   }
 
   const solverMs = Date.now() - t0;
+  _snap("before buildSolverResult");
   const result = buildSolverResult(mesh, cg.u, material, cg.iterations, cg.converged, solverMs, cg.residualCheckpoints);
+  _snap("after buildSolverResult");
   validateResult(result, mesh);
 
   const boltReactions = computeBoltReactions(K, cg.u, f_ext, constraints);
@@ -255,9 +193,17 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
     result: { ...result, boltReactions, meshQualityReport },
     K,
     diagIdx,
+    K0data,
   };
 }
 
+/**
+ * Per-constraint reaction forces via the residual method:
+ *   f_reaction = K_modified × u − f_ext
+ * At constrained DOFs this gives the force the boundary exerts on the structure.
+ * K_modified × u is computed as a sparse row dot-product at the constrained DOF
+ * rows only — O(nnz_at_constrained_rows), fast even for large meshes.
+ */
 function computeBoltReactions(
   K: CSRMatrix,
   u: Float64Array,

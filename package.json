@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc && node scripts/copy-client.mjs",
     "copy:client": "node scripts/copy-client.mjs",
-    "test": "vitest run && tsc && node dist/tests/solver_validation.js && node scripts/test_client_logic.mjs",
+    "test": "vitest run && tsc && node dist/tests/solver_validation.js && node dist/tests/test-parallel-assembly.js && node scripts/test_client_logic.mjs",
     "test:unit": "vitest run --reporter=verbose",
     "test:ui": "vitest --ui",
     "test:coverage": "vitest run --coverage",

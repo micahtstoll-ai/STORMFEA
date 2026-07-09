@@ -69,16 +69,28 @@ export function buildConstitutiveMatrix(mat: IsotropicMaterial): Float64Array {
  * The XY plane is the isotropic plane (layers lie in XY, Z is through-thickness).
  * Voigt ordering: [εxx, εyy, εzz, γxy, γyz, γxz]
  *
+ * POISSON-RATIO CONVENTION (issue #102)
+ * -------------------------------------
+ * Input `nu_xz` follows the STANDARD engineering convention:
+ *   ν_ij = −ε_j / ε_i under uniaxial stress along i, so S_ij = −ν_ij / E_i.
+ * `nu_xz` is therefore the contraction along Z per unit strain along an
+ * in-plane (X) load direction, and its compliance entry is
+ *   s13 = −ν_xz / E_xy      (load in the isotropy plane, E_x = E_xy).
+ * The reciprocal ratio is derived from symmetry of S (Maxwell relation
+ * ν_ij/E_i = ν_ji/E_j):
+ *   ν_zx = ν_xz × E_z / E_xy   (so s31 = −ν_zx/E_z = s13).
+ * This matches the convention of the cited measurement (Casavola et al. 2016)
+ * from which FDM_ORTHO_RATIOS.nu_xz = 0.30 is taken.
+ *
  * Compliance matrix S = C⁻¹:
- *   [ 1/E_xy   -nu_xy/E_xy  -nu_xz/E_z   0        0        0     ]
- *   [-nu_xy/E_xy  1/E_xy    -nu_xz/E_z   0        0        0     ]
- *   [-nu_zx/E_xy -nu_zx/E_xy  1/E_z      0        0        0     ]
+ *   [ 1/E_xy   -nu_xy/E_xy  -nu_xz/E_xy   0        0        0     ]
+ *   [-nu_xy/E_xy  1/E_xy    -nu_xz/E_xy   0        0        0     ]
+ *   [-nu_xz/E_xy -nu_xz/E_xy  1/E_z       0        0        0     ]
  *   [  0          0           0        1/G_xy    0        0     ]
  *   [  0          0           0          0      1/G_xz    0     ]
  *   [  0          0           0          0        0      1/G_xz]
  *
- * Where nu_zx = nu_xz × E_xy / E_z  (Maxwell reciprocal relation)
- * And   G_xy  = E_xy / (2 × (1 + nu_xy))
+ * When G_xy is absent: G_xy = E_xy / (2 × (1 + nu_xy))
  *
  * We invert S analytically to get C.
  *
@@ -94,12 +106,15 @@ export function buildOrthotropicConstitutiveMatrix(mat: OrthotropicMaterial): Fl
 
   // Use explicitly set G_xy (e.g. from CLT 1/A66) when available; fall back to isotropic approximation.
   const G_xy = mat.G_xy ?? E_xy / (2 * (1 + nu_xy));
-  const nu_zx = nu_xz * E_xy / E_z;          // reciprocal Poisson (Maxwell relation)
+  // Reciprocal (minor) Poisson ratio from compliance symmetry:
+  //   ν_zx / E_z = ν_xz / E_xy   →   ν_zx = ν_xz × E_z / E_xy
+  const nu_zx = nu_xz * E_z / E_xy;
 
-  // Check stability: denominator Δ must be > 0
-  // For transverse isotropy: Δ = (1 - nu_xy²) × (1 - 2×nu_xz×nu_zx) - 2×nu_xz×nu_zx×(1 + nu_xy)
-  // Simplified: Δ = 1 - nu_xy² - 2×nu_xz²×(E_xy/E_z) - 2×nu_xy×nu_xz²×(E_xy/E_z)
-  const delta = (1 - nu_xy*nu_xy) - (2 * nu_xz * nu_zx) - (2 * nu_xy * nu_xz * nu_zx);
+  // Thermodynamic stability (positive-definite S) for transverse isotropy with
+  // the standard convention. The 3×3 normal-block determinant factors as
+  //   det(S) = (1+ν_xy) / (E_xy²·E_z) × [ (1−ν_xy) − 2·ν_xz·ν_zx ]
+  // Since (1+ν_xy) > 0 for ν_xy ∈ [0, 0.5), positive-definiteness reduces to Δ > 0:
+  const delta = (1 - nu_xy) - 2 * nu_xz * nu_zx;
   if (delta <= 0) {
     throw new Error(
       `Orthotropic material is not positive definite (Δ=${delta.toFixed(6)}). ` +
@@ -107,37 +122,21 @@ export function buildOrthotropicConstitutiveMatrix(mat: OrthotropicMaterial): Fl
     );
   }
 
-  // Stiffness matrix entries (from inversion of compliance, Reddy §2.4):
-  //
-  // C11 = C22 = E_xy × (1 - nu_xz × nu_zx) / (Δ × E_z)
-  // C33       = E_z  × (1 - nu_xy²)         / (Δ × E_xy) × E_xy  [simplifies]
-  // C12       = E_xy × (nu_xy + nu_xz × nu_zx) / (Δ × E_z)
-  // C13 = C23 = E_z  × (nu_xz + nu_xy × nu_xz) / Δ × (E_xy/E_z) [simplifies]
-  //
-  // Let's derive directly from the compliance inverse for clarity.
-  // Compliance block for normal stresses (3×3 submatrix):
-  //   S = [ 1/E_xy      -nu_xy/E_xy  -nu_zx/E_xy ]
-  //       [-nu_xy/E_xy   1/E_xy      -nu_zx/E_xy ]
-  //       [-nu_xz/E_z   -nu_xz/E_z    1/E_z      ]
+  // Derive C directly from the compliance inverse.
+  // Compliance block for normal stresses (3×3 submatrix), standard convention:
+  //   S = [ 1/E_xy      -nu_xy/E_xy  -nu_xz/E_xy ]
+  //       [-nu_xy/E_xy   1/E_xy      -nu_xz/E_xy ]
+  //       [-nu_xz/E_xy  -nu_xz/E_xy   1/E_z      ]
+  // (row 3 uses s31 = s13 = -nu_xz/E_xy = -nu_zx/E_z by the Maxwell relation)
   //
   // Inverted using cofactor expansion:
 
   const s11 =  1 / E_xy;
   const s12 = -nu_xy / E_xy;
-  const s13 = -nu_zx / E_xy;   // = -nu_xz / E_z  by reciprocal
+  const s13 = -nu_xz / E_xy;   // standard convention: = -nu_zx / E_z  by reciprocity
   const s33 =  1 / E_z;
 
-  // Cofactors of the 3×3 compliance block:
-  const A11 = s33 * s11 - s13 * s13;           // cofactor (1,1) for S symmetric
-  const A22 = s33 * s11 - s13 * s13;           // = A11 (transverse isotropy)
-  const A33 = s11 * s11 - s12 * s12;           // cofactor (3,3)
-  const A12 = s12 * s33 - s13 * s13;           // no wait — correct formula below
-  // Using full 3×3 inverse:
-  // det = s11²×s33 + 2×s12×s13×s13 - s11×s13² - s12²×s33 - s13²×s11
-  // For transverse isotropy (s11=s22, s13=s23, s12=s21):
-  const det = s11*s11*s33 + 2*s12*s13*s13 - s11*s13*s13 - s12*s12*s33 - s11*s13*s13;
-  // Which simplifies to: (s11+s12)(s11-s12)s33 - 2×s13²×(s11-s12)... let me just compute numerically
-  // Actually for numerical robustness, build the 3×3 and invert directly:
+  // Invert the 3×3 normal-stress compliance block directly (transverse isotropy):
   // [a b c]   [s11 s12 s13]
   // [b a c] = [s12 s11 s13]
   // [c c d]   [s13 s13 s33]
@@ -299,11 +298,24 @@ export function computeGeometry(
   const β3 =  s * ((y0*(z1-z2)) + (y1*(z2-z0)) + (y2*(z0-z1)));
 
   // γ coefficients (∂N/∂y numerators) — cofactors of column 2 (y).
-  // Sign pattern: cofactor(i,2) = (-1)^(i+2), giving signs [+,-,+,-] for i=0,1,2,3.
-  const γ0 = -s * ((x1*(z2-z3)) + (x2*(z3-z1)) + (x3*(z1-z2)));
-  const γ1 =  s * ((x0*(z2-z3)) + (x2*(z3-z0)) + (x3*(z0-z2)));
-  const γ2 = -s * ((x0*(z1-z3)) + (x1*(z3-z0)) + (x3*(z0-z1)));
-  const γ3 =  s * ((x0*(z1-z2)) + (x1*(z2-z0)) + (x2*(z0-z1)));
+  // Sign pattern: cofactor(i,2) = (-1)^(i+2), giving signs [+,-,+,-] for i=0,1,2,3
+  // — the OPPOSITE of the β/δ rows (the y column sits between x and z, so its
+  // cofactor sign alternation is shifted by one).
+  //
+  // REGRESSION NOTE (found during #97): these four signs were previously
+  // [-,+,-,+] (copy of the β pattern), which negated every ∂N/∂y. Because the
+  // same B is used for assembly and recovery, the error conjugates away for
+  // loads confined to y-only or xz-only (K_wrong = P·K·P with P flipping uy
+  // DOFs, and D·C·D = C for block-diagonal C), which is why pure-axis
+  // validation tests passed. Mixed-direction loads and imposed strain fields
+  // were wrong, and C3D4 disagreed with the (correct, isoparametric) C3D10
+  // path. Hand check, canonical tet (0,0,0),(1,0,0),(0,1,0),(0,0,1):
+  // N0 = 1-x-y-z → ∂N0/∂y = -1 = γ0/(6V) with 6V = 1.
+  // See tests/unit/b-matrix-sign.test.ts.
+  const γ0 =  s * ((x1*(z2-z3)) + (x2*(z3-z1)) + (x3*(z1-z2)));
+  const γ1 = -s * ((x0*(z2-z3)) + (x2*(z3-z0)) + (x3*(z0-z2)));
+  const γ2 =  s * ((x0*(z1-z3)) + (x1*(z3-z0)) + (x3*(z0-z1)));
+  const γ3 = -s * ((x0*(z1-z2)) + (x1*(z2-z0)) + (x2*(z0-z1)));
 
   // δ coefficients (∂N/∂z numerators) — cofactors of column 3 (z).
   // Sign pattern: cofactor(i,3) = (-1)^(i+3), giving signs [-,+,-,+] for i=0,1,2,3.
@@ -510,13 +522,26 @@ export function elementGeometricStiffness(
  */
 
 
-/** 4-point Gauss quadrature points and weights for tetrahedron */
-const C3D10_GAUSS = [
-  // [ξ, η, ζ, weight×6] — standard tetrahedral quadrature
-  { xi:0.1381966, eta:0.1381966, zeta:0.1381966, w:0.0416667 },
-  { xi:0.5854102, eta:0.1381966, zeta:0.1381966, w:0.0416667 },
-  { xi:0.1381966, eta:0.5854102, zeta:0.1381966, w:0.0416667 },
-  { xi:0.1381966, eta:0.1381966, zeta:0.5854102, w:0.0416667 },
+/**
+ * 4-point Gauss quadrature points and weights for the reference tetrahedron.
+ *
+ * Closed forms (degree-2 exact rule, Hammer-Marlowe-Stroud):
+ *   a = (5 − √5)/20 ≈ 0.138196601...   (three barycentric coords)
+ *   b = (5 + 3√5)/20 ≈ 0.585410196...  (the fourth coord)
+ *   w = 1/24 per point (Σw = 1/6 = reference tet volume)
+ *
+ * Exported so stress recovery (stress.ts) uses the identical point set —
+ * do not duplicate these constants elsewhere.
+ */
+const TET4_GP_A = (5 - Math.sqrt(5)) / 20;
+const TET4_GP_B = (5 + 3 * Math.sqrt(5)) / 20;
+const TET4_GP_W = 1 / 24;
+
+export const C3D10_GAUSS = [
+  { xi: TET4_GP_A, eta: TET4_GP_A, zeta: TET4_GP_A, w: TET4_GP_W },
+  { xi: TET4_GP_B, eta: TET4_GP_A, zeta: TET4_GP_A, w: TET4_GP_W },
+  { xi: TET4_GP_A, eta: TET4_GP_B, zeta: TET4_GP_A, w: TET4_GP_W },
+  { xi: TET4_GP_A, eta: TET4_GP_A, zeta: TET4_GP_B, w: TET4_GP_W },
 ] as const;
 
 /**

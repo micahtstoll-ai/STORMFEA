@@ -61,9 +61,6 @@
 import type { CSRMatrix } from "./types.js";
 import { matvec } from "./assembly.js";
 
-// NOTE: axpby is kept for external callers that may import it, but is no longer
-// used inside solvePCG (replaced by the in-place update below for zero allocation).
-
 // ─── Vector operations ────────────────────────────────────────────────────────
 
 function dot(a: Float64Array, b: Float64Array): number {
@@ -81,15 +78,6 @@ function daxpy(alpha: number, x: Float64Array, y: Float64Array): void {
   for (let i = 0; i < x.length; i++) {
     y[i] = (y[i] ?? 0) + alpha * (x[i] ?? 0);
   }
-}
-
-/** z = alpha*x + beta*y */
-function axpby(alpha: number, x: Float64Array, beta: number, y: Float64Array): Float64Array {
-  const z = new Float64Array(x.length);
-  for (let i = 0; i < x.length; i++) {
-    z[i] = alpha * (x[i] ?? 0) + beta * (y[i] ?? 0);
-  }
-  return z;
 }
 
 // ─── IC(0) incomplete Cholesky factorization ─────────────────────────────────
@@ -256,25 +244,37 @@ export interface CGResult {
 }
 
 /**
- * Solve K·u = f using Preconditioned Conjugate Gradient.
- *
- * @param K             Global stiffness matrix in CSR format (modified in-place by BCs).
- * @param f             Right-hand side force vector in Newtons.
- * @param diagIdx       Diagonal entry positions in K.data, for preconditioner.
- * @param tol           Relative residual tolerance (default 1e-8).
- * @param maxIter       Maximum iterations (default 3 × DOF count).
- * @param preconditioner Which preconditioner to use: 'ic0' (default) or 'jacobi'.
- *                       IC(0) typically converges in 3-10x fewer iterations.
- *                       Falls back to Jacobi if IC(0) factorization fails.
+ * Optional progress/abort hooks (issue #109). Passed only by the streaming
+ * analysis path; all other callers (modal, buckling, tests) omit it and are
+ * unaffected.
  */
-export function solvePCG(
+export interface SolvePCGOpts {
+  /** Checked at CG checkpoints; when aborted, solvePCG throws (name === 'AnalysisAbortError'). */
+  signal?: AbortSignal;
+  /** Invoked at CG residual checkpoints with (iteration, relativeResidual). */
+  onProgress?: (iteration: number, relativeResidual: number) => void;
+}
+
+/** Progress emitted at each CG residual checkpoint. */
+type CGProgress = { iteration: number; relativeResidual: number };
+
+/**
+ * Core PCG iteration as a generator (issue #109). It yields a { iteration,
+ * relativeResidual } at each residual checkpoint and returns the final
+ * CGResult. This is the SINGLE source of the CG numerics: the synchronous
+ * driver (solvePCG) drains it in a tight loop, and the cooperative async driver
+ * (solvePCGStreaming) drives it while yielding the event loop between
+ * checkpoints — so the blocking and streaming solve paths can never drift.
+ */
+function* pcgSolve(
   K:        CSRMatrix,
   f:        Float64Array,
   diagIdx:  Int32Array,
-  tol       = 1e-8,
-  maxIter?: number,
-  preconditioner: 'jacobi' | 'ic0' = 'ic0',
-): CGResult {
+  tol:      number,
+  maxIter:  number | undefined,
+  preconditioner: 'jacobi' | 'ic0',
+  prebuiltFactor: IC0Factor | null | undefined,
+): Generator<CGProgress, CGResult, void> {
   const n    = K.n;
   // Hard cap at 5 000 iterations regardless of DOF count.
   // Rationale: with Jacobi preconditioning on a well-conditioned FEM system,
@@ -297,7 +297,14 @@ export function solvePCG(
   let LrowPtr: Int32Array   | null = null;
   let LdiagIdx: Int32Array  | null = null;
 
-  if (useIC0) {
+  if (useIC0 && prebuiltFactor) {
+    // Reuse a caller-supplied factorization — the matrix is unchanged across
+    // solves, so re-factorizing per RHS would be pure waste (issue #100).
+    Ldata    = prebuiltFactor.Ldata;
+    LcolIdx  = prebuiltFactor.LcolIdx;
+    LrowPtr  = prebuiltFactor.LrowPtr;
+    LdiagIdx = prebuiltFactor.diagIdx;
+  } else if (useIC0) {
     try {
       const tFactor = benchPrecond ? Date.now() : 0;
       const L = buildIC0(K, diagIdx);
@@ -402,6 +409,10 @@ export function solvePCG(
       if (debugCG) {
         console.log(`[cg] iter ${iter}: relRes=${relRes.toExponential(3)} (initial=${initialRelRes.toExponential(3)})`);
       }
+      // Checkpoint boundary: hand control to the driver so it can stream live
+      // progress and observe an abort (issue #109). The sync driver resumes
+      // immediately; the streaming driver yields the event loop here first.
+      yield { iteration: iter, relativeResidual: relRes };
       nextLogIter = iter < 256 ? iter * 2 : iter + 256;
     }
 
@@ -477,4 +488,74 @@ export function solvePCG(
     preconditionerUsed:     useIC0 ? 'ic0' as const : 'jacobi' as const,
     residualCheckpoints:    residualCheckpoints,
   };
+}
+
+// Apply the caller's progress callback and abort check at a checkpoint. Shared
+// by both drivers so streaming and blocking solves handle opts identically.
+function _applyPCGProgress(p: CGProgress, opts?: SolvePCGOpts): void {
+  if (opts?.onProgress) opts.onProgress(p.iteration, p.relativeResidual);
+  if (opts?.signal?.aborted) {
+    const e = new Error(`PCG aborted by caller at iteration ${p.iteration}`);
+    e.name = 'AnalysisAbortError';
+    throw e;
+  }
+}
+
+/**
+ * Solve K·u = f using Preconditioned Conjugate Gradient (synchronous).
+ *
+ * @param K              Global stiffness matrix in CSR format.
+ * @param f              Right-hand side force vector in Newtons.
+ * @param diagIdx        Diagonal entry positions in K.data, for preconditioner.
+ * @param tol            Relative residual tolerance (default 1e-8).
+ * @param maxIter        Maximum iterations (default min(5000, max(1000, 3×DOF))).
+ * @param preconditioner 'ic0' (default) or 'jacobi'.
+ * @param prebuiltFactor Optional prebuilt IC(0) factor (issue #100).
+ * @param opts           Optional progress/abort hooks (issue #109).
+ */
+export function solvePCG(
+  K:        CSRMatrix,
+  f:        Float64Array,
+  diagIdx:  Int32Array,
+  tol       = 1e-8,
+  maxIter?: number,
+  preconditioner: 'jacobi' | 'ic0' = 'ic0',
+  prebuiltFactor?: IC0Factor | null,
+  opts?: SolvePCGOpts,
+): CGResult {
+  const gen = pcgSolve(K, f, diagIdx, tol, maxIter, preconditioner, prebuiltFactor ?? null);
+  let step = gen.next();
+  while (!step.done) {
+    _applyPCGProgress(step.value, opts);
+    step = gen.next();
+  }
+  return step.value;
+}
+
+/**
+ * Cooperative-yielding twin of solvePCG (issue #109). Numerically identical —
+ * both drive the same pcgSolve generator — but between residual checkpoints it
+ * awaits setImmediate so the event loop can flush streamed progress events and
+ * observe a mid-solve abort (tab close / Cancel), which a fully synchronous
+ * solve would block until completion. Used only by the SSE analysis path;
+ * equivalence with solvePCG is guarded by server/tests/unit/cg-streaming.test.ts.
+ */
+export async function solvePCGStreaming(
+  K:        CSRMatrix,
+  f:        Float64Array,
+  diagIdx:  Int32Array,
+  tol       = 1e-8,
+  maxIter?: number,
+  preconditioner: 'jacobi' | 'ic0' = 'ic0',
+  prebuiltFactor?: IC0Factor | null,
+  opts?: SolvePCGOpts,
+): Promise<CGResult> {
+  const gen = pcgSolve(K, f, diagIdx, tol, maxIter, preconditioner, prebuiltFactor ?? null);
+  let step = gen.next();
+  while (!step.done) {
+    _applyPCGProgress(step.value, opts);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    step = gen.next();
+  }
+  return step.value;
 }

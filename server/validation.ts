@@ -1,10 +1,10 @@
 /**
  * validation.ts
  * ─────────────────────────────────────────────────────────────────────────────
- * The prediction-vs-measurement scoreboard — the piece that turns StressForm
+ * The prediction-vs-measurement scoreboard — the piece that turns STORMFEA
  * from a tool into a *validated* tool.
  *
- * Workflow: analyse a specimen (StressForm predicts the failure load), break it
+ * Workflow: analyse a specimen (STORMFEA predicts the failure load), break it
  * physically (the real failure load), and record the pair here. Across a set of
  * specimens — e.g. the Taguchi L9 — the aggregate tells you the two things that
  * matter for validation:
@@ -23,7 +23,7 @@ export interface ValidationCase {
   id:             string;
   label:          string;
   partName:       string;
-  /** StressForm's predicted failure load (estimatedFailForce), N. */
+  /** STORMFEA's predicted failure load (estimatedFailForce), N. */
   predictedFailN: number;
   /** Physical test failure load, N. */
   measuredFailN:  number;

@@ -4,7 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>STORMFEA — Nordic Storm 5962</title>
-<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
+<!-- Three.js is vendored locally (client/vendor/three.min.js, pinned r0.152.2)
+     so the 3-D viewer works with no internet connection. See issue #107. -->
+<script src="vendor/three.min.js"></script>
 <script>
 /* ── Runtime error surfacing ─────────────────────────────────────────────────
    Installed in <head>, BEFORE the main application script, so that even a
@@ -102,7 +104,7 @@
       _dropped++;
     }
     if (_dropped > 0) {
-      var msg = 'and ' + _dropped + ' more error' + (_dropped !== 1 ? 's' : '') + ' — open the Debug tab for the full log';
+      var msg = 'and ' + _dropped + ' more error' + (_dropped !== 1 ? 's' : '') + ' — open the DBG tab for the full log';
       var h = host();
       var existCons = h.querySelector('[data-sf-consolidation]');
       if (existCons) {
@@ -169,8 +171,57 @@
   });
 })();
 </script>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Rajdhani:wght@700&display=swap" rel="stylesheet">
+<!-- Fonts are vendored locally (client/vendor/fonts/, latin subset) instead of
+     loaded from Google Fonts, so typography works with no internet connection.
+     Families/weights match what the UI uses: Outfit 400/500/600 (variable),
+     DM Mono 300/400/500 + italic 300, Rajdhani 700. See issue #107. -->
+<style>
+  /* Outfit — variable font; one file serves weights 400–600. */
+  @font-face {
+    font-family: 'Outfit';
+    font-style: normal;
+    font-weight: 400 600;
+    font-display: swap;
+    src: url('vendor/fonts/outfit-variable.woff2') format('woff2');
+  }
+  /* DM Mono */
+  @font-face {
+    font-family: 'DM Mono';
+    font-style: normal;
+    font-weight: 300;
+    font-display: swap;
+    src: url('vendor/fonts/dmmono-normal-300.woff2') format('woff2');
+  }
+  @font-face {
+    font-family: 'DM Mono';
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url('vendor/fonts/dmmono-normal-400.woff2') format('woff2');
+  }
+  @font-face {
+    font-family: 'DM Mono';
+    font-style: normal;
+    font-weight: 500;
+    font-display: swap;
+    src: url('vendor/fonts/dmmono-normal-500.woff2') format('woff2');
+  }
+  @font-face {
+    font-family: 'DM Mono';
+    font-style: italic;
+    font-weight: 300;
+    font-display: swap;
+    src: url('vendor/fonts/dmmono-italic-300.woff2') format('woff2');
+  }
+  /* Rajdhani */
+  @font-face {
+    font-family: 'Rajdhani';
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    src: url('vendor/fonts/rajdhani-700.woff2') format('woff2');
+  }
+</style>
 <style>
 /* ── CSS Variables ───────────────────────────────────────────────────────────
    Three-color palette: gold · black · white. Both modes mirror each other.
@@ -615,26 +666,31 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <div class="sf-card-label">NEW ANALYSIS</div>
     </button>
 
-    <!-- 2: RESUME SESSION — disabled -->
-    <!-- TODO: wire once session persistence layer exists -->
-    <div class="sf-nav-card sf-disabled" style="display:flex;align-items:center;gap:14px;padding:14px 18px">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--sf-text-lo)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+    <!-- 2: RESUME SESSION — enabled by initLandingResumeCard() when a saved
+         session exists on the server (issue #110). Disabled with a hint when
+         there is none. Restores geometry (IndexedDB) + settings/loads/last-tab
+         from the latest autosave via resumeSession(). -->
+    <button id="sf-resume-card" class="sf-nav-card sf-disabled" disabled
+      onclick="resumeSession()"
+      style="display:flex;align-items:center;gap:14px;padding:14px 18px;
+             cursor:pointer;text-align:left;width:100%;background:none;
+             font-family:'Outfit',sans-serif">
+      <svg id="sf-resume-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--sf-text-lo)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
         <path d="M2 8a6 6 0 1 0 1-3.5"/>
         <polyline points="2,2 2,6 6,6"/>
       </svg>
-      <div class="sf-card-label">RESUME SESSION</div>
-    </div>
+      <div>
+        <div class="sf-card-label">RESUME SESSION</div>
+        <div class="sf-card-sub" id="sf-resume-hint">No saved session</div>
+      </div>
+    </button>
 
-    <!-- 3: PAST EXPORTS — disabled -->
-    <!-- TODO: wire once session persistence layer exists -->
-    <div class="sf-nav-card sf-disabled" style="display:flex;align-items:center;gap:14px;padding:14px 18px">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--sf-text-lo)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
-        <rect x="2" y="2" width="12" height="12" rx="2"/>
-        <line x1="8" y1="6" x2="8" y2="10"/>
-        <polyline points="5.5,8 8,10.5 10.5,8"/>
-      </svg>
-      <div class="sf-card-label">PAST EXPORTS</div>
-    </div>
+    <!-- PAST EXPORTS card removed (issue #110): export bundles are streamed
+         straight to the browser as a download by POST /api/export-zip and are
+         not persisted or indexed anywhere on the server, so there is nothing to
+         list. Building the card would require new export-history infrastructure;
+         the issue explicitly allows removal, so we remove rather than ship a
+         half-feature. -->
 
     <!-- Divider -->
     <div style="height:1px;background:var(--sf-border);margin:4px 0"></div>
@@ -907,7 +963,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
   </div>
   <!-- Cross-reference -->
   <div style="border-top:1px solid var(--border);padding-top:8px;font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);text-align:center;line-height:1.6">
-    More settings available from the Start Screen.
+    Audio feedback settings are in the PREFS tab · print &amp; solver settings in the MATERIAL tab.
   </div>
 </div>
 
@@ -1088,6 +1144,13 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <div id="overlay-bar-wrap" style="display:none;width:160px;height:2px;background:var(--border);border-radius:1px;overflow:hidden">
         <div id="overlay-bar" style="height:100%;width:0%;background:var(--gold);border-radius:1px;transition:width 0.4s ease"></div>
       </div>
+      <!-- Live mesh size, shown as soon as meshing completes (issue #109) -->
+      <div id="overlay-mesh" style="display:none;font-size:9px;color:var(--text-mid);letter-spacing:.08em;margin-top:10px;font-family:'DM Mono',monospace"></div>
+      <!-- Live CG residual sparkline (issue #109) -->
+      <canvas id="overlay-spark" width="160" height="34" style="display:none;margin-top:8px;background:var(--bg-card);border:1px solid var(--border);border-radius:2px"></canvas>
+      <!-- Cancel button — aborts the streaming fetch, which closes the socket and
+           stops the server-side solve at the next phase boundary (issue #109). -->
+      <button id="overlay-cancel" onclick="cancelAnalysis()" style="display:none;margin-top:16px;padding:5px 16px;font-size:10px;letter-spacing:.06em;background:transparent;border:1px solid var(--border-mid);color:var(--text-mid);border-radius:3px;cursor:pointer;font-family:inherit">CANCEL</button>
     </div>
 
     <!-- Fastener picker popup — shown after clicking a hole in bolt mode -->
@@ -1522,7 +1585,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
                 padding:1px 6px;margin-left:8px;white-space:nowrap"></span>
         </div>
         <div style="font-size:10px;color:var(--text-lo);margin-top:5px;line-height:1.5">
-          Set the bed face in the Orientation tab, then add forces — orientation is computed automatically from the angle between your forces and layer direction.
+          Set the bed face in the ORIENT tab, then add forces — orientation is computed automatically from the angle between your forces and layer direction.
         </div>
         <div id="orient-derived-nav" style="font-size:10px;margin-top:4px;display:none"></div>
       </div>
@@ -1630,7 +1693,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       </div>
       <!-- Cross-reference -->
       <div style="margin-top:16px;padding-top:10px;border-top:1px solid var(--border);font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);text-align:center;line-height:1.6">
-        More settings available from the Start Screen.
+        Display settings (colormap, units, split view) are in the gear panel at the top right.
       </div>
     </div>  <!-- end tab-prefs -->
 
@@ -2066,7 +2129,45 @@ function initLandingRain() {
 
 document.addEventListener('DOMContentLoaded', () => {
   if (_landingScreenActive) initLandingRain();
+  initLandingResumeCard();
 });
+
+// Compact "N ago" formatter for the RESUME SESSION card hint.
+function _shortAgo(iso) {
+  const t = Date.parse(iso);
+  if (!isFinite(t)) return '';
+  const secs = Math.round((Date.now() - t) / 1000);
+  if (secs < 60)  return 'just now';
+  const mins = Math.round(secs / 60);
+  if (mins < 60)  return mins + ' min ago';
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24)   return hrs + 'h ago';
+  return Math.round(hrs / 24) + 'd ago';
+}
+
+// Probe the server for a saved session and enable the RESUME SESSION landing
+// card only when one exists (issue #110). The card stays disabled with a
+// "No saved session" hint otherwise, so NEW ANALYSIS remains the obvious path.
+async function initLandingResumeCard() {
+  const card = document.getElementById('sf-resume-card');
+  const hint = document.getElementById('sf-resume-hint');
+  const icon = document.getElementById('sf-resume-icon');
+  if (!card || !hint) return;
+  try {
+    const r = await fetch('/api/session');
+    if (!r.ok) return;
+    const s = await r.json();
+    if (s && s.version === 2 && s.fileName) {
+      card.classList.remove('sf-disabled');
+      card.disabled = false;
+      if (icon) icon.setAttribute('stroke', 'var(--sf-highlight)');
+      const ago = s.savedAt ? _shortAgo(s.savedAt) : '';
+      hint.textContent = s.fileName + (ago ? ' · ' + ago : '');
+    }
+  } catch (_e) {
+    // Leave the card disabled — resuming is optional, a probe failure is not fatal.
+  }
+}
 
 // ─── Web Worker for solver communication ──────────────────────────────────────
 let solverWorker = null;
@@ -2108,11 +2209,11 @@ function analyzeWithWorker(body) {
     const id = `analyse-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const worker = getSolverWorker();
 
-    // 600s timeout matching server-side ANALYSE_TIMEOUT_MS
+    // 120s timeout matching server-side ANALYSE_TIMEOUT_MS
     const timeout = setTimeout(() => {
       pendingRequests.delete(id);
-      reject(new Error('Solver timed out after 600s. Server may be unresponsive.'));
-    }, 600_000);
+      reject(new Error('Solver timed out after 120s. Server may be unresponsive.'));
+    }, 120_000);
 
     pendingRequests.set(id, { resolve, reject, timeout });
     worker.postMessage({ type: 'analyzeRequest', payload: body, id });
@@ -2127,6 +2228,163 @@ window.addEventListener('beforeunload', () => {
     pendingRequests.clear();
   }
 });
+
+// ─── Streaming analyse over SSE (issue #109) ──────────────────────────────────
+// POSTs the analysis body to /api/analyse?stream=1 and reads Server-Sent Events
+// so the overlay reflects REAL solver phases (mesh → constraints → assembly →
+// CG → recovery → mapping) instead of a fake timer, shows mesh size as soon as
+// meshing completes, and — via the AbortSignal — lets the user cancel: aborting
+// the fetch closes the socket, which the server turns into an AbortSignal that
+// stops the solve at the next phase boundary. Resolves with the same payload
+// shape the blocking JSON path returns, so downstream result handling is
+// unchanged. The Web-Worker JSON path (analyzeWithWorker) remains for the
+// convergence study and A/B comparison.
+let _analyseAbort = null;
+
+async function analyzeStreaming(body, { onPhase } = {}) {
+  const ctrl = new AbortController();
+  _analyseAbort = ctrl;
+  let resp;
+  try {
+    resp = await fetch('/api/analyse?stream=1', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+      body:    JSON.stringify(body),
+      signal:  ctrl.signal,
+    });
+  } catch (e) {
+    if (e && e.name === 'AbortError') { const err = new Error('Analysis cancelled'); err.cancelled = true; throw err; }
+    throw e;
+  }
+
+  if (!resp.ok || !resp.body) {
+    // Server rejected before streaming (e.g. 400 validation / 503 no mesher):
+    // body is a normal JSON error envelope, not an event stream.
+    const txt = await resp.text().catch(() => '');
+    throw new Error(formatErrorEnvelope(txt) || ('HTTP ' + resp.status));
+  }
+
+  const reader  = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '', result = null, errored = null;
+
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let sep;
+      while ((sep = buf.indexOf('\n\n')) >= 0) {
+        const raw = buf.slice(0, sep);
+        buf = buf.slice(sep + 2);
+        let event = 'message', data = '';
+        for (const line of raw.split('\n')) {
+          if (line.startsWith('event:'))     event = line.slice(6).trim();
+          else if (line.startsWith('data:')) data += line.slice(5).trim();
+        }
+        if (!data) continue;
+        let parsed;
+        try { parsed = JSON.parse(data); } catch { continue; }
+        if      (event === 'phase')  { if (onPhase) { try { onPhase(parsed); } catch(_e){} } }
+        else if (event === 'result') { result = parsed; }
+        else if (event === 'error')  { errored = parsed; }
+      }
+    }
+  } catch (e) {
+    if (e && e.name === 'AbortError') { const err = new Error('Analysis cancelled'); err.cancelled = true; throw err; }
+    throw e;
+  }
+
+  if (errored) throw new Error(errored.error + (errored.hint ? ' — ' + errored.hint : ''));
+  if (!result) { const err = new Error('Analysis cancelled'); err.cancelled = true; throw err; }
+  return result;
+}
+
+// Cancel button on the solve overlay — aborts the in-flight streaming fetch.
+function cancelAnalysis() {
+  if (_analyseAbort) {
+    _analyseAbort.abort();
+    _analyseAbort = null;
+  }
+  const btn = document.getElementById('overlay-cancel');
+  if (btn) btn.textContent = 'CANCELLING…';
+}
+
+// Map a server phase event onto the solve overlay (label, sub-text, progress
+// bar, mesh-size line, live CG iteration/residual). Issue #109.
+const _ANALYSE_PHASE_PCT = { mesh: 15, constraints: 30, assembly: 45, solve: 62, modal: 80, buckling: 84, recovery: 88, mapping: 94 };
+const _ANALYSE_PHASE_LABEL = {
+  mesh: 'Meshing…', constraints: 'Applying constraints…', assembly: 'Assembling K matrix…',
+  solve: 'Solving K·u = F…', modal: 'Modal analysis…', buckling: 'Buckling analysis…',
+  recovery: 'Recovering stress…', mapping: 'Mapping to surface…',
+};
+function applyAnalysePhase(ev) {
+  if (!ev || !ev.phase) return;
+  const label = _ANALYSE_PHASE_LABEL[ev.phase] || 'Working…';
+  let sub = ev.message || '';
+  const pct = _ANALYSE_PHASE_PCT[ev.phase] ?? null;
+
+  // Mesh size — display the instant meshing completes.
+  if (ev.phase === 'mesh' && ev.nodeCount != null) {
+    const mel = document.getElementById('overlay-mesh');
+    if (mel) {
+      mel.style.display = 'block';
+      const dof = ev.dof != null ? ev.dof : ev.nodeCount * 3;
+      mel.textContent =
+        `${(ev.nodeCount).toLocaleString()} nodes · ${(ev.elementCount||0).toLocaleString()} elements · ${dof.toLocaleString()} DOF`;
+    }
+  }
+
+  // Live CG iteration + residual.
+  if (ev.phase === 'solve' && ev.iteration != null) {
+    const rr = (ev.relativeResidual != null) ? ev.relativeResidual.toExponential(2) : '';
+    sub = `CG iteration ${ev.iteration}${rr ? ' · residual ' + rr : ''}`;
+    _pushLiveResidual(ev.iteration, ev.relativeResidual);
+  }
+
+  setOverlayPhase(label, sub, pct);
+}
+
+// Live CG residual sparkline (issue #109). Fed by streamed solve-phase events
+// (relative residual per checkpoint) and drawn on the overlay canvas on a
+// log10 scale so the convergence trend is visible while the solve runs.
+let _liveResidualPts = [];
+function _resetLiveResidual() {
+  _liveResidualPts = [];
+  const c = document.getElementById('overlay-spark');
+  if (c) {
+    c.style.display = 'none';
+    const ctx = c.getContext('2d');
+    if (ctx) ctx.clearRect(0, 0, c.width, c.height);
+  }
+}
+function _pushLiveResidual(iter, relRes) {
+  if (relRes == null || !isFinite(relRes) || relRes <= 0) return;
+  _liveResidualPts.push({ iter, r: relRes });
+  const c = document.getElementById('overlay-spark');
+  if (!c) return;
+  c.style.display = 'block';
+  const ctx = c.getContext('2d');
+  if (!ctx) return;
+  const W = c.width, H = c.height, pad = 3;
+  ctx.clearRect(0, 0, W, H);
+  const pts = _liveResidualPts;
+  if (pts.length < 2) return;
+  const logs = pts.map(p => Math.log10(p.r));
+  let lmin = Math.min(...logs), lmax = Math.max(...logs);
+  if (lmax - lmin < 1e-6) lmax = lmin + 1;   // avoid divide-by-zero on a flat run
+  const n = pts.length;
+  const gold = (getComputedStyle(document.documentElement).getPropertyValue('--gold') || '').trim() || '#C9A227';
+  ctx.strokeStyle = gold;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = pad + (W - 2 * pad) * (n === 1 ? 0 : i / (n - 1));
+    const y = pad + (H - 2 * pad) * (1 - (logs[i] - lmin) / (lmax - lmin));  // higher residual = higher
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
 
 // ─── Three.js setup ───────────────────────────────────────────────────────────
 let scene, camera, renderer, mesh3d, animId;
@@ -3138,6 +3396,21 @@ async function startNewFile() {
   location.reload();
 }
 
+// Server errors use the uniform envelope { error, field?, hint? } (issue #106).
+// Turn the raw response text into a readable one-line message; non-JSON text
+// (proxy errors, plain-text responses) passes through unchanged.
+function formatErrorEnvelope(text) {
+  try {
+    const env = JSON.parse(text);
+    if (env && env.error) {
+      return env.error
+        + (env.field && !String(env.error).includes(env.field) ? ` (field: ${env.field})` : '')
+        + (env.hint ? ' — ' + env.hint : '');
+    }
+  } catch (_) { /* not JSON */ }
+  return text;
+}
+
 async function handleFile(file) {
   if (!file) return;
   const name = file.name.toLowerCase();
@@ -3169,7 +3442,7 @@ async function handleFile(file) {
 
     AudioManager.playUploadStart();
     const resp = await fetch('/api/upload', { method: 'POST', body: form });
-    if (!resp.ok) throw new Error(await resp.text());
+    if (!resp.ok) throw new Error(formatErrorEnvelope(await resp.text()));
     const data = await resp.json();
     const wasSessionRestore = S.fileData?._sessionRestored;
     const savedBolts  = wasSessionRestore ? S.bolts  : [];
@@ -3253,16 +3526,25 @@ async function handleFile(file) {
     updateBoltList();
     updateForceList();
     updateAnalyseButton();
-    // Show orientation tab first — user picks bed face before placing constraints
-    switchTab('orient');
-    showOnce('orient', {
-      title: 'Step 1 — orient the part',
-      body: 'Print orientation sets the layer direction, which drives the anisotropy STORMFEA models. Use BED to snap a face to the build plate before adding loads — the same part oriented two ways can fail at different stresses.',
-      anchorSel: '[data-tab="orient"]',
-    });
-    // Show bed mode prompt
-    document.getElementById('bed-indicator').style.display = 'block';
-    document.getElementById('bed-face-label').textContent = 'CLICK A FACE TO SET AS PRINT BED';
+    // On a session RESUME, jump back to the tab the user left off on (issue
+    // #110). Results are not persisted, so if that was RESULTS fall back to
+    // LOADS. Otherwise show ORIENT — user picks bed face before constraints.
+    const resumeTab = _pendingResumeTab;
+    _pendingResumeTab = null;
+    const targetTab = resumeTab
+      ? (resumeTab === 'results' && !S.results ? 'loads' : resumeTab)
+      : 'orient';
+    switchTab(targetTab);
+    if (targetTab === 'orient') {
+      showOnce('orient', {
+        title: 'Step 1 — orient the part',
+        body: 'Print orientation sets the layer direction, which drives the anisotropy STORMFEA models. Use BED to snap a face to the build plate before adding loads — the same part oriented two ways can fail at different stresses.',
+        anchorSel: '[data-tab="orient"]',
+      });
+      // Show bed mode prompt
+      document.getElementById('bed-indicator').style.display = 'block';
+      document.getElementById('bed-face-label').textContent = 'CLICK A FACE TO SET AS PRINT BED';
+    }
     updateHintBar();
     updateOrientDerivedDisplay();
     hideOverlay();
@@ -3334,12 +3616,12 @@ function updateHintBar() {
       if (S.results) {
         setHint(
           'Analysis complete — drag to rotate, scroll to zoom',
-          'Press R to reset view · Tab 5 for full results · Ctrl+P to export PDF'
+          'Press R to reset view · 5 for the RESULTS tab · Ctrl+P to export PDF'
         );
       } else if (nBolts === 0 && nForces === 0) {
         setHint(
-          'Part loaded — switch to Constraints tab to add bolts and forces',
-          'Press 3 to jump to Constraints · B for bolt mode · F for force mode'
+          'Part loaded — open the LOADS tab to add bolts and forces',
+          'Press 3 for the LOADS tab · F for force mode'
         );
       } else if (nBolts > 0 && nForces === 0) {
         setHint(
@@ -3349,7 +3631,7 @@ function updateHintBar() {
       } else if (nBolts === 0 && nForces > 0) {
         setHint(
           `${nForces} force${nForces > 1 ? 's' : ''} applied — now add at least one bolt constraint`,
-          'Press B to enter Bolt mode · click a highlighted hole'
+          'Open the LOADS tab · click + Add Bolt next to a detected hole'
         );
       } else {
         setHint(
@@ -3903,8 +4185,8 @@ function finishManualHole() {
   switchTab('loads');
   updateHolesList();
   setHint(
-    `Hole added: ø${U.lenStr(fit.radius * 2)} — switch to Constraints to add a bolt`,
-    'Press 3 to jump to Constraints · B for Bolt mode'
+    `Hole added: ø${U.lenStr(fit.radius * 2)} — add a bolt to it in the LOADS tab`,
+    'Press 3 for the LOADS tab · click + Add Bolt on the hole row'
   );
 }
 
@@ -4311,7 +4593,7 @@ function updateBoltList() {
   const el = document.getElementById('bolt-list');
   document.getElementById('badge-bolts').innerHTML = `<svg width="11" height="11" viewBox="0 0 11 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5.5" cy="5.5" r="4"/><circle cx="5.5" cy="5.5" r="1.5" fill="currentColor" stroke="none"/></svg> ${S.bolts.length} bolt${S.bolts.length!==1?'s':''}`;
   if (!S.bolts.length) {
-    el.innerHTML = '<div style="font-size:11px;color:var(--text-mid);padding:12px;border:1px dashed var(--border);border-radius:3px;text-align:center">No bolts placed yet. Switch to Bolt mode and click a hole.</div>';
+    el.innerHTML = '<div style="font-size:11px;color:var(--text-mid);padding:12px;border:1px dashed var(--border);border-radius:3px;text-align:center">No bolts placed yet. Click + Add Bolt next to a detected hole above.</div>';
     return;
   }
   el.innerHTML = S.bolts.map((b,i) => `
@@ -4335,7 +4617,7 @@ function updateForceList() {
   const el = document.getElementById('force-list');
   document.getElementById('badge-forces').innerHTML = `<svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> ${S.forces.length} force${S.forces.length!==1?'s':''}`;
   if (!S.forces.length) {
-    el.innerHTML = '<div style="font-size:11px;color:var(--text-mid);padding:12px;border:1px dashed var(--border);border-radius:3px;text-align:center">No forces placed yet. Switch to Force mode and click the mesh.</div>';
+    el.innerHTML = '<div style="font-size:11px;color:var(--text-mid);padding:12px;border:1px dashed var(--border);border-radius:3px;text-align:center">No forces placed yet. Click + Place Force (or press F), then click the model.</div>';
     return;
   }
   const dirLabel = d => {
@@ -4789,7 +5071,7 @@ function updateOrientDerivedDisplay() {
   }
 
   if (!S.bedNormal && !S.bedFaceName) {
-    labelEl.textContent = 'Set bed face in Orientation tab first';
+    labelEl.textContent = 'Set bed face in the ORIENT tab first';
     labelEl.style.color = 'var(--warn)';
     if (badgeEl) { badgeEl.textContent = ''; }
     _setNav('<button onclick="switchTab(\'orient\')" style="background:none;border:none;padding:0;cursor:pointer;color:var(--gold);font-size:10px;font-family:inherit;text-decoration:underline">← Set in Orient</button>');
@@ -4938,19 +5220,17 @@ async function runAnalysis() {
   // still where the full failure-mode table, heatmap controls, and export
   // buttons live, for when that level of detail is actually wanted.
 
-  // Phase labels advance on a timer while the server works.
-  // Timings are conservative estimates — the overlay snaps to the real phase
-  // when the response arrives regardless of where the timer is.
-  const isStep = S.fileData?.fileType === 'step';
-  runOverlayPhases([
-    { msg: 'Meshing...',                 sub: isStep ? 'Gmsh curvature-based refinement' : 'TetGen Delaunay tetrahedralisation', pct: 15,  ms: 800  },
-    { msg: 'Applying constraints...',    sub: 'Locating bolt wall nodes and load faces',                                          pct: 30,  ms: 2200 },
-    { msg: 'Assembling K matrix...',     sub: 'Building global stiffness matrix from element contributions',                      pct: 45,  ms: 1500 },
-    { msg: 'Solving K·u = F...',         sub: 'Conjugate gradient iteration',                                                     pct: 60,  ms: 2000 },
-    { msg: 'Computing stress...',        sub: 'Strain-stress via constitutive matrix, Hill 1948 anisotropy',                      pct: 78,  ms: 1800 },
-    { msg: 'Mapping to surface...',      sub: '3D nearest-node stress projection',                                                pct: 90,  ms: 1200 },
-    { msg: 'Almost done...',             sub: 'Smoothing and safety factor computation',                                          pct: 97,  ms: 1000 },
-  ]);
+  // Overlay is now driven by REAL solver-phase events streamed over SSE
+  // (issue #109) rather than a fake timer, and a Cancel button lets the user
+  // abort the server-side solve. Reset the overlay's live regions and show the
+  // progress bar + Cancel affordance.
+  clearOverlayTimer();
+  setOverlayPhase('Meshing…', 'Preparing geometry for meshing', 8);
+  const _meshEl = document.getElementById('overlay-mesh');
+  if (_meshEl) { _meshEl.style.display = 'none'; _meshEl.textContent = ''; }
+  const _cancelBtn = document.getElementById('overlay-cancel');
+  if (_cancelBtn) { _cancelBtn.style.display = 'block'; _cancelBtn.textContent = 'CANCEL'; }
+  _resetLiveResidual();
 
   // ── Phase 1: standard mesh — show results immediately ────────────────────
   const bodyStd = buildAnalyseBody('standard');
@@ -4959,8 +5239,8 @@ async function runAnalysis() {
   try {
     document.getElementById('analyse-status').textContent = 'Solving...';
     AudioManager.playSolveStart();
-    setOverlayPhase('Mapping stress...', 'Projecting onto render mesh and smoothing', 97);
-    dataStd = await analyzeWithWorker(bodyStd);
+    dataStd = await analyzeStreaming(bodyStd, { onPhase: applyAnalysePhase });
+    if (_cancelBtn) _cancelBtn.style.display = 'none';
     S.results = dataStd;
     syncResultsUI();
 
@@ -5023,6 +5303,18 @@ async function runAnalysis() {
     updateHintBar();
     updateAnalyseButton();
   } catch (e) {
+    const _cb = document.getElementById('overlay-cancel');
+    if (_cb) _cb.style.display = 'none';
+    // User-initiated cancel (issue #109) is not an error — the server has
+    // already been told to stop. Just close the overlay quietly.
+    if (e && e.cancelled) {
+      hideOverlay();
+      updateAnalyseButton();
+      document.getElementById('analyse-status').textContent = 'Analysis cancelled';
+      showSessionToast('Analysis cancelled');
+      _analyseAbort = null;
+      return;
+    }
     hideOverlay();
     updateAnalyseButton();
     document.getElementById('results-content').style.display = 'none';
@@ -5031,9 +5323,19 @@ async function runAnalysis() {
     // Actionable error messages — each gives a specific fix, not just a label
     let friendlyErr, friendlyFix;
 
-    if (errMsg.includes('TetGen') || errMsg.includes('tetgen') || errMsg.includes('mesh')) {
+    if (errMsg.startsWith('Invalid request')) {
+      // 400 from the server-side shape checker: the request never reached the
+      // solver. The message already names the offending field and a hint.
+      friendlyErr = 'Request rejected before solving';
+      friendlyFix = `${errMsg}. Refresh the page and re-run the analysis; if this persists, the client and server versions may be out of sync — restart the server (start.bat or npm start).`;
+    } else if (errMsg.includes('TetGen not found')) {
+      // 503 from the server: the mesher binary is absent. Setup problem —
+      // do NOT tell the user their geometry is broken (issue #106).
+      friendlyErr = 'TetGen is not installed';
+      friendlyFix = 'STL meshing needs the TetGen binary, and the server could not find it — your part is fine. Install TetGen (Windows: place <code>tetgen.exe</code> next to <code>start.bat</code> · macOS: <code>brew install tetgen</code> · Linux: <code>sudo apt-get install tetgen</code>), then restart the server. The server console prints the same instructions at startup.';
+    } else if (errMsg.includes('TetGen') || errMsg.includes('tetgen') || errMsg.includes('mesh')) {
       friendlyErr = 'Mesh generation failed';
-      friendlyFix = 'Try reducing mesh quality one level in Settings → Print Settings. If that fails, re-export your STL and check for non-manifold edges or self-intersections using Meshmixer or PrusaSlicer.';
+      friendlyFix = 'Try reducing mesh quality one level in the MATERIAL tab → Mesh quality. If that fails, re-export your STL and check for non-manifold edges or self-intersections using Meshmixer or PrusaSlicer.';
     } else if (errMsg.includes('Gmsh') || errMsg.includes('gmsh')) {
       friendlyErr = 'STEP meshing failed';
       friendlyFix = 'Check that Gmsh is installed: run <code>winget install Gmsh.Gmsh</code> in a terminal, then restart the server. If already installed, try exporting the file as STL from your CAD tool instead.';
@@ -5042,16 +5344,16 @@ async function runAnalysis() {
       friendlyFix = 'Your constraint setup may be under-constrained — check that bolts are placed on holes that are actually fixing the part. Try a coarser mesh (lower mesh quality) or add an additional bolt constraint.';
     } else if (errMsg.includes('401') || errMsg.includes('Unauthorized')) {
       friendlyErr = 'Authentication failed';
-      friendlyFix = 'Your Onshape API key has expired or is incorrect. Go to the Start Screen → Calibrate → update your API key, or generate a new key at dev-portal.onshape.com/keys.';
+      friendlyFix = 'Your Onshape API key has expired or is incorrect. Go to the SETUP tab → Import from Onshape and update your API key (gear button), or generate a new key at dev-portal.onshape.com/keys.';
     } else if (errMsg.includes('Failed to fetch') || errMsg.includes('NetworkError') || errMsg.includes('ECONNREFUSED')) {
       friendlyErr = 'Cannot reach the STORMFEA server';
       friendlyFix = 'The Node.js server is not running. Open a terminal in the stormfea-local folder and run: <code>npm start</code>. Then refresh this page.';
     } else if (errMsg.includes('no bolts') || errMsg.includes('bolt') && errMsg.includes('0')) {
       friendlyErr = 'No bolt constraints found';
-      friendlyFix = 'Switch to the Constraints tab, enter Bolt mode (B), and click at least one hole to fix it. A part with no fixed points cannot be solved.';
+      friendlyFix = 'Open the LOADS tab and click + Add Bolt next to at least one detected hole to fix it. A part with no fixed points cannot be solved.';
     } else if (errMsg.includes('no force') || errMsg.includes('force') && errMsg.includes('0')) {
       friendlyErr = 'No forces applied';
-      friendlyFix = 'Switch to the Constraints tab, enter Force mode (F), and click the part to place at least one force.';
+      friendlyFix = 'Open the LOADS tab and click + Place Force (or press F), then click the part to place at least one force.';
     } else {
       friendlyErr = 'Analysis failed';
       friendlyFix = errMsg;
@@ -5198,13 +5500,13 @@ function showConvergenceBadge(state, changePct, nodesStd, nodesFine) {
       color: 'var(--warn)', bg: 'var(--bg-card)', border: 'var(--gold)33',
       icon: '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="currentColor"><polygon points="5,1 9.5,9 0.5,9"/><rect x="4.4" y="4.2" width="1.2" height="2.8" fill="var(--bg-base)"/><rect x="4.4" y="7.5" width="1.2" height="1.2" fill="var(--bg-base)"/></svg>',
       text: `C3D4 mesh, SF > 3.0 — fine mesh skipped, but C3D4 may underpredict bending stress`,
-      sub: `Linear C3D4 tetrahedra underpredict bending deflection and stress by ~55% at practical mesh densities due to shear locking. The reported SF may be higher than the true value for bending-loaded geometry. Use C3D10 (STEP files, Settings → Element order) for accurate bending analysis.`,
+      sub: `Linear C3D4 tetrahedra underpredict bending deflection and stress by ~55% at practical mesh densities due to shear locking. The reported SF may be higher than the true value for bending-loaded geometry. Switch to C3D10 in the MATERIAL tab → Element order for accurate bending analysis.`,
     },
     c3d4_stable: {
       color: 'var(--warn)', bg: 'var(--bg-card)', border: 'var(--gold)33',
       icon: '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="currentColor"><polygon points="5,1 9.5,9 0.5,9"/><rect x="4.4" y="4.2" width="1.2" height="2.8" fill="var(--bg-base)"/><rect x="4.4" y="7.5" width="1.2" height="1.2" fill="var(--bg-base)"/></svg>',
       text: `C3D4 mesh stable within ${changePct?.toFixed(1)}% — but this is not convergence`,
-      sub: `Standard and fine C3D4 meshes agree because both are equally locked, not because they are correct. C3D4 underpredicts bending stress by ~55% at practical mesh densities. Switch to C3D10 in Settings → Element order (STEP files) for bending-loaded geometry.`,
+      sub: `Standard and fine C3D4 meshes agree because both are equally locked, not because they are correct. C3D4 underpredicts bending stress by ~55% at practical mesh densities. Switch to C3D10 in the MATERIAL tab → Element order for bending-loaded geometry.`,
     },
     converged: {
       color: 'var(--success)', bg: 'var(--gold-faint)', border: 'var(--gold-glow)',
@@ -5377,7 +5679,7 @@ function showResults(s) {
       <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
         <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">SAFETY FACTOR</div>
         <div style="font-size:18px;font-weight:500;color:${sfColor}">${s.safetyFactor.toFixed(2)}×</div>
-        <div style="font-size:10px;color:var(--text-lo);margin-top:2px">yield / peak</div>
+        <div style="font-size:10px;color:var(--text-lo);margin-top:2px" title="${s.sfCriterion === 'hill' ? `Hill (1948) anisotropic yield criterion — accounts for the weaker inter-layer (Z) direction. Von Mises SF on the same stress field: ${s.vonMisesSafetyFactor != null ? s.vonMisesSafetyFactor.toFixed(2) + '×' : 'n/a'}.` : 'Von Mises equivalent stress vs effective yield.'}">${s.sfCriterion === 'hill' ? 'Hill 1948 anisotropic yield' : 'von Mises yield / peak'}</div>
         <div style="font-size:9px;color:var(--text-lo);margin-top:3px">Recommended minimum: 2×</div>
         ${s.safetyfactorLow !== undefined ? (() => {
           const lo = s.safetyfactorLow, hi = s.safetyFactorHigh ?? s.safetyfactorLow, mid = s.safetyFactor;
@@ -5866,7 +6168,14 @@ function renderBoltLoadTable(s) {
 }
 
 // ─── Tab switching ───────────────────────────────────────────────────────────── ────────────────────────────────────────────────────────────
+// Last active main-flow tab — persisted in the session so RESUME jumps the
+// user back to where they left off (issue #110). Util tabs (prefs/debug/
+// calibrate/sources) are intentionally not tracked here.
+let _activeMainTab = 'setup';
+const _PERSISTABLE_TABS = ['setup','orient','loads','material','results'];
+
 function switchTab(name) {
+  if (_PERSISTABLE_TABS.includes(name)) _activeMainTab = name;
   if (name === 'material') syncAppearanceBtns();
   updateNextButtons();
   if (typeof updateHintBar === 'function') updateHintBar();
@@ -5912,6 +6221,11 @@ function hideOverlay() {
   if (subEl) subEl.textContent = '';
   const bar  = document.getElementById('overlay-bar-wrap');
   if (bar) bar.style.display = 'none';
+  // Hide issue #109 live regions (mesh size, residual sparkline, Cancel).
+  for (const id of ['overlay-mesh', 'overlay-spark', 'overlay-cancel']) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  }
 }
 
 // Timed phase sequencer — advances through phases while server is busy
@@ -6045,7 +6359,7 @@ function computeWorkflowState() {
       status: nForces > 0 ? 'done' : 'todo',
       sub: !hasFile ? 'Upload first.'
          : nForces > 0 ? `${nForces} force${nForces>1?'s':''} applied.`
-         : 'Enter Force mode, click the part, set direction + magnitude.',
+         : 'Click FORCE in the toolbar (F), click the part, set direction + magnitude.',
     },
     {
       key:'settings', n:'05', t:'Print settings', tab:'material', mandatory:false,
@@ -7529,6 +7843,14 @@ const SOURCES_DB = [
         confidence: "high",
         note: '"Strength of FDM printed PLA was accurately predicted by Hill48 yield criterion." Confirms our Hill approximation is the right approach.',
       },
+      {
+        id: "upright_swap",
+        citation: "STORMFEA modeling approximation — upright orientation as an E_xy↔E_z scalar swap (issue #101). Exact alternative: 90° Bond transformation of the 6×6 stiffness tensor (Auld, Acoustic Fields and Waves in Solids, 1973, §3).",
+        url: "",
+        usedFor: "Material model for parts printed 'upright' (layer normal horizontal in the analysis frame)",
+        confidence: "medium",
+        note: "An upright print is weak across layers along ONE horizontal axis and strong along the other horizontal axis and Z. The exact model is a 90° rotation of the stiffness tensor, which is transversely isotropic about a HORIZONTAL axis. The solver's material type only supports transverse isotropy about Z, so STORMFEA swaps scalars instead: E_z takes the strong in-layer modulus (exact for vertical loads) and BOTH horizontal directions take the weak through-layer modulus (conservative — the real part is weak in only one). Shear: the global-XY plane contains the layer normal, so G_xy is set to the inter-layer shear G_xz (exact); vertical shear planes mix in-layer and inter-layer shear, and the conservative inter-layer value is used for both. Yield strengths swap the same way. Limitations: in-plane stiffness along the strong horizontal direction is underestimated by up to E_z/E_xy (~35%), and load paths that exploit the strong horizontal axis will show pessimistic deflections/SF. Benchmarked against the full tensor rotation in server/tests/unit/upright-swap.test.ts.",
+      },
     ]
   },
   {
@@ -7541,7 +7863,7 @@ const SOURCES_DB = [
         url: "",
         usedFor: "Conservative and optimistic SF bands shown in Results panel range bar",
         confidence: "medium",
-        note: `Uncertainty table used in SF range calculation:\n  Constant         Central   Conservative  Optimistic\n  E_z/E_xy         0.65      0.55          0.75       (Perez 2021, Cojocaru 2019)\n  yieldZ/yieldXY   0.58      0.48          0.68       (central 0.58 from Cojocaru 2019 / Rodriguez 2001;\n                                                        the ±0.10 width is an engineering margin — no cited\n                                                        paper reports these exact bounds — but it lies well\n                                                        inside the documented cross-study scatter: orientation-\n                                                        dependent strengths of 46–85% of injection-molded\n                                                        (Zaldivar 2017, ULTEM) up to near-bulk interlayer\n                                                        strength for PLA (Allum 2020))\n  G_xz/G_xy        0.40      0.33          0.47       (Casavola 2016)\n  LH slope         −1.0/mm   −1.3/mm       −0.7/mm    (central −1.0/mm from Farashi 2022 meta-analysis; the\n                                                        −1.3 to −0.7/mm band is bracketed by published results —\n                                                        Shergill 2023: PLA UTS 30→18 MPa from 0.1→0.3 mm layer\n                                                        thickness, ≈−2.0/mm; Garg 2025: peak strength at 0.4 mm,\n                                                        slope ≥ 0 — though the ±30% width itself is a choice\n                                                        within that published spread, not a reported value)\n\n  Fast-path: only yieldZ ratio and LH slope are perturbed (K unchanged). Amber caution shown when conservative SF < 1.5 ≤ central SF.\n  Definitive calibration of both band widths requires physical coupon testing of the actual printer/filament combination; see allum2020, zaldivar2017 and shergill2023 entries for the bracketing evidence.`,
+        note: `Uncertainty table used in SF range calculation:\n  Constant         Central   Conservative  Optimistic\n  E_z/E_xy         0.65      0.55          0.75       (Perez 2021, Cojocaru 2019)\n  yieldZ/yieldXY   0.58      0.48          0.68       (central 0.58 from Cojocaru 2019 / Rodriguez 2001;\n                                                        the ±0.10 width is an engineering margin — no cited\n                                                        paper reports these exact bounds — but it lies well\n                                                        inside the documented cross-study scatter: orientation-\n                                                        dependent strengths of 46–85% of injection-molded\n                                                        (Zaldivar 2017, ULTEM) up to near-bulk interlayer\n                                                        strength for PLA (Allum 2020))\n  G_xz/G_xy        0.40      0.33          0.47       (Casavola 2016)\n  LH slope         −1.0/mm   −1.3/mm       −0.7/mm    (central −1.0/mm from Farashi 2022 meta-analysis; the\n                                                        −1.3 to −0.7/mm band is bracketed by published results —\n                                                        Shergill 2023: PLA UTS 30→18 MPa from 0.1→0.3 mm layer\n                                                        thickness, ≈−2.0/mm; Garg 2025: peak strength at 0.4 mm,\n                                                        slope ≥ 0 — though the ±30% width itself is a choice\n                                                        within that published spread, not a reported value)\n\n  Fast-path: only yieldZ ratio and LH slope are perturbed (K unchanged). Amber caution shown when conservative SF < 1.5 ≤ central SF.\n\n  Literature check (issue #64): the candidate variability sources named in the issue were examined and neither pins these widths — Gardan & Makke (2018) is a fracture-toughness improvement method (smart deposition, +30% Kc), not a scatter study, and no Morales-Planas 2021 FDM-variability paper reporting yield-ratio or slope bounds could be verified. So no primary citation reports the ±0.10 / ±30% widths; they remain engineering margins, bracketed by the cross-study scatter above and consistent with the significant between-study heterogeneity the Farashi 2022 meta-analysis reports for the layer-thickness effect. Definitive calibration of both band widths requires physical coupon testing of the actual printer/filament combination; see allum2020, zaldivar2017 and shergill2023 entries for the bracketing evidence.`,
       },
       {
         id: "allum2020",
@@ -8299,7 +8621,7 @@ function drawSummaryCanvas() {
 
       ctx.fillStyle = TEXT_MID;
       ctx.font = '9px monospace';
-      ctx.fillText('SAFETY FACTOR', RX, RY);
+      ctx.fillText('SAFETY FACTOR' + (s.sfCriterion === 'hill' ? ' (HILL 1948 ANISOTROPIC)' : ' (VON MISES)'), RX, RY);
       RY += 6;
 
       ctx.fillStyle = sfCol;
@@ -8464,7 +8786,7 @@ function drawDetailCanvas() {
   ctx.fillStyle = GOLD;
   ctx.font = 'bold 20px monospace';
   ctx.textAlign = 'left';
-  ctx.fillText('STRESSFORM — DETAIL REPORT (PAGE 2)', MX, RY);
+  ctx.fillText('STORMFEA — DETAIL REPORT (PAGE 2)', MX, RY);
   RY += 16;
   ctx.fillStyle = TEXT_LO;
   ctx.font = '11px monospace';
@@ -9109,6 +9431,9 @@ const SESSION_AUTOSAVE_MS = 5000;  // autosave every 5s after changes
 let _sessionDirty  = false;
 let _sessionTimer  = null;
 let _sessionLoaded = false;
+// Tab to jump to once a resumed geometry finishes loading (issue #110). Set by
+// loadSession(), consumed by handleFile() after the mesh rebuilds.
+let _pendingResumeTab = null;
 
 function markSessionDirty() {
   _sessionDirty = true;
@@ -9159,6 +9484,7 @@ async function saveSession() {
     holeTypeOverrides: S.holeTypeOverrides,
     bedNormal:         S.bedNormal,
     bedFaceName:       S.bedFaceName,
+    lastTab:           _activeMainTab,   // jumped to on RESUME (issue #110)
     // Geometry is NOT saved in session — re-upload required on restore.
     // This keeps session files small (kb not mb). The mesh will be rebuilt on restore.
     positionsB64:  null,
@@ -9185,6 +9511,10 @@ async function loadSession() {
     if (!session || session.version !== 2) return;
 
     console.log('[session] restoring:', session.fileName, 'saved', session.savedAt);
+
+    // Remember which tab to land on once geometry finishes loading (issue #110).
+    // handleFile() consumes this after the mesh rebuilds; falls back to 'orient'.
+    _pendingResumeTab = _PERSISTABLE_TABS.includes(session.lastTab) ? session.lastTab : null;
 
     // Restore session metadata (geometry requires re-upload)
     if (session.bounds) {
@@ -9428,12 +9758,20 @@ const _origUpdateForceList = updateForceList;
 
 // Patch will be done after functions are defined — use event-based approach
 function initSessionPersistence() {
-  // Load session on startup
-  loadSession();
-
-  // Autosave on bolt/force changes — patch key state mutators
-  // We mark dirty after any user action that changes analysis-relevant state
+  // Autosave wiring only. Restoring is now a deliberate user action via the
+  // RESUME SESSION landing card (resumeSession()), rather than an automatic
+  // startup load — so NEW ANALYSIS always starts clean and resuming is opt-in
+  // (issue #110). Autosave still runs continuously so a session is always
+  // available to resume after a crash/tab-close.
   document.addEventListener('stressform:statechange', markSessionDirty);
+}
+
+// Explicit resume from the landing screen (issue #110): dismiss the landing UI,
+// then restore geometry (from IndexedDB) + print settings + loads + last tab
+// from the latest autosave via loadSession().
+async function resumeSession() {
+  dismissLandingScreen();
+  await loadSession();
 }
 
 // Dispatch statechange events from key actions
@@ -10577,7 +10915,7 @@ const CHECKLIST = [
   { id:'upload_stl',   label:'STL upload — drag or click, model appears in viewer' },
   { id:'upload_step',  label:'STEP upload — model appears, holes detected automatically' },
   { id:'bed_orient',   label:'Bed orientation — click <svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="1.5" y="1.5" width="7" height="7" rx="1"/><rect x="3.5" y="3.5" width="3" height="3"/></svg> BED, click a face, layer rings appear' },
-  { id:'add_bolt',     label:'Add bolt — Constraints tab -> + Add Bolt -> blue dot appears' },
+  { id:'add_bolt',     label:'Add bolt — Loads tab -> + Add Bolt -> blue dot appears' },
   { id:'bolt_override',label:'Bolt type override — dropdown on hole row works' },
   { id:'add_force',    label:'Add force — + Place Force -> gold arrow appears on model' },
   { id:'force_preset', label:'FTC load preset — show presets -> click Apply -> force populated' },

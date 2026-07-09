@@ -29,6 +29,7 @@ import { Worker } from "worker_threads";
 import { fileURLToPath } from "url";
 import path from "path";
 import os from "os";
+import fs from "fs";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -229,20 +230,20 @@ function mergeCoOIntoCSR(
 // ─── Parallel assembly via worker_threads ─────────────────────────────────────
 
 /**
- * Check if worker_threads module is available (not in Electron or restricted env).
+ * Minimum element count for the parallel path. Below this, worker spawn +
+ * message overhead exceeds the assembly cost and serial is faster.
  */
-function areWorkersAvailable(): boolean {
-  try {
-    require.resolve("worker_threads");
-    return true;
-  } catch {
-    return false;
-  }
-}
+const PARALLEL_MIN_ELEMENTS = 1000;
 
 /**
  * Assemble stiffness matrix using worker_threads for element chunk parallelization.
- * Falls back to serial if workers unavailable or on error.
+ * Falls back to serial if the worker script is missing or on any worker error.
+ *
+ * NOTE: worker_threads itself is guaranteed available — `Worker` is statically
+ * imported at the top of this module, so the module would fail to load at all
+ * if the platform lacked it. (A previous `require.resolve("worker_threads")`
+ * probe always threw in this ESM project — `require` is undefined — which
+ * silently disabled the parallel path entirely; issue #98.)
  */
 async function assembleK_parallel(
   mesh: TetMesh,
@@ -251,12 +252,18 @@ async function assembleK_parallel(
   colIdx: Int32Array,
   data: Float64Array,
 ): Promise<boolean> {
-  // Check if workers available and mesh is large enough for parallelization overhead
-  if (!areWorkersAvailable() || mesh.elementCount < 1000) {
-    return false;  // Use serial path
-  }
-
   try {
+    // The worker script is the COMPILED sibling of this module. When running
+    // from uncompiled TypeScript (e.g. under vitest), assembly-worker.js does
+    // not exist next to the source file — fall back to serial gracefully.
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = path.dirname(__filename);
+    const workerScript = path.join(__dirname, "assembly-worker.js");
+    if (!fs.existsSync(workerScript)) {
+      console.warn(`[assembleK] worker script not found at ${workerScript} — using serial assembly`);
+      return false;
+    }
+
     const cpuCount = os.cpus().length;
     const chunkSize = Math.ceil(mesh.elementCount / cpuCount);
     const chunks: { start: number; end: number }[] = [];
@@ -269,11 +276,6 @@ async function assembleK_parallel(
       }
     }
 
-    // Get worker script path
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = path.dirname(__filename);
-    const workerScript = path.join(__dirname, "assembly-worker.js");
-
     // Spawn workers and collect results
     const workerPromises = chunks.map((chunk) => {
       return new Promise<CoOTriplet[]>((resolve, reject) => {
@@ -281,7 +283,7 @@ async function assembleK_parallel(
         const timeout = setTimeout(() => {
           worker.terminate();
           reject(new Error(`Worker timeout for elements ${chunk.start}–${chunk.end}`));
-        }, 180_000);  // 3 minute timeout (fine C3D10 chunks can exceed 60s on slow hardware)
+        }, 60_000);  // 60 second timeout
 
         worker.on("message", (msg: any) => {
           clearTimeout(timeout);
@@ -328,6 +330,16 @@ async function assembleK_parallel(
 // ─── Global assembly (public API) ──────────────────────────────────────────────
 
 /**
+ * CSR sparsity pattern of a mesh (as returned by buildSparsityPattern).
+ * Depends only on mesh connectivity — shareable across K, M and Kσ.
+ */
+export type SparsityPattern = {
+  rowPtr:  Int32Array;
+  colIdx:  Int32Array;
+  diagIdx: Int32Array;
+};
+
+/**
  * Assemble the global stiffness matrix K and return it as a CSRMatrix.
  *
  * Supports both C3D4 (linear, 4 nodes, 12 DOF) and C3D10 (quadratic, 10 nodes, 30 DOF).
@@ -336,36 +348,66 @@ async function assembleK_parallel(
  * Algorithm:
  *   1. Build sparsity pattern (determines non-zero structure).
  *   2. Allocate data array (zeros).
- *   3. Attempt parallel assembly via worker_threads:
+ *   3. For meshes with >= PARALLEL_MIN_ELEMENTS elements, attempt parallel
+ *      assembly via worker_threads:
  *      - Partition elements into N_cpu chunks
  *      - Each worker computes element stiffness, collects COO triplets
  *      - Main thread merges COO into CSR
- *   4. Fall back to serial if workers unavailable or on error.
+ *   4. Fall back to serial on any worker error or for small meshes.
+ *
+ * @param mode 'auto' (default): parallel for large meshes, serial otherwise.
+ *             'serial'/'parallel': force a path (used by the parallel-vs-serial
+ *             equivalence test; 'parallel' still falls back to serial if the
+ *             worker script is missing or a worker errors).
+ * @param pattern Optional prebuilt sparsity pattern for this mesh (from
+ *             buildSparsityPattern). The pattern depends only on mesh
+ *             connectivity, so K, M and Kσ for the same mesh can share one
+ *             pattern instead of rebuilding it per matrix (issue #100).
  */
 export async function assembleK(
   mesh: TetMesh,
   mat:  AnyMaterial,
+  mode: 'auto' | 'serial' | 'parallel' = 'auto',
+  pattern?: SparsityPattern,
 ): Promise<{
   K:       CSRMatrix;
   diagIdx: Int32Array;
+  /** True if the parallel (worker_threads) path produced the matrix. */
+  parallel: boolean;
 }> {
   const n   = mesh.nodeCount * 3;
   const npe = mesh.nodesPerElem;
   const C   = buildAnyConstitutiveMatrix(mat);
 
-  const { rowPtr, colIdx, diagIdx } = buildSparsityPattern(mesh);
+  const { rowPtr, colIdx, diagIdx } = pattern ?? buildSparsityPattern(mesh);
   const nnz = rowPtr[n] ?? 0;
   const data = new Float64Array(nnz);
 
+  const tryParallel =
+    mode === 'parallel' ||
+    (mode === 'auto' && mesh.elementCount >= PARALLEL_MIN_ELEMENTS);
+
   // Try parallel assembly; fall back to serial if it fails or is not available
-  const parallelSucceeded = await assembleK_parallel(mesh, C, rowPtr, colIdx, data).catch(() => false);
+  const parallelSucceeded = tryParallel
+    ? await assembleK_parallel(mesh, C, rowPtr, colIdx, data).catch(() => false)
+    : false;
   if (!parallelSucceeded) {
     assembleK_serial(mesh, C, rowPtr, colIdx, data);
+  }
+
+  // Log which path ran (only for meshes large enough that the choice matters —
+  // keeps small test solves quiet).
+  if (mesh.elementCount >= PARALLEL_MIN_ELEMENTS || mode !== 'auto') {
+    console.log(
+      `[assembleK] path=${parallelSucceeded ? 'parallel' : 'serial'} ` +
+      `elements=${mesh.elementCount} npe=${npe} dof=${n}`
+    );
   }
 
   return {
     K: { n, data, colIdx, rowPtr },
     diagIdx,
+    parallel: parallelSucceeded,
   };
 }
 
@@ -394,17 +436,23 @@ export function assembleKsigma(
   const nnz = rowPtr[n] ?? 0;
   const data = new Float64Array(nnz);
 
+  // Geometric stiffness is only implemented for C3D4. Silently skipping other
+  // element types would return an all-zero Kσ, making any downstream buckling
+  // factor meaningless — fail loudly instead. (analysis.ts already gates
+  // buckling to C3D4 meshes, so this is a guard against future misuse.)
+  if (mesh.nodesPerElem !== 4) {
+    throw new Error(
+      `assembleKsigma: geometric stiffness is only implemented for C3D4 ` +
+      `(nodesPerElem=4), got nodesPerElem=${mesh.nodesPerElem}.`
+    );
+  }
+
   const sig = new Float64Array(6);
 
   for (let e = 0; e < mesh.elementCount; e++) {
     const base = e * mesh.nodesPerElem;
     // Extract element stress tensor
     for (let k = 0; k < 6; k++) sig[k] = elemStress[e*6+k] ?? 0;
-
-    if (mesh.nodesPerElem !== 4) {
-      // Kσ for C3D10 not yet implemented — skip; buckling result will be approximate
-      continue;
-    }
 
     const n0 = i32(mesh.elements, base),
           n1 = i32(mesh.elements, base+1),

@@ -76,7 +76,7 @@ export function generateHtmlReport(
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>StressForm Report — ${fileName}</title>
+<title>STORMFEA Report — ${fileName}</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@600;700&family=Source+Sans+Pro:wght@400;600&display=swap');
   * { box-sizing:border-box; margin:0; padding:0; }
@@ -115,7 +115,7 @@ export function generateHtmlReport(
   <!-- Header -->
   <div class="header">
     <div>
-      <div class="title">STRESSFORM FEA REPORT</div>
+      <div class="title">STORMFEA FEA REPORT</div>
       <div class="subtitle">FDM-Aware Finite Element Analysis · Nordic Storm FTC 5962</div>
     </div>
     <div class="meta">
@@ -213,7 +213,7 @@ export function generateHtmlReport(
 
   <!-- Footer -->
   <div class="footer">
-    <div>StressForm v1.0 · Nordic Storm FTC 5962 · FDM-Aware FEA — Orthotropic Model + Hill Criterion + SPR Smoothing</div>
+    <div>STORMFEA · Nordic Storm FTC 5962 · FDM-Aware FEA — Orthotropic Model + Hill Criterion + SPR Smoothing</div>
     <div>For comparison and ranking only — not safety certification</div>
   </div>
 

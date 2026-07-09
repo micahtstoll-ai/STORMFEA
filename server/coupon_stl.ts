@@ -13,7 +13,7 @@
 function writeBinarySTL(triangles: Array<[number,number,number,number,number,number,number,number,number]>): Buffer {
   // 80-byte header + 4-byte count + n×50-byte triangles
   const buf = Buffer.alloc(80 + 4 + triangles.length * 50);
-  buf.write('StressForm calibration coupon — Nordic Storm 5962', 0, 'ascii');
+  buf.write('STORMFEA calibration coupon — Nordic Storm 5962', 0, 'ascii');
   buf.writeUInt32LE(triangles.length, 80);
   let off = 84;
   for (const t of triangles) {
