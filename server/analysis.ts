@@ -970,6 +970,12 @@ export interface AnalysisRequest {
   /** Default: 'linear_static'. Set to 'modal' to also compute natural frequencies. */
   analysisType?: 'linear_static' | 'modal';
   /**
+   * When true, also run a linear buckling (eigenvalue) analysis and report the
+   * Buckling Load Factor. Opt-in because the eigen-solve adds solve time; works
+   * for both C3D4 and C3D10 meshes.
+   */
+  computeBuckling?: boolean;
+  /**
    * Material uncertainty mode. When 'central' (default) the solver uses the literature
    * central estimates. The server always computes sfConservative and sfOptimistic alongside
    * the central SF regardless of this field — it is reserved for future single-mode runs.
@@ -1302,6 +1308,17 @@ export interface AnalysisResult {
   vertexModeShapesB64?:   string[];
   /** Present when analysisType === 'modal'. Undefined for static-only runs. */
   modalResult?:           ModalAnalysisResult;
+  /** Buckling mode shape projected to surface vertices. Base64 Float32Array. Present only with a physical positive BLF. */
+  vertexBucklingModeB64?: string;
+  /** Structured buckling summary. Present when computeBuckling was requested and the analysis ran. */
+  bucklingResult?: {
+    blf: number | null;
+    verdict: 'FAIL' | 'MARGINAL' | 'PASS' | 'no-buckling' | 'indeterminate';
+    converged: boolean;
+    tensileDominated: boolean;
+    indeterminate: boolean;
+    hasMode: boolean;
+  };
   /** CG solver residual checkpoints for convergence visualization */
   residualCheckpoints?:   readonly { iteration: number; relativeResidual: number }[];
   /** Zienkiewicz-Zhu error estimate η_e at each vertex, projected from elements */
@@ -2347,7 +2364,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // to its own copy. rowPtr/colIdx/diagIdx (the sparsity pattern) depend only
   // on mesh connectivity and are shared by K, M and Kσ.
   const wantsModal = req.analysisType === 'modal';
-  const mayBuckle  = mesh.nodesPerElem === 4;
+  const mayBuckle  = req.computeBuckling === true;
   const input: SolverInput = {
     mesh,
     material,
@@ -2396,14 +2413,15 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
 
   // ── Linear buckling analysis ───────────────────────────────────────────────
   // Compute the Buckling Load Factor (BLF) using the pre-stress from the
-  // static solve. Only run for C3D4 meshes (geometric stiffness for C3D10
-  // is not yet implemented). Failures are non-fatal: buckling result is
-  // marked "unchecked" rather than crashing the analysis.
+  // static solve. Opt-in (req.computeBuckling) because the eigen-solve adds
+  // solve time; runs for both C3D4 and C3D10 meshes. Failures are non-fatal:
+  // the buckling result is marked "unchecked" rather than crashing the analysis.
   let bucklingBLF: number | undefined;
   let bucklingConverged = false;
   let bucklingTensile   = false;
   let bucklingIndeterminate = false;
-  if (mesh.nodesPerElem === 4 && result.elemStress6) {
+  let bucklingMode: Float64Array | undefined;
+  if (mayBuckle && result.elemStress6) {
     try {
       // Apply BCs to a fresh copy of the pristine assembled K (issue #100 —
       // previously this re-ran the full element assembly). Falls back to
@@ -2431,6 +2449,10 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       bucklingIndeterminate = bResult.indeterminate;
       // Do NOT surface a non-physical (indeterminate) eigenvalue as a BLF.
       if (!bResult.indeterminate) bucklingBLF = bResult.blf;
+      // Keep the mode shape only when a physical positive BLF was found.
+      if (!bResult.indeterminate && !bResult.tensileDominated && bResult.blf > 0) {
+        bucklingMode = bResult.modeShape;
+      }
       console.log(`[buckling] BLF=${bResult.blf.toFixed(3)} converged=${bResult.converged} iters=${bResult.iterations} tensile=${bResult.tensileDominated} indeterminate=${bResult.indeterminate}`);
     } catch (err) {
       console.warn(`[buckling] Analysis failed (non-fatal): ${err}`);
@@ -2778,6 +2800,48 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       }
       vertexModeShapesB64.push(Buffer.from(vertMode.buffer).toString("base64"));
     }
+  }
+
+  // ── Buckling mode shape projection to surface vertices ──────────────────────
+  // Same nearest-node grid mapping as the modal shapes, for the single buckling
+  // eigenvector (present only when a physical positive BLF was found).
+  let vertexBucklingModeB64: string | undefined;
+  if (bucklingMode) {
+    const vertMode = new Float32Array(vertCount * 3);
+    const R2 = R3D * R3D;
+    for (let v = 0; v < vertCount; v++) {
+      const vx = req.positions[v*3] ?? 0;
+      const vy = req.positions[v*3+1] ?? 0;
+      const vz = req.positions[v*3+2] ?? 0;
+      const ci = Math.floor((vx-nxMin)/CELL3);
+      const cj = Math.floor((vy-nyMin)/CELL3);
+      const ck = Math.floor((vz-nzMin)/CELL3);
+      let bestDist2 = Infinity, bestN = -1;
+      for (let di=-1;di<=1;di++) for (let dj=-1;dj<=1;dj++) for (let dk=-1;dk<=1;dk++) {
+        const ni2=ci+di, nj2=cj+dj, nk2=ck+dk;
+        if (ni2<0||ni2>=gW3||nj2<0||nj2>=gH3||nk2<0||nk2>=gD3) continue;
+        const cell = grid3.get(ni2*gH3*gD3+nj2*gD3+nk2);
+        if (!cell) continue;
+        for (const n of cell) {
+          const ddx=(mesh.nodes[n*3]??0)-vx, ddy=(mesh.nodes[n*3+1]??0)-vy, ddz=(mesh.nodes[n*3+2]??0)-vz;
+          const d2=ddx*ddx+ddy*ddy+ddz*ddz;
+          if (d2<R2 && d2<bestDist2) { bestDist2=d2; bestN=n; }
+        }
+      }
+      if (bestN < 0) {
+        for (let n=0; n<mesh.nodeCount; n++) {
+          const ddx=(mesh.nodes[n*3]??0)-vx, ddy=(mesh.nodes[n*3+1]??0)-vy, ddz=(mesh.nodes[n*3+2]??0)-vz;
+          const d2=ddx*ddx+ddy*ddy+ddz*ddz;
+          if (d2<bestDist2) { bestDist2=d2; bestN=n; }
+        }
+      }
+      if (bestN >= 0) {
+        vertMode[v*3]   = bucklingMode[bestN*3] ?? 0;
+        vertMode[v*3+1] = bucklingMode[bestN*3+1] ?? 0;
+        vertMode[v*3+2] = bucklingMode[bestN*3+2] ?? 0;
+      }
+    }
+    vertexBucklingModeB64 = Buffer.from(vertMode.buffer).toString("base64");
   }
 
   // ── Summary ────────────────────────────────────────────────────────────────
@@ -3311,6 +3375,19 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     maxSignedVonMisesMPa: +maxSignedVM.toFixed(3),
     vertexModeShapesB64,
     modalResult,
+    vertexBucklingModeB64,
+    bucklingResult: mayBuckle ? {
+      blf: bucklingBLF ?? null,
+      verdict: bucklingTensile ? 'no-buckling'
+             : bucklingIndeterminate ? 'indeterminate'
+             : (bucklingBLF !== undefined && bucklingBLF > 0)
+                 ? (bucklingBLF < 1.5 ? 'FAIL' : bucklingBLF < 3.0 ? 'MARGINAL' : 'PASS')
+                 : 'indeterminate',
+      converged: bucklingConverged,
+      tensileDominated: bucklingTensile,
+      indeterminate: bucklingIndeterminate,
+      hasMode: !!vertexBucklingModeB64,
+    } : undefined,
     residualCheckpoints: result.residualCheckpoints,
     vertexErrorEstimateB64: vertexErrorEstimate ? Buffer.from(vertexErrorEstimate.buffer).toString("base64") : undefined,
     globalRelativeError: result.globalRelativeError,
