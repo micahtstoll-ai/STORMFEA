@@ -2405,9 +2405,11 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     } else {
       const triCount = Math.floor(surfaceFaces.length / 3);
       for (const p of req.pressures) {
-        if (!(p.magnitude > 0)) continue;
+        // Zero → no-op. Negative is allowed and means outward (tension/suction).
+        if (!Number.isFinite(p.magnitude) || p.magnitude === 0) continue;
         const [dx, dy, dz] = p.direction;
-        const dl = Math.hypot(dx, dy, dz) || 1;
+        const dl = Math.hypot(dx, dy, dz);
+        if (!(dl > 0)) continue;   // undefined face for a zero direction
         const ux = dx/dl, uy = dy/dl, uz = dz/dl;
         // Extreme face in direction d: max projection over all mesh nodes.
         let maxProj = -Infinity;
@@ -2427,7 +2429,11 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
           isLoaded[t] = (maxProj - proj) < 0.5;
           if (isLoaded[t]) nLoaded++;
         }
-        const traction: [number,number,number] = [p.magnitude*ux, p.magnitude*uy, p.magnitude*uz];
+        // A positive pressure pushes INWARD on the selected face (compression) —
+        // the intuitive "pressure on this face" and the compressive pre-stress
+        // buckling needs. The selected face's outward normal points along +d, so
+        // an inward push is −magnitude·d. Negative magnitude → outward (tension).
+        const traction: [number,number,number] = [-p.magnitude*ux, -p.magnitude*uy, -p.magnitude*uz];
         const pf = assembleSurfaceTraction(mesh.nodes, surfaceFaces, isLoaded, traction);
         let resN = 0;
         for (let n = 0; n < mesh.nodeCount; n++) {

@@ -233,7 +233,7 @@ const ANALYSE_SPEC: Spec = {
   "meshQuality?":  "coarse|standard|fine",
   "analysisType?": "string",
   "computeBuckling?": "boolean",
-  "gravity?":      "object",
+  "gravity?":      { g: "number", direction: "vec3" },
   "pressures?":    [{ magnitude: "number", direction: "vec3" }],
   "calibration?":  "object",
 };
@@ -303,12 +303,10 @@ app.post("/api/analyse", async (req, res) => {
       meshQuality:   body.meshQuality,
       analysisType:  ((body as any).analysisType ?? 'linear_static') as 'linear_static' | 'modal',
       computeBuckling: (body as any).computeBuckling === true,
-      ...(((body as any).gravity && typeof (body as any).gravity.g === 'number'
-          && Array.isArray((body as any).gravity.direction))
-        ? { gravity: {
-              g: (body as any).gravity.g,
-              direction: (body as any).gravity.direction as [number, number, number],
-            } }
+      // gravity is validated by ANALYSE_SPEC ({ g:number, direction:vec3 }) when
+      // present, so it can be passed through directly.
+      ...((body as any).gravity
+        ? { gravity: (body as any).gravity as { g: number; direction: [number, number, number] } }
         : {}),
       ...(Array.isArray((body as any).pressures)
         ? { pressures: (body as any).pressures as { magnitude: number; direction: [number, number, number] }[] }
