@@ -11,7 +11,7 @@
 
 import { describe, it, expect } from "vitest";
 import { generateBoxMeshC3D4, generateBoxMeshC3D10, extractSurfaceFaces } from "../../solver/meshgen.js";
-import { assembleSurfaceTraction, assembleSurfaceTractionNormal } from "../../solver/load.js";
+import { assembleSurfaceTraction, assembleSurfaceTractionNormal, selectPressureRegion } from "../../solver/load.js";
 
 const W = 4, H = 3, D = 5;              // box [0,W]×[0,H]×[0,D]
 // Conforming 6-tet mesh — the fallback path (extractSurfaceFaces needs conformity).
@@ -101,5 +101,54 @@ describe("assembleSurfaceTractionNormal", () => {
     for (let i = 0; i < fNormal.length; i++) {
       expect(fNormal[i]).toBeCloseTo(fUniform[i]!, 9);
     }
+  });
+});
+
+describe("selectPressureRegion", () => {
+  const count = (m: boolean[]) => m.reduce((s, on) => s + (on ? 1 : 0), 0);
+
+  it("'all' selects every triangle (even with no direction)", () => {
+    const sel = selectPressureRegion(box.nodes, faces, [0, 0, 0], "all");
+    expect(count(sel)).toBe(triCount);
+  });
+
+  it("'face' selects a 0.5 mm band at the extreme +Z end", () => {
+    const sel = selectPressureRegion(box.nodes, faces, [0, 0, 1], "face");
+    // Selected triangle centroids must lie within 0.5 mm of the top plane z = D.
+    for (let t = 0; t < triCount; t++) {
+      if (!sel[t]) continue;
+      const cz = (box.nodes[faces[t*3]!*3+2]! + box.nodes[faces[t*3+1]!*3+2]! + box.nodes[faces[t*3+2]!*3+2]!) / 3;
+      expect(D - cz).toBeLessThan(0.5 + 1e-9);
+    }
+    expect(count(sel)).toBeGreaterThan(0);
+    expect(count(sel)).toBeLessThan(triCount);
+  });
+
+  it("'facing +Z' selects exactly the top face (outward normal has +Z, all corners at z=D)", () => {
+    const facing = selectPressureRegion(box.nodes, faces, [0, 0, 1], "facing");
+    expect(count(facing)).toBeGreaterThan(0);
+    for (let t = 0; t < triCount; t++) {
+      if (!facing[t]) continue;
+      for (const k of [0,1,2]) expect(box.nodes[faces[t*3+k]!*3+2]).toBeCloseTo(D, 6);
+    }
+    // 'facing' is stricter than the 'face' band (no side-wall fringe), so it
+    // selects no more triangles than 'face'.
+    const face = selectPressureRegion(box.nodes, faces, [0, 0, 1], "face");
+    expect(count(facing)).toBeLessThanOrEqual(count(face));
+  });
+
+  it("'face'/'facing' select nothing without a direction", () => {
+    expect(count(selectPressureRegion(box.nodes, faces, [0,0,0], "face"))).toBe(0);
+    expect(count(selectPressureRegion(box.nodes, faces, [0,0,0], "facing"))).toBe(0);
+  });
+
+  it("normal pressure over the whole closed box nets ~zero resultant (hydrostatic balance)", () => {
+    const all = selectPressureRegion(box.nodes, faces, [0,0,0], "all");
+    const f = assembleSurfaceTractionNormal(box.nodes, faces, all, -3.0); // inward everywhere
+    let fx=0, fy=0, fz=0;
+    for (let n = 0; n < box.nodeCount; n++) { fx+=f[n*3]!; fy+=f[n*3+1]!; fz+=f[n*3+2]!; }
+    expect(fx).toBeCloseTo(0, 6);
+    expect(fy).toBeCloseTo(0, 6);
+    expect(fz).toBeCloseTo(0, 6);
   });
 });

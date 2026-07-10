@@ -22,7 +22,7 @@ import { runLinearBuckling }              from "./solver/buckling.js";
 import { assembleK, assembleKsigma, buildSparsityPattern } from "./solver/assembly.js";
 import { buildNodeElementAdjacency }       from "./solver/adjacency.js";
 import { applyDirichletBC }    from "./solver/boundary.js";
-import { assembleForceVector, assembleBodyForce, assembleSurfaceTraction, assembleSurfaceTractionNormal } from "./solver/load.js";
+import { assembleForceVector, assembleBodyForce, assembleSurfaceTraction, assembleSurfaceTractionNormal, selectPressureRegion } from "./solver/load.js";
 import type { ModalAnalysisResult }        from "./solver/types.js";
 import {
   buildLaminateCMatrix,
@@ -991,9 +991,12 @@ export interface AnalysisRequest {
    * distributed as consistent tributary-area nodal forces. When `normal` is true
    * the load instead follows each loaded triangle's own outward normal
    * (t = −magnitude·n̂), i.e. a true pressure normal to a curved/non-planar face.
+   * `region` selects which triangles are loaded: 'face' (default, the extreme
+   * face toward `direction`), 'facing' (every triangle whose outward normal
+   * faces `direction`), or 'all' (the whole exterior — hydrostatic, normal mode).
    * Honoured on the box-mesh fallback (which now carries surface connectivity).
    */
-  pressures?: { magnitude: number; direction: [number, number, number]; normal?: boolean }[];
+  pressures?: { magnitude: number; direction: [number, number, number]; normal?: boolean; region?: "face" | "facing" | "all" }[];
   /**
    * Fatigue load ratio R = σ_min/σ_max for the Goodman/Basquin estimate.
    * Default 0 (pulsating 0→peak). −1 = fully reversed; R>0 = tension-biased.
@@ -2437,32 +2440,26 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     if (!surfaceFaces) {
       console.warn("[analysis] surface pressure ignored — no surface connectivity.");
     } else {
-      const triCount = Math.floor(surfaceFaces.length / 3);
       for (const p of req.pressures) {
         // Zero → no-op. Negative is allowed and means outward (tension/suction).
         if (!Number.isFinite(p.magnitude) || p.magnitude === 0) continue;
+        // Which surface triangles the pressure acts on:
+        //   'face'   (default) — the extreme face toward `direction` (a band).
+        //   'facing' — every surface triangle whose outward normal faces
+        //              `direction` (the whole windward side).
+        //   'all'    — the entire exterior surface (e.g. hydrostatic/external
+        //              pressure; only physical with normal mode).
+        const region = p.region ?? "face";
         const [dx, dy, dz] = p.direction;
         const dl = Math.hypot(dx, dy, dz);
-        if (!(dl > 0)) continue;   // undefined face for a zero direction
-        const ux = dx/dl, uy = dy/dl, uz = dz/dl;
-        // Extreme face in direction d: max projection over all mesh nodes.
-        let maxProj = -Infinity;
-        for (let n = 0; n < mesh.nodeCount; n++) {
-          const proj = (mesh.nodes[n*3]??0)*ux + (mesh.nodes[n*3+1]??0)*uy + (mesh.nodes[n*3+2]??0)*uz;
-          if (proj > maxProj) maxProj = proj;
-        }
-        // A triangle is loaded if its centroid lies within the face band.
-        const isLoaded: boolean[] = new Array(triCount);
-        let nLoaded = 0;
-        for (let t = 0; t < triCount; t++) {
-          const a = surfaceFaces[t*3]??0, b = surfaceFaces[t*3+1]??0, c = surfaceFaces[t*3+2]??0;
-          const cxp = ((mesh.nodes[a*3]??0)+(mesh.nodes[b*3]??0)+(mesh.nodes[c*3]??0))/3;
-          const cyp = ((mesh.nodes[a*3+1]??0)+(mesh.nodes[b*3+1]??0)+(mesh.nodes[c*3+1]??0))/3;
-          const czp = ((mesh.nodes[a*3+2]??0)+(mesh.nodes[b*3+2]??0)+(mesh.nodes[c*3+2]??0))/3;
-          const proj = cxp*ux + cyp*uy + czp*uz;
-          isLoaded[t] = (maxProj - proj) < 0.5;
-          if (isLoaded[t]) nLoaded++;
-        }
+        const hasDir = dl > 0;
+        const ux = hasDir ? dx/dl : 0, uy = hasDir ? dy/dl : 0, uz = hasDir ? dz/dl : 0;
+        // A direction is required to select a face/facing region and for the
+        // uniform (non-normal) traction direction. 'all' + normal needs none.
+        if ((region !== "all" || !p.normal) && !hasDir) continue;
+
+        const isLoaded = selectPressureRegion(mesh.nodes, surfaceFaces, [ux, uy, uz], region);
+        const nLoaded = isLoaded.reduce((s, on) => s + (on ? 1 : 0), 0);
         // A positive pressure pushes INWARD on the selected face (compression) —
         // the intuitive "pressure on this face" and the compressive pre-stress
         // buckling needs. Negative magnitude → outward (tension).
@@ -2482,7 +2479,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
             resN += Math.hypot(fx, fy, fz);
           }
         }
-        console.log(`[analysis] pressure ${p.magnitude}MPa ${p.normal ? "normal-to-surface" : `in (${ux.toFixed(2)},${uy.toFixed(2)},${uz.toFixed(2)})`}: ` +
+        console.log(`[analysis] pressure ${p.magnitude}MPa ${p.normal ? "normal-to-surface" : `in (${ux.toFixed(2)},${uy.toFixed(2)},${uz.toFixed(2)})`} region=${region}: ` +
           `${nLoaded} loaded triangles, |resultant|~${resN.toFixed(2)}N`);
       }
     }

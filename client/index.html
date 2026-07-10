@@ -1545,6 +1545,13 @@ body:not(.has-results) #btn-stress { display: none !important; }
             <input type="checkbox" id="s-pressure-normal" style="width:auto;margin:0" onchange="markSessionDirty()">
             Normal to surface (follow each triangle's own normal)
           </label>
+          <label style="font-size:10px;color:var(--text-lo);display:flex;align-items:center;gap:6px;margin-top:6px">Apply to
+            <select id="s-pressure-region" onchange="markSessionDirty()">
+              <option value="face" selected>Extreme face only</option>
+              <option value="facing">All faces toward direction</option>
+              <option value="all">Entire surface (hydrostatic)</option>
+            </select>
+          </label>
           <div style="font-size:10px;color:var(--text-lo);margin-top:6px;line-height:1.5">Pressure (MPa) on the face toward the chosen direction — a positive value pushes inward (compression), negative pulls outward. By default the load is uniform in the chosen direction; check <em>Normal to surface</em> for a true pressure that follows each surface triangle's own normal (physical on curved/non-planar faces). Consistent surface load.</div>
         </div>
       </div>
@@ -7689,7 +7696,8 @@ function pressureRequest() {
   const dir = (document.getElementById('s-pressure-dir')?.value ?? '0,0,1')
     .split(',').map(Number);
   const normal = !!document.getElementById('s-pressure-normal')?.checked;
-  return { magnitude: m, direction: [dir[0] || 0, dir[1] || 0, dir[2] || 0], normal };
+  const region = document.getElementById('s-pressure-region')?.value || 'face';
+  return { magnitude: m, direction: [dir[0] || 0, dir[1] || 0, dir[2] || 0], normal, region };
 }
 
 function updatePressureUI() {
@@ -9875,6 +9883,7 @@ async function loadSession() {
         setVal('s-pressure-mpa', a.pressure.magnitude);
         setVal('s-pressure-dir', (a.pressure.direction || []).join(','));
         setChk('s-pressure-normal', !!a.pressure.normal);
+        if (a.pressure.region) setVal('s-pressure-region', a.pressure.region);
       } else { setChk('s-pressure', false); }
       if (a.fatigueR != null) setVal('s-fatigue-r', a.fatigueR);
       if (typeof updateGravityUI === 'function') updateGravityUI();
