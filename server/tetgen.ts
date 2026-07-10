@@ -19,13 +19,18 @@
  * This gives us a direct O(1) surface-to-volume mapping with no spatial search.
  *
  * TetGen switches used:
- *   -p  Tetrahedralise the piecewise linear complex (required)
- *   -Y  Preserve input surface vertices (no Steiner points on surface)
- *   -Q  Quiet mode (suppress stdout)
+ *   -p       Tetrahedralise the piecewise linear complex (required)
+ *   -q1.4    Quality refinement (radius-edge ratio ≤ 1.4) — tried first
+ *   -a<v>    Max element volume (mm³), from the mesh-quality selector
+ *   -Y       Preserve input surface vertices (no Steiner points on surface)
+ *   -Q       Quiet mode (suppress stdout)
+ *   -o2      Second-order (C3D10) elements when elementOrder=2
  *
- * Note: -q (quality) causes assertion failures in TetGen 1.5 on some
- * geometries. We omit it and rely on -p only for a valid but unrefined mesh.
- * Quality refinement is planned for a future version.
+ * Quality refinement (-q) can trip assertion failures in TetGen 1.5 on some
+ * geometries, so meshWithTetGen tries `-pq1.4a…` FIRST and, only if that run
+ * fails, degrades through `-pa…` (volume only), a relaxed volume, and finally
+ * `-pQ` (a valid but unrefined mesh). So a well-behaved STL gets a refined mesh
+ * and a pathological one still meshes — see the switchSets fallback chain below.
  */
 
 import { execFile }                           from "child_process";

@@ -108,9 +108,14 @@ export interface OrthotropicMaterial {
  *   ν_xy and ν_xz are constant across densities
  *
  * Gibson-Ashby (1997) lattice scaling: E ∝ ρ^n with n ∈ [1.5, 2.5] for open-cell solids.
- * NOTE: The specific exponents (1.75, 2.1, 2.3) and linear correction factors (0.12, 0.18, 0.22)
- * are NOT sourced to any cited paper. Birosz et al. (2022) is a qualitative infill pattern
- * comparison and does not provide power-law density-modulus coefficients.
+ * The power-law FORM is cited (Gibson & Ashby; see the SOURCES tab entry
+ * "gibson_ashby1997"). The specific exponents (1.75, 2.1, 2.3) and small linear
+ * correction factors (0.12, 0.18, 0.22) are STORMFEA engineering estimates
+ * chosen WITHIN that cited range — no paper reports gyroid-specific coefficients
+ * (Birosz et al. 2022 is a qualitative pattern comparison, not a density-modulus
+ * fit). They are confidence-labelled LOW, locked by regression tests
+ * (server/tests/unit/gyroid-formula.test.ts), and can be replaced with
+ * printer-specific values via coupon calibration. Treat as bounded estimates.
  */
 export interface GyroidOrthotropic {
   readonly kind:          "gyroid-orthotropic";

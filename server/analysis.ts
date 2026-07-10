@@ -48,6 +48,7 @@ import type { IsotropicMaterial, AnyMaterial, OrthotropicMaterial } from "./solv
 import { isOrthotropic, isOrthotropicLike } from "./solver/types.js";
 import { recoverElementStressComponents }   from "./solver/stress_detail.js";
 import { sprSmoothedStress, sprSmoothedStress6, recoverElementStress, nodeAveragedPrincipalStress } from "./solver/stress.js";
+import { flagMergedHoleWarnings }           from "./holes.js";
 import type { HoleFeature }                 from "./holes.js";
 import { meshWithTetGen, TetGenNotFoundError } from "./tetgen.js";
 import { meshStepWithGmsh }                 from "./gmsh_mesh.js";
@@ -3061,10 +3062,21 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     };
   }
 
+  // Detect overlapping (likely Gmsh-merged) hole detections across ALL holes so
+  // the geometry warning reaches the report too, not just the upload-time UI
+  // panel. Keyed by hole id (same check as the upload path in index.ts).
+  const mergeWarn = flagMergedHoleWarnings(req.holes);
+  const mergeById = new Map<number, string>();
+  req.holes.forEach((h, i) => { if (mergeWarn[i]) mergeById.set(h.id, mergeWarn[i]!); });
+
   for (const hole of holesForClassification) {
     const rawCls  = classifyHole(hole.radius, plateDimMin);
     const override = req.holeTypeOverrides?.[hole.id];
     const cls = applyHoleOverride(rawCls, override);
+    // A merge/overlap warning is about the detected radius/centre, so it stands
+    // even when the user has overridden the bolt type — append it either way.
+    const mw = mergeById.get(hole.id);
+    if (mw) cls.warning = [cls.warning, mw].filter(Boolean).join(" ");
     holeClassifications.push(cls);
 
     // Edge distance: distance from hole centre to nearest plate edge in XY
