@@ -11215,17 +11215,60 @@ document.addEventListener('DOMContentLoaded', () => {
 // Steps may carry an `action` run on entry; `duration: null` means manual-advance
 // (used around the analysis run, where timing isn't predictable).
 
+// Archetype catalogue — shared by the picker and startDemoMode. `bedNormal` is
+// the MODEL-space normal of the face that rests on the build plate. The three
+// demo parts are all flat slabs with thickness along Z (see server/demo_part.ts),
+// so the bottom face normal is [0,0,-1]: printing flat puts the layer stack along
+// Z, i.e. the load crosses the weak inter-layer direction — the STORMFEA claim.
+const DEMO_ARCHETYPES = [
+  { type: 'bracket',   label: 'Mounting Bracket', desc: 'Flat bracket bolted through a hole, loaded at the far edge. Classic FTC motor mount. Demonstrates flat-print false safety — the core STORMFEA claim.', bedNormal: [0, 0, -1] },
+  { type: 'l-bracket', label: 'Wide Motor Mount',  desc: 'Wide flat bracket with the hole near one end. Longer moment arm than the standard bracket — higher bending stress at the constraint. Common FTC motor mount.', bedNormal: [0, 0, -1] },
+  { type: 'arm-pivot', label: 'Arm Pivot Link',   desc: 'Elongated arm with holes at both ends. One end fixed, one loaded in bending. FTC intake arm or extension link failure mode.',                        bedNormal: [0, 0, -1] },
+];
+
+// Compose the closing verdict from the real solve so judges hear a headline
+// number, not just "see the panel". Reads the same summary the results tab reads.
+function demoVerdictText() {
+  const s = S.results && S.results.summary;
+  if (!s || !s.safetyFactorAvailable) {
+    return "Analysis complete — open the RESULTS tab for the full safety-factor breakdown. " +
+           "The report is downloading now so the judges leave with a copy.";
+  }
+  const sf = s.safetyFactor;
+  const verdict = sf >= 2 ? 'SAFE — clears the 2× design threshold'
+    : sf >= 1 ? 'MARGINAL — positive margin but below the recommended 2×'
+    : 'FAIL — the part yields under the applied load';
+  let out = `STORMFEA verdict: <b>${verdict}</b> at a safety factor of <b>${sf.toFixed(2)}×</b>. `;
+  const iso = s.isotropicComparison;
+  if (iso && iso.falseSafe) {
+    out += `A conventional isotropic FEA calls this part SAFE — STORMFEA says it FAILS. ` +
+           `That ${Math.round(iso.optimismPct)}% blind spot is exactly what orthotropic analysis closes. `;
+  } else if (iso && typeof iso.optimismPct === 'number' && iso.optimismPct > 5) {
+    out += `A conventional isotropic tool is ${Math.round(iso.optimismPct)}% more optimistic on the same load. `;
+  }
+  out += `The full PDF report is downloading now — hand it to the judges.`;
+  return out;
+}
+
 const DEMO_STEPS = [
   {
     tab: "setup",
     title: "A Real Part, Ready to Analyse",
     text: "This part is bolted at its holes and loaded at an edge — a complete setup, generated automatically. " +
-          "The workflow rail on the left shows part, constraints, and load all in place. " +
-          "Note the orientation warning: flat printing puts the load across the layer lines, the weakest direction.",
+          "The workflow rail on the left shows part, constraints, and load all in place, " +
+          "and the part is already resting on the build plate in the orientation it will be printed.",
     duration: 8000,
   },
   {
-    tab: "settings",
+    tab: "orient",
+    title: "Laid Flat on the Build Plate",
+    text: "STORMFEA has set the print orientation for you: the part lies flat on the plate, so the layers stack " +
+          "through its thickness. The applied load pulls across those layers — the weakest, inter-layer direction. " +
+          "This bed orientation is what drives the anisotropic material model; a conventional tool never sees it.",
+    duration: 9000,
+  },
+  {
+    tab: "material",
     title: "Print Settings Drive the Material Model",
     text: "These settings change the prediction. A flat part has E_z = 65% of E_xy (Perez et al. 2021) and " +
           "inter-layer yield = 58% of in-plane yield (Cojocaru et al. 2019). " +
@@ -11254,6 +11297,14 @@ const DEMO_STEPS = [
     text: "STORMFEA checks bulk yield, net-section tension, shear-out, thread strip-out, and bearing failure. " +
           "Each carries an explicit confidence label based on data quality, and the governing mode is flagged.",
     duration: 8000,
+  },
+  {
+    tab: "results",
+    title: "The Verdict — and a Report to Keep",
+    text: demoVerdictText,                 // dynamic — composed from the real solve
+    duration: null,                        // manual — final step, fires the export
+    showReportBtn: true,
+    action: () => { if (S.results) { try { exportFullReportPDF(); } catch (e) { console.warn('[demo] report export failed', e); } } },
   },
 ];
 
@@ -11374,14 +11425,8 @@ function pickDemoArchetype() {
         <div style="display:flex;flex-direction:column;gap:8px" id="demo-archetype-list"></div>
       </div>`;
 
-    const archetypes = [
-      { type: 'bracket',   label: 'Mounting Bracket',   desc: 'Flat bracket bolted through a hole, loaded at the far edge. Classic FTC motor mount. Demonstrates flat-print false safety — the core STORMFEA claim.' },
-      { type: 'l-bracket', label: 'L-Bracket',           desc: 'Right-angle bracket with a bolt hole in the vertical wing. Demonstrates bending stress concentration at the 90° corner — common in FTC arm mounts.' },
-      { type: 'arm-pivot', label: 'Arm Pivot Link',      desc: 'Elongated arm with holes at both ends. One end fixed, one loaded in bending. FTC intake arm or extension link failure mode.' },
-    ];
-
     const list = overlay.querySelector('#demo-archetype-list');
-    archetypes.forEach(a => {
+    DEMO_ARCHETYPES.forEach(a => {
       const btn = document.createElement('button');
       btn.style.cssText = 'width:100%;background:var(--bg-base);border:1px solid var(--border);border-radius:4px;padding:12px 14px;cursor:pointer;text-align:left;font-family:inherit;transition:border-color .12s';
       btn.innerHTML = `
@@ -11409,12 +11454,20 @@ async function startDemoMode() {
   // 1. Always load the chosen archetype fresh for demo mode
   if (!await loadDemoBracket(archetype)) return;
 
-  // 2. Auto-configure bolts + a varied load on it.
+  // 2. Lay the part flat on the build plate in its pre-determined orientation.
+  //    snapToBed rotates the picked face to -Y, lifts min-Y to the plate, and
+  //    sets S.bedNormal so the analysis uses the intended weak axis (not the
+  //    implicit flat default). Falls back to the bracket's normal if unknown.
+  const meta = DEMO_ARCHETYPES.find(a => a.type === archetype);
+  snapToBed((meta && meta.bedNormal) || [0, 0, -1]);
+
+  // 3. Auto-configure bolts + a varied load on it.
   if (!autoSetupScenario()) {
     if (!await loadDemoBracket('bracket')) return;
+    snapToBed([0, 0, -1]);
     autoSetupScenario();
   }
-  // 3. Run the narrated tour over the now-populated, runnable part.
+  // 4. Run the narrated tour over the now-populated, runnable part.
   demoStepIdx = 0;
   showDemoStep();
 }
@@ -11449,6 +11502,12 @@ function showDemoStep() {
   const progress = DEMO_STEPS.map((_,i) =>
     `<div style="width:${i===demoStepIdx?'24px':'8px'};height:4px;border-radius:2px;background:${i===demoStepIdx?'var(--gold)':i<demoStepIdx?'var(--gold-dim)':'var(--text-hi)'};transition:all .3s"></div>`
   ).join('');
+  // title/text may be strings or functions (composed from the live results).
+  const stepTitle = typeof step.title === 'function' ? step.title() : step.title;
+  const stepText  = typeof step.text  === 'function' ? step.text()  : step.text;
+  const reportBtn = step.showReportBtn
+    ? '<button onclick="exportFullReportPDF()" style="padding:5px 12px;font-size:11px;background:transparent;border:1px solid var(--gold-glow);color:var(--gold);border-radius:3px;cursor:pointer;font-family:inherit">Download report</button>'
+    : '';
   demoOverlayEl.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
       <div style="font-family:'Outfit',system-ui,sans-serif;font-size:11px;font-weight:700;color:var(--gold);letter-spacing:.04em">
@@ -11456,11 +11515,12 @@ function showDemoStep() {
       </div>
       <button onclick="endDemoMode()" aria-label="End demo mode" style="background:none;border:none;color:var(--text-lo);cursor:pointer;font-size:14px;padding:0 4px"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg></button>
     </div>
-    <div style="font-size:10px;font-weight:600;color:var(--text-hi);margin-bottom:7px">${step.title}</div>
-    <div style="font-size:11px;color:var(--text-mid);line-height:1.7;margin-bottom:12px">${step.text}</div>
+    <div style="font-size:10px;font-weight:600;color:var(--text-hi);margin-bottom:7px">${stepTitle}</div>
+    <div style="font-size:11px;color:var(--text-mid);line-height:1.7;margin-bottom:12px">${stepText}</div>
     <div style="display:flex;justify-content:space-between;align-items:center">
       <div style="display:flex;gap:4px;align-items:center">${progress}</div>
       <div style="display:flex;gap:6px">
+        ${reportBtn}
         ${demoStepIdx > 0 ? '<button onclick="prevDemoStep()" style="padding:5px 12px;font-size:11px;background:transparent;border:1px solid var(--border);color:var(--text-lo);border-radius:3px;cursor:pointer;font-family:inherit">← Back</button>' : ''}
         <button onclick="nextDemoStep()" style="padding:5px 14px;font-size:11px;background:var(--gold-faint);border:1px solid var(--gold-glow);color:var(--gold);border-radius:3px;cursor:pointer;font-family:inherit;letter-spacing:.08em">
           ${demoStepIdx < DEMO_STEPS.length-1 ? 'Next ->' : 'Done <svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg>'}
