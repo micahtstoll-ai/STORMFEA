@@ -239,13 +239,13 @@ stormfea/
 ## Known Limitations
 
 - **Linear elastic only** — no plasticity or large deformation (the deflected-shape view is a scaled/exaggerated visualization of the linear solution, not a large-deformation result)
-- **Surface pressure loads** use consistent tributary-area (lumped) nodal loading and require a solid volume mesh — they are skipped on the box-mesh fallback
+- **Surface pressure loads** use consistent tributary-area (lumped) nodal loading. They act on the extreme face toward a chosen direction; a **normal-to-surface** option follows each triangle's own outward normal for curved/non-planar faces. Honoured on the box-mesh fallback as well (which now carries surface connectivity).
 - **Bearing failure confidence: LOW** — no FDM-specific bearing test data in literature
 - **Fatigue confidence: LOW** — sparse FDM S-N curve data; estimate only
 - **Filament color** affects strength (η² = 97.3% in one study) — not modeled
 - **Layer height correction** is a linear approximation; valid within ±0.15 mm of nominal
-- **Element order** — both STL (TetGen `-o2`) and STEP (Gmsh) uploads default to quadratic C3D10 elements; TetGen's mid-node ordering permutation is verified empirically and pinned by a regression test (`server/tests/unit/tetgen-c3d10.test.ts`). Linear C3D4 is selectable in the MATERIAL tab for faster solves, but underpredicts bending stress by ~55% due to shear locking.
-- **Closely-spaced holes (STEP):** if Gmsh merges two hole surfaces, detected radius can be wrong — use `start-debug.bat` and check `[gmsh-debug]` lines if hole geometry looks off
+- **Element order** — both STL (TetGen `-o2`) and STEP (Gmsh) uploads default to quadratic C3D10 elements; TetGen's mid-node ordering permutation is verified empirically and pinned by a regression test (`server/tests/unit/tetgen-c3d10.test.ts`). Linear C3D4 is selectable in the MATERIAL tab for faster solves, but underpredicts bending stress by ~55% due to shear locking. The box-mesh fallback now honours the element-order selector too (C3D10 by default), so a TetGen-fallback run is no longer forced to C3D4.
+- **Closely-spaced holes (STEP):** if Gmsh merges two hole surfaces the detected radius can be wrong. Overlapping hole detections are now flagged in the CONSTRAINTS panel so you can verify or redefine them; `start-debug.bat` still shows the `[gmsh-debug]` circle-fit lines for deeper inspection.
 
 ---
 
