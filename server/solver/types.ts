@@ -88,6 +88,18 @@ export interface OrthotropicMaterial {
   readonly yieldZ:        number;   // MPa
   readonly label:         string;
   /**
+   * Unit vector (global frame) giving the material's weak / through-layer axis —
+   * the FDM layer normal. Absent or [0,0,1] means the local model axes coincide
+   * with global axes (transverse isotropy about global Z, the historical flat
+   * case). When it points elsewhere (e.g. horizontal for an upright print) the
+   * constitutive matrix is rotated to align the local 3-axis with it (Bond
+   * transform), and the Hill criterion is evaluated in that rotated frame. This
+   * replaces the scalar-swap upright approximation (issue #101) with an exact
+   * tensor rotation. In-plane azimuth about the weak axis is irrelevant (the
+   * material is isotropic in the layer plane), so only the direction matters.
+   */
+  readonly weakAxis?:     readonly [number, number, number];
+  /**
    * Mass density in kg/m³ (SI). Default: 1240 (PLA).
    * Solver converts to t/mm³ via ×1e-12: 1 kg/m³ = 1e-12 t/mm³.
    */

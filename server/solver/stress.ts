@@ -39,8 +39,14 @@
 
 import type { TetMesh, IsotropicMaterial, AnyMaterial, SolverResult } from "./types.js";
 import { isOrthotropic } from "./types.js";
-import { buildAnyConstitutiveMatrix, computeGeometry, buildB, buildB_c3d10, C3D10_GAUSS } from "./element.js";
+import { buildAnyConstitutiveMatrix, computeGeometry, buildB, buildB_c3d10, C3D10_GAUSS, rotationAligningZTo, rotateStress6ToLocal } from "./element.js";
 import { buildNodeElementLists } from "./adjacency.js";
+
+// True when a vector points along +Z (within tolerance), i.e. no rotation needed.
+function _isPlusZUnit(a: readonly [number, number, number]): boolean {
+  const n = Math.hypot(a[0], a[1], a[2]) || 1;
+  return a[2] / n > 1 - 1e-12;
+}
 
 // ─── Typed-array helper ────────────────────────────────────────────────────────
 function f64(arr: Float64Array, i: number): number {
@@ -184,6 +190,24 @@ export function recoverElementStress(
   const C = buildAnyConstitutiveMatrix(mat);
   const yieldStr = 'kind' in mat ? (mat as import("./types.js").OrthotropicMaterial).yieldXY
                                  : (mat as IsotropicMaterial).yieldStrength;
+  // Hill is defined in the material frame (weak axis = local Z). For a rotated
+  // weak axis (upright/angled prints, issue #101) the global stress must be
+  // expressed in that frame before evaluating Hill. weakR = null for the common
+  // weak-along-Z case, so the hot loop pays nothing there.
+  const weakR = (isOrthotropic(mat) && mat.weakAxis && !_isPlusZUnit(mat.weakAxis))
+    ? rotationAligningZTo(mat.weakAxis) : null;
+  const hillSF = (
+    sxx: number, syy: number, szz: number, txy: number, tyz: number, txz: number,
+    yieldXY: number, yieldZ: number,
+  ): number => {
+    let a = sxx, b = syy, c = szz, d = txy, e2 = tyz, f = txz;
+    if (weakR) {
+      const L = rotateStress6ToLocal([sxx, syy, szz, txy, tyz, txz], weakR);
+      a = L[0]; b = L[1]; c = L[2]; d = L[3]; e2 = L[4]; f = L[5];
+    }
+    const sigHill = hillEquivalentStress(a, b, c, d, e2, f, yieldXY, yieldZ);
+    return sigHill > 1e-12 ? yieldXY / sigHill : 999;
+  };
   const vonMises     = new Float64Array(mesh.elementCount);
   const safetyFactor = new Float64Array(mesh.elementCount);
   const elemPrincipal = new Float64Array(mesh.elementCount * 3);
@@ -290,9 +314,7 @@ export function recoverElementStress(
       vm = Math.sqrt(0.5*((sxx-syy)**2+(syy-szz)**2+(szz-sxx)**2+6*(txy**2+tyz**2+txz**2)));
 
       if (isOrthotropic(mat)) {
-        const { yieldXY, yieldZ } = mat;
-        const sigHill = hillEquivalentStress(sxx, syy, szz, txy, tyz, txz, yieldXY, yieldZ);
-        sf = sigHill > 1e-12 ? yieldXY / sigHill : 999;
+        sf = hillSF(sxx, syy, szz, txy, tyz, txz, mat.yieldXY, mat.yieldZ);
       } else {
         sf = vm > 1e-12 ? yieldStr/vm : 999;
       }
@@ -345,9 +367,7 @@ export function recoverElementStress(
       }
 
       if (isOrthotropic(mat)) {
-        const { yieldXY, yieldZ } = mat;
-        const sigHill = hillEquivalentStress(sxx, syy, szz, txy, tyz, txz, yieldXY, yieldZ);
-        sf = sigHill > 1e-12 ? yieldXY / sigHill : 999;
+        sf = hillSF(sxx, syy, szz, txy, tyz, txz, mat.yieldXY, mat.yieldZ);
       } else {
         sf = vm > 1e-12 ? yieldStr/vm : 999;
       }

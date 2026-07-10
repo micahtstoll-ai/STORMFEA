@@ -175,6 +175,16 @@
 - [x] Closely-spaced-hole detection — overlapping hole detections (the symptom of
       Gmsh merging two hole surfaces) are flagged in the CONSTRAINTS panel
       (`flagMergedHoleWarnings`).
+- [x] Exact upright/angled orientation (issue #101) — when a bed face is picked,
+      the orthotropic tensor is rotated (full 4th-order Bond transform,
+      `rotateC6`/`rotationAligningZTo`) to align the weak axis with the bed
+      normal, and Hill is evaluated in that frame. Replaces the scalar-swap
+      approximation (kept as a conservative fallback when no bed is picked).
+      Flat prints (weak axis +Z) are the identity, so all prior results are
+      unchanged; validated in `bond-rotation.test.ts`.
+- [x] Fatigue load ratio R — Goodman/Basquin now takes R = σ_min/σ_max
+      (default 0). Surface pressure: normal-to-surface option + region selector
+      (face/facing/all). Suction (negative) pressure allowed in the UI.
 
 ---
 
