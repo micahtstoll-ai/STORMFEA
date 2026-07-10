@@ -52,8 +52,15 @@
  * density — that ~5% is the method's noise floor. Practical consequence: trust Kt
  * signals comfortably above the floor (bearing/lap-shear concentrations are
  * typically 1.3–2.5×); do NOT read meaning into Kt differences under ~10%.
- * Tightening this floor would require per-DOF (roller) constraints in the solver
- * core — a separate change, not done here.
+ *
+ * Note: the solver DOES support per-DOF (roller) constraints via
+ * FixedNodeSet.fixedAxes (used by the simply-supported-beam validation), so a
+ * z-only roller grip that permits Poisson contraction is possible. It was tried
+ * and does NOT tighten this floor — the gauge window (gripFraction) already
+ * excludes the grip zone where the clamp artifact lives, so the reported Kt is
+ * unchanged (1.059 clamped vs roller) and the residual is dominated by
+ * load-application/discretization. The floor is therefore inherent to the
+ * coupon-FEA method rather than a missing solver feature.
  */
 
 import type { AnyMaterial, TetMesh, FixedNodeSet, PointForce } from "./solver/types.js";
@@ -112,6 +119,15 @@ export function regionalPeakVonMises(
 /**
  * Build the constraint + force sets for an axial pull: fix the low-coordinate
  * end face on `axis`, apply `totalForceN` spread evenly over the high end face.
+ *
+ * The grip face is fully clamped. A per-DOF roller grip (fixing only the axial
+ * DOF; the solver supports this via FixedNodeSet.fixedAxes, exercised by the
+ * simply-supported-beam validation) was tried to relieve Poisson clamping, but
+ * it leaves the gauge-window Kt unchanged (measured 1.059 either way): the
+ * clamp artifact decays within the excluded grip zone, so the residual ~5%
+ * floor is dominated by load-application/discretization, not the grip — see the
+ * ACCURACY / NOISE FLOOR note above. The clamp is therefore kept (a roller adds
+ * point-anchor concentrations with no gauge-window benefit).
  */
 export function buildAxialConstraintsAndForces(
   mesh: TetMesh,
