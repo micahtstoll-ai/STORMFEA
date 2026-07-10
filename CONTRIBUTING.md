@@ -5,7 +5,7 @@ Thanks for taking an interest. Contributions from FTC teams, engineering student
 ## Ground Rules
 
 - **Physics first.** Any change that touches the solver, material model, or failure-mode logic needs a clear justification — ideally a citation. The 65% stiffness ratio and 58% bond strength are not arbitrary; they come from peer-reviewed literature. If you have better data, bring the paper.
-- **Tests must pass.** Run `npm run test` before opening a PR. The full suite covers 226 Vitest unit tests, 97 solver validation tests (patch tests, cantilever benchmarks, isotropic-limit and Hill-criterion checks), the parallel-assembly equivalence check, and 41 client-logic checks. A regression in any of these is a blocker. See [docs/METHODOLOGY.md](docs/METHODOLOGY.md#9-validation) for what the solver suite proves.
+- **Tests must pass.** Run `npm run test` before opening a PR. The full suite covers 265 Vitest unit tests, 99 solver validation tests (patch tests, cantilever benchmarks, isotropic-limit and Hill-criterion checks, hole-in-plate Kt, weak-axis Bond rotation), the parallel-assembly equivalence check, and 41 client-logic checks. A regression in any of these is a blocker. See [docs/METHODOLOGY.md](docs/METHODOLOGY.md#9-validation) for what the solver suite proves.
 - **Keep the design system.** If you're touching the frontend, read `DESIGN.md` first. Three fonts, no gradients, no purple/cyan/blue/green — the aesthetic is intentional.
 
 ## Setting Up
