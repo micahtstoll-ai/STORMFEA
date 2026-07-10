@@ -307,6 +307,140 @@ export function generateBoxMeshC3D10(
 }
 
 /**
+ * Structured C3D4 (linear tet) box mesh using the SAME conforming 6-tet
+ * body-diagonal split as generateBoxMeshC3D10. Unlike the 5-tet
+ * generateBoxMesh, adjacent hexes agree on every shared face diagonal, so the
+ * mesh is globally conforming — which lets extractSurfaceFaces recover a clean
+ * boundary (a face is then shared by exactly two tets, never mismatched). Used
+ * by the box-mesh fallback when linear elements are selected.
+ */
+export function generateBoxMeshC3D4(
+  x0: number, y0: number, z0: number,
+  x1: number, y1: number, z1: number,
+  nx: number, ny: number, nz: number,
+): TetMesh & { surfaceToNode: Int32Array } {
+  if (nx < 1 || ny < 1 || nz < 1) throw new Error("Division counts must be ≥ 1");
+
+  const Nx = nx + 1, Ny = ny + 1, Nz = nz + 1;
+  const nodeCount = Nx * Ny * Nz;
+  const dx = (x1 - x0) / nx, dy = (y1 - y0) / ny, dz = (z1 - z0) / nz;
+
+  const nodes = new Float64Array(nodeCount * 3);
+  let ni = 0;
+  for (let k = 0; k < Nz; k++)
+    for (let j = 0; j < Ny; j++)
+      for (let i = 0; i < Nx; i++) {
+        nodes[ni*3] = x0 + i*dx; nodes[ni*3+1] = y0 + j*dy; nodes[ni*3+2] = z0 + k*dz; ni++;
+      }
+
+  const idx = (i: number, j: number, k: number): number => k*Ny*Nx + j*Nx + i;
+  const elementCount = nx * ny * nz * 6;
+  const elements = new Int32Array(elementCount * 4);
+  let ei = 0;
+  for (let k = 0; k < nz; k++)
+    for (let j = 0; j < ny; j++)
+      for (let i = 0; i < nx; i++) {
+        const v0 = idx(i,j,k),     v1 = idx(i+1,j,k),   v2 = idx(i+1,j+1,k),   v3 = idx(i,j+1,k);
+        const v4 = idx(i,j,k+1),   v5 = idx(i+1,j,k+1), v6 = idx(i+1,j+1,k+1), v7 = idx(i,j+1,k+1);
+        const tets: [number,number,number,number][] = [
+          [v0,v6,v1,v2], [v0,v6,v2,v3], [v0,v6,v3,v7],
+          [v0,v6,v7,v4], [v0,v6,v4,v5], [v0,v6,v5,v1],
+        ];
+        for (const [n0,n1,n2,n3] of tets) {
+          elements[ei*4] = n0; elements[ei*4+1] = n1; elements[ei*4+2] = n2; elements[ei*4+3] = n3; ei++;
+        }
+      }
+
+  const surfaceToNode = new Int32Array(nodeCount);
+  for (let n = 0; n < nodeCount; n++) surfaceToNode[n] = n;
+  return { nodes, elements, nodeCount, elementCount, nodesPerElem: 4, surfaceToNode };
+}
+
+/**
+ * Extract the boundary surface triangles of a tetrahedral mesh as corner-node
+ * triples, oriented so each triangle's winding gives an OUTWARD normal.
+ *
+ * A tet has four triangular faces (its 4 corner nodes taken 3 at a time). A face
+ * is on the boundary iff it is referenced by exactly one element; interior faces
+ * are shared by two. This works identically for C3D4 and C3D10 meshes because
+ * the corner nodes are always the first four entries of each element and the
+ * mid-side nodes lie on the same triangle (the pressure/traction assembler lumps
+ * on corner nodes — see load.ts). The returned triples match the shape the STEP
+ * (Gmsh) and STL (TetGen) paths already produce for `surfaceFaces`, so the
+ * box-mesh fallback can carry real surface connectivity for pressure loads.
+ *
+ * Requires a CONFORMING mesh (every interior face shared by exactly two tets):
+ * TetGen, Gmsh, generateBoxMeshC3D4 and generateBoxMeshC3D10 all qualify. The
+ * non-conforming 5-tet generateBoxMesh does NOT and must not be used here.
+ *
+ * Outward orientation: for each boundary face (a,b,c) with opposite corner
+ * `apex`, the winding is flipped if (b−a)×(c−a) points toward the apex, so the
+ * face normal always points away from the element interior.
+ */
+export function extractSurfaceFaces(mesh: TetMesh): Int32Array {
+  const npe = mesh.nodesPerElem;
+  const { elements, nodes, elementCount } = mesh;
+
+  // face-local corner indices (3 face nodes + the opposite/apex corner)
+  const FACES: [number, number, number, number][] = [
+    [0, 1, 2, 3],
+    [0, 1, 3, 2],
+    [0, 2, 3, 1],
+    [1, 2, 3, 0],
+  ];
+
+  // Canonical key for a triangle from its 3 sorted corner node indices.
+  const keyOf = (p: number, q: number, r: number): string => {
+    let a = p, b = q, c = r;
+    if (a > b) { const t = a; a = b; b = t; }
+    if (b > c) { const t = b; b = c; c = t; }
+    if (a > b) { const t = a; a = b; b = t; }
+    return `${a},${b},${c}`;
+  };
+
+  // count[key] = how many elements reference this face; store the winding + apex
+  // for the first occurrence so a boundary face can be emitted outward-oriented.
+  const count = new Map<string, number>();
+  const record = new Map<string, [number, number, number, number]>();
+
+  for (let e = 0; e < elementCount; e++) {
+    const base = e * npe;
+    for (const [i0, i1, i2, ia] of FACES) {
+      const a = elements[base + i0] ?? 0;
+      const b = elements[base + i1] ?? 0;
+      const c = elements[base + i2] ?? 0;
+      const apex = elements[base + ia] ?? 0;
+      const key = keyOf(a, b, c);
+      count.set(key, (count.get(key) ?? 0) + 1);
+      if (!record.has(key)) record.set(key, [a, b, c, apex]);
+    }
+  }
+
+  const tris: number[] = [];
+  for (const [key, n] of count) {
+    if (n !== 1) continue; // interior face (shared by two tets)
+    const [a, b, c, apex] = record.get(key)!;
+    const ax = nodes[a * 3] ?? 0, ay = nodes[a * 3 + 1] ?? 0, az = nodes[a * 3 + 2] ?? 0;
+    const bx = nodes[b * 3] ?? 0, by = nodes[b * 3 + 1] ?? 0, bz = nodes[b * 3 + 2] ?? 0;
+    const cx = nodes[c * 3] ?? 0, cy = nodes[c * 3 + 1] ?? 0, cz = nodes[c * 3 + 2] ?? 0;
+    const px = nodes[apex * 3] ?? 0, py = nodes[apex * 3 + 1] ?? 0, pz = nodes[apex * 3 + 2] ?? 0;
+    // normal = (b-a) × (c-a)
+    const ux = bx - ax, uy = by - ay, uz = bz - az;
+    const vx = cx - ax, vy = cy - ay, vz = cz - az;
+    const nx = uy * vz - uz * vy;
+    const ny = uz * vx - ux * vz;
+    const nz = ux * vy - uy * vx;
+    // vector from face to apex; if the normal points toward the apex it is
+    // inward, so flip the winding (swap b and c).
+    const dot = nx * (px - ax) + ny * (py - ay) + nz * (pz - az);
+    if (dot > 0) tris.push(a, c, b);
+    else tris.push(a, b, c);
+  }
+
+  return Int32Array.from(tris);
+}
+
+/**
  * Return all node indices where z ≈ target (within tolerance).
  * Used to identify the constrained face (z=z0) and loaded face (z=z1).
  */

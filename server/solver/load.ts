@@ -192,3 +192,108 @@ export function assembleSurfaceTraction(
 
   return f;
 }
+
+/**
+ * Select which surface triangles a pressure load acts on.
+ *
+ *   'face'   — the extreme face toward `direction`: triangles whose centroid is
+ *              within 0.5 mm of the furthest node projected onto `direction`.
+ *   'facing' — every triangle whose OUTWARD normal faces `direction`
+ *              (normal·direction > 0), i.e. the whole windward side.
+ *   'all'    — the entire exterior surface (hydrostatic / external pressure).
+ *
+ * Returns a boolean[] aligned with the triangles in `faces`. A zero-length
+ * `direction` selects nothing for 'face'/'facing' (undefined side) but still
+ * selects everything for 'all'.
+ */
+export function selectPressureRegion(
+  nodes:     Float64Array,
+  faces:     Int32Array,
+  direction: readonly [number, number, number],
+  region:    "face" | "facing" | "all",
+): boolean[] {
+  const triCount = Math.floor(faces.length / 3);
+  const out: boolean[] = new Array(triCount).fill(false);
+  if (region === "all") return out.fill(true);
+
+  const [dx, dy, dz] = direction;
+  const dl = Math.hypot(dx, dy, dz);
+  if (!(dl > 0)) return out;   // undefined side without a direction
+  const ux = dx/dl, uy = dy/dl, uz = dz/dl;
+
+  let maxProj = -Infinity;
+  if (region === "face") {
+    for (let n = 0; n < nodes.length / 3; n++) {
+      const proj = (nodes[n*3]??0)*ux + (nodes[n*3+1]??0)*uy + (nodes[n*3+2]??0)*uz;
+      if (proj > maxProj) maxProj = proj;
+    }
+  }
+  for (let t = 0; t < triCount; t++) {
+    const a = faces[t*3]??0, b = faces[t*3+1]??0, c = faces[t*3+2]??0;
+    const ax = nodes[a*3]??0, ay = nodes[a*3+1]??0, az = nodes[a*3+2]??0;
+    const bx = nodes[b*3]??0, by = nodes[b*3+1]??0, bz = nodes[b*3+2]??0;
+    const cx = nodes[c*3]??0, cy = nodes[c*3+1]??0, cz = nodes[c*3+2]??0;
+    if (region === "facing") {
+      const nx = (by-ay)*(cz-az)-(bz-az)*(cy-ay);
+      const ny = (bz-az)*(cx-ax)-(bx-ax)*(cz-az);
+      const nz = (bx-ax)*(cy-ay)-(by-ay)*(cx-ax);
+      out[t] = (nx*ux + ny*uy + nz*uz) > 1e-9;
+    } else { // face
+      const proj = ((ax+bx+cx)/3)*ux + ((ay+by+cy)/3)*uy + ((az+bz+cz)/3)*uz;
+      out[t] = (maxProj - proj) < 0.5;
+    }
+  }
+  return out;
+}
+
+/**
+ * Assemble consistent nodal forces for a pressure that acts NORMAL to each
+ * loaded surface triangle (a true surface-normal pressure, not a single fixed
+ * direction). For each loaded triangle the traction is t = pressure · n̂, where
+ * n̂ is the triangle's OUTWARD unit normal (from its winding — the surface faces
+ * from TetGen, Gmsh, and `extractSurfaceFaces` are outward-oriented).
+ *
+ * Sign convention matches `assembleSurfaceTraction`'s caller: pass a negative
+ * `pressureMPa` for an inward push (compression) and a positive value for an
+ * outward pull (suction/tension). Each of the three corner nodes receives
+ * t·A/3 (tributary-area lumping), identical to the uniform assembler.
+ *
+ * @param nodes       mesh node coordinates [x0,y0,z0, …]
+ * @param faces       surface triangles as node triples [a0,b0,c0, …]
+ * @param loaded      isLoaded[t] = true → triangle t receives the pressure
+ * @param pressureMPa scalar pressure in N/mm² (MPa); sign per convention above
+ * @returns Float64Array of length nodeCount × 3
+ */
+export function assembleSurfaceTractionNormal(
+  nodes:       Float64Array,
+  faces:       Int32Array,
+  loaded:      readonly boolean[],
+  pressureMPa: number,
+): Float64Array {
+  const f = new Float64Array(nodes.length);
+  const triCount = Math.floor(faces.length / 3);
+
+  for (let t = 0; t < triCount; t++) {
+    if (!loaded[t]) continue;
+    const a = faces[t*3] ?? 0, b = faces[t*3+1] ?? 0, c = faces[t*3+2] ?? 0;
+    const ax = nodes[a*3] ?? 0, ay = nodes[a*3+1] ?? 0, az = nodes[a*3+2] ?? 0;
+    const bx = nodes[b*3] ?? 0, by = nodes[b*3+1] ?? 0, bz = nodes[b*3+2] ?? 0;
+    const cx = nodes[c*3] ?? 0, cy = nodes[c*3+1] ?? 0, cz = nodes[c*3+2] ?? 0;
+    // n = (b−a)×(c−a); ‖n‖ = 2·area, so n̂·area = n/2 and each node gets n/2 / 3.
+    const ux = bx-ax, uy = by-ay, uz = bz-az;
+    const vx = cx-ax, vy = cy-ay, vz = cz-az;
+    const nx = uy*vz - uz*vy, ny = uz*vx - ux*vz, nz = ux*vy - uy*vx;
+    const mag = Math.hypot(nx, ny, nz);
+    if (!(mag > 0)) continue;   // degenerate triangle
+    // force per node = pressure · n̂ · (area/3) = pressure · (n/mag) · (mag/2) / 3
+    //               = pressure · n / 6
+    const w = pressureMPa / 6;
+    for (const n of [a, b, c]) {
+      f[n*3]   = (f[n*3]   ?? 0) + nx * w;
+      f[n*3+1] = (f[n*3+1] ?? 0) + ny * w;
+      f[n*3+2] = (f[n*3+2] ?? 0) + nz * w;
+    }
+  }
+
+  return f;
+}

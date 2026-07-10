@@ -54,8 +54,10 @@ delegated to two external binaries (**TetGen** for STL, **Gmsh** for STEP).
    `runAnalysis()` in `server/analysis.ts`.
 4. **Volume mesh.** `analysis.ts` invokes `server/tetgen.ts` (STL) or
    `server/gmsh_mesh.ts` (STEP) to produce a tetrahedral volume mesh. Default
-   elements are **C3D10** (quadratic); **C3D4** (linear) is selectable. A box-mesh
-   fallback exists if meshing is unavailable.
+   elements are **C3D10** (quadratic); **C3D4** (linear) is selectable. If TetGen
+   fails, a structured box-mesh fallback runs — it honours the element-order
+   selector (C3D10 by default) and carries surface connectivity, so pressure
+   loads still apply.
 5. **Constraints & loads.** `analysis.ts` selects constraint nodes around bolted
    holes and builds the load set (point forces, body force / gravity, surface
    pressure).
@@ -78,12 +80,12 @@ delegated to two external binaries (**TetGen** for STL, **Gmsh** for STEP).
 | `index.ts` | Express app, all ~29 routes, request validation, error envelope, startup binary probe |
 | `analysis.ts` | The orchestrator (~3,500 lines): meshing calls, constraint/load setup, 5 failure modes, fatigue, recommendations, bolt database |
 | `stl.ts` | Binary/ASCII STL parser |
-| `holes.ts` | Cylindrical hole detection from STL geometry |
+| `holes.ts` | Cylindrical hole detection from STL geometry; overlapping/merged-hole warning (`flagMergedHoleWarnings`) |
 | `tetgen.ts` | TetGen wrapper (STL → volume mesh), binary probe, C3D10 midnode ordering |
 | `gmsh_mesh.ts` | Gmsh wrapper (STEP → mesh), surface/hole identification, curvature refinement |
 | `onshape.ts` | Onshape REST client (HMAC signing, Part Studio STEP export) |
 | `coupon_stl.ts` | Calibration coupon STL generators (tensile / lap-shear / bearing) |
-| `coupon_fea.ts` | FEA-in-the-loop Kt extraction for coupons |
+| `coupon_fea.ts` | FEA-in-the-loop Kt extraction for coupons; structured plate-with-hole fixture (`buildPlateWithHoleMesh`) for the Kt ≈ 3.0 benchmark |
 | `demo_part.ts` | Sample parts + archetype metadata for the judge demo |
 | `report.ts` | HTML report generation |
 | `validate.ts` | Request-body shape checker (`expect`/`Spec`, `ValidationError`) |
@@ -102,10 +104,10 @@ types → element → assembly (+ assembly-worker) → boundary → load → cg
 | Module | Responsibility |
 |--------|----------------|
 | `types.ts` | Mesh (`TetMesh`), material (isotropic / orthotropic / gyroid), and result interfaces; C3D10 node-ordering convention |
-| `element.ts` | C3D4 + C3D10 element stiffness, B-matrix, constitutive matrix **C**, geometric stiffness |
+| `element.ts` | C3D4 + C3D10 element stiffness, B-matrix, constitutive matrix **C**, geometric stiffness; weak-axis tensor rotation (`rotateC6`, `rotationAligningZTo`, `rotateStress6ToLocal`) for the Bond-transform orientation model |
 | `assembly.ts` | Global stiffness **K** in CSR (two-pass), sparsity pattern, matvec; parallel path via `assembly-worker.ts` |
 | `boundary.ts` | Dirichlet BCs via the penalty method |
-| `load.ts` | Force vector: point forces, equivalent nodal forces, body force, surface traction |
+| `load.ts` | Force vector: point forces, equivalent nodal forces, body force, surface traction (uniform + per-triangle-normal), pressure-region selection (`selectPressureRegion`) |
 | `cg.ts` | Preconditioned Conjugate Gradient solver (Jacobi + IC0 preconditioners), streaming residual callbacks |
 | `stress.ts` | Element stress recovery, SPR smoothing, Hill criterion, node-averaged display stress, safety factor |
 | `stress_detail.ts` | Full stress tensor (σxx,σyy,σzz,τxy,τyz,τxz) recovery |
@@ -114,7 +116,7 @@ types → element → assembly (+ assembly-worker) → boundary → load → cg
 | `modal.ts` | Modal eigensolver (subspace iteration, shift-invert) → natural frequencies + mode shapes |
 | `buckling.ts` | Linear buckling: geometric stiffness + inverse power iteration → Buckling Load Factor |
 | `laminate.ts` | Classical Laminate Theory bead/wall property contributions |
-| `meshgen.ts` | Box/fallback mesh generation |
+| `meshgen.ts` | Box/fallback mesh generation (C3D4 + C3D10, conforming), boundary-face extraction (`extractSurfaceFaces`) so the fallback carries surface connectivity |
 | `meshQuality.ts` | Element quality metrics |
 | `adjacency.ts` | Node–element adjacency (used by SPR patches and constraint selection) |
 

@@ -1528,7 +1528,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <div id="pressure-controls" style="display:none;padding-left:22px">
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
             <label style="font-size:10px;color:var(--text-lo);display:flex;align-items:center;gap:4px">Magnitude
-              <input type="number" id="s-pressure-mpa" value="1" min="0" step="0.5" style="width:60px" onchange="markSessionDirty()"><span style="font-family:'DM Mono',monospace;font-size:10px">MPa</span>
+              <input type="number" id="s-pressure-mpa" value="1" step="0.5" style="width:60px" onchange="markSessionDirty()"><span style="font-family:'DM Mono',monospace;font-size:10px">MPa</span>
             </label>
             <label style="font-size:10px;color:var(--text-lo);display:flex;align-items:center;gap:4px">On face toward
               <select id="s-pressure-dir" onchange="markSessionDirty()">
@@ -1541,8 +1541,33 @@ body:not(.has-results) #btn-stress { display: none !important; }
               </select>
             </label>
           </div>
-          <div style="font-size:10px;color:var(--text-lo);margin-top:6px;line-height:1.5">Uniform pressure (MPa) on the face toward the chosen direction — a positive value pushes inward (compression), negative pulls outward. Consistent surface load; needs a solid mesh (unavailable on the box-mesh fallback).</div>
+          <label style="font-size:10px;color:var(--text-lo);display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer">
+            <input type="checkbox" id="s-pressure-normal" style="width:auto;margin:0" onchange="markSessionDirty()">
+            Normal to surface (follow each triangle's own normal)
+          </label>
+          <label style="font-size:10px;color:var(--text-lo);display:flex;align-items:center;gap:6px;margin-top:6px">Apply to
+            <select id="s-pressure-region" onchange="markSessionDirty()">
+              <option value="face" selected>Extreme face only</option>
+              <option value="facing">All faces toward direction</option>
+              <option value="all">Entire surface (hydrostatic)</option>
+            </select>
+          </label>
+          <div style="font-size:10px;color:var(--text-lo);margin-top:6px;line-height:1.5">Pressure (MPa) on the face toward the chosen direction — a positive value pushes inward (compression), negative pulls outward. By default the load is uniform in the chosen direction; check <em>Normal to surface</em> for a true pressure that follows each surface triangle's own normal (physical on curved/non-planar faces). Consistent surface load.</div>
         </div>
+      </div>
+
+      <!-- Fatigue load ratio -->
+      <div style="margin-bottom:16px;padding-top:14px;border-top:1px solid var(--border)">
+        <label style="font-size:11px;letter-spacing:.04em;color:var(--text-label);display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          FATIGUE LOAD RATIO&nbsp;R
+          <select id="s-fatigue-r" onchange="markSessionDirty()">
+            <option value="0" selected>0 · pulsating (0→peak)</option>
+            <option value="-1">−1 · fully reversed (±peak)</option>
+            <option value="0.1">0.1 · lightly tension-biased</option>
+            <option value="0.5">0.5 · tension-biased</option>
+          </select>
+        </label>
+        <div style="font-size:10px;color:var(--text-lo);margin-top:6px;line-height:1.5">R = σ_min/σ_max for the fatigue (Goodman/Basquin) estimate. Default 0 assumes repeated 0→peak loading (conservative for most FTC mechanisms). Pick −1 for a fully reversed cycle, or a positive R for a load that never fully unloads.</div>
       </div>
 
 
@@ -4799,6 +4824,7 @@ function renderHolesList() {
           <div style="color:var(--text-mid)">Hole ${h.id} &nbsp;·&nbsp; ø${U.lenStr(h.diameter)}${h.manual ? ' <span style="color:var(--success);font-size:10px">· MANUAL</span>' : ''}</div>
           <div style="color:var(--text-lo);margin-top:1px">centre (${h.centre[0].toFixed(1)}, ${h.centre[1].toFixed(1)}, ${h.centre[2].toFixed(1)}) mm · axis (${h.normal.map(v=>v.toFixed(2)).join(', ')})</div>
           <div style="margin-top:1px;font-size:10px;color:${h.manual ? 'var(--success)' : lowConf ? 'var(--warn)' : 'var(--text-lo)'}">${h.manual ? 'user-defined · 100%' : lowConf ? `<svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> low confidence ${conf}% — verify axis or redefine manually` : `confidence ${conf}%`}</div>
+          ${h.warning ? `<div style="margin-top:3px;font-size:10px;color:var(--warn);line-height:1.4"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> ${h.warning}</div>` : ''}
         </div>
         <button style="${btnStyle}" onclick="toggleBoltFromList(${h.id})" ${alreadyAdded?'disabled':''}>${btnLabel}</button>
       </div>
@@ -7655,7 +7681,19 @@ function buildAnalyseBody(quality, opts) {
     calibration:  getActiveProfile(),
     ...(gravityRequest() ? { gravity: gravityRequest() } : {}),
     ...(pressureRequest() ? { pressures: [pressureRequest()] } : {}),
+    fatigueLoadRatio: +(document.getElementById('s-fatigue-r')?.value ?? 0),
+    // Through-layer (weak) axis from the picked bed face — lets the solver apply
+    // an exact tensor rotation for upright/angled prints (issue #101) instead of
+    // the conservative scalar swap. Only sent when a bed face was actually
+    // chosen (otherwise the orientation dropdown drives the fallback). Sign and
+    // in-plane azimuth are immaterial to the solver.
+    ...((S.bedNormal && S.bedFaceName) ? { layerNormal: normalizeVec3(S.bedNormal) } : {}),
   };
+}
+// Normalize a 3-vector for transport (returns a plain [x,y,z]).
+function normalizeVec3(v) {
+  const n = Math.hypot(v[0]||0, v[1]||0, v[2]||0) || 1;
+  return [(v[0]||0)/n, (v[1]||0)/n, (v[2]||0)/n];
 }
 
 // Read the surface-pressure control into a request entry, or null when disabled.
@@ -7663,10 +7701,14 @@ function buildAnalyseBody(quality, opts) {
 function pressureRequest() {
   if (!document.getElementById('s-pressure')?.checked) return null;
   const m = +(document.getElementById('s-pressure-mpa')?.value ?? 1);
-  if (!(m > 0)) return null;
+  // Negative magnitude = suction/tension (outward pull) — the server supports it
+  // (see analysis.ts pressure loop). Only zero / non-finite is a no-op.
+  if (!Number.isFinite(m) || m === 0) return null;
   const dir = (document.getElementById('s-pressure-dir')?.value ?? '0,0,1')
     .split(',').map(Number);
-  return { magnitude: m, direction: [dir[0] || 0, dir[1] || 0, dir[2] || 0] };
+  const normal = !!document.getElementById('s-pressure-normal')?.checked;
+  const region = document.getElementById('s-pressure-region')?.value || 'face';
+  return { magnitude: m, direction: [dir[0] || 0, dir[1] || 0, dir[2] || 0], normal, region };
 }
 
 function updatePressureUI() {
@@ -8057,11 +8099,11 @@ const SOURCES_DB = [
       },
       {
         id: "upright_swap",
-        citation: "STORMFEA modeling approximation — upright orientation as an E_xy↔E_z scalar swap (issue #101). Exact alternative: 90° Bond transformation of the 6×6 stiffness tensor (Auld, Acoustic Fields and Waves in Solids, 1973, §3).",
+        citation: "Upright/angled orientation as a 90° Bond transformation of the 6×6 stiffness tensor (Auld, Acoustic Fields and Waves in Solids, 1973, §3), with a conservative scalar-swap fallback (issue #101).",
         url: "",
-        usedFor: "Material model for parts printed 'upright' (layer normal horizontal in the analysis frame)",
-        confidence: "medium",
-        note: "An upright print is weak across layers along ONE horizontal axis and strong along the other horizontal axis and Z. The exact model is a 90° rotation of the stiffness tensor, which is transversely isotropic about a HORIZONTAL axis. The solver's material type only supports transverse isotropy about Z, so STORMFEA swaps scalars instead: E_z takes the strong in-layer modulus (exact for vertical loads) and BOTH horizontal directions take the weak through-layer modulus (conservative — the real part is weak in only one). Shear: the global-XY plane contains the layer normal, so G_xy is set to the inter-layer shear G_xz (exact); vertical shear planes mix in-layer and inter-layer shear, and the conservative inter-layer value is used for both. Yield strengths swap the same way. Limitations: in-plane stiffness along the strong horizontal direction is underestimated by up to E_z/E_xy (~35%), and load paths that exploit the strong horizontal axis will show pessimistic deflections/SF. Benchmarked against the full tensor rotation in server/tests/unit/upright-swap.test.ts.",
+        usedFor: "Material model for parts whose layer normal is not vertical (upright/angled)",
+        confidence: "high",
+        note: "An upright print is weak across layers along ONE horizontal axis and strong along the other horizontal axis and Z; the exact model is transverse isotropy about that horizontal (layer-normal) axis. When you pick a BED face, STORMFEA now sends the layer-normal direction and the solver applies the EXACT tensor rotation: the constitutive matrix is rotated to align the weak axis with the bed normal, and the Hill criterion is evaluated in that rotated frame (handles flat, upright, and angled uniformly). If no bed face is picked (azimuth unknown), it falls back to the conservative scalar swap — E_z takes the strong in-layer modulus and BOTH horizontal directions take the weak through-layer modulus (pessimistic along the strong horizontal axis by up to E_z/E_xy ≈ 35%). Rotation core validated in server/tests/unit/bond-rotation.test.ts; swap fallback in upright-swap.test.ts.",
       },
     ]
   },
@@ -8182,6 +8224,14 @@ const SOURCES_DB = [
         usedFor: "Honeycomb and gyroid can exhibit superior resistance vs grid for some load types",
         confidence: "medium",
         note: "Confirms pattern matters but ranking depends on load type. Justifies our small, conservative pattern multipliers.",
+      },
+      {
+        id: "gibson_ashby1997",
+        citation: "Gibson LJ, Ashby MF. Cellular Solids: Structure and Properties. 2nd ed. Cambridge University Press; 1997.",
+        url: "https://doi.org/10.1017/CBO9781139878326",
+        usedFor: "Density–modulus scaling for the gyroid infill constitutive model: E ∝ ρⁿ with n ≈ 1.5–2.5 for open-cell lattices",
+        confidence: "low",
+        note: "Establishes the power-law FORM only. STORMFEA's gyroid exponents (E_xy ρ^1.75, E_z ρ^2.1, G_xz ρ^2.3) and small linear corrections are engineering estimates chosen WITHIN this cited range — no paper reports gyroid-specific coefficients. They are locked by regression tests (gyroid-formula.test.ts) and can be replaced with printer-specific values via coupon calibration.",
       },
       {
         id: "comprehensive2025",
@@ -9700,6 +9750,7 @@ async function saveSession() {
       buckling:    !!document.getElementById('s-buckling')?.checked,
       gravity:     gravityRequest(),
       pressure:    pressureRequest(),
+      fatigueR:    +(document.getElementById('s-fatigue-r')?.value ?? 0),
     },
     calibrationId:     activeProfileId,
     holeTypeOverrides: S.holeTypeOverrides,
@@ -9842,7 +9893,10 @@ async function loadSession() {
         setChk('s-pressure', true);
         setVal('s-pressure-mpa', a.pressure.magnitude);
         setVal('s-pressure-dir', (a.pressure.direction || []).join(','));
+        setChk('s-pressure-normal', !!a.pressure.normal);
+        if (a.pressure.region) setVal('s-pressure-region', a.pressure.region);
       } else { setChk('s-pressure', false); }
+      if (a.fatigueR != null) setVal('s-fatigue-r', a.fatigueR);
       if (typeof updateGravityUI === 'function') updateGravityUI();
       if (typeof updatePressureUI === 'function') updatePressureUI();
     }

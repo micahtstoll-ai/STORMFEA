@@ -55,6 +55,20 @@ around a 0.2 mm baseline (Farashi & Vafaee 2022).
 pattern (gyroid degrades less than rectilinear at equal infill). Wall/bead
 contributions can be added via Classical Laminate Theory (`solver/laminate.ts`).
 
+**Print orientation (weak-axis rotation).** The weak (through-layer) axis is the
+FDM layer normal. **C** is built in the material's local frame (weak along local
+Z) and then rotated so that local Z aligns with the part's actual layer normal —
+an exact 90°/arbitrary **Bond transform** implemented as a 4th-order tensor
+rotation (`rotateC6` / `rotationAligningZTo` in `solver/element.ts`), driven by
+the `weakAxis` field on the material. When a **bed face is picked** the client
+sends that layer normal (`layerNormal`), so flat, **upright**, and angled prints
+are all handled exactly — the Hill criterion (below) is likewise evaluated in the
+rotated frame. Flat prints have `weakAxis = +Z`, i.e. the identity, so the
+common case is unchanged. When no bed is picked (azimuth unknown), an upright
+print falls back to a **conservative scalar swap** (both horizontal directions
+treated as weak). This supersedes the previous scalar-swap-only approximation
+(issue #101).
+
 ---
 
 ## 3. Elements
@@ -90,10 +104,16 @@ holes fixed) are applied by the **penalty method**: add a large `K_penalty` to t
 constrained diagonal and `K_penalty · gᵢ` to the load, so `uᵢ ≈ gᵢ` to a relative
 error of ~1e-8.
 
-**Loads (`solver/load.ts`).** Point forces, equivalent nodal tractions (surface
-pressure via consistent tributary area), and body forces (self-weight,
-acceleration/impact in multiples of *g*) build the right-hand side **f** in
-Newtons.
+**Loads (`solver/load.ts`).** Point forces, surface pressure, and body forces
+(self-weight, acceleration/impact in multiples of *g*) build the right-hand side
+**f** in Newtons. Surface pressure is applied as a consistent tributary-area
+traction over a selectable region (`selectPressureRegion`): the extreme face
+toward a direction (`face`), every triangle facing that direction (`facing`), or
+the whole exterior (`all`, i.e. hydrostatic). A **normal-to-surface** option
+(`assembleSurfaceTractionNormal`) follows each triangle's own outward normal for
+curved/non-planar faces; a negative magnitude is outward (suction). The box-mesh
+fallback carries surface connectivity (`extractSurfaceFaces`), so pressure loads
+work there too.
 
 **Linear solve (`solver/cg.ts`).** `K·u = f` is solved with **Preconditioned
 Conjugate Gradient (PCG)** (Saad §6.7) using a Jacobi (diagonal) preconditioner
@@ -157,9 +177,13 @@ The governing (lowest-SF) mode drives the overall verdict.
 
 ### Fatigue (Goodman)
 
-A fatigue-life estimate uses the **modified Goodman** relation with an
-FDM-specific endurance ratio `Se/UTS = 0.37` (Wang et al. 2020). Confidence is
-LOW — FDM S-N data is sparse — so it is reported as an estimate, not a guarantee.
+A fatigue-life estimate uses the **modified Goodman** relation (plus Basquin for
+cycle count) with an FDM-specific endurance ratio `Se/UTS = 0.37` (Wang et al.
+2020). The **load ratio** `R = σ_min/σ_max` is a user input (default `0`,
+pulsating): `σ_a = σ_max(1−R)/2`, `σ_m = σ_max(1+R)/2`, with compressive mean
+stress conservatively clamped to zero. `R = −1` is fully reversed; `R > 0` is a
+tension-biased cycle. Confidence is LOW — FDM S-N data is sparse — so it is
+reported as an estimate, not a guarantee.
 
 ---
 
@@ -212,6 +236,12 @@ answers, grouped by:
   uniaxial yields exactly at `Y_xy`; the false-safety case (flat print,
   through-layer load) detects `SF ≈ 0.58` — the core engineering claim.
 - **Kt calibration** — a uniform coupon bar returns `Kt ≈ 1.0` within noise.
+- **Hole-in-plate concentration** — a plate with a central hole in uniaxial
+  tension returns the classic Kirsch `Kt ≈ 3.0` (peak/gross) within ~15%, run
+  through the production solver on a mesher-free structured C3D10 fixture.
+- **Weak-axis rotation** — the Bond-transform core (`bond-rotation.test.ts`):
+  identity for `+Z`, correct modulus reorientation, and an end-to-end anisotropy
+  flip when the weak axis is rotated.
 
 These solver checks run alongside the Vitest unit tests, the parallel-assembly
 equivalence check, and the client-logic checks. Exact counts are reported by

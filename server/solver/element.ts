@@ -172,7 +172,102 @@ export function buildOrthotropicConstitutiveMatrix(mat: OrthotropicMaterial): Fl
   C[28] = G_xz;
   C[35] = G_xz;
 
+  // If a non-Z weak axis is requested, rotate the (weak-along-local-Z) tensor so
+  // its weak axis aligns with `weakAxis` in the global frame (Bond transform for
+  // upright/angled prints, issue #101). weakAxis ≈ +Z is the identity.
+  if (mat.weakAxis && !isPlusZ(mat.weakAxis)) {
+    return rotateC6(C, rotationAligningZTo(mat.weakAxis));
+  }
   return C;
+}
+
+// ─── Tensor rotation utilities (Bond transform for arbitrary weak axis) ────────
+//
+// STORMFEA Voigt order is [xx, yy, zz, xy, yz, xz]; the map below converts
+// between a 6×6 (flat 36) elasticity matrix and its 4th-order tensor C_ijkl.
+// For a STIFFNESS matrix with engineering shear strains, the Voigt entries equal
+// the tensor components directly (the factor-of-two lives on the compliance
+// side), so a plain index expansion + R⊗R⊗R⊗R rotation is exact.
+
+const VOIGT_OF: readonly (readonly number[])[] = [[0,3,5],[3,1,4],[5,4,2]]; // [i][j] → voigt
+const IJ_OF: readonly (readonly [number, number])[] = [[0,0],[1,1],[2,2],[0,1],[1,2],[0,2]];
+
+function isPlusZ(a: readonly [number, number, number]): boolean {
+  const n = Math.hypot(a[0], a[1], a[2]) || 1;
+  return a[2] / n > 1 - 1e-12;
+}
+
+/**
+ * Row-major 3×3 rotation R (local→global) whose third column is the unit
+ * `axis`, i.e. R·ẑ = axis. In-plane rotation about the axis is arbitrary
+ * (immaterial for a transversely-isotropic material). Rodrigues from ẑ to axis.
+ */
+export function rotationAligningZTo(axis: readonly [number, number, number]): Float64Array {
+  const n = Math.hypot(axis[0], axis[1], axis[2]) || 1;
+  const ux = axis[0]/n, uy = axis[1]/n, uz = axis[2]/n;
+  const R = new Float64Array(9);
+  const c = uz;                         // ẑ · u
+  if (c > 1 - 1e-12) { R.set([1,0,0, 0,1,0, 0,0,1]); return R; }
+  if (c < -1 + 1e-12) { R.set([1,0,0, 0,-1,0, 0,0,-1]); return R; } // 180° about x
+  // v = ẑ × u = (−uy, ux, 0); K = [v]_×; R = I + K + K²·(1−c)/|v|²
+  const vx = -uy, vy = ux;
+  const s2 = vx*vx + vy*vy;             // = sin²θ = 1 − c²
+  const k  = (1 - c) / s2;
+  const K = [0,0,vy, 0,0,-vx, -vy,vx,0]; // row-major [v]_× (vz=0)
+  // K²
+  const K2 = new Float64Array(9);
+  for (let i=0;i<3;i++) for (let j=0;j<3;j++) {
+    let s=0; for (let m=0;m<3;m++) s += K[i*3+m]! * K[m*3+j]!;
+    K2[i*3+j] = s;
+  }
+  for (let i=0;i<9;i++) R[i] = (i%4===0?1:0) + K[i]! + k*K2[i]!;
+  return R;
+}
+
+/**
+ * Rotate a 6×6 stiffness matrix (STORMFEA Voigt order) by the row-major 3×3
+ * rotation R (local→global): C_global = R⊗R⊗R⊗R : C_local.
+ */
+export function rotateC6(C6: Float64Array, R: Float64Array): Float64Array {
+  const Ce = new Float64Array(81);
+  for (let i=0;i<3;i++) for (let j=0;j<3;j++) for (let k=0;k<3;k++) for (let l=0;l<3;l++)
+    Ce[((i*3+j)*3+k)*3+l] = C6[VOIGT_OF[i]![j]! * 6 + VOIGT_OF[k]![l]!]!;
+  const Cr = new Float64Array(81);
+  for (let i=0;i<3;i++) for (let j=0;j<3;j++) for (let k=0;k<3;k++) for (let l=0;l<3;l++) {
+    let s = 0;
+    for (let p=0;p<3;p++) for (let q=0;q<3;q++) for (let r=0;r<3;r++) for (let t=0;t<3;t++)
+      s += R[i*3+p]! * R[j*3+q]! * R[k*3+r]! * R[l*3+t]! * Ce[((p*3+q)*3+r)*3+t]!;
+    Cr[((i*3+j)*3+k)*3+l] = s;
+  }
+  const out = new Float64Array(36);
+  for (let a=0;a<6;a++) for (let b=0;b<6;b++) {
+    const [i,j] = IJ_OF[a]!, [k,l] = IJ_OF[b]!;
+    out[a*6+b] = Cr[((i*3+j)*3+k)*3+l]!;
+  }
+  return out;
+}
+
+/**
+ * Express a global Cauchy stress [σxx,σyy,σzz,τxy,τyz,τxz] in the material's
+ * local frame (weak axis → local Z): σ_local = Rᵀ · σ_global · R.
+ */
+export function rotateStress6ToLocal(
+  s6: readonly number[] | Float64Array,
+  R:  Float64Array,
+): [number, number, number, number, number, number] {
+  const S = [s6[0]!,s6[3]!,s6[5]!, s6[3]!,s6[1]!,s6[4]!, s6[5]!,s6[4]!,s6[2]!]; // 3×3 row-major
+  // L = Rᵀ S R
+  const RtS = new Float64Array(9);
+  for (let i=0;i<3;i++) for (let j=0;j<3;j++) {
+    let s=0; for (let m=0;m<3;m++) s += R[m*3+i]! * S[m*3+j]!; // Rᵀ[i][m]=R[m][i]
+    RtS[i*3+j]=s;
+  }
+  const L = new Float64Array(9);
+  for (let i=0;i<3;i++) for (let j=0;j<3;j++) {
+    let s=0; for (let m=0;m<3;m++) s += RtS[i*3+m]! * R[m*3+j]!;
+    L[i*3+j]=s;
+  }
+  return [L[0]!, L[4]!, L[8]!, L[1]!, L[5]!, L[2]!]; // [xx,yy,zz,xy,yz,xz]
 }
 
 /**
