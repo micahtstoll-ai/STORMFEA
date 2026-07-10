@@ -5,7 +5,7 @@ Thanks for taking an interest. Contributions from FTC teams, engineering student
 ## Ground Rules
 
 - **Physics first.** Any change that touches the solver, material model, or failure-mode logic needs a clear justification — ideally a citation. The 65% stiffness ratio and 58% bond strength are not arbitrary; they come from peer-reviewed literature. If you have better data, bring the paper.
-- **Tests must pass.** Run `npm run test` before opening a PR. The 32 solver validation tests include patch tests, cantilever benchmarks, and isotropic-limit checks. A regression in any of these is a blocker.
+- **Tests must pass.** Run `npm run test` before opening a PR. The full suite covers 226 Vitest unit tests, 97 solver validation tests (patch tests, cantilever benchmarks, isotropic-limit and Hill-criterion checks), the parallel-assembly equivalence check, and 41 client-logic checks. A regression in any of these is a blocker. See [docs/METHODOLOGY.md](docs/METHODOLOGY.md#9-validation) for what the solver suite proves.
 - **Keep the design system.** If you're touching the frontend, read `DESIGN.md` first. Three fonts, no gradients, no purple/cyan/blue/green — the aesthetic is intentional.
 
 ## Setting Up
@@ -15,7 +15,7 @@ git clone https://github.com/micahtstoll-ai/stormfea.git
 cd stormfea
 npm install
 npm run build
-npm run test   # all 32 tests should pass
+npm run test   # full suite must pass (see counts above)
 ```
 
 You'll need [TetGen 1.5.1](https://github.com/emersonkeenan/tetgen1.5.1-beta1) and [Gmsh 4.x](https://gmsh.info) on your PATH for the full server to run, but the solver unit tests work without them.
