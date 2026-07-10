@@ -239,7 +239,7 @@ stormfea/
 ## Known Limitations
 
 - **Linear elastic only** — no plasticity or large deformation (the deflected-shape view is a scaled/exaggerated visualization of the linear solution, not a large-deformation result)
-- **Surface pressure loads** use consistent tributary-area (lumped) nodal loading. They act on the extreme face toward a chosen direction; a **normal-to-surface** option follows each triangle's own outward normal for curved/non-planar faces. Honoured on the box-mesh fallback as well (which now carries surface connectivity).
+- **Surface pressure loads** use consistent tributary-area (lumped) nodal loading. A **normal-to-surface** option follows each triangle's own outward normal for curved/non-planar faces, and the load region is selectable — the extreme face toward a direction, every face *facing* that direction, or the entire exterior surface (hydrostatic). Honoured on the box-mesh fallback as well (which now carries surface connectivity).
 - **Bearing failure confidence: LOW** — no FDM-specific bearing test data in literature
 - **Fatigue confidence: LOW** — sparse FDM S-N curve data; estimate only
 - **Filament color** affects strength (η² = 97.3% in one study) — not modeled
