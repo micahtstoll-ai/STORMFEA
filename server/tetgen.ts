@@ -212,6 +212,13 @@ export interface TetGenResult {
   mesh: TetMesh;
   /** surfaceToNode[i] = index of STL surface vertex i in mesh.nodes */
   surfaceToNode: Int32Array;
+  /**
+   * Surface triangles as mesh-node triples [a0,b0,c0, a1,b1,c1, …]. These are
+   * the welded boundary triangles; boundary vertices are the first N mesh nodes
+   * in order (see surfaceToNode), so these indices point directly into
+   * mesh.nodes. Used to apply consistent surface tractions (pressure loads).
+   */
+  surfaceFaces: Int32Array;
   /** Number of Steiner points TetGen added (should be 0 with -Y) */
   steinerCount: number;
 }
@@ -220,6 +227,14 @@ export async function meshWithTetGen(
   stlPositions:  Float32Array,
   triangleCount: number,
   elementOrder:  1 | 2 = 2,
+  /**
+   * Maximum tetrahedron volume in mm³ (TetGen -a switch). Lower = denser mesh.
+   * Default 10 preserves the historical behaviour; analysis.ts maps the user's
+   * coarse/standard/fine selector to this so the control actually affects STL
+   * mesh density (previously it was hardcoded and only the STEP/Gmsh path
+   * honoured the selector).
+   */
+  maxVolume:     number = 10,
 ): Promise<TetGenResult> {
 
   // ── 0. Known-missing fast path ────────────────────────────────────────────
@@ -241,7 +256,7 @@ export async function meshWithTetGen(
   // ── 2. Run TetGen ─────────────────────────────────────────────────────────
   // -p      tetrahedralise the PLC
   // -q1.4   quality constraint (radius-edge ratio ≤ 1.4)
-  // -a10    max element volume 10 mm³
+  // -a<v>   max element volume <v> mm³ (from maxVolume, driven by mesh quality)
   // -Q      quiet
   // -o2     second-order elements (C3D10); only added when elementOrder=2
   //
@@ -250,16 +265,21 @@ export async function meshWithTetGen(
   // (1.5.1-beta1) — see the comment above C3D10_REORDER and the regression
   // test server/tests/unit/tetgen-c3d10.test.ts.
   //
-  // Fallback chain: try quality+volume, then volume only, then basic.
+  // Fallback chain: try quality+volume, then volume only, then a relaxed volume,
+  // then basic. The final `-pQ` (no volume constraint) always succeeds if the
+  // geometry is meshable at all.
   const nodePath = tmpBase + ".1.node";
   const elePath  = tmpBase + ".1.ele";
 
+  const a  = Math.max(0.01, maxVolume);
+  const aR = (a * 5).toPrecision(4);   // relaxed volume for the third attempt
+  const av = a.toPrecision(4);
   const o2 = elementOrder === 2 ? ["-o2"] : [];
   const switchSets = [
-    ["-pq1.4a10Q", ...o2],
-    ["-pa10Q",     ...o2],
-    ["-pa50Q",     ...o2],
-    ["-pQ",        ...o2],
+    [`-pq1.4a${av}Q`, ...o2],
+    [`-pa${av}Q`,     ...o2],
+    [`-pa${aR}Q`,     ...o2],
+    ["-pQ",           ...o2],
   ];
 
   let meshed = false;
@@ -321,6 +341,7 @@ export async function meshWithTetGen(
       nodesPerElem,
     },
     surfaceToNode,
+    surfaceFaces: weld.faces,
     steinerCount: nodeCount - weld.vertCount,
   };
 }

@@ -38,6 +38,11 @@ STORMFEA models the anisotropic reality.
 - **Hill (1948) anisotropic yield criterion** — collapses to von Mises when the material is isotropic; correctly amplifies through-layer stresses when it's not
 - **5 distinct failure modes** with individual confidence levels: bulk yield, net-section tension, shear-out, thread strip-out, bearing
 - **Superconvergent Patch Recovery (SPR)** stress smoothing (Zienkiewicz & Zhu 1992) — more accurate nodal stresses than direct averaging
+- **Deflected-shape visualization** — warp the mesh by the computed displacement field, with an exaggeration slider and animation; the stress heatmap follows the deformed surface
+- **Modal analysis** (opt-in) — natural frequencies with animated mode shapes
+- **Linear buckling** (opt-in) — Buckling Load Factor on the default C3D10 quadratic mesh (geometric stiffness for both C3D4 and C3D10), with an animated buckling mode
+- **Section / cutting-plane view** — slice the part along X/Y/Z to inspect stress on internal and occluded surfaces
+- **Body-force loads** — self-weight and robot-acceleration/impact (in multiples of g) using the infill-scaled mass, plus uniform surface-pressure (traction) loads
 - **Fatigue life estimate** using modified Goodman with FDM-specific endurance ratio (Se/UTS = 0.37)
 - **Layer height correction** — accounts for −15% to +10% Z-property variation with layer height
 - **3-coupon calibration** — tensile, lap shear, and bearing coupons let you tune the model to your specific printer and filament
@@ -217,7 +222,8 @@ stormfea/
 
 ## Known Limitations
 
-- **Linear elastic only** — no plasticity or large deformation
+- **Linear elastic only** — no plasticity or large deformation (the deflected-shape view is a scaled/exaggerated visualization of the linear solution, not a large-deformation result)
+- **Surface pressure loads** use consistent tributary-area (lumped) nodal loading and require a solid volume mesh — they are skipped on the box-mesh fallback
 - **Bearing failure confidence: LOW** — no FDM-specific bearing test data in literature
 - **Fatigue confidence: LOW** — sparse FDM S-N curve data; estimate only
 - **Filament color** affects strength (η² = 97.3% in one study) — not modeled

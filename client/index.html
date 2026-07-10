@@ -1077,6 +1077,23 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <button class="btn"        id="btn-zutil"  onclick="setStressMode('zutil')"  style="font-size:10px;padding:4px 8px;display:none;flex-direction:column;align-items:center;gap:1px" title="Z out-of-plane utilization — max(|σzz|, √3·√(σyz²+σxz²)) / yieldZ. Red at 1.0 = at inter-layer yield. High → reorient or add walls."><span style="font-weight:700">U<sub>Z</sub></span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Z-layer use</span></button>
         <button class="btn"        id="btn-error"  onclick="setStressMode('error')"  style="font-size:10px;padding:4px 8px;display:none;flex-direction:column;align-items:center;gap:1px" title="Error estimate η — Zienkiewicz-Zhu mesh quality metric (0–1), identifies under-resolved elements"><span style="font-weight:700">η</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Mesh quality</span></button>
       </div>
+      <!-- Deformation (deflected-shape) controls (shown after solve) -->
+      <div id="deform-wrap" style="display:none;border-left:1px solid var(--border);margin-left:2px;padding-left:6px;gap:5px;align-items:center">
+        <button class="btn" id="btn-deform" onclick="toggleDeform()" style="font-size:10px;padding:4px 8px;display:flex;flex-direction:column;align-items:center;gap:1px" title="Warp the mesh by the computed nodal displacement to show the deflected shape (exaggerated). Stress colors follow the deformed surface."><span style="font-weight:700">DEFORM</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Deflected</span></button>
+        <label id="deform-exag-label" for="deform-exag" style="display:none;font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);letter-spacing:.04em;align-items:center;gap:4px">×<span id="deform-exag-val" style="color:var(--text-mid);min-width:20px;display:inline-block">auto</span><input type="range" id="deform-exag" min="0" max="100" value="0" step="1" oninput="onDeformExagInput(this.value)" style="width:70px;vertical-align:middle" title="Exaggeration factor. 0 = auto (peak deflection scaled to ~12% of part size)."></label>
+        <button class="btn" id="btn-deform-anim" onclick="toggleDeformAnim()" style="display:none;font-size:10px;padding:4px 8px;align-items:center" title="Animate the deflection (0 → peak → 0)">▶</button>
+      </div>
+      <!-- Section / cutting-plane controls (shown after solve) -->
+      <div id="clip-wrap" style="display:none;border-left:1px solid var(--border);margin-left:2px;padding-left:6px;gap:5px;align-items:center">
+        <button class="btn" id="btn-clip" onclick="toggleClip()" style="font-size:10px;padding:4px 8px;display:flex;flex-direction:column;align-items:center;gap:1px" title="Cut the part with a plane to inspect stress on internal / occluded surfaces. Drag the slider to move the cut; ⇄ flips which half is kept."><span style="font-weight:700">SECTION</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Cut view</span></button>
+        <span id="clip-controls" style="display:none;gap:3px;align-items:center">
+          <button class="btn" id="clip-x" onclick="setClipAxis('x')" style="font-size:10px;padding:4px 7px" title="Cut along the X axis">X</button>
+          <button class="btn" id="clip-y" onclick="setClipAxis('y')" style="font-size:10px;padding:4px 7px" title="Cut along the Y axis">Y</button>
+          <button class="btn" id="clip-z" onclick="setClipAxis('z')" style="font-size:10px;padding:4px 7px" title="Cut along the Z axis">Z</button>
+          <input type="range" id="clip-pos" min="0" max="100" value="50" step="1" oninput="onClipPosInput(this.value)" style="width:70px;vertical-align:middle" title="Position of the cutting plane along the chosen axis">
+          <button class="btn" id="clip-flip" onclick="toggleClipFlip()" style="font-size:11px;padding:4px 7px" title="Flip which half of the part is kept">⇄</button>
+        </span>
+      </div>
     </div>
 
     <!-- Top-right toggles -->
@@ -1476,6 +1493,58 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <div id="load-case-list" style="display:none"></div>
       </div>
 
+      <!-- Self-weight / acceleration (gravity body load) -->
+      <div style="margin-bottom:16px;padding-top:14px;border-top:1px solid var(--border)">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:6px">
+          <input type="checkbox" id="s-gravity" style="width:auto;margin:0" onchange="updateGravityUI();markSessionDirty()">
+          <span style="font-size:11px;letter-spacing:.04em;color:var(--text-label)">SELF-WEIGHT / ACCELERATION</span>
+        </label>
+        <div id="gravity-controls" style="display:none;padding-left:22px">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <label style="font-size:10px;color:var(--text-lo);display:flex;align-items:center;gap:4px">Magnitude
+              <input type="number" id="s-gravity-g" value="1" min="0" step="0.5" style="width:56px" onchange="markSessionDirty()"><span style="font-family:'DM Mono',monospace;font-size:10px">g</span>
+            </label>
+            <label style="font-size:10px;color:var(--text-lo);display:flex;align-items:center;gap:4px">Direction
+              <select id="s-gravity-dir" onchange="markSessionDirty()">
+                <option value="0,0,-1" selected>−Z (down)</option>
+                <option value="0,0,1">+Z</option>
+                <option value="0,-1,0">−Y</option>
+                <option value="0,1,0">+Y</option>
+                <option value="-1,0,0">−X</option>
+                <option value="1,0,0">+X</option>
+              </select>
+            </label>
+          </div>
+          <div style="font-size:10px;color:var(--text-lo);margin-top:6px;line-height:1.5">Adds a body-force load using the part's (infill-scaled) mass. 1g = self-weight; use a higher value for robot acceleration or impact (e.g. 5g).</div>
+        </div>
+      </div>
+
+      <!-- Surface pressure / traction load -->
+      <div style="margin-bottom:16px;padding-top:14px;border-top:1px solid var(--border)">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:6px">
+          <input type="checkbox" id="s-pressure" style="width:auto;margin:0" onchange="updatePressureUI();markSessionDirty()">
+          <span style="font-size:11px;letter-spacing:.04em;color:var(--text-label)">SURFACE PRESSURE</span>
+        </label>
+        <div id="pressure-controls" style="display:none;padding-left:22px">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <label style="font-size:10px;color:var(--text-lo);display:flex;align-items:center;gap:4px">Magnitude
+              <input type="number" id="s-pressure-mpa" value="1" min="0" step="0.5" style="width:60px" onchange="markSessionDirty()"><span style="font-family:'DM Mono',monospace;font-size:10px">MPa</span>
+            </label>
+            <label style="font-size:10px;color:var(--text-lo);display:flex;align-items:center;gap:4px">On face toward
+              <select id="s-pressure-dir" onchange="markSessionDirty()">
+                <option value="0,0,1" selected>+Z</option>
+                <option value="0,0,-1">−Z</option>
+                <option value="0,1,0">+Y</option>
+                <option value="0,-1,0">−Y</option>
+                <option value="1,0,0">+X</option>
+                <option value="-1,0,0">−X</option>
+              </select>
+            </label>
+          </div>
+          <div style="font-size:10px;color:var(--text-lo);margin-top:6px;line-height:1.5">Uniform pressure (MPa) on the face toward the chosen direction — a positive value pushes inward (compression), negative pulls outward. Consistent surface load; needs a solid mesh (unavailable on the box-mesh fallback).</div>
+        </div>
+      </div>
+
 
       <!-- Next step CTA — updated by updateNextButtons() -->
       <div id="next-loads-wrap" class="tab-cta">
@@ -1609,6 +1678,30 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <div id="s-mesh-order-hint" style="font-size:10px;color:var(--text-lo);margin-top:4px;line-height:1.6">
           C3D10 uses 10-node quadratic tetrahedra — eliminates shear locking for more accurate bending and stress concentrations near holes.
           <span style="color:var(--text-mid);display:block;margin-top:3px">Changing this affects result accuracy — leave as default unless you know what this means.</span>
+        </div>
+      </div>
+
+      <div style="margin-bottom:16px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="s-modal" style="width:auto;margin:0" onchange="markSessionDirty()">
+          <span>Compute natural frequencies (modal)</span>
+        </label>
+        <div style="font-size:10px;color:var(--text-lo);margin-top:4px;line-height:1.6">
+          Runs a modal analysis alongside the stress solve, adding vibration mode
+          shapes and natural frequencies to the results. Adds solve time — leave off
+          unless you need it.
+        </div>
+      </div>
+
+      <div style="margin-bottom:16px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="s-buckling" style="width:auto;margin:0" onchange="markSessionDirty()">
+          <span>Compute buckling (BLF)</span>
+        </label>
+        <div style="font-size:10px;color:var(--text-lo);margin-top:4px;line-height:1.6">
+          Runs a linear buckling analysis and reports the Buckling Load Factor plus
+          an animated buckling mode. Important for thin walls, channels, and gussets.
+          Adds an eigen-solve to the solve time — leave off unless you need it.
         </div>
       </div>
 
@@ -2424,6 +2517,7 @@ function initThree() {
   updateCamera();
 
   renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.localClippingEnabled = true;   // per-material section/cutting plane
   renderer.domElement.setAttribute('role', 'img');
   renderer.domElement.setAttribute('aria-label', '3D stress visualization — rotate with mouse drag, zoom with scroll wheel');
   renderer.domElement.setAttribute('tabindex', '0');
@@ -2449,6 +2543,9 @@ function initThree() {
   renderer.setClearColor(isDark ? 0x070604 : 0xeeeae3, 0);
   const loop = () => {
     animId = requestAnimationFrame(loop);
+    // The section plane is defined in the part's local frame, so re-derive it in
+    // world space each frame to track orbit rotation.
+    if (S.clipActive) _updateClipPlane();
     if (_splitActive) {
       renderSplitFrame();
     } else {
@@ -2943,6 +3040,18 @@ function loadMeshFromPositions(posB64) {
   mesh3d.rotation.set(0, 0, 0);
   scene.add(mesh3d);
 
+  // Deformation baseline: the centered position array the warp will mutate, plus
+  // the model-space max extent used to auto-scale the exaggeration. A new mesh
+  // invalidates any prior deflected-shape view.
+  S.basePositions = geo.attributes.position.array.slice();
+  // Original crease-smoothed normals, restored when the deformed view is cleared
+  // (so un-deforming doesn't leave THREE's default area-weighted normals).
+  S.baseNormals   = geo.attributes.normal ? geo.attributes.normal.array.slice() : null;
+  S._modelSizeMax = Math.max(sz.x, sz.y, sz.z);
+  S._modelSize    = sz.clone();   // per-axis extents for the section plane
+  resetDeform();
+  resetClip();
+
   // Fit camera to part: orbit center at part mid-height, zoom to fit
   const partSize = Math.max(sz.x, sz.y, sz.z) * scale;
   S._partSize = partSize;  // stored for zoom clamping
@@ -3269,6 +3378,10 @@ function applyStressColors(stressB64, maxStress, principalStressB64, errorEstima
   // Show stress mode buttons
   const smWrap = document.getElementById('stress-mode-wrap');
   if (smWrap) smWrap.style.display = 'flex';
+  const dfWrap = document.getElementById('deform-wrap');
+  if (dfWrap) dfWrap.style.display = (S.displacements ? 'flex' : 'none');
+  const clWrap = document.getElementById('clip-wrap');
+  if (clWrap) clWrap.style.display = 'flex';
 
   // Update legend labels
   const labels = document.getElementById('legend-val-stack');
@@ -5233,7 +5346,10 @@ async function runAnalysis() {
   _resetLiveResidual();
 
   // ── Phase 1: standard mesh — show results immediately ────────────────────
-  const bodyStd = buildAnalyseBody('standard');
+  const bodyStd = buildAnalyseBody('standard', {
+    modal:    !!document.getElementById('s-modal')?.checked,
+    buckling: !!document.getElementById('s-buckling')?.checked,
+  });
   let dataStd;
 
   try {
@@ -5259,6 +5375,13 @@ async function runAnalysis() {
         }
       }
     }
+
+    // Decode and store modal results (present only when modal was requested).
+    // Mode shapes use the same per-vertex Float32 base64 layout as displacements.
+    storeModalResult(dataStd.modalResult, dataStd.vertexModeShapesB64);
+    // Decode and store the buckling result + mode (present only when buckling
+    // was requested and a physical positive BLF was found).
+    storeBucklingResult(dataStd.bucklingResult, dataStd.vertexBucklingModeB64);
 
     applyStressColors(dataStd.vertexStressB64, dataStd.summary.maxVonMisesMPa, dataStd.vertexPrincipalStressB64, null, dataStd.vertexPrincipalStress2B64, dataStd.vertexPrincipalStress3B64, dataStd.vertexXyUtilB64, dataStd.vertexZUtilB64, dataStd.vertexSignedVonMisesB64);
     showResults(dataStd.summary);
@@ -5758,6 +5881,51 @@ function showResults(s) {
       </details>`;
     })() : ''}
 
+    ${S.modal && S.modal.modes && S.modal.modes.length ? (() => {
+      const rows = S.modal.modes.map((m, k) => {
+        const rigid = m.frequencyHz < 1.0;
+        const hz = m.frequencyHz < 10 ? m.frequencyHz.toFixed(2) : m.frequencyHz.toFixed(1);
+        const canView = !!(S.modeShapes && S.modeShapes[k]);
+        return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px solid var(--border)">
+          <span style="font-family:'DM Mono',monospace;font-size:9px;letter-spacing:.06em;color:var(--text-lo)">MODE ${k + 1}${rigid ? ' <span style="color:var(--text-lo)">· rigid body</span>' : ''}</span>
+          <span style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text-hi)">${hz} <span style="font-size:8px;color:var(--text-label)">Hz</span></span>
+          <button class="btn" id="mode-btn-${k}" onclick="viewModeShape(${k})" style="font-size:9px;padding:2px 8px"${canView ? '' : ' disabled'}>View</button>
+        </div>`;
+      }).join('');
+      return `
+      <div style="border-left:2px solid var(--gold);background:var(--bg-input);padding:10px 14px;margin-bottom:12px">
+        <div style="font-family:'Rajdhani',sans-serif;font-size:13px;letter-spacing:.08em;color:var(--text-mid);margin-bottom:6px">NATURAL FREQUENCIES</div>
+        ${rows}
+        <div style="font-size:9px;color:var(--text-lo);margin-top:6px;line-height:1.5">Mode shapes show relative amplitude (unit-normalized eigenvectors), not physical deflection. Click View to animate a mode in the viewer.</div>
+      </div>`;
+    })() : ''}
+
+    ${S.buckling ? (() => {
+      const bk = S.buckling;
+      const vColor = bk.verdict === 'FAIL' ? 'var(--danger)'
+                   : bk.verdict === 'MARGINAL' ? 'var(--warn)'
+                   : bk.verdict === 'PASS' ? 'var(--success)' : 'var(--text-lo)';
+      let body;
+      if (bk.verdict === 'no-buckling') {
+        body = `<div style="font-size:11px;color:var(--text-mid)">Tensile-dominated load — no compressive buckling mode. BLF effectively infinite.</div>`;
+      } else if (bk.verdict === 'indeterminate' || bk.blf == null) {
+        body = `<div style="font-size:11px;color:var(--text-mid)">Indeterminate: mixed tension/compression pre-stress — treat buckling as unchecked for this load case.</div>`;
+      } else {
+        const conv = bk.converged ? '' : ' <span style="color:var(--warn)">(estimate — not converged)</span>';
+        body = `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+            <span style="font-family:'DM Mono',monospace;font-size:9px;letter-spacing:.06em;color:var(--text-lo)">BUCKLING LOAD FACTOR</span>
+            <span style="font-family:'DM Mono',monospace;font-size:16px;color:${vColor}">${bk.blf.toFixed(2)}× <span style="font-size:9px">${bk.verdict}</span></span>
+            ${bk.hasMode && S.bucklingMode ? `<button class="btn" id="buckling-view-btn" onclick="viewBucklingMode()" style="font-size:9px;padding:2px 8px">View mode</button>` : ''}
+          </div>
+          <div style="font-size:9px;color:var(--text-lo);margin-top:6px;line-height:1.5">Load multiplier at which the part buckles${conv}. Linear buckling overestimates real BLF by 10–40% for imperfect FDM geometry; thresholds (FAIL &lt;1.5×, MARGINAL &lt;3.0×) are design-basis values (SOURCES tab).</div>`;
+      }
+      return `
+      <div style="border-left:2px solid var(--gold);background:var(--bg-input);padding:10px 14px;margin-bottom:12px">
+        <div style="font-family:'Rajdhani',sans-serif;font-size:13px;letter-spacing:.08em;color:var(--text-mid);margin-bottom:6px">BUCKLING</div>
+        ${body}
+      </div>`;
+    })() : ''}
+
     ${s.residualCheckpoints && s.residualCheckpoints.length > 0 ? `
     <div style="margin-bottom:16px">
       <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:8px">CG SOLVER CONVERGENCE</div>
@@ -6191,6 +6359,8 @@ function switchTab(name) {
   } else if (name !== 'orient' && S.mode === 'bed') {
     setMode('view');
   }
+  // Pause deflection/mode animation when the viewer isn't the focus.
+  if (name !== 'results' && S.deformAnimating) { _stopDeformAnim(); _syncDeformUI(); }
 }
 
 // ─── Overlay helpers ──────────────────────────────────────────────────────────
@@ -7444,9 +7614,14 @@ function deriveOrientString() {
   if (maxDot < 0.3)  return 'upright';
   return 'angled';
 }
-function buildAnalyseBody(quality) {
+function buildAnalyseBody(quality, opts) {
   if (!S.fileData) return null;
   return {
+    // Modal and buckling are opt-in (each adds solve cost) and only requested on
+    // the primary solve — not the background fine-mesh convergence check or A/B
+    // comparison runs.
+    analysisType:    (opts && opts.modal) ? 'modal' : 'linear_static',
+    computeBuckling: !!(opts && opts.buckling),
     positionsB64:  S.fileData.positionsB64,
     stepB64:       S.fileData.stepB64 || null,
     fileType:      S.fileData.fileType || 'stl',
@@ -7478,7 +7653,44 @@ function buildAnalyseBody(quality) {
     },
     meshQuality:  quality || document.getElementById('s-mesh')?.value || 'standard',
     calibration:  getActiveProfile(),
+    ...(gravityRequest() ? { gravity: gravityRequest() } : {}),
+    ...(pressureRequest() ? { pressures: [pressureRequest()] } : {}),
   };
+}
+
+// Read the surface-pressure control into a request entry, or null when disabled.
+// Included on every solve variant (it is a load, like gravity).
+function pressureRequest() {
+  if (!document.getElementById('s-pressure')?.checked) return null;
+  const m = +(document.getElementById('s-pressure-mpa')?.value ?? 1);
+  if (!(m > 0)) return null;
+  const dir = (document.getElementById('s-pressure-dir')?.value ?? '0,0,1')
+    .split(',').map(Number);
+  return { magnitude: m, direction: [dir[0] || 0, dir[1] || 0, dir[2] || 0] };
+}
+
+function updatePressureUI() {
+  const on = !!document.getElementById('s-pressure')?.checked;
+  const c = document.getElementById('pressure-controls');
+  if (c) c.style.display = on ? 'block' : 'none';
+}
+
+// Read the self-weight / acceleration control into a request payload, or null
+// when disabled. Included on every solve variant (it is a load, not an opt-in
+// analysis), so it also participates in the fine-mesh and A/B runs.
+function gravityRequest() {
+  if (!document.getElementById('s-gravity')?.checked) return null;
+  const g = +(document.getElementById('s-gravity-g')?.value ?? 1);
+  if (!(g > 0)) return null;
+  const dir = (document.getElementById('s-gravity-dir')?.value ?? '0,0,-1')
+    .split(',').map(Number);
+  return { g, direction: [dir[0] || 0, dir[1] || 0, dir[2] || 0] };
+}
+
+function updateGravityUI() {
+  const on = !!document.getElementById('s-gravity')?.checked;
+  const c = document.getElementById('gravity-controls');
+  if (c) c.style.display = on ? 'block' : 'none';
 }
 
 // ─── Theme toggle ────────────────────────────────────────────────────────────
@@ -9480,6 +9692,15 @@ async function saveSession() {
       layerHeightMm: +(document.getElementById('s-lh')?.value ?? 20) / 100,
       meshOrder:     +(document.getElementById('s-mesh-order')?.value ?? 2),
     },
+    // Solver options + body/pressure loads so a resumed session keeps them
+    // (gravity/pressure return null when their control is off).
+    analysis: {
+      meshQuality: document.getElementById('s-mesh')?.value,
+      modal:       !!document.getElementById('s-modal')?.checked,
+      buckling:    !!document.getElementById('s-buckling')?.checked,
+      gravity:     gravityRequest(),
+      pressure:    pressureRequest(),
+    },
     calibrationId:     activeProfileId,
     holeTypeOverrides: S.holeTypeOverrides,
     bedNormal:         S.bedNormal,
@@ -9590,6 +9811,8 @@ async function loadSession() {
       if (p.wallCount)   document.getElementById('s-walls').value      = p.wallCount;
       if (p.pattern)     document.getElementById('s-pattern').value    = p.pattern;
       if (p.orientation) document.getElementById('s-orient').value     = p.orientation;
+      if (p.meshOrder && document.getElementById('s-mesh-order'))
+        document.getElementById('s-mesh-order').value = String(p.meshOrder);
       if (p.layerHeightMm) {
         const lhSlider = document.getElementById('s-lh');
         if (lhSlider) {
@@ -9598,6 +9821,30 @@ async function loadSession() {
         }
       }
       updateSettingsPreview();
+    }
+
+    // Restore solver options + body/pressure loads (issue #110 parity — these
+    // are inputs to the analysis just like forces, so a resumed session keeps
+    // them). Absent on older sessions → controls stay at their defaults.
+    if (session.analysis) {
+      const a = session.analysis;
+      const setVal = (id, v) => { const el = document.getElementById(id); if (el != null && v != null) el.value = String(v); };
+      const setChk = (id, on) => { const el = document.getElementById(id); if (el) el.checked = !!on; };
+      setVal('s-mesh', a.meshQuality);
+      setChk('s-modal', a.modal);
+      setChk('s-buckling', a.buckling);
+      if (a.gravity) {
+        setChk('s-gravity', true);
+        setVal('s-gravity-g', a.gravity.g);
+        setVal('s-gravity-dir', (a.gravity.direction || []).join(','));
+      } else { setChk('s-gravity', false); }
+      if (a.pressure) {
+        setChk('s-pressure', true);
+        setVal('s-pressure-mpa', a.pressure.magnitude);
+        setVal('s-pressure-dir', (a.pressure.direction || []).join(','));
+      } else { setChk('s-pressure', false); }
+      if (typeof updateGravityUI === 'function') updateGravityUI();
+      if (typeof updatePressureUI === 'function') updatePressureUI();
     }
 
     // Restore bolts + rebuild 3D markers
@@ -10283,6 +10530,316 @@ async function importFromOnshape() {
 
 // Init Onshape status on load
 setTimeout(initOnshapeStatus, 200);
+
+// ─── Deflected-shape & mode-shape visualization ──────────────────────────────
+// The solver returns per-surface-vertex displacements (and, when modal is
+// requested, per-mode shape vectors) in the same layout as the display mesh's
+// position attribute. Warping = base position + exaggeration × field. A
+// displacement is a delta, so it composes correctly with the mesh's centering
+// and uniform view scale. Colors live in a separate attribute, so the active
+// heatmap keeps working on the deformed surface. The main render loop draws
+// every frame, so animation only needs to mutate the geometry.
+
+function _prefersReducedMotion() {
+  return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+}
+
+// Full reset of deflected-shape / modal viewer state — called when a mesh loads.
+function resetDeform() {
+  _stopDeformAnim();
+  S.deformActive = false;
+  S.activeMode   = null;
+  S.bucklingViewing = false;
+  S.deformExag   = 0;
+  S.deformPeakMag = 0;
+  S.modal        = null;
+  S.modeShapes   = null;
+  S.buckling     = null;
+  S.bucklingMode = null;
+  if (mesh3d && S.basePositions) _warpMesh(null, 0);
+  _syncDeformUI();
+}
+
+// Warp the live position buffer to base + scale·field (null/0 ⇒ undeformed).
+function _warpMesh(field, scale) {
+  if (!mesh3d || !S.basePositions) return;
+  const pos  = mesh3d.geometry.attributes.position;
+  const arr  = pos.array;
+  const base = S.basePositions;
+  const nrm  = mesh3d.geometry.attributes.normal;
+  if (!field || !scale) {
+    // Undeformed: restore the original crease-smoothed normals rather than
+    // recomputing them (computeVertexNormals discards the 35° crease shading
+    // built in buildGeometryFromPositions — see CLAUDE.md shading notes). This
+    // path runs on every mesh load via resetDeform().
+    arr.set(base);
+    pos.needsUpdate = true;
+    if (nrm && S.baseNormals) { nrm.array.set(S.baseNormals); nrm.needsUpdate = true; }
+    return;
+  }
+  const n = Math.min(arr.length, base.length, field.length);
+  for (let i = 0; i < n; i++) arr[i] = base[i] + scale * field[i];
+  pos.needsUpdate = true;
+  // Deformed shape: recompute normals so lighting tracks the warped surface.
+  mesh3d.geometry.computeVertexNormals();
+}
+
+// Peak per-vertex vector magnitude of a field (model units, pre view-scale).
+function _peakFieldMag(field) {
+  let max = 0;
+  if (!field) return 0;
+  for (let i = 0; i + 2 < field.length; i += 3) {
+    const m = Math.hypot(field[i], field[i + 1], field[i + 2]);
+    if (m > max) max = m;
+  }
+  return max;
+}
+
+// Exaggeration factor that scales a field's peak deflection to ~12% of part
+// size, clamped to the slider's 1–100 range.
+function _autoExag(peakMag) {
+  if (!peakMag || !S._modelSizeMax) return 1;
+  return Math.max(1, Math.min(100, Math.round((0.12 * S._modelSizeMax) / peakMag)));
+}
+
+// The field currently driving the warp: a buckling mode, else an active modal
+// mode shape, else the static displacement field, else none.
+function _currentDeformField() {
+  if (S.bucklingViewing) return S.bucklingMode || null;
+  if (S.activeMode != null && S.modeShapes) return S.modeShapes[S.activeMode] || null;
+  if (S.deformActive) return S.displacements || null;
+  return null;
+}
+
+function _applyDeformStatic() {
+  const field = _currentDeformField();
+  if (!field) { _warpMesh(null, 0); return; }
+  _warpMesh(field, S.deformExag);
+}
+
+function _startDeformAnim() {
+  _stopDeformAnim();
+  const field = _currentDeformField();
+  if (!field) return;
+  if (_prefersReducedMotion()) { S.deformAnimating = false; _applyDeformStatic(); return; }
+  S.deformAnimating = true;
+  const t0 = performance.now();
+  // Mode shapes (modal + buckling) swing symmetrically; static deflection pulses.
+  const symmetric = S.activeMode != null || S.bucklingViewing;
+  const step = () => {
+    if (!S.deformAnimating) return;
+    const f = _currentDeformField();
+    if (!f) { S.deformAnimating = false; return; }
+    const phase = ((performance.now() - t0) / 1000) * (2 * Math.PI / 1.6); // 1.6 s period
+    // Static deflection swings 0→peak→0; a mode shape swings −peak→+peak.
+    const cyc = symmetric ? Math.sin(phase) : (0.5 - 0.5 * Math.cos(phase));
+    _warpMesh(f, S.deformExag * cyc);
+    S._deformRaf = requestAnimationFrame(step);
+  };
+  S._deformRaf = requestAnimationFrame(step);
+}
+
+function _stopDeformAnim() {
+  S.deformAnimating = false;
+  if (S._deformRaf) { cancelAnimationFrame(S._deformRaf); S._deformRaf = null; }
+}
+
+// DEFORM toolbar toggle — warp by the static nodal-displacement field.
+function toggleDeform() {
+  if (!S.displacements) return;
+  S.activeMode = null;                 // leave any mode view
+  S.bucklingViewing = false;
+  S.deformActive = !S.deformActive;
+  _stopDeformAnim();
+  if (S.deformActive) {
+    S.deformPeakMag = S.results?.summary?.maxDisplacementMm || _peakFieldMag(S.displacements);
+    S.deformExag = _autoExag(S.deformPeakMag);
+    _applyDeformStatic();
+  } else {
+    _warpMesh(null, 0);
+  }
+  _syncDeformUI();
+  updateModeButtons();
+}
+
+function toggleDeformAnim() {
+  if (!S.deformActive && S.activeMode == null) return;
+  if (S.deformAnimating) { _stopDeformAnim(); _applyDeformStatic(); }
+  else _startDeformAnim();
+  _syncDeformUI();
+}
+
+function onDeformExagInput(v) {
+  S.deformExag = Math.max(1, +v || 1);
+  const val = document.getElementById('deform-exag-val');
+  if (val) val.textContent = '×' + S.deformExag;
+  if (!S.deformAnimating) _applyDeformStatic();
+}
+
+// Animate a natural-vibration mode shape (called from the results MODAL card).
+function viewModeShape(k) {
+  if (!S.modeShapes || !S.modeShapes[k]) return;
+  S.activeMode   = k;
+  S.deformActive = false;
+  S.bucklingViewing = false;
+  S.deformPeakMag = _peakFieldMag(S.modeShapes[k]);
+  S.deformExag   = _autoExag(S.deformPeakMag);
+  _startDeformAnim();                  // modes read best animated
+  _syncDeformUI();
+  updateModeButtons();
+}
+
+// Animate the buckling mode shape (called from the results BUCKLING card).
+function viewBucklingMode() {
+  if (!S.bucklingMode) return;
+  S.bucklingViewing = true;
+  S.activeMode   = null;
+  S.deformActive = false;
+  S.deformPeakMag = _peakFieldMag(S.bucklingMode);
+  S.deformExag   = _autoExag(S.deformPeakMag);
+  _startDeformAnim();
+  _syncDeformUI();
+  updateModeButtons();
+}
+
+// Decode + store the buckling result and its mode shape (Float32 per-vertex,
+// same base64 layout as displacements). Absent result clears any prior buckling.
+function storeBucklingResult(bucklingResult, bucklingModeB64) {
+  S.buckling = bucklingResult || null;
+  S.bucklingMode = null;
+  S.bucklingViewing = false;
+  if (S.buckling && bucklingModeB64) {
+    S.bucklingMode = decodeDisplacementB64(bucklingModeB64);
+  }
+}
+
+// Decode + store modal results returned by the solver (Float32 per-vertex, same
+// base64 layout as displacements). Absent modalResult clears any prior modal.
+function storeModalResult(modalResult, modeShapesB64) {
+  S.modal = (modalResult && modalResult.modes && modalResult.modes.length) ? modalResult : null;
+  S.modeShapes = null;
+  S.activeMode = null;
+  if (S.modal && Array.isArray(modeShapesB64)) {
+    S.modeShapes = modeShapesB64.map(b => decodeDisplacementB64(b));
+  }
+}
+
+// Reflect current deform state onto the toolbar controls.
+function _syncDeformUI() {
+  const active = S.deformActive || S.activeMode != null || S.bucklingViewing;
+  const btn    = document.getElementById('btn-deform');
+  const lbl    = document.getElementById('deform-exag-label');
+  const anim   = document.getElementById('btn-deform-anim');
+  const slider = document.getElementById('deform-exag');
+  const val    = document.getElementById('deform-exag-val');
+  if (btn)    btn.className = 'btn' + (S.deformActive ? ' active' : '');
+  if (lbl)    lbl.style.display  = active ? 'inline-flex' : 'none';
+  if (anim) {
+    anim.style.display = active ? 'inline-flex' : 'none';
+    anim.textContent   = S.deformAnimating ? '❚❚' : '▶';
+    anim.className      = 'btn' + (S.deformAnimating ? ' active' : '');
+  }
+  if (slider) slider.value = Math.min(100, S.deformExag || 0);
+  if (val)    val.textContent = '×' + (S.deformExag || 0);
+}
+
+// Highlight whichever mode's "View" button is active in the results card.
+function updateModeButtons() {
+  if (S.modeShapes) {
+    S.modeShapes.forEach((_, k) => {
+      const b = document.getElementById('mode-btn-' + k);
+      if (b) b.className = 'btn' + (S.activeMode === k ? ' active' : '');
+    });
+  }
+  const bb = document.getElementById('buckling-view-btn');
+  if (bb) bb.className = 'btn' + (S.bucklingViewing ? ' active' : '');
+}
+
+// ─── Section / cutting-plane view ────────────────────────────────────────────
+// A single clipping plane defined in the part's local frame (geometry is
+// centered at origin). Each render frame it is re-derived into world space via
+// the mesh's world matrix, so the cut follows the part as it orbits. The display
+// mesh is a surface shell, so this reveals stress on internal / occluded
+// surfaces rather than a filled volumetric slice; the material switches to
+// double-sided while cut so those interior faces render.
+
+function resetClip() {
+  S.clipActive = false;
+  S.clipAxis   = 'x';
+  S.clipPos    = 50;
+  S.clipFlip   = false;
+  if (mesh3d && mesh3d.material) {
+    mesh3d.material.clippingPlanes = [];
+    mesh3d.material.side = THREE.FrontSide;
+    mesh3d.material.needsUpdate = true;
+  }
+  _syncClipUI();
+}
+
+function toggleClip() {
+  if (!mesh3d) return;
+  S.clipActive = !S.clipActive;
+  const mat = mesh3d.material;
+  if (S.clipActive) {
+    if (!S._clipPlane) S._clipPlane = new THREE.Plane();
+    mat.clippingPlanes = [S._clipPlane];
+    mat.side = THREE.DoubleSide;
+    _updateClipPlane();
+  } else {
+    mat.clippingPlanes = [];
+    mat.side = THREE.FrontSide;
+  }
+  mat.needsUpdate = true;
+  _syncClipUI();
+}
+
+function setClipAxis(axis) {
+  S.clipAxis = axis;
+  if (S.clipActive) _updateClipPlane();
+  _syncClipUI();
+}
+
+function onClipPosInput(v) {
+  S.clipPos = Math.max(0, Math.min(100, +v || 0));
+  if (S.clipActive) _updateClipPlane();
+}
+
+function toggleClipFlip() {
+  S.clipFlip = !S.clipFlip;
+  if (S.clipActive) _updateClipPlane();
+  _syncClipUI();
+}
+
+// Rebuild the world-space clipping plane from the current axis/position/flip.
+function _updateClipPlane() {
+  if (!mesh3d || !S._clipPlane || !S._modelSize) return;
+  const sz  = S._modelSize;
+  const ext = S.clipAxis === 'x' ? sz.x : S.clipAxis === 'y' ? sz.y : sz.z;
+  const off = -ext / 2 + (S.clipPos / 100) * ext;            // local coord of the cut
+  const n   = S.clipAxis === 'x' ? new THREE.Vector3(1, 0, 0)
+            : S.clipAxis === 'y' ? new THREE.Vector3(0, 1, 0)
+            :                      new THREE.Vector3(0, 0, 1);
+  const sign = S.clipFlip ? -1 : 1;                          // which half is kept
+  S._clipPlane.set(n.multiplyScalar(sign), -sign * off);    // keep {axis} ≷ off
+  mesh3d.updateMatrixWorld();
+  S._clipPlane.applyMatrix4(mesh3d.matrixWorld);            // local → world
+}
+
+function _syncClipUI() {
+  const btn      = document.getElementById('btn-clip');
+  const controls = document.getElementById('clip-controls');
+  const flip     = document.getElementById('clip-flip');
+  const slider   = document.getElementById('clip-pos');
+  if (btn)      btn.className = 'btn' + (S.clipActive ? ' active' : '');
+  if (controls) controls.style.display = S.clipActive ? 'inline-flex' : 'none';
+  if (flip)     flip.className = 'btn' + (S.clipFlip ? ' active' : '');
+  if (slider)   slider.value = S.clipPos;
+  ['x', 'y', 'z'].forEach(a => {
+    const b = document.getElementById('clip-' + a);
+    if (b) b.className = 'btn' + (S.clipAxis === a ? ' active' : '');
+  });
+}
+
 // ── Stress visualization modes ────────────────────────────────────────────────
 function setStressMode(mode) {
   S.stressMode = mode;
