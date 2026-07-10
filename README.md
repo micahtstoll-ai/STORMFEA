@@ -182,7 +182,7 @@ The **lap shear coupon** directly measures inter-layer bond strength — the sin
 stormfea/
 ├── server/
 │   ├── index.ts          Express routes (upload, analyse, calibrate, Onshape)
-│   ├── analysis.ts       FEM pipeline, failure modes, fatigue (2,147 lines)
+│   ├── analysis.ts       FEM pipeline, failure modes, fatigue (~3,500 lines)
 │   ├── stl.ts            Binary/ASCII STL parser
 │   ├── holes.ts          Cylindrical hole detection from STL geometry
 │   ├── tetgen.ts         TetGen wrapper (STL → .node/.ele)
@@ -211,12 +211,28 @@ stormfea/
 │   ├── workflows/
 │   │   └── test.yml      CI: TypeScript compile + solver validation suite
 │   └── ISSUE_TEMPLATE/   Bug report and feature request templates
+├── docs/
+│   ├── API.md            HTTP API reference (all endpoints)
+│   ├── ARCHITECTURE.md   Contributor architecture map
+│   └── METHODOLOGY.md    FEA theory & math
 ├── start.bat             Windows launcher (sets PATH, opens browser)
 ├── start-debug.bat       Windows launcher with verbose solver diagnostics
 ├── CONTRIBUTING.md       How to contribute
+├── DESIGN.md             Frontend design system
 ├── ROADMAP.md            Development history
 └── README.md             This file
 ```
+
+### Documentation
+
+| Doc | What's in it |
+|-----|--------------|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How a request flows from upload to heatmap; module-by-module map of `server/` and `server/solver/` |
+| [docs/METHODOLOGY.md](docs/METHODOLOGY.md) | The FEA theory — constitutive model, elements, PCG solve, SPR, Hill criterion, failure modes, calibration, validation |
+| [docs/API.md](docs/API.md) | Every HTTP endpoint with request/response shapes |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Setup, ground rules, PR checklist |
+| [DESIGN.md](DESIGN.md) | Frontend design system (typography, color, spacing) |
+| [ROADMAP.md](ROADMAP.md) | Development history and known limitations |
 
 ---
 
@@ -253,7 +269,7 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the ful
 
 1. Fork → create a branch (`git checkout -b fix/my-fix`)
 2. Make changes; if touching physics, verify the 65% stiffness / 58% bond constants are unchanged
-3. Run `npm run test` — everything must pass: 225 vitest unit tests across 24 files, 86 solver validation tests in `solver_validation.ts`, the parallel-assembly equivalence suite, and 41 client logic checks (a few vitest tests self-skip where the TetGen binary is absent)
+3. Run `npm run test` — everything must pass: 226 vitest unit tests across 24 files, 97 solver validation tests in `solver_validation.ts`, the parallel-assembly equivalence suite, and 41 client logic checks (a few vitest tests self-skip where the TetGen/Gmsh binaries are absent, so the raw totals show a handful of skips)
 4. Open a pull request using the provided template
 
 ---
