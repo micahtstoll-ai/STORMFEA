@@ -995,6 +995,11 @@ export interface AnalysisRequest {
    */
   pressures?: { magnitude: number; direction: [number, number, number]; normal?: boolean }[];
   /**
+   * Fatigue load ratio R = σ_min/σ_max for the Goodman/Basquin estimate.
+   * Default 0 (pulsating 0→peak). −1 = fully reversed; R>0 = tension-biased.
+   */
+  fatigueLoadRatio?: number;
+  /**
    * Material uncertainty mode. When 'central' (default) the solver uses the literature
    * central estimates. The server always computes sfConservative and sfOptimistic alongside
    * the central SF regardless of this field — it is reserved for future single-mode runs.
@@ -1087,8 +1092,12 @@ export interface FatigueEstimate {
  * Estimate fatigue life using modified Goodman criterion + Basquin power law.
  *
  * Assumptions:
- *   - Pulsating load (R=0): σ_min=0, σ_max=peak VM, σ_m=σ_a=σ_max/2
- *     (conservative for FTC mechanisms — most see repeated 0→peak loading)
+ *   - Load ratio R = σ_min/σ_max is a user input (default 0 = pulsating).
+ *     σ_max = peak VM, σ_a = σ_max(1−R)/2, σ_m = σ_max(1+R)/2. R=0 recovers
+ *     σ_m=σ_a=σ_max/2 (repeated 0→peak, the conservative FTC default); R=−1 is
+ *     fully reversed (σ_m=0, σ_a=σ_max); R>0 is a tension-biased cycle. A
+ *     compressive mean stress (σ_m<0) is clamped to 0 in Goodman to stay
+ *     conservative (its life benefit is not credited).
  *   - Endurance limit Se ≈ 0.40 × UTS for FDM PLA (flat print)
  *     Conservative estimate: Juvinall & Marshek, and limited FDM fatigue data
  *     from Wang et al. 2020 (PLA fatigue life study)
@@ -1110,7 +1119,10 @@ export function estimateFatigue(
   effectiveYieldMPa: number,
   materialId: string,
   orientation: string,
+  /** Load ratio R = σ_min/σ_max. Default 0 (pulsating). Clamped to [-1, 0.95]. */
+  loadRatioR: number = 0,
 ): FatigueEstimate {
+  const R = Math.max(-1, Math.min(0.95, Number.isFinite(loadRatioR) ? loadRatioR : 0));
   // Base material UTS — use literature values, not FDM-reduced yield
   // UTS ≈ 1.15-1.25 × yield for PLA-like polymers
   // For FDM, we use the effective yield as the strength basis
@@ -1131,17 +1143,20 @@ export function estimateFatigue(
   // (FDM parts typically fracture near yield for brittle-ish PLA)
   const utsMPa = Math.max(effectiveYieldMPa * 1.15, Se * 1.5);
 
-  // Pulsating load (R=0): σ_m = σ_a = σ_max / 2
-  const sigma_a = peakVonMisesMPa / 2;
-  const sigma_m = peakVonMisesMPa / 2;
+  // Amplitude / mean from the load ratio R = σ_min/σ_max, with σ_max = peak VM:
+  //   σ_a = σ_max(1−R)/2,  σ_m = σ_max(1+R)/2.  R=0 → σ_m = σ_a = σ_max/2.
+  const sigma_a = peakVonMisesMPa * (1 - R) / 2;
+  const sigma_m = peakVonMisesMPa * (1 + R) / 2;
+  // Compressive mean stress is beneficial; conservatively don't credit it.
+  const sigma_m_eff = Math.max(0, sigma_m);
 
   // Modified Goodman: 1/SF = σ_a/Se + σ_m/Su
-  const goodmanDemand = (sigma_a / Se) + (sigma_m / utsMPa);
+  const goodmanDemand = (sigma_a / Se) + (sigma_m_eff / utsMPa);
   const fatigueSF     = goodmanDemand > 0 ? 1 / goodmanDemand : 999;
 
   // Basquin cycles to failure
   // σ_a,eq = σ_a / (1 - σ_m/Su)  [Goodman-corrected amplitude]
-  const sigmaEqA = sigma_a / Math.max(0.01, 1 - sigma_m / utsMPa);
+  const sigmaEqA = sigma_a / Math.max(0.01, 1 - sigma_m_eff / utsMPa);
   const sigmaf   = 1.5 * baseMaterialUTS;
   const b        = -0.1;
 
@@ -1169,9 +1184,11 @@ export function estimateFatigue(
     fatigueSF: +fatigueSF.toFixed(2),
     enduranceLimitMPa: +Se.toFixed(1),
     utsMPa: +utsMPa.toFixed(1),
-    loadRatio: 0,
+    loadRatio: R,
     confidence: "low",
-    note: `Pulsating load (R=0): ${cycleStr}. Se=${Se.toFixed(1)} MPa (${(seRatio*100).toFixed(0)}% of base UTS ${baseMaterialUTS} MPa, ${orientation} orientation). ` +
+    note: `${R === 0 ? "Pulsating load (R=0)" : `Load ratio R=${R.toFixed(2)}`}: ${cycleStr}. ` +
+          `σ_a=${sigma_a.toFixed(1)} MPa, σ_m=${sigma_m_eff.toFixed(1)} MPa. ` +
+          `Se=${Se.toFixed(1)} MPa (${(seRatio*100).toFixed(0)}% of base UTS ${baseMaterialUTS} MPa, ${orientation} orientation). ` +
           `FDM fatigue data sparse — treat as order-of-magnitude. Goodman criterion + Basquin b=-0.1. ` +
           `Source: Wang et al. 2020.`,
   };
@@ -3335,6 +3352,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     effectiveYield,
     req.print.materialId,
     req.print.orientation,
+    req.fatigueLoadRatio ?? 0,
   );
 
   // ── Isotropic comparison ─────────────────────────────────────────────────
