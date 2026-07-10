@@ -1528,7 +1528,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <div id="pressure-controls" style="display:none;padding-left:22px">
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
             <label style="font-size:10px;color:var(--text-lo);display:flex;align-items:center;gap:4px">Magnitude
-              <input type="number" id="s-pressure-mpa" value="1" min="0" step="0.5" style="width:60px" onchange="markSessionDirty()"><span style="font-family:'DM Mono',monospace;font-size:10px">MPa</span>
+              <input type="number" id="s-pressure-mpa" value="1" step="0.5" style="width:60px" onchange="markSessionDirty()"><span style="font-family:'DM Mono',monospace;font-size:10px">MPa</span>
             </label>
             <label style="font-size:10px;color:var(--text-lo);display:flex;align-items:center;gap:4px">On face toward
               <select id="s-pressure-dir" onchange="markSessionDirty()">
@@ -7668,7 +7668,9 @@ function buildAnalyseBody(quality, opts) {
 function pressureRequest() {
   if (!document.getElementById('s-pressure')?.checked) return null;
   const m = +(document.getElementById('s-pressure-mpa')?.value ?? 1);
-  if (!(m > 0)) return null;
+  // Negative magnitude = suction/tension (outward pull) — the server supports it
+  // (see analysis.ts pressure loop). Only zero / non-finite is a no-op.
+  if (!Number.isFinite(m) || m === 0) return null;
   const dir = (document.getElementById('s-pressure-dir')?.value ?? '0,0,1')
     .split(',').map(Number);
   const normal = !!document.getElementById('s-pressure-normal')?.checked;
@@ -8188,6 +8190,14 @@ const SOURCES_DB = [
         usedFor: "Honeycomb and gyroid can exhibit superior resistance vs grid for some load types",
         confidence: "medium",
         note: "Confirms pattern matters but ranking depends on load type. Justifies our small, conservative pattern multipliers.",
+      },
+      {
+        id: "gibson_ashby1997",
+        citation: "Gibson LJ, Ashby MF. Cellular Solids: Structure and Properties. 2nd ed. Cambridge University Press; 1997.",
+        url: "https://doi.org/10.1017/CBO9781139878326",
+        usedFor: "Density–modulus scaling for the gyroid infill constitutive model: E ∝ ρⁿ with n ≈ 1.5–2.5 for open-cell lattices",
+        confidence: "low",
+        note: "Establishes the power-law FORM only. STORMFEA's gyroid exponents (E_xy ρ^1.75, E_z ρ^2.1, G_xz ρ^2.3) and small linear corrections are engineering estimates chosen WITHIN this cited range — no paper reports gyroid-specific coefficients. They are locked by regression tests (gyroid-formula.test.ts) and can be replaced with printer-specific values via coupon calibration.",
       },
       {
         id: "comprehensive2025",
