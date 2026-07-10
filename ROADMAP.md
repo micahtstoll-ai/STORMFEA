@@ -15,7 +15,7 @@
 - [x] Isotropic limit test — zero difference when E_z = E_xy
 - [x] Positive definiteness check on C matrix before every solve
 - [x] C3D10 second-order (10-node quadratic) tetrahedral elements — quadratic shape functions, B matrix, and assembly; 4-point Gauss integration with Gauss-point stress recovery. Reduces shear locking and resolves stress concentrations more accurately
-- [x] Automated validation suite (`server/tests/solver_validation.ts`) — 32 tests across 8 groups: patch test, cantilever linearity, orthotropic isotropic-limit, SPR smoothing, C3D10 element properties, Hill criterion (von Mises collapse + directional yield), and FEA-in-the-loop calibration
+- [x] Automated validation suite (`server/tests/solver_validation.ts`) — 97 tests across 8 groups: patch test, cantilever linearity, orthotropic isotropic-limit, SPR smoothing, C3D10 element properties, Hill criterion (von Mises collapse + directional yield), and FEA-in-the-loop calibration
 
 ### Geometry Pipeline
 - [x] STL → TetGen → volume FEM
