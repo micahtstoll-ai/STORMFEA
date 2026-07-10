@@ -34,16 +34,16 @@ STORMFEA models the anisotropic reality.
 
 ## Key Features
 
-- **Transversely isotropic material model** — 5 independent elastic constants calibrated from peer-reviewed literature
-- **Hill (1948) anisotropic yield criterion** — collapses to von Mises when the material is isotropic; correctly amplifies through-layer stresses when it's not
+- **Transversely isotropic material model** — 5 independent elastic constants calibrated from peer-reviewed literature, with an exact weak-axis tensor rotation (Bond transform) for upright/angled prints when a bed face is picked
+- **Hill (1948) anisotropic yield criterion** — collapses to von Mises when the material is isotropic; correctly amplifies through-layer stresses when it's not (evaluated in the rotated material frame for non-flat prints)
 - **5 distinct failure modes** with individual confidence levels: bulk yield, net-section tension, shear-out, thread strip-out, bearing
 - **Superconvergent Patch Recovery (SPR)** stress smoothing (Zienkiewicz & Zhu 1992) — more accurate nodal stresses than direct averaging
 - **Deflected-shape visualization** — warp the mesh by the computed displacement field, with an exaggeration slider and animation; the stress heatmap follows the deformed surface
 - **Modal analysis** (opt-in) — natural frequencies with animated mode shapes
 - **Linear buckling** (opt-in) — Buckling Load Factor on the default C3D10 quadratic mesh (geometric stiffness for both C3D4 and C3D10), with an animated buckling mode
 - **Section / cutting-plane view** — slice the part along X/Y/Z to inspect stress on internal and occluded surfaces
-- **Body-force loads** — self-weight and robot-acceleration/impact (in multiples of g) using the infill-scaled mass, plus uniform surface-pressure (traction) loads
-- **Fatigue life estimate** using modified Goodman with FDM-specific endurance ratio (Se/UTS = 0.37)
+- **Body-force loads** — self-weight and robot-acceleration/impact (in multiples of g) using the infill-scaled mass, plus surface-pressure loads with a normal-to-surface option, a region selector (extreme face / all faces facing a direction / whole surface), and suction (negative pressure)
+- **Fatigue life estimate** using modified Goodman + Basquin with FDM-specific endurance ratio (Se/UTS = 0.37) and a selectable load ratio R (pulsating / fully reversed / tension-biased)
 - **Layer height correction** — accounts for −15% to +10% Z-property variation with layer height
 - **3-coupon calibration** — tensile, lap shear, and bearing coupons let you tune the model to your specific printer and filament
 - **Onshape integration** — import directly from Part Studio via REST API, no export step
@@ -241,7 +241,8 @@ stormfea/
 - **Linear elastic only** — no plasticity or large deformation (the deflected-shape view is a scaled/exaggerated visualization of the linear solution, not a large-deformation result)
 - **Surface pressure loads** use consistent tributary-area (lumped) nodal loading. A **normal-to-surface** option follows each triangle's own outward normal for curved/non-planar faces, and the load region is selectable — the extreme face toward a direction, every face *facing* that direction, or the entire exterior surface (hydrostatic). Honoured on the box-mesh fallback as well (which now carries surface connectivity).
 - **Bearing failure confidence: LOW** — no FDM-specific bearing test data in literature
-- **Fatigue confidence: LOW** — sparse FDM S-N curve data; estimate only
+- **Fatigue confidence: LOW** — sparse FDM S-N curve data; estimate only (the load ratio R is selectable, but the underlying S-N data gap remains)
+- **Upright/angled orientation** — modeled exactly (weak-axis tensor rotation) when a bed face is picked; without one, an upright print falls back to a conservative scalar-swap approximation
 - **Filament color** affects strength (η² = 97.3% in one study) — not modeled
 - **Layer height correction** is a linear approximation; valid within ±0.15 mm of nominal
 - **Element order** — both STL (TetGen `-o2`) and STEP (Gmsh) uploads default to quadratic C3D10 elements; TetGen's mid-node ordering permutation is verified empirically and pinned by a regression test (`server/tests/unit/tetgen-c3d10.test.ts`). Linear C3D4 is selectable in the MATERIAL tab for faster solves, but underpredicts bending stress by ~55% due to shear locking. The box-mesh fallback now honours the element-order selector too (C3D10 by default), so a TetGen-fallback run is no longer forced to C3D4.
@@ -269,7 +270,7 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the ful
 
 1. Fork → create a branch (`git checkout -b fix/my-fix`)
 2. Make changes; if touching physics, verify the 65% stiffness / 58% bond constants are unchanged
-3. Run `npm run test` — everything must pass: 226 vitest unit tests across 24 files, 97 solver validation tests in `solver_validation.ts`, the parallel-assembly equivalence suite, and 41 client logic checks (a few vitest tests self-skip where the TetGen/Gmsh binaries are absent, so the raw totals show a handful of skips)
+3. Run `npm run test` — everything must pass: 265 vitest unit tests across 29 files, 99 solver validation tests in `solver_validation.ts`, the parallel-assembly equivalence suite, and 41 client logic checks (a few vitest tests self-skip where the TetGen/Gmsh binaries are absent, so the raw totals show a handful of skips)
 4. Open a pull request using the provided template
 
 ---
