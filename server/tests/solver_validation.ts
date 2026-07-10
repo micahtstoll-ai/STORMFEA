@@ -925,6 +925,45 @@ console.log("\n[16] Linear buckling — Euler column (clamped-free cantilever)")
     test("[16.3] Not tensile-dominated", false);
     test("[16.4] BLF within 15% of Euler", false);
   }
+
+  // Same Euler column, now with C3D10 quadratic elements. C3D10 does not
+  // shear-lock, so a much coarser mesh (nx=12, 288 elements) reaches tighter
+  // accuracy than the C3D4 nx=80 (6400 element) case above — exercising the
+  // C3D10 geometric-stiffness path (c3d10ElementGeometricStiffness).
+  const meshQ = generateBoxMeshC3D10(0, 0, 0, L, b, b, 12, 2, 2);
+  const fixedQ: number[] = [], tipQ: number[] = [];
+  for (let n = 0; n < meshQ.nodeCount; n++) {
+    const x = meshQ.nodes[n*3] ?? 0;
+    if (x < 0.01) fixedQ.push(n);
+    if (x > L - 0.01) tipQ.push(n);
+  }
+  const fPerNodeQ = P_cr_euler / tipQ.length;
+  const forces16Q = tipQ.map(n => ({ nodeIndex: n, forceN: [-fPerNodeQ, 0, 0] as [number, number, number] }));
+  try {
+    const interQ = await runLinearStaticWithK({
+      mesh: meshQ, material: mat, constraints: [{ nodeIndices: fixedQ }], forces: forces16Q,
+    });
+    const elemStress6Q = interQ.result.elemStress6;
+    if (!elemStress6Q) throw new Error("elemStress6 not returned (C3D10)");
+    const { K: KbuckQ, diagIdx: diagIdxQ } = await assembleK(meshQ, mat);
+    const fDummyQ = assembleForceVector(meshQ.nodeCount, forces16Q);
+    applyDirichletBC(KbuckQ, fDummyQ, diagIdxQ, [{ nodeIndices: fixedQ }]);
+    const KsigmaQ = assembleKsigma(meshQ, elemStress6Q, KbuckQ.rowPtr, KbuckQ.colIdx);
+    const bResultQ = await runLinearBuckling(KbuckQ, KsigmaQ, diagIdxQ);
+    const relErrQ = Math.abs(bResultQ.blf - 1.0);
+    test("[16.5] C3D10 buckling converged",       bResultQ.converged,        `iters=${bResultQ.iterations}`);
+    test("[16.6] C3D10 BLF positive",             bResultQ.blf > 0,          `blf=${bResultQ.blf.toFixed(4)}`);
+    test("[16.7] C3D10 BLF within 3% of Euler",   relErrQ < 0.03,
+      `BLF=${bResultQ.blf.toFixed(4)} relErr=${(relErrQ*100).toFixed(2)}%`);
+    test("[16.8] C3D10 mode shape returned",      bResultQ.modeShape.length === meshQ.nodeCount * 3,
+      `len=${bResultQ.modeShape.length} expected=${meshQ.nodeCount*3}`);
+    console.log(`    C3D10 nx=12: BLF=${bResultQ.blf.toFixed(4)}, error=${(relErrQ*100).toFixed(2)}%`);
+  } catch (err) {
+    test("[16.5] C3D10 buckling did not throw", false, String(err));
+    test("[16.6] C3D10 BLF positive", false);
+    test("[16.7] C3D10 BLF within 3% of Euler", false);
+    test("[16.8] C3D10 mode shape returned", false);
+  }
 }
 
 // ── Test group 17: Simply-supported beam ─────────────────────────────────────
@@ -1241,6 +1280,130 @@ console.log("\n[20] SPR linear-field exactness — C3D4 and C3D10 (issue #96)");
     }
     test(`[20] ${label}: sprSmoothedStress6 reproduces linear σxx exactly`,
       maxErr6 < 1e-8, `maxErr=${maxErr6.toExponential(2)}`);
+  }
+}
+
+// ── Test group 21: Body force (self-weight) resultant conservation ────────────
+console.log("\n[21] Body force — consistent nodal load sums to ρ·V·a");
+{
+  const { assembleBodyForce } = await import("../solver/load.js");
+  // Box 20×10×5 mm → V=1000 mm³. b = ρ·a downward (−Y). The consistent nodal
+  // forces must sum to the total weight ρ·V·a regardless of element order.
+  const Lx=20, Ly=10, Lz=5, Vbox = Lx*Ly*Lz;
+  const rho = 1240e-12;          // t/mm³ (PLA)
+  const a   = 9806.65;           // mm/s² (1 g)
+  const b: [number,number,number] = [0, -rho*a, 0];
+  const expected = rho * Vbox * a;   // N (= mass·g)
+
+  for (const [label, m] of [
+    ["C3D4",  generateBoxMesh(0,0,0, Lx,Ly,Lz, 8,4,2)],
+    ["C3D10", generateBoxMeshC3D10(0,0,0, Lx,Ly,Lz, 6,3,2)],
+  ] as const) {
+    const f = assembleBodyForce(m, b);
+    let sx=0, sy=0, sz=0;
+    for (let n=0; n<m.nodeCount; n++) { sx+=f[n*3]??0; sy+=f[n*3+1]??0; sz+=f[n*3+2]??0; }
+    const relErr = Math.abs(-sy - expected) / expected;
+    test(`[21] ${label} resultant = ρ·V·a (within 0.01%)`, relErr < 1e-4,
+      `Σfy=${sy.toExponential(4)} expected=${(-expected).toExponential(4)} relErr=${(relErr*100).toFixed(4)}%`);
+    test(`[21] ${label} no transverse resultant`, Math.abs(sx)+Math.abs(sz) < 1e-9 * expected,
+      `Σfx=${sx.toExponential(2)} Σfz=${sz.toExponential(2)}`);
+  }
+}
+
+// ── Test group 22: Surface pressure / traction load ──────────────────────────
+console.log("\n[22] Surface pressure — consistent traction resultant + patch test");
+{
+  const { assembleSurfaceTraction } = await import("../solver/load.js");
+  const { runLinearStaticWithK } = await import("../solver/pipeline.js");
+
+  // Extract surface triangles (corner-node triples) from a tet mesh: a boundary
+  // face appears in exactly one element. Corners are the first 4 local nodes for
+  // both C3D4 and C3D10.
+  function boundaryFaces(m: import("../solver/types.js").TetMesh): Int32Array {
+    const npe = m.nodesPerElem;
+    const F = [[0,1,2],[0,1,3],[0,2,3],[1,2,3]];
+    const count = new Map<string, number>(), rep = new Map<string, [number,number,number]>();
+    for (let e=0;e<m.elementCount;e++){
+      const base=e*npe;
+      for (const fa of F){
+        const tri: [number,number,number] = [m.elements[base+fa[0]!]!, m.elements[base+fa[1]!]!, m.elements[base+fa[2]!]!];
+        const key = [...tri].sort((a,b)=>a-b).join(",");
+        count.set(key,(count.get(key)??0)+1);
+        if(!rep.has(key)) rep.set(key, tri);
+      }
+    }
+    const out:number[]=[];
+    for (const [key,c] of count) if(c===1){ const t=rep.get(key)!; out.push(t[0],t[1],t[2]); }
+    return new Int32Array(out);
+  }
+
+  const L=10, P=2.0;   // cube, pressure 2 MPa in +z on the top face
+  const mesh = generateBoxMesh(0,0,0, L,L,L, 4,4,4);
+  const faces = boundaryFaces(mesh);
+  const triCount = faces.length/3;
+  const isLoaded:boolean[] = new Array(triCount);
+  for (let t=0;t<triCount;t++){
+    const a=faces[t*3]!, b=faces[t*3+1]!, c=faces[t*3+2]!;
+    isLoaded[t] = (mesh.nodes[a*3+2]!>L-1e-6)&&(mesh.nodes[b*3+2]!>L-1e-6)&&(mesh.nodes[c*3+2]!>L-1e-6);
+  }
+  const pf = assembleSurfaceTraction(mesh.nodes, faces, isLoaded, [0,0,P]);
+  let sz=0; for(let n=0;n<mesh.nodeCount;n++) sz+=pf[n*3+2]??0;
+  test("[22.1] traction resultant = P·A", Math.abs(sz - P*L*L) < 1e-6*(P*L*L),
+    `Σfz=${sz.toFixed(4)} expected=${(P*L*L).toFixed(4)}`);
+
+  // Patch solve: fix z=0 face (all DOF), pressure on top → volume-mean σ_zz ≈ P.
+  const mat = { E:3500, nu:0.36, yieldStrength:50, label:"pla" };
+  const fixed:number[]=[]; for(let n=0;n<mesh.nodeCount;n++) if((mesh.nodes[n*3+2]??0)<1e-6) fixed.push(n);
+  const forces:{nodeIndex:number;forceN:[number,number,number]}[]=[];
+  for(let n=0;n<mesh.nodeCount;n++){ const fz=pf[n*3+2]??0; if(fz!==0) forces.push({nodeIndex:n,forceN:[0,0,fz]}); }
+  try {
+    const inter = await runLinearStaticWithK({ mesh, material:mat, constraints:[{nodeIndices:fixed}], forces });
+    const es6 = inter.result.elemStress6!;
+    let sum=0; for(let e=0;e<mesh.elementCount;e++) sum += es6[e*6+2]??0;
+    const meanSzz = sum/mesh.elementCount;
+    test("[22.2] patch: mean σ_zz ≈ P (within 5%)", near(meanSzz, P, 0.05*P),
+      `σ_zz=${meanSzz.toFixed(4)} P=${P}`);
+    console.log(`    resultant=${sz.toFixed(2)}N, mean σ_zz=${meanSzz.toFixed(4)} MPa`);
+  } catch (err) {
+    test("[22.2] patch test did not throw", false, String(err));
+  }
+}
+
+// ── Test group 23: Orthotropic directional stiffness ─────────────────────────
+console.log("\n[23] Orthotropic directional stiffness — δ_z/δ_x ≈ E_xy/E_z");
+{
+  const { runLinearStaticWithK } = await import("../solver/pipeline.js");
+  const E_xy=3500, ratio=0.65, E_z=E_xy*ratio;
+  const G = E_xy/(2*(1+0.36));
+  const mat = { kind:"orthotropic" as const, E_xy, E_z, nu_xy:0.36, nu_xz:0.30,
+    G_xz: 0.4*G, yieldXY:50, yieldZ:29, label:"ortho" };
+
+  // Axial deflection of a slender bar under tip load along its long axis.
+  // Same L, A, F for both bars; only the loaded axis (X vs Z) differs.
+  async function axialDelta(long:"x"|"z"): Promise<number> {
+    const S=4, Lb=40, F=200;
+    const [lx,ly,lz] = long==="x" ? [Lb,S,S] : [S,S,Lb];
+    const [nx,ny,nz] = long==="x" ? [20,2,2] : [2,2,20];
+    const m = generateBoxMesh(0,0,0, lx,ly,lz, nx,ny,nz);
+    const ax = long==="x" ? 0 : 2;          // loaded-axis coordinate index
+    const fixed:number[]=[], tip:number[]=[];
+    for(let n=0;n<m.nodeCount;n++){ const p=m.nodes[n*3+ax]??0; if(p<1e-6) fixed.push(n); if(p>Lb-1e-6) tip.push(n); }
+    const fPer=F/tip.length;
+    const forces = tip.map(n=>({nodeIndex:n, forceN:(long==="x"?[fPer,0,0]:[0,0,fPer]) as [number,number,number]}));
+    const inter = await runLinearStaticWithK({ mesh:m, material:mat, constraints:[{nodeIndices:fixed}], forces });
+    const u = inter.result.displacement;
+    let d=0; for(const n of tip) d += Math.abs(u[n*3+ax]??0); return d/tip.length;
+  }
+  try {
+    const dx = await axialDelta("x");
+    const dz = await axialDelta("z");
+    const measured = dz/dx, expected = E_xy/E_z;   // = 1/0.65 ≈ 1.538
+    const relErr = Math.abs(measured-expected)/expected;
+    test("[23] δ_z/δ_x ≈ E_xy/E_z (within 6%)", relErr < 0.06,
+      `measured=${measured.toFixed(4)} expected=${expected.toFixed(4)} relErr=${(relErr*100).toFixed(2)}%`);
+    console.log(`    δ_x=${dx.toExponential(3)} δ_z=${dz.toExponential(3)} ratio=${measured.toFixed(4)} (expect ${expected.toFixed(4)})`);
+  } catch (err) {
+    test("[23] orthotropic directional test did not throw", false, String(err));
   }
 }
 

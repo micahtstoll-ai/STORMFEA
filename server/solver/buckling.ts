@@ -55,6 +55,13 @@ export interface BucklingResult {
    * When true, `blf` must NOT be reported to the user as a buckling factor.
    */
   readonly indeterminate: boolean;
+  /**
+   * Converged (normalized) buckling mode eigenvector φ, length nodeCount·3,
+   * corresponding to the reported `blf`. Used to visualise/animate the buckled
+   * shape. Only physically meaningful when a positive BLF was found
+   * (not tensileDominated and not indeterminate).
+   */
+  readonly modeShape: Float64Array;
 }
 
 interface PowerIterationOutcome {
@@ -216,14 +223,14 @@ export async function runLinearBuckling(
     // Predominantly tensile stress state — no buckling mode to find.
     return {
       blf: first.blf, converged: first.converged, iterations: first.iterations,
-      tensileDominated: true, indeterminate: false,
+      tensileDominated: true, indeterminate: false, modeShape: first.mode,
     };
   }
 
   if (first.blf > 0) {
     return {
       blf: first.blf, converged: first.converged, iterations: first.iterations,
-      tensileDominated: false, indeterminate: false,
+      tensileDominated: false, indeterminate: false, modeShape: first.mode,
     };
   }
 
@@ -239,7 +246,7 @@ export async function runLinearBuckling(
   if (second.sawCompression && second.blf > 0) {
     return {
       blf: second.blf, converged: second.converged, iterations,
-      tensileDominated: false, indeterminate: false,
+      tensileDominated: false, indeterminate: false, modeShape: second.mode,
     };
   }
 
@@ -248,5 +255,6 @@ export async function runLinearBuckling(
     blf: second.sawCompression ? second.blf : first.blf,
     converged: false, iterations,
     tensileDominated: false, indeterminate: true,
+    modeShape: second.sawCompression ? second.mode : first.mode,
   };
 }

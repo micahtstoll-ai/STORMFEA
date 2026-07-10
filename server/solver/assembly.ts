@@ -24,7 +24,7 @@
  */
 
 import type { TetMesh, AnyMaterial, CSRMatrix } from "./types.js";
-import { elementStiffness, buildAnyConstitutiveMatrix, c3d10ElementStiffness, elementGeometricStiffness } from "./element.js";
+import { elementStiffness, buildAnyConstitutiveMatrix, c3d10ElementStiffness, elementGeometricStiffness, c3d10ElementGeometricStiffness } from "./element.js";
 import { Worker } from "worker_threads";
 import { fileURLToPath } from "url";
 import path from "path";
@@ -415,12 +415,13 @@ export async function assembleK(
  * Assemble the global geometric stiffness matrix Kσ for linear buckling analysis.
  *
  * Uses the same sparsity pattern (rowPtr, colIdx) as K so both matrices share the
- * same CSR structure. Element contributions are computed from centroid Cauchy stresses.
+ * same CSR structure. Element contributions are computed from element Cauchy stresses.
  *
- * Currently supports C3D4 only (C3D10 geometric stiffness is not yet implemented).
+ * Supports C3D4 (linear, 12 DOF) and C3D10 (quadratic, 30 DOF); the element type
+ * is determined by mesh.nodesPerElem.
  *
  * @param mesh         Tetrahedral mesh
- * @param elemStress   Flat array of element centroid stresses, shape [elementCount × 6].
+ * @param elemStress   Flat array of element stresses, shape [elementCount × 6].
  *                     Each group of 6: [σxx, σyy, σzz, τxy, τyz, τxz] in MPa.
  * @param rowPtr       CSR row pointer (from buildSparsityPattern)
  * @param colIdx       CSR column indices (from buildSparsityPattern)
@@ -433,41 +434,48 @@ export function assembleKsigma(
   colIdx:     Int32Array,
 ): CSRMatrix {
   const n   = mesh.nodeCount * 3;
+  const npe = mesh.nodesPerElem;
+  const dpe = npe * 3;  // DOF per element
   const nnz = rowPtr[n] ?? 0;
   const data = new Float64Array(nnz);
 
-  // Geometric stiffness is only implemented for C3D4. Silently skipping other
-  // element types would return an all-zero Kσ, making any downstream buckling
-  // factor meaningless — fail loudly instead. (analysis.ts already gates
-  // buckling to C3D4 meshes, so this is a guard against future misuse.)
-  if (mesh.nodesPerElem !== 4) {
+  if (npe !== 4 && npe !== 10) {
     throw new Error(
-      `assembleKsigma: geometric stiffness is only implemented for C3D4 ` +
-      `(nodesPerElem=4), got nodesPerElem=${mesh.nodesPerElem}.`
+      `assembleKsigma: geometric stiffness is only implemented for C3D4 and ` +
+      `C3D10, got nodesPerElem=${npe}.`
     );
   }
 
   const sig = new Float64Array(6);
+  const elemNodes = new Int32Array(npe);
+  const scratchCoords = new Float64Array(30);  // C3D10 local node coordinates
 
   for (let e = 0; e < mesh.elementCount; e++) {
-    const base = e * mesh.nodesPerElem;
-    // Extract element stress tensor
+    const base = e * npe;
+    for (let ni = 0; ni < npe; ni++) elemNodes[ni] = i32(mesh.elements, base + ni);
     for (let k = 0; k < 6; k++) sig[k] = elemStress[e*6+k] ?? 0;
 
-    const n0 = i32(mesh.elements, base),
-          n1 = i32(mesh.elements, base+1),
-          n2 = i32(mesh.elements, base+2),
-          n3 = i32(mesh.elements, base+3);
+    let ksg: Float64Array;
+    if (npe === 10) {
+      for (let ni = 0; ni < 10; ni++) {
+        const nd = elemNodes[ni]!;
+        scratchCoords[ni*3]   = mesh.nodes[nd*3]   ?? 0;
+        scratchCoords[ni*3+1] = mesh.nodes[nd*3+1] ?? 0;
+        scratchCoords[ni*3+2] = mesh.nodes[nd*3+2] ?? 0;
+      }
+      ksg = c3d10ElementGeometricStiffness(scratchCoords, sig);
+    } else {
+      ksg = elementGeometricStiffness(
+        mesh.nodes, elemNodes[0]!, elemNodes[1]!, elemNodes[2]!, elemNodes[3]!, sig,
+      );
+    }
 
-    const ksg = elementGeometricStiffness(mesh.nodes, n0, n1, n2, n3, sig);
-    const elemNodes = [n0, n1, n2, n3];
-
-    for (let lr = 0; lr < 12; lr++) {
+    for (let lr = 0; lr < dpe; lr++) {
       const globalR = (elemNodes[Math.floor(lr/3)] ?? 0)*3 + (lr%3);
-      for (let lc = 0; lc < 12; lc++) {
+      for (let lc = 0; lc < dpe; lc++) {
         const globalC = (elemNodes[Math.floor(lc/3)] ?? 0)*3 + (lc%3);
         const pos = findEntry(colIdx, rowPtr, globalR, globalC);
-        data[pos] = (data[pos] ?? 0) + (ksg[lr*12+lc] ?? 0);
+        data[pos] = (data[pos] ?? 0) + (ksg[lr*dpe+lc] ?? 0);
       }
     }
   }

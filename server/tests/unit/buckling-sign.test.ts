@@ -77,21 +77,44 @@ describe("runLinearBuckling — sign-blindness handling (issue #103)", () => {
   });
 });
 
-describe("assembleKsigma — C3D10 guard (issue #103)", () => {
-  it("throws for nodesPerElem=10 instead of silently returning zero Kσ", () => {
-    // Single straight-sided C3D10 tet (same geometry as solver_validation group 6)
-    const mesh10: TetMesh = {
-      nodes: new Float64Array([
-        2,0,0,  0,2,0,  0,0,2,  0,0,0,
-        1,1,0,  0,1,1,  1,0,1,  1,0,0,  0,1,0,  0,0,1,
-      ]),
-      elements:     new Int32Array([0,1,2,3,4,5,6,7,8,9]),
-      nodeCount:    10,
-      elementCount: 1,
-      nodesPerElem: 10,
-    };
+describe("assembleKsigma — C3D10 geometric stiffness", () => {
+  // Single straight-sided C3D10 tet (same geometry as solver_validation group 6)
+  const mesh10: TetMesh = {
+    nodes: new Float64Array([
+      2,0,0,  0,2,0,  0,0,2,  0,0,0,
+      1,1,0,  0,1,1,  1,0,1,  1,0,0,  0,1,0,  0,0,1,
+    ]),
+    elements:     new Int32Array([0,1,2,3,4,5,6,7,8,9]),
+    nodeCount:    10,
+    elementCount: 1,
+    nodesPerElem: 10,
+  };
+
+  it("assembles a non-zero, finite, symmetric Kσ for nodesPerElem=10", () => {
     const { rowPtr, colIdx } = buildSparsityPattern(mesh10);
-    const elemStress = new Float64Array(6);
-    expect(() => assembleKsigma(mesh10, elemStress, rowPtr, colIdx)).toThrow(/C3D4/);
+    // Uniaxial tension σxx = 10 MPa
+    const elemStress = new Float64Array([10, 0, 0, 0, 0, 0]);
+    const Ksigma = assembleKsigma(mesh10, elemStress, rowPtr, colIdx);
+    expect(Ksigma.n).toBe(30);
+    // Not all zeros, and every entry finite.
+    let anyNonZero = false, allFinite = true;
+    for (const v of Ksigma.data) {
+      if (v !== 0) anyNonZero = true;
+      if (!Number.isFinite(v)) allFinite = false;
+    }
+    expect(anyNonZero).toBe(true);
+    expect(allFinite).toBe(true);
+  });
+
+  it("returns an all-zero Kσ for a zero stress state", () => {
+    const { rowPtr, colIdx } = buildSparsityPattern(mesh10);
+    const Ksigma = assembleKsigma(mesh10, new Float64Array(6), rowPtr, colIdx);
+    expect(Ksigma.data.every(v => v === 0)).toBe(true);
+  });
+
+  it("still throws for unsupported element types (nodesPerElem=6)", () => {
+    const bad = { ...mesh10, nodesPerElem: 6 };
+    const { rowPtr, colIdx } = buildSparsityPattern(mesh10);
+    expect(() => assembleKsigma(bad, new Float64Array(6), rowPtr, colIdx)).toThrow(/C3D4 and/);
   });
 });

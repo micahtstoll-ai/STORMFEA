@@ -22,7 +22,7 @@ import { runLinearBuckling }              from "./solver/buckling.js";
 import { assembleK, assembleKsigma, buildSparsityPattern } from "./solver/assembly.js";
 import { buildNodeElementAdjacency }       from "./solver/adjacency.js";
 import { applyDirichletBC }    from "./solver/boundary.js";
-import { assembleForceVector } from "./solver/load.js";
+import { assembleForceVector, assembleBodyForce, assembleSurfaceTraction } from "./solver/load.js";
 import type { ModalAnalysisResult }        from "./solver/types.js";
 import {
   buildLaminateCMatrix,
@@ -970,6 +970,27 @@ export interface AnalysisRequest {
   /** Default: 'linear_static'. Set to 'modal' to also compute natural frequencies. */
   analysisType?: 'linear_static' | 'modal';
   /**
+   * When true, also run a linear buckling (eigenvalue) analysis and report the
+   * Buckling Load Factor. Opt-in because the eigen-solve adds solve time; works
+   * for both C3D4 and C3D10 meshes.
+   */
+  computeBuckling?: boolean;
+  /**
+   * Optional uniform body-force (self-weight / robot acceleration) load.
+   *   g         — acceleration magnitude in multiples of standard gravity
+   *               (1 = 9.80665 m/s²); e.g. 5 for a 5g impact case.
+   *   direction — load direction in the part frame (need not be unit length).
+   * Uses the material's (infill-scaled) mass density.
+   */
+  gravity?: { g: number; direction: [number, number, number] };
+  /**
+   * Optional uniform surface pressure / traction loads. Each applies a traction
+   * t = magnitude·direction (magnitude in MPa = N/mm²) over the surface
+   * triangles of the extreme face in `direction`, as consistent tributary-area
+   * nodal forces. Ignored on the box-fallback mesh (no surface connectivity).
+   */
+  pressures?: { magnitude: number; direction: [number, number, number] }[];
+  /**
    * Material uncertainty mode. When 'central' (default) the solver uses the literature
    * central estimates. The server always computes sfConservative and sfOptimistic alongside
    * the central SF regardless of this field — it is reserved for future single-mode runs.
@@ -1302,6 +1323,17 @@ export interface AnalysisResult {
   vertexModeShapesB64?:   string[];
   /** Present when analysisType === 'modal'. Undefined for static-only runs. */
   modalResult?:           ModalAnalysisResult;
+  /** Buckling mode shape projected to surface vertices. Base64 Float32Array. Present only with a physical positive BLF. */
+  vertexBucklingModeB64?: string;
+  /** Structured buckling summary. Present when computeBuckling was requested and the analysis ran. */
+  bucklingResult?: {
+    blf: number | null;
+    verdict: 'FAIL' | 'MARGINAL' | 'PASS' | 'no-buckling' | 'indeterminate';
+    converged: boolean;
+    tensileDominated: boolean;
+    indeterminate: boolean;
+    hasMode: boolean;
+  };
   /** CG solver residual checkpoints for convergence visualization */
   residualCheckpoints?:   readonly { iteration: number; relativeResidual: number }[];
   /** Zienkiewicz-Zhu error estimate η_e at each vertex, projected from elements */
@@ -2091,6 +2123,9 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   emit({ phase: "mesh", message: req.fileType === "step" ? "Meshing (Gmsh)…" : "Meshing (TetGen)…" });
   let mesh: import("./solver/types.js").TetMesh;
   let surfaceToNode: Int32Array;
+  // Surface triangles as mesh-node triples, for consistent pressure/traction
+  // loads. Null on the box-fallback path (no surface connectivity).
+  let surfaceFaces: Int32Array | null = null;
   let gmshResult: import("./gmsh_mesh.js").GmshMeshResult | null = null;
   let meshFallback = false;
 
@@ -2107,6 +2142,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     console.log("[analysis] meshing STEP with Gmsh...");
     gmshResult = await meshStepWithGmsh(req.stepBuffer, { ...opts, elementOrder });
     mesh = gmshResult.mesh;
+    surfaceFaces = gmshResult.surfaceTriangles;
     _snapAnalysis("after Gmsh mesh");
     surfaceToNode = new Int32Array(gmshResult.surfaceTriangles.length);
     for (let i = 0; i < gmshResult.surfaceTriangles.length; i++) {
@@ -2118,10 +2154,17 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     try {
       _snapAnalysis("before TetGen mesh");
       const tetOrder = (req.print.meshOrder ?? 2) as 1 | 2;
-      console.log(`[analysis] meshing with TetGen (order=${tetOrder})...`);
-      const tetResult = await meshWithTetGen(req.positions, req.triangleCount, tetOrder);
+      // Map the coarse/standard/fine selector to TetGen's max-volume (-a) switch
+      // so the control actually affects STL mesh density. 'standard' keeps the
+      // historical 10 mm³. (Previously the selector only affected the STEP path.)
+      const tetMaxVol = req.meshQuality === "fine" ? 3
+                      : req.meshQuality === "coarse" ? 30
+                      : 10;
+      console.log(`[analysis] meshing with TetGen (order=${tetOrder}, maxVol=${tetMaxVol}mm³, quality=${req.meshQuality})...`);
+      const tetResult = await meshWithTetGen(req.positions, req.triangleCount, tetOrder, tetMaxVol);
       mesh          = tetResult.mesh;
       surfaceToNode = tetResult.surfaceToNode;
+      surfaceFaces  = tetResult.surfaceFaces;
       console.log(`[analysis] TetGen mesh: ${mesh.nodeCount} nodes, ${mesh.elementCount} elements (${mesh.nodesPerElem}-node)`);
       _snapAnalysis("after TetGen mesh");
     } catch (err) {
@@ -2322,6 +2365,90 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     }
   }
 
+  // ── Self-weight / body-force load (gravity or robot acceleration) ──────────
+  // When requested, add a consistent body-force load. b = ρ·a in N/mm³, where
+  //   ρ = material.massRho[kg/m³] × 1e-12  (→ tonne/mm³, already infill-scaled #99)
+  //   a = g × 9806.65 mm/s² along the normalised direction
+  // and 1 tonne·mm/s² = 1 N, so the resulting nodal loads are in N and add
+  // directly to the point-force list feeding the solve (and buckling pre-stress).
+  if (req.gravity && req.gravity.g) {
+    const dir  = req.gravity.direction;
+    const dlen = Math.hypot(dir[0], dir[1], dir[2]) || 1;
+    const rhoTMm3 = ((material as { massRho?: number }).massRho ?? 1240) * 1e-12;
+    const a = req.gravity.g * 9806.65;
+    const b: [number, number, number] = [
+      rhoTMm3 * a * (dir[0] / dlen),
+      rhoTMm3 * a * (dir[1] / dlen),
+      rhoTMm3 * a * (dir[2] / dlen),
+    ];
+    const bodyF = assembleBodyForce(mesh, b);
+    let loaded = 0, totX = 0, totY = 0, totZ = 0;
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      const fx = bodyF[n*3] ?? 0, fy = bodyF[n*3+1] ?? 0, fz = bodyF[n*3+2] ?? 0;
+      if (fx !== 0 || fy !== 0 || fz !== 0) {
+        solverForces.push({ nodeIndex: n, forceN: [fx, fy, fz] });
+        loaded++; totX += fx; totY += fy; totZ += fz;
+      }
+    }
+    console.log(`[analysis] self-weight ${req.gravity.g}g: ${loaded} loaded nodes, ` +
+      `resultant=${Math.hypot(totX, totY, totZ).toFixed(3)}N`);
+  }
+
+  // ── Surface pressure / traction loads ──────────────────────────────────────
+  // A uniform traction t = P·d (P in MPa = N/mm²) applied over the surface
+  // triangles of the extreme face in direction d, distributed as consistent
+  // (tributary-area) nodal forces. Requires surface connectivity (unavailable
+  // on the box-fallback path).
+  if (req.pressures && req.pressures.length > 0) {
+    if (!surfaceFaces) {
+      console.warn("[analysis] surface pressure ignored — no surface connectivity (box-mesh fallback).");
+    } else {
+      const triCount = Math.floor(surfaceFaces.length / 3);
+      for (const p of req.pressures) {
+        // Zero → no-op. Negative is allowed and means outward (tension/suction).
+        if (!Number.isFinite(p.magnitude) || p.magnitude === 0) continue;
+        const [dx, dy, dz] = p.direction;
+        const dl = Math.hypot(dx, dy, dz);
+        if (!(dl > 0)) continue;   // undefined face for a zero direction
+        const ux = dx/dl, uy = dy/dl, uz = dz/dl;
+        // Extreme face in direction d: max projection over all mesh nodes.
+        let maxProj = -Infinity;
+        for (let n = 0; n < mesh.nodeCount; n++) {
+          const proj = (mesh.nodes[n*3]??0)*ux + (mesh.nodes[n*3+1]??0)*uy + (mesh.nodes[n*3+2]??0)*uz;
+          if (proj > maxProj) maxProj = proj;
+        }
+        // A triangle is loaded if its centroid lies within the face band.
+        const isLoaded: boolean[] = new Array(triCount);
+        let nLoaded = 0;
+        for (let t = 0; t < triCount; t++) {
+          const a = surfaceFaces[t*3]??0, b = surfaceFaces[t*3+1]??0, c = surfaceFaces[t*3+2]??0;
+          const cxp = ((mesh.nodes[a*3]??0)+(mesh.nodes[b*3]??0)+(mesh.nodes[c*3]??0))/3;
+          const cyp = ((mesh.nodes[a*3+1]??0)+(mesh.nodes[b*3+1]??0)+(mesh.nodes[c*3+1]??0))/3;
+          const czp = ((mesh.nodes[a*3+2]??0)+(mesh.nodes[b*3+2]??0)+(mesh.nodes[c*3+2]??0))/3;
+          const proj = cxp*ux + cyp*uy + czp*uz;
+          isLoaded[t] = (maxProj - proj) < 0.5;
+          if (isLoaded[t]) nLoaded++;
+        }
+        // A positive pressure pushes INWARD on the selected face (compression) —
+        // the intuitive "pressure on this face" and the compressive pre-stress
+        // buckling needs. The selected face's outward normal points along +d, so
+        // an inward push is −magnitude·d. Negative magnitude → outward (tension).
+        const traction: [number,number,number] = [-p.magnitude*ux, -p.magnitude*uy, -p.magnitude*uz];
+        const pf = assembleSurfaceTraction(mesh.nodes, surfaceFaces, isLoaded, traction);
+        let resN = 0;
+        for (let n = 0; n < mesh.nodeCount; n++) {
+          const fx = pf[n*3]??0, fy = pf[n*3+1]??0, fz = pf[n*3+2]??0;
+          if (fx !== 0 || fy !== 0 || fz !== 0) {
+            solverForces.push({ nodeIndex: n, forceN: [fx, fy, fz] });
+            resN += Math.hypot(fx, fy, fz);
+          }
+        }
+        console.log(`[analysis] pressure ${p.magnitude}MPa in (${ux.toFixed(2)},${uy.toFixed(2)},${uz.toFixed(2)}): ` +
+          `${nLoaded} loaded triangles, |resultant|~${resN.toFixed(2)}N`);
+      }
+    }
+  }
+
   const effectiveForces = solverForces;
 
   // ── Rigid-body-mode check ─────────────────────────────────────────────────
@@ -2347,7 +2474,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // to its own copy. rowPtr/colIdx/diagIdx (the sparsity pattern) depend only
   // on mesh connectivity and are shared by K, M and Kσ.
   const wantsModal = req.analysisType === 'modal';
-  const mayBuckle  = mesh.nodesPerElem === 4;
+  const mayBuckle  = req.computeBuckling === true;
   const input: SolverInput = {
     mesh,
     material,
@@ -2396,14 +2523,15 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
 
   // ── Linear buckling analysis ───────────────────────────────────────────────
   // Compute the Buckling Load Factor (BLF) using the pre-stress from the
-  // static solve. Only run for C3D4 meshes (geometric stiffness for C3D10
-  // is not yet implemented). Failures are non-fatal: buckling result is
-  // marked "unchecked" rather than crashing the analysis.
+  // static solve. Opt-in (req.computeBuckling) because the eigen-solve adds
+  // solve time; runs for both C3D4 and C3D10 meshes. Failures are non-fatal:
+  // the buckling result is marked "unchecked" rather than crashing the analysis.
   let bucklingBLF: number | undefined;
   let bucklingConverged = false;
   let bucklingTensile   = false;
   let bucklingIndeterminate = false;
-  if (mesh.nodesPerElem === 4 && result.elemStress6) {
+  let bucklingMode: Float64Array | undefined;
+  if (mayBuckle && result.elemStress6) {
     try {
       // Apply BCs to a fresh copy of the pristine assembled K (issue #100 —
       // previously this re-ran the full element assembly). Falls back to
@@ -2431,6 +2559,10 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       bucklingIndeterminate = bResult.indeterminate;
       // Do NOT surface a non-physical (indeterminate) eigenvalue as a BLF.
       if (!bResult.indeterminate) bucklingBLF = bResult.blf;
+      // Keep the mode shape only when a physical positive BLF was found.
+      if (!bResult.indeterminate && !bResult.tensileDominated && bResult.blf > 0) {
+        bucklingMode = bResult.modeShape;
+      }
       console.log(`[buckling] BLF=${bResult.blf.toFixed(3)} converged=${bResult.converged} iters=${bResult.iterations} tensile=${bResult.tensileDominated} indeterminate=${bResult.indeterminate}`);
     } catch (err) {
       console.warn(`[buckling] Analysis failed (non-fatal): ${err}`);
@@ -2778,6 +2910,48 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       }
       vertexModeShapesB64.push(Buffer.from(vertMode.buffer).toString("base64"));
     }
+  }
+
+  // ── Buckling mode shape projection to surface vertices ──────────────────────
+  // Same nearest-node grid mapping as the modal shapes, for the single buckling
+  // eigenvector (present only when a physical positive BLF was found).
+  let vertexBucklingModeB64: string | undefined;
+  if (bucklingMode) {
+    const vertMode = new Float32Array(vertCount * 3);
+    const R2 = R3D * R3D;
+    for (let v = 0; v < vertCount; v++) {
+      const vx = req.positions[v*3] ?? 0;
+      const vy = req.positions[v*3+1] ?? 0;
+      const vz = req.positions[v*3+2] ?? 0;
+      const ci = Math.floor((vx-nxMin)/CELL3);
+      const cj = Math.floor((vy-nyMin)/CELL3);
+      const ck = Math.floor((vz-nzMin)/CELL3);
+      let bestDist2 = Infinity, bestN = -1;
+      for (let di=-1;di<=1;di++) for (let dj=-1;dj<=1;dj++) for (let dk=-1;dk<=1;dk++) {
+        const ni2=ci+di, nj2=cj+dj, nk2=ck+dk;
+        if (ni2<0||ni2>=gW3||nj2<0||nj2>=gH3||nk2<0||nk2>=gD3) continue;
+        const cell = grid3.get(ni2*gH3*gD3+nj2*gD3+nk2);
+        if (!cell) continue;
+        for (const n of cell) {
+          const ddx=(mesh.nodes[n*3]??0)-vx, ddy=(mesh.nodes[n*3+1]??0)-vy, ddz=(mesh.nodes[n*3+2]??0)-vz;
+          const d2=ddx*ddx+ddy*ddy+ddz*ddz;
+          if (d2<R2 && d2<bestDist2) { bestDist2=d2; bestN=n; }
+        }
+      }
+      if (bestN < 0) {
+        for (let n=0; n<mesh.nodeCount; n++) {
+          const ddx=(mesh.nodes[n*3]??0)-vx, ddy=(mesh.nodes[n*3+1]??0)-vy, ddz=(mesh.nodes[n*3+2]??0)-vz;
+          const d2=ddx*ddx+ddy*ddy+ddz*ddz;
+          if (d2<bestDist2) { bestDist2=d2; bestN=n; }
+        }
+      }
+      if (bestN >= 0) {
+        vertMode[v*3]   = bucklingMode[bestN*3] ?? 0;
+        vertMode[v*3+1] = bucklingMode[bestN*3+1] ?? 0;
+        vertMode[v*3+2] = bucklingMode[bestN*3+2] ?? 0;
+      }
+    }
+    vertexBucklingModeB64 = Buffer.from(vertMode.buffer).toString("base64");
   }
 
   // ── Summary ────────────────────────────────────────────────────────────────
@@ -3311,6 +3485,19 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     maxSignedVonMisesMPa: +maxSignedVM.toFixed(3),
     vertexModeShapesB64,
     modalResult,
+    vertexBucklingModeB64,
+    bucklingResult: mayBuckle ? {
+      blf: bucklingBLF ?? null,
+      verdict: bucklingTensile ? 'no-buckling'
+             : bucklingIndeterminate ? 'indeterminate'
+             : (bucklingBLF !== undefined && bucklingBLF > 0)
+                 ? (bucklingBLF < 1.5 ? 'FAIL' : bucklingBLF < 3.0 ? 'MARGINAL' : 'PASS')
+                 : 'indeterminate',
+      converged: bucklingConverged,
+      tensileDominated: bucklingTensile,
+      indeterminate: bucklingIndeterminate,
+      hasMode: !!vertexBucklingModeB64,
+    } : undefined,
     residualCheckpoints: result.residualCheckpoints,
     vertexErrorEstimateB64: vertexErrorEstimate ? Buffer.from(vertexErrorEstimate.buffer).toString("base64") : undefined,
     globalRelativeError: result.globalRelativeError,

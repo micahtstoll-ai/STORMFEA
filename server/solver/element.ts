@@ -692,3 +692,60 @@ export function c3d10ElementStiffness(
 
   return Ke;
 }
+
+/**
+ * Compute the 30×30 element geometric (stress) stiffness matrix Kσ for C3D10,
+ * used in linear buckling. This is the quadratic-tet analogue of
+ * elementGeometricStiffness (C3D4).
+ *
+ * Kσ = ∫ Gᵀ S G dV, which for the displacement-gradient formulation reduces to a
+ * block-diagonal matrix whose (i,j) 3×3 block is g_ij·I₃ with the scalar
+ *   g_ij = ∫ (∇Nᵢ)ᵀ · σ · (∇Nⱼ) dV
+ * (σ the 3×3 Cauchy stress tensor). Integrated with the same 4-point Gauss rule
+ * as the stiffness. The per-node physical gradients ∇Nᵢ = [dNᵢ/dx, dNᵢ/dy,
+ * dNᵢ/dz] are read from the B matrix already assembled by buildB_c3d10, so the
+ * (tested) Jacobian inversion is reused rather than duplicated.
+ *
+ * @param nodes 10×3 node coordinates for this element
+ * @param sig   Element Cauchy stress [σxx, σyy, σzz, τxy, τyz, τxz] in MPa
+ */
+export function c3d10ElementGeometricStiffness(
+  nodes: Float64Array,
+  sig:   Float64Array,
+): Float64Array {
+  const sxx = sig[0]??0, syy = sig[1]??0, szz = sig[2]??0;
+  const txy = sig[3]??0, tyz = sig[4]??0, txz = sig[5]??0;
+
+  const ksg  = new Float64Array(30 * 30);
+  const grad = new Float64Array(10 * 3);  // per-node [dN/dx, dN/dy, dN/dz]
+
+  for (const gp of C3D10_GAUSS) {
+    const { B, detJ } = buildB_c3d10(nodes, gp.xi, gp.eta, gp.zeta);
+    const vol = Math.abs(detJ) * gp.w;
+
+    // Physical shape-function gradients live on the diagonal entries of B.
+    for (let i = 0; i < 10; i++) {
+      grad[i*3]   = B[0*30 + i*3]   ?? 0;   // dNᵢ/dx (ε_xx row)
+      grad[i*3+1] = B[1*30 + i*3+1] ?? 0;   // dNᵢ/dy (ε_yy row)
+      grad[i*3+2] = B[2*30 + i*3+2] ?? 0;   // dNᵢ/dz (ε_zz row)
+    }
+
+    for (let i = 0; i < 10; i++) {
+      const bxi = grad[i*3]!, byi = grad[i*3+1]!, bzi = grad[i*3+2]!;
+      // σ · ∇Nᵢ
+      const sGi_x = sxx*bxi + txy*byi + txz*bzi;
+      const sGi_y = txy*bxi + syy*byi + tyz*bzi;
+      const sGi_z = txz*bxi + tyz*byi + szz*bzi;
+      for (let j = 0; j < 10; j++) {
+        const bxj = grad[j*3]!, byj = grad[j*3+1]!, bzj = grad[j*3+2]!;
+        const s = vol * (bxj*sGi_x + byj*sGi_y + bzj*sGi_z);
+        // Diagonal of the (i,j) 3×3 block.
+        ksg[(3*i)  *30 + (3*j)]   = (ksg[(3*i)  *30 + (3*j)]   ?? 0) + s;
+        ksg[(3*i+1)*30 + (3*j+1)] = (ksg[(3*i+1)*30 + (3*j+1)] ?? 0) + s;
+        ksg[(3*i+2)*30 + (3*j+2)] = (ksg[(3*i+2)*30 + (3*j+2)] ?? 0) + s;
+      }
+    }
+  }
+
+  return ksg;
+}
