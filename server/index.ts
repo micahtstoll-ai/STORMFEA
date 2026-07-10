@@ -245,6 +245,7 @@ const ANALYSE_SPEC: Spec = {
   "gravity?":      { g: "number", direction: "vec3" },
   "pressures?":    [{ magnitude: "number", direction: "vec3", "normal?": "boolean", "region?": "face|facing|all" }],
   "fatigueLoadRatio?": "number",
+  "layerNormal?":  "vec3",
   "calibration?":  "object",
 };
 
@@ -323,6 +324,9 @@ app.post("/api/analyse", async (req, res) => {
         : {}),
       ...(typeof (body as any).fatigueLoadRatio === "number"
         ? { fatigueLoadRatio: (body as any).fatigueLoadRatio as number }
+        : {}),
+      ...(Array.isArray((body as any).layerNormal)
+        ? { layerNormal: (body as any).layerNormal as [number, number, number] }
         : {}),
     };
 

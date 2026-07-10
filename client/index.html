@@ -7682,7 +7682,18 @@ function buildAnalyseBody(quality, opts) {
     ...(gravityRequest() ? { gravity: gravityRequest() } : {}),
     ...(pressureRequest() ? { pressures: [pressureRequest()] } : {}),
     fatigueLoadRatio: +(document.getElementById('s-fatigue-r')?.value ?? 0),
+    // Through-layer (weak) axis from the picked bed face — lets the solver apply
+    // an exact tensor rotation for upright/angled prints (issue #101) instead of
+    // the conservative scalar swap. Only sent when a bed face was actually
+    // chosen (otherwise the orientation dropdown drives the fallback). Sign and
+    // in-plane azimuth are immaterial to the solver.
+    ...((S.bedNormal && S.bedFaceName) ? { layerNormal: normalizeVec3(S.bedNormal) } : {}),
   };
+}
+// Normalize a 3-vector for transport (returns a plain [x,y,z]).
+function normalizeVec3(v) {
+  const n = Math.hypot(v[0]||0, v[1]||0, v[2]||0) || 1;
+  return [(v[0]||0)/n, (v[1]||0)/n, (v[2]||0)/n];
 }
 
 // Read the surface-pressure control into a request entry, or null when disabled.
@@ -8088,11 +8099,11 @@ const SOURCES_DB = [
       },
       {
         id: "upright_swap",
-        citation: "STORMFEA modeling approximation — upright orientation as an E_xy↔E_z scalar swap (issue #101). Exact alternative: 90° Bond transformation of the 6×6 stiffness tensor (Auld, Acoustic Fields and Waves in Solids, 1973, §3).",
+        citation: "Upright/angled orientation as a 90° Bond transformation of the 6×6 stiffness tensor (Auld, Acoustic Fields and Waves in Solids, 1973, §3), with a conservative scalar-swap fallback (issue #101).",
         url: "",
-        usedFor: "Material model for parts printed 'upright' (layer normal horizontal in the analysis frame)",
-        confidence: "medium",
-        note: "An upright print is weak across layers along ONE horizontal axis and strong along the other horizontal axis and Z. The exact model is a 90° rotation of the stiffness tensor, which is transversely isotropic about a HORIZONTAL axis. The solver's material type only supports transverse isotropy about Z, so STORMFEA swaps scalars instead: E_z takes the strong in-layer modulus (exact for vertical loads) and BOTH horizontal directions take the weak through-layer modulus (conservative — the real part is weak in only one). Shear: the global-XY plane contains the layer normal, so G_xy is set to the inter-layer shear G_xz (exact); vertical shear planes mix in-layer and inter-layer shear, and the conservative inter-layer value is used for both. Yield strengths swap the same way. Limitations: in-plane stiffness along the strong horizontal direction is underestimated by up to E_z/E_xy (~35%), and load paths that exploit the strong horizontal axis will show pessimistic deflections/SF. Benchmarked against the full tensor rotation in server/tests/unit/upright-swap.test.ts.",
+        usedFor: "Material model for parts whose layer normal is not vertical (upright/angled)",
+        confidence: "high",
+        note: "An upright print is weak across layers along ONE horizontal axis and strong along the other horizontal axis and Z; the exact model is transverse isotropy about that horizontal (layer-normal) axis. When you pick a BED face, STORMFEA now sends the layer-normal direction and the solver applies the EXACT tensor rotation: the constitutive matrix is rotated to align the weak axis with the bed normal, and the Hill criterion is evaluated in that rotated frame (handles flat, upright, and angled uniformly). If no bed face is picked (azimuth unknown), it falls back to the conservative scalar swap — E_z takes the strong in-layer modulus and BOTH horizontal directions take the weak through-layer modulus (pessimistic along the strong horizontal axis by up to E_z/E_xy ≈ 35%). Rotation core validated in server/tests/unit/bond-rotation.test.ts; swap fallback in upright-swap.test.ts.",
       },
     ]
   },

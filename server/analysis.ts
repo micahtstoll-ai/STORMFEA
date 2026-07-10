@@ -47,6 +47,7 @@ import type { SolverInput }                 from "./solver/pipeline.js";
 import type { IsotropicMaterial, AnyMaterial, OrthotropicMaterial } from "./solver/types.js";
 import { isOrthotropic, isOrthotropicLike } from "./solver/types.js";
 import { recoverElementStressComponents }   from "./solver/stress_detail.js";
+import { rotationAligningZTo, rotateStress6ToLocal } from "./solver/element.js";
 import { sprSmoothedStress, sprSmoothedStress6, recoverElementStress, nodeAveragedPrincipalStress } from "./solver/stress.js";
 import { flagMergedHoleWarnings }           from "./holes.js";
 import type { HoleFeature }                 from "./holes.js";
@@ -585,6 +586,8 @@ function buildOrthotropicMaterialCLT(
   strengthMul:     number,
   calibration?:    CalibrationProfile | null,
   beadPropsOverride?: BeadProperties,
+  /** Through-layer (weak) axis in the global frame; see buildOrthotropicMaterial. */
+  weakAxis?:       readonly [number, number, number] | null,
 ): OrthotropicMaterial {
   const base = MATERIALS[baseMatId] ?? MATERIALS["pla"]!;
   const lhf  = layerHeightFactor(layerHeightMm);
@@ -623,35 +626,25 @@ function buildOrthotropicMaterialCLT(
     `${base.label} (CLT, ${pattern}, ${orientation}, lh=${layerHeightMm}mm, ${src})`,
   );
 
+  // Exact path (issue #101): a known through-layer axis (bed normal) → keep the
+  // natural weak-along-local-Z CLT material and attach `weakAxis` so the solver
+  // rotates the full tensor. Handles flat (+Z ⇒ identity), upright, and angled
+  // uniformly, replacing the scalar-swap approximation.
+  if (weakAxis && Math.hypot(weakAxis[0], weakAxis[1], weakAxis[2]) > 0) {
+    return { ...mat, weakAxis };
+  }
+
   if (orientation === "upright") {
-    // UPRIGHT ORIENTATION — SCALAR-SWAP APPROXIMATION (issue #101)
-    // ------------------------------------------------------------
-    // Physically, an upright print has its layer normal along a HORIZONTAL
-    // axis in the analysis frame: one in-plane direction is weak (across
-    // layers) and the other in-plane direction plus Z are strong (in-layer).
-    // The exact model is a 90° rotation of the full 6×6 C (Bond transform),
-    // which yields a material that is transversely isotropic about a
-    // horizontal axis — NOT about Z.
-    //
-    // The solver's OrthotropicMaterial type only supports transverse isotropy
-    // about global Z, so we approximate by swapping scalars: E_z takes the
-    // strong in-layer modulus (the load axis faces the strong direction) and
-    // BOTH horizontal directions take the weak through-layer modulus. This is
-    // conservative for in-plane loads (one horizontal direction is actually
-    // strong) and exact for the vertical modulus. See the SOURCES tab
-    // ("upright_swap" entry) and server/tests/unit/upright-swap.test.ts,
-    // which benchmarks this swap against the full tensor rotation.
-    //
-    // Shear moduli after the swap:
-    //   G_xy (global XY plane): this plane contains the layer normal, so
-    //     shearing it slides layers over each other → the inter-layer shear
-    //     G_xz, NOT the CLT in-plane 1/A66 (and not the isotropic fallback
-    //     E_xy/(2(1+ν)) that the constitutive builder would derive if G_xy
-    //     were omitted — that was the dropped-G_xy bug this fixes).
-    //   G_xz (planes containing global Z): the true rotated values are
-    //     G_xy (in-layer) for one plane and G_xz (inter-layer) for the other;
-    //     the transversely-isotropic type forces them equal, so keep the
-    //     conservative inter-layer value G_xz.
+    // Fallback SCALAR-SWAP APPROXIMATION when no bed is picked (weak azimuth
+    // unknown). Physically an upright print has its layer normal along a
+    // HORIZONTAL axis; the exact model is a 90° rotation of the full 6×6 C
+    // (Bond transform, now used above when weakAxis is known). Without the
+    // azimuth we approximate by swapping scalars: E_z takes the strong in-layer
+    // modulus and BOTH horizontal directions take the weak through-layer
+    // modulus — conservative (the real part is weak in only one). G_xy is set to
+    // the inter-layer shear G_xz because the global XY plane contains the layer
+    // normal after the swap (issue #101). See the "upright_swap" SOURCES entry
+    // and server/tests/unit/upright-swap.test.ts.
     return {
       kind: "orthotropic",
       E_xy: mat.E_z, E_z: mat.E_xy,
@@ -670,6 +663,14 @@ function buildOrthotropicMaterial(
   orientation:     string,
   layerHeightMm:   number,
   calibration?:    CalibrationProfile | null,
+  /**
+   * Through-layer (weak) axis in the global frame, from the bed normal. When
+   * provided, the material keeps its natural weak-along-local-Z constants and
+   * carries `weakAxis` so the solver applies an exact tensor rotation (issue
+   * #101) — this supersedes the scalar-swap upright approximation. When absent
+   * (no bed picked), the conservative scalar swap is used for upright prints.
+   */
+  weakAxis?:       readonly [number, number, number] | null,
 ): OrthotropicMaterial {
   const base = MATERIALS[baseMatId] ?? MATERIALS["pla"]!;
   const lhf  = layerHeightFactor(layerHeightMm);
@@ -692,16 +693,26 @@ function buildOrthotropicMaterial(
 
   const src = calibration ? `calibrated:${calibration.id}` : "literature";
 
+  // Natural material: weak (through-layer) axis along local Z, strong in-plane.
+  const flat: OrthotropicMaterial = {
+    kind: "orthotropic",
+    E_xy, E_z, nu_xy, nu_xz, G_xz, yieldXY, yieldZ,
+    label: `${base.label} (orthotropic, ${orientation}, lh=${layerHeightMm}mm, ${src})`,
+  };
+
+  // Exact path: a known weak axis (bed normal) → rotate the tensor to align the
+  // local weak axis with it. Handles flat (+Z ⇒ identity), upright, and angled
+  // uniformly and correctly (issue #101).
+  if (weakAxis && Math.hypot(weakAxis[0], weakAxis[1], weakAxis[2]) > 0) {
+    return { ...flat, weakAxis };
+  }
+
   if (orientation === "upright") {
-    // Scalar-swap approximation for upright prints — same reasoning as the
-    // CLT branch above (see the long comment in buildOrthotropicMaterialCLT
-    // and the "upright_swap" SOURCES entry): the swapped material keeps
-    // transverse isotropy about global Z, which makes BOTH horizontal
-    // directions weak (conservative; the real part is weak in only one).
-    // G_xy is set explicitly to the inter-layer shear modulus G_xz because
-    // the global XY plane contains the layer normal after the swap — without
-    // this the constitutive builder would silently derive an in-layer-like
-    // G_xy = E_xy/(2(1+ν)) from the swapped (weak) modulus (issue #101).
+    // Fallback scalar-swap approximation (no bed picked, so the weak azimuth is
+    // unknown): keep transverse isotropy about global Z, making BOTH horizontal
+    // directions weak (conservative; the real part is weak in only one). G_xy is
+    // set to the inter-layer shear G_xz because the global XY plane contains the
+    // layer normal after the swap (issue #101).
     return {
       kind: "orthotropic",
       E_xy: E_z, E_z: E_xy,
@@ -711,11 +722,7 @@ function buildOrthotropicMaterial(
       label: `${base.label} (orthotropic, upright, lh=${layerHeightMm}mm, ${src})`,
     };
   }
-  return {
-    kind: "orthotropic",
-    E_xy, E_z, nu_xy, nu_xz, G_xz, yieldXY, yieldZ,
-    label: `${base.label} (orthotropic, flat, lh=${layerHeightMm}mm, ${src})`,
-  };
+  return flat;
 }
 
 // ─── Print settings effect on strength ────────────────────────────────────────
@@ -1002,6 +1009,14 @@ export interface AnalysisRequest {
    * Default 0 (pulsating 0→peak). −1 = fully reversed; R>0 = tension-biased.
    */
   fatigueLoadRatio?: number;
+  /**
+   * Through-layer (weak) axis in the mesh/global frame — the FDM layer normal,
+   * from the picked bed face. When present the solver rotates the orthotropic
+   * tensor to align its weak axis with it (exact upright/angled model, issue
+   * #101) instead of the scalar-swap approximation. Direction only; sign and
+   * in-plane azimuth are immaterial.
+   */
+  layerNormal?: [number, number, number];
   /**
    * Material uncertainty mode. When 'central' (default) the solver uses the literature
    * central estimates. The server always computes sfConservative and sfOptimistic alongside
@@ -2114,6 +2129,14 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // Use orthotropic material model — accurately captures the anisotropy of FDM parts.
   // For flat prints: E_z ≈ 0.45 × E_xy, G_xz ≈ 0.40 × G_xy (Ahn et al. 2002)
   // For upright prints: axes are swapped — the strong direction faces the load
+  // Through-layer (weak) axis from the picked bed normal, when available — the
+  // solver then applies an exact tensor rotation instead of the scalar-swap
+  // upright approximation (issue #101). Only its direction matters (sign/azimuth
+  // about the axis are immaterial). Omitted → conservative scalar-swap fallback.
+  const weakAxis: readonly [number, number, number] | null =
+    (req.layerNormal && Math.hypot(req.layerNormal[0], req.layerNormal[1], req.layerNormal[2]) > 1e-9)
+      ? req.layerNormal : null;
+
   const builtMaterial: AnyMaterial = req.print.useCLT
     ? buildOrthotropicMaterialCLT(
         req.print.materialId,
@@ -2124,6 +2147,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         strengthMul,
         req.calibration ?? null,
         req.print.beadProps,
+        weakAxis,
       )
     : buildOrthotropicMaterial(
         req.print.materialId,
@@ -2131,6 +2155,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         req.print.orientation,
         req.print.layerHeightMm ?? 0.2,
         req.calibration ?? null,
+        weakAxis,
       );
 
   // Effective mass density (issue #99): solid density × first-order solid
@@ -2624,6 +2649,13 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     : null;
   const utilYieldXY = orthoMatU ? orthoMatU.yieldXY : effectiveYield;
   const utilYieldZ  = orthoMatU ? orthoMatU.yieldZ  : effectiveYield;
+  // U_XY / U_Z are defined in the material frame (weak axis = local Z). For a
+  // rotated weak axis (upright/angled, issue #101) rotate the nodal stress into
+  // that frame first; null for the common weak-along-Z case.
+  const utilR = (orthoMatU && orthoMatU.weakAxis
+    && Math.hypot(...orthoMatU.weakAxis) > 0
+    && (orthoMatU.weakAxis[2] / (Math.hypot(...orthoMatU.weakAxis) || 1)) < 1 - 1e-12)
+    ? rotationAligningZTo(orthoMatU.weakAxis) : null;
 
   const nodeStress6 = result.elemStress6
     ? sprSmoothedStress6(mesh, result.elemStress6)
@@ -2634,12 +2666,16 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   const nodeSignedStress = new Float64Array(mesh.nodeCount);
   if (nodeStress6 && nodeUtilXY && nodeUtilZ) {
     for (let n = 0; n < mesh.nodeCount; n++) {
-      const sxx = nodeStress6[n*6]   ?? 0;
-      const syy = nodeStress6[n*6+1] ?? 0;
-      const szz = nodeStress6[n*6+2] ?? 0;
-      const txy = nodeStress6[n*6+3] ?? 0;
-      const tyz = nodeStress6[n*6+4] ?? 0;
-      const txz = nodeStress6[n*6+5] ?? 0;
+      let sxx = nodeStress6[n*6]   ?? 0;
+      let syy = nodeStress6[n*6+1] ?? 0;
+      let szz = nodeStress6[n*6+2] ?? 0;
+      let txy = nodeStress6[n*6+3] ?? 0;
+      let tyz = nodeStress6[n*6+4] ?? 0;
+      let txz = nodeStress6[n*6+5] ?? 0;
+      if (utilR) {
+        const L = rotateStress6ToLocal([sxx, syy, szz, txy, tyz, txz], utilR);
+        sxx = L[0]; syy = L[1]; szz = L[2]; txy = L[3]; tyz = L[4]; txz = L[5];
+      }
       const util = computeUtilizationRatios(sxx, syy, szz, txy, tyz, txz, utilYieldXY, utilYieldZ);
       nodeUtilXY[n] = util.uXY;
       nodeUtilZ[n]  = util.uZ;
