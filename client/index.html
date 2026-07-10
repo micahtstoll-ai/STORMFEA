@@ -1541,7 +1541,11 @@ body:not(.has-results) #btn-stress { display: none !important; }
               </select>
             </label>
           </div>
-          <div style="font-size:10px;color:var(--text-lo);margin-top:6px;line-height:1.5">Uniform pressure (MPa) on the face toward the chosen direction — a positive value pushes inward (compression), negative pulls outward. Consistent surface load; needs a solid mesh (unavailable on the box-mesh fallback).</div>
+          <label style="font-size:10px;color:var(--text-lo);display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer">
+            <input type="checkbox" id="s-pressure-normal" style="width:auto;margin:0" onchange="markSessionDirty()">
+            Normal to surface (follow each triangle's own normal)
+          </label>
+          <div style="font-size:10px;color:var(--text-lo);margin-top:6px;line-height:1.5">Pressure (MPa) on the face toward the chosen direction — a positive value pushes inward (compression), negative pulls outward. By default the load is uniform in the chosen direction; check <em>Normal to surface</em> for a true pressure that follows each surface triangle's own normal (physical on curved/non-planar faces). Consistent surface load.</div>
         </div>
       </div>
 
@@ -4799,6 +4803,7 @@ function renderHolesList() {
           <div style="color:var(--text-mid)">Hole ${h.id} &nbsp;·&nbsp; ø${U.lenStr(h.diameter)}${h.manual ? ' <span style="color:var(--success);font-size:10px">· MANUAL</span>' : ''}</div>
           <div style="color:var(--text-lo);margin-top:1px">centre (${h.centre[0].toFixed(1)}, ${h.centre[1].toFixed(1)}, ${h.centre[2].toFixed(1)}) mm · axis (${h.normal.map(v=>v.toFixed(2)).join(', ')})</div>
           <div style="margin-top:1px;font-size:10px;color:${h.manual ? 'var(--success)' : lowConf ? 'var(--warn)' : 'var(--text-lo)'}">${h.manual ? 'user-defined · 100%' : lowConf ? `<svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> low confidence ${conf}% — verify axis or redefine manually` : `confidence ${conf}%`}</div>
+          ${h.warning ? `<div style="margin-top:3px;font-size:10px;color:var(--warn);line-height:1.4"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> ${h.warning}</div>` : ''}
         </div>
         <button style="${btnStyle}" onclick="toggleBoltFromList(${h.id})" ${alreadyAdded?'disabled':''}>${btnLabel}</button>
       </div>
@@ -7666,7 +7671,8 @@ function pressureRequest() {
   if (!(m > 0)) return null;
   const dir = (document.getElementById('s-pressure-dir')?.value ?? '0,0,1')
     .split(',').map(Number);
-  return { magnitude: m, direction: [dir[0] || 0, dir[1] || 0, dir[2] || 0] };
+  const normal = !!document.getElementById('s-pressure-normal')?.checked;
+  return { magnitude: m, direction: [dir[0] || 0, dir[1] || 0, dir[2] || 0], normal };
 }
 
 function updatePressureUI() {
@@ -9842,6 +9848,7 @@ async function loadSession() {
         setChk('s-pressure', true);
         setVal('s-pressure-mpa', a.pressure.magnitude);
         setVal('s-pressure-dir', (a.pressure.direction || []).join(','));
+        setChk('s-pressure-normal', !!a.pressure.normal);
       } else { setChk('s-pressure', false); }
       if (typeof updateGravityUI === 'function') updateGravityUI();
       if (typeof updatePressureUI === 'function') updatePressureUI();

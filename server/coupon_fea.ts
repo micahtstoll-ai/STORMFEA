@@ -211,3 +211,145 @@ export function buildGaugeBoxMesh(
   const nz = Math.max(6, Math.round(lengthMm / divPerMmInv));
   return generateBoxMesh(0, 0, 0, widthMm, thickMm, lengthMm, nx, ny, nz);
 }
+
+/**
+ * Structured C3D10 mesh of a rectangular plate with a centred circular through-
+ * hole — the classic "plate with a hole" fixture for the Kt ≈ 3.0 stress-
+ * concentration benchmark (Kirsch). Built directly (no external mesher) so the
+ * benchmark runs everywhere, including CI without TetGen/Gmsh.
+ *
+ * Geometry (centred at the origin):
+ *   width  W → x ∈ [−W/2, W/2]
+ *   thick  T → y ∈ [0, T]       (thin; hole axis is along y, through the plate)
+ *   length L → z ∈ [−L/2, L/2]  (uniaxial tension is applied along z)
+ * A hole of radius `holeR` is centred on the z–x plane at x = z = 0.
+ *
+ * Topology is a single O-grid (butterfly-free) annulus: the inner ring is the
+ * hole edge, the outer ring is the rectangle, connected by `ns` graded radial
+ * layers (clustered toward the hole for edge resolution) and `nTheta`
+ * circumferential divisions, extruded `nThick` cells through the thickness. Each
+ * curved hex cell uses the same conforming 6-tet body-diagonal split as
+ * generateBoxMeshC3D10, so all tets have positive volume and mid-side nodes on
+ * shared faces are identical.
+ *
+ * For a small hole-to-width ratio the peak σ_zz at the hole edge approaches
+ * 3× the far-field (gross-section) stress — the value the benchmark checks.
+ */
+export function buildPlateWithHoleMesh(opts: {
+  widthMm:  number;
+  thickMm:  number;
+  lengthMm: number;
+  holeR:    number;
+  nTheta?:  number;
+  ns?:      number;
+  nThick?:  number;
+  radialGrade?: number;
+}): TetMesh {
+  const { widthMm: W, thickMm: T, lengthMm: L, holeR: r } = opts;
+  const nTheta = Math.max(16, opts.nTheta ?? 48);
+  const ns     = Math.max(4,  opts.ns ?? 10);
+  const nThick = Math.max(1,  opts.nThick ?? 2);
+  const grade  = opts.radialGrade ?? 1.8; // >1 clusters radial layers at the hole
+
+  const Nrad = ns + 1;      // nodes per ray (inner hole → outer rectangle)
+  const Ny   = nThick + 1;  // nodes through thickness
+  const cornerPerLayer = nTheta * Nrad;
+  const cornerCount = cornerPerLayer * Ny;
+
+  // Ray/rectangle intersection for a centred rectangle [−W/2,W/2]×[−L/2,L/2]
+  // (x = cosθ scaled, z = sinθ scaled).
+  const outerPoint = (ct: number, st: number): [number, number] => {
+    const tx = Math.abs(ct) > 1e-12 ? (W / 2) / Math.abs(ct) : Infinity;
+    const tz = Math.abs(st) > 1e-12 ? (L / 2) / Math.abs(st) : Infinity;
+    const t = Math.min(tx, tz);
+    return [t * ct, t * st];
+  };
+
+  const cornerNodes = new Float64Array(cornerCount * 3);
+  const cornerIdx = (iTheta: number, is: number, iy: number): number =>
+    iy * cornerPerLayer + (iTheta % nTheta) * Nrad + is;
+
+  for (let iy = 0; iy < Ny; iy++) {
+    const y = (T * iy) / nThick;
+    for (let it = 0; it < nTheta; it++) {
+      const theta = (2 * Math.PI * it) / nTheta;
+      const ct = Math.cos(theta), st = Math.sin(theta);
+      const inX = r * ct, inZ = r * st;
+      const [outX, outZ] = outerPoint(ct, st);
+      for (let is = 0; is < Nrad; is++) {
+        const frac = Math.pow(is / ns, grade); // 0 at hole, 1 at rectangle
+        const x = inX + frac * (outX - inX);
+        const z = inZ + frac * (outZ - inZ);
+        const n = cornerIdx(it, is, iy);
+        cornerNodes[n * 3]     = x;
+        cornerNodes[n * 3 + 1] = y;
+        cornerNodes[n * 3 + 2] = z;
+      }
+    }
+  }
+
+  const elementCount = nTheta * ns * nThick * 6;
+  const elemConnFlat = new Int32Array(elementCount * 10);
+  let ei = 0;
+
+  const midMap = new Map<number, number>();
+  let nextMidIdx = cornerCount;
+  const midXYZ: number[] = [];
+  const getMid = (a: number, b: number): number => {
+    const lo = Math.min(a, b), hi = Math.max(a, b);
+    const key = lo * (cornerCount + 1) + hi;
+    let idx = midMap.get(key);
+    if (idx !== undefined) return idx;
+    idx = nextMidIdx++;
+    midMap.set(key, idx);
+    const ax = cornerNodes[a * 3]!, ay = cornerNodes[a * 3 + 1]!, az = cornerNodes[a * 3 + 2]!;
+    const bx = cornerNodes[b * 3]!, by = cornerNodes[b * 3 + 1]!, bz = cornerNodes[b * 3 + 2]!;
+    midXYZ.push((ax + bx) * 0.5, (ay + by) * 0.5, (az + bz) * 0.5);
+    return idx;
+  };
+
+  for (let iy = 0; iy < nThick; iy++) {
+    for (let it = 0; it < nTheta; it++) {   // periodic in θ (it+1 wraps)
+      for (let is = 0; is < ns; is++) {
+        const v0 = cornerIdx(it,   is,   iy);
+        const v1 = cornerIdx(it+1, is,   iy);
+        const v2 = cornerIdx(it+1, is+1, iy);
+        const v3 = cornerIdx(it,   is+1, iy);
+        const v4 = cornerIdx(it,   is,   iy+1);
+        const v5 = cornerIdx(it+1, is,   iy+1);
+        const v6 = cornerIdx(it+1, is+1, iy+1);
+        const v7 = cornerIdx(it,   is+1, iy+1);
+        const tets: [number, number, number, number][] = [
+          [v0, v6, v1, v2],
+          [v0, v6, v2, v3],
+          [v0, v6, v3, v7],
+          [v0, v6, v7, v4],
+          [v0, v6, v4, v5],
+          [v0, v6, v5, v1],
+        ];
+        for (const [n0, n1, n2, n3] of tets) {
+          const base = ei * 10;
+          elemConnFlat[base]     = n0;
+          elemConnFlat[base + 1] = n1;
+          elemConnFlat[base + 2] = n2;
+          elemConnFlat[base + 3] = n3;
+          elemConnFlat[base + 4] = getMid(n0, n1);
+          elemConnFlat[base + 5] = getMid(n1, n2);
+          elemConnFlat[base + 6] = getMid(n0, n2);
+          elemConnFlat[base + 7] = getMid(n0, n3);
+          elemConnFlat[base + 8] = getMid(n1, n3);
+          elemConnFlat[base + 9] = getMid(n2, n3);
+          ei++;
+        }
+      }
+    }
+  }
+
+  const midCount = midXYZ.length / 3;
+  const nodeCount = cornerCount + midCount;
+  const nodes = new Float64Array(nodeCount * 3);
+  nodes.set(cornerNodes);
+  for (let m = 0; m < midXYZ.length; m++) nodes[cornerCount * 3 + m] = midXYZ[m]!;
+
+  return { nodes, elements: elemConnFlat, nodeCount, elementCount, nodesPerElem: 10 };
+}

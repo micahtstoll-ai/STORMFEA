@@ -1407,6 +1407,39 @@ console.log("\n[23] Orthotropic directional stiffness — δ_z/δ_x ≈ E_xy/E_z
   }
 }
 
+// ── Test group 24: Hole-in-plate stress concentration (Kt ≈ 3.0) ─────────────
+console.log("\n[24] Hole-in-plate stress concentration — Kirsch Kt ≈ 3.0");
+{
+  try {
+    const { buildPlateWithHoleMesh, solveCouponKt } = await import("../coupon_fea.js");
+
+    // Rectangular plate (W=40, t=2, L=100 mm) with a centred Ø6 through-hole
+    // (d/W = 0.15) in uniaxial tension along z. For a small hole-to-width ratio
+    // the peak σ at the hole edge approaches 3× the far-field (gross) stress
+    // — the classic Kirsch result. Built without an external mesher so the
+    // benchmark runs everywhere (this was deferred while the coupon hole was
+    // non-manifold for TetGen). Quadratic C3D10 elements + radial refinement at
+    // the hole resolve the gradient; the ~15% band absorbs the residual mesh
+    // discretization (the element-averaged peak is slightly below the nodal one).
+    const iso = { E: 3500, nu: 0.36, yieldStrength: 50, label: "kt-plate" };
+    const mesh = buildPlateWithHoleMesh({
+      widthMm: 40, thickMm: 2, lengthMm: 100, holeR: 3,
+      nTheta: 48, ns: 12, nThick: 1, radialGrade: 2.0,
+    });
+    const kt = await solveCouponKt(mesh, iso, {
+      totalForceN: 1000, axis: 2, nominalAreaMm2: 40 * 2, // gross section
+      gripFraction: 0.30, shear: false,
+    });
+    test("[24] plate-with-hole solve converged", kt.converged, `converged=${kt.converged}`);
+    test("[24] peak/gross Kt ≈ 3.0 (within 15%)", kt.converged && near(kt.Kt, 3.0, 0.15),
+      `Kt=${kt.Kt.toFixed(3)} (expect ≈3.0)`);
+    console.log(`    Kt_gross=${kt.Kt.toFixed(3)} peakVM=${kt.peakVonMisesMPa.toFixed(2)}MPa ` +
+      `nomVM=${kt.nominalVonMisesMPa.toFixed(2)}MPa (${mesh.elementCount} C3D10 elems)`);
+  } catch (err) {
+    test("[24] hole-in-plate benchmark did not throw", false, String(err));
+  }
+}
+
 // ── Summary ───────────────────────────────────────────────────────────────────
 // Runs at the END of the async IIFE, after every test group above has
 // completed. (A previous setTimeout(0) variant fired as soon as the event

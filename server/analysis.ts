@@ -15,14 +15,14 @@
  *   - Failure assessment
  */
 
-import { generateBoxMesh }                  from "./solver/meshgen.js";
+import { generateBoxMeshC3D4, generateBoxMeshC3D10, extractSurfaceFaces } from "./solver/meshgen.js";
 import { runLinearStaticWithK }            from "./solver/pipeline.js";
 import { runModalAnalysis }                from "./solver/modal.js";
 import { runLinearBuckling }              from "./solver/buckling.js";
 import { assembleK, assembleKsigma, buildSparsityPattern } from "./solver/assembly.js";
 import { buildNodeElementAdjacency }       from "./solver/adjacency.js";
 import { applyDirichletBC }    from "./solver/boundary.js";
-import { assembleForceVector, assembleBodyForce, assembleSurfaceTraction } from "./solver/load.js";
+import { assembleForceVector, assembleBodyForce, assembleSurfaceTraction, assembleSurfaceTractionNormal } from "./solver/load.js";
 import type { ModalAnalysisResult }        from "./solver/types.js";
 import {
   buildLaminateCMatrix,
@@ -984,12 +984,15 @@ export interface AnalysisRequest {
    */
   gravity?: { g: number; direction: [number, number, number] };
   /**
-   * Optional uniform surface pressure / traction loads. Each applies a traction
-   * t = magnitude·direction (magnitude in MPa = N/mm²) over the surface
-   * triangles of the extreme face in `direction`, as consistent tributary-area
-   * nodal forces. Ignored on the box-fallback mesh (no surface connectivity).
+   * Optional surface pressure / traction loads. `direction` selects the extreme
+   * face the load acts on. By default the traction is uniform:
+   * t = magnitude·(−direction) (magnitude in MPa = N/mm², positive = inward push),
+   * distributed as consistent tributary-area nodal forces. When `normal` is true
+   * the load instead follows each loaded triangle's own outward normal
+   * (t = −magnitude·n̂), i.e. a true pressure normal to a curved/non-planar face.
+   * Honoured on the box-mesh fallback (which now carries surface connectivity).
    */
-  pressures?: { magnitude: number; direction: [number, number, number] }[];
+  pressures?: { magnitude: number; direction: [number, number, number]; normal?: boolean }[];
   /**
    * Material uncertainty mode. When 'central' (default) the solver uses the literature
    * central estimates. The server always computes sfConservative and sfOptimistic alongside
@@ -2174,7 +2177,13 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       // (issue #106). The box fallback below remains for genuine meshing
       // failures where TetGen ran and rejected the geometry.
       if (err instanceof TetGenNotFoundError) throw err;
-      console.warn("[analysis] TetGen failed, falling back to C3D4 box mesh (C3D10 not available in fallback):", err);
+      // Honour the element-order selector on the fallback too: a C3D10 box mesh
+      // avoids the ~55% bending underprediction that C3D4 suffers from shear
+      // locking. The box is still featureless (no holes/fillets), so the
+      // mesh-fallback reliability banner is unchanged — only element-order
+      // accuracy improves.
+      const tetOrder = (req.print.meshOrder ?? 2) as 1 | 2;
+      console.warn(`[analysis] TetGen failed, falling back to ${tetOrder === 2 ? "C3D10" : "C3D4"} box mesh:`, err);
       meshFallback = true;
       const { minX, maxX, minY, maxY, minZ, maxZ } = req.bounds;
       const spanX = maxX - minX, spanY = maxY - minY, spanZ = maxZ - minZ;
@@ -2183,7 +2192,12 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       const nx = Math.max(4, Math.round(divisions * spanX / aspect));
       const ny = Math.max(4, Math.round(divisions * spanY / aspect));
       const nz = Math.max(2, Math.round(divisions * spanZ / aspect));
-      mesh = generateBoxMesh(minX, minY, minZ, maxX, maxY, maxZ, nx, ny, nz);
+      mesh = tetOrder === 2
+        ? generateBoxMeshC3D10(minX, minY, minZ, maxX, maxY, maxZ, nx, ny, nz)
+        : generateBoxMeshC3D4(minX, minY, minZ, maxX, maxY, maxZ, nx, ny, nz);
+      // Real boundary connectivity so surface-pressure loads are honoured on the
+      // fallback (previously skipped for lack of surface faces).
+      surfaceFaces = extractSurfaceFaces(mesh);
       surfaceToNode = new Int32Array(req.triangleCount * 3);
       for (let i = 0; i < surfaceToNode.length; i++) surfaceToNode[i] = i % mesh.nodeCount;
     }
@@ -2395,13 +2409,15 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   }
 
   // ── Surface pressure / traction loads ──────────────────────────────────────
-  // A uniform traction t = P·d (P in MPa = N/mm²) applied over the surface
-  // triangles of the extreme face in direction d, distributed as consistent
-  // (tributary-area) nodal forces. Requires surface connectivity (unavailable
-  // on the box-fallback path).
+  // A traction applied over the surface triangles of the extreme face in
+  // direction d, distributed as consistent (tributary-area) nodal forces.
+  // Uniform mode: t = P·(−d) (same push on every loaded triangle). Normal mode
+  // (p.normal): t = P·(−n̂) per triangle, following each triangle's own outward
+  // normal — a true pressure on a curved/non-planar face. The fallback box mesh
+  // now carries surface connectivity, so pressure is honoured there too.
   if (req.pressures && req.pressures.length > 0) {
     if (!surfaceFaces) {
-      console.warn("[analysis] surface pressure ignored — no surface connectivity (box-mesh fallback).");
+      console.warn("[analysis] surface pressure ignored — no surface connectivity.");
     } else {
       const triCount = Math.floor(surfaceFaces.length / 3);
       for (const p of req.pressures) {
@@ -2431,10 +2447,15 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         }
         // A positive pressure pushes INWARD on the selected face (compression) —
         // the intuitive "pressure on this face" and the compressive pre-stress
-        // buckling needs. The selected face's outward normal points along +d, so
-        // an inward push is −magnitude·d. Negative magnitude → outward (tension).
-        const traction: [number,number,number] = [-p.magnitude*ux, -p.magnitude*uy, -p.magnitude*uz];
-        const pf = assembleSurfaceTraction(mesh.nodes, surfaceFaces, isLoaded, traction);
+        // buckling needs. Negative magnitude → outward (tension).
+        //   Uniform: the selected face's outward normal points along +d, so an
+        //   inward push is −magnitude·d.
+        //   Normal:  each loaded triangle uses its own outward normal n̂, so the
+        //   inward push is −magnitude·n̂ per triangle (physical on curved faces).
+        const pf = p.normal
+          ? assembleSurfaceTractionNormal(mesh.nodes, surfaceFaces, isLoaded, -p.magnitude)
+          : assembleSurfaceTraction(mesh.nodes, surfaceFaces, isLoaded,
+              [-p.magnitude*ux, -p.magnitude*uy, -p.magnitude*uz]);
         let resN = 0;
         for (let n = 0; n < mesh.nodeCount; n++) {
           const fx = pf[n*3]??0, fy = pf[n*3+1]??0, fz = pf[n*3+2]??0;
@@ -2443,7 +2464,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
             resN += Math.hypot(fx, fy, fz);
           }
         }
-        console.log(`[analysis] pressure ${p.magnitude}MPa in (${ux.toFixed(2)},${uy.toFixed(2)},${uz.toFixed(2)}): ` +
+        console.log(`[analysis] pressure ${p.magnitude}MPa ${p.normal ? "normal-to-surface" : `in (${ux.toFixed(2)},${uy.toFixed(2)},${uz.toFixed(2)})`}: ` +
           `${nLoaded} loaded triangles, |resultant|~${resN.toFixed(2)}N`);
       }
     }

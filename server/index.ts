@@ -19,7 +19,7 @@ import path          from "path";
 import { fileURLToPath } from "url";
 import { spawn }         from "child_process";
 import { parseSTL }      from "./stl.js";
-import { detectHoles }   from "./holes.js";
+import { detectHoles, flagMergedHoleWarnings }   from "./holes.js";
 import { runAnalysis, AnalysisAbortError }   from "./analysis.js";
 import type { ForceSpec, PrintSettings, AnalysisResult } from "./analysis.js";
 import { expect as expectShape, ValidationError } from "./validate.js";
@@ -154,10 +154,19 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
         return { id, centre:[cx,cy,cz] as [number,number,number],
           normal:[0,0,1] as [number,number,number],
           radius:+r.toFixed(4), diameter:+(r*2).toFixed(4),
-          confidence:1.0, edgeCount:nodeIndices.length };
+          confidence:1.0, edgeCount:nodeIndices.length,
+          warning: null as string | null };
       });
 
-      console.log(`[upload] STEP ${req.file.originalname}: ${triCount} surface tris, ${holes.length} holes`);
+      // Flag overlapping (likely Gmsh-merged) hole detections so the user can
+      // verify a possibly-wrong radius (README closely-spaced-holes caveat).
+      const holeWarnings = flagMergedHoleWarnings(holes);
+      holes.forEach((h, i) => {
+        if (holeWarnings[i]) { h.warning = holeWarnings[i]; h.confidence = Math.min(h.confidence, 0.5); }
+      });
+      const nMerged = holeWarnings.filter(Boolean).length;
+      console.log(`[upload] STEP ${req.file.originalname}: ${triCount} surface tris, ${holes.length} holes` +
+        (nMerged ? ` (${nMerged} flagged as possibly merged)` : ""));
 
       res.json({
         fileType: "step",
@@ -1551,7 +1560,7 @@ app.post("/api/onshape/import", async (req, res) => {
     // used max distance among wall nodes as a radius estimate, which is
     // both an independent reimplementation of the same calculation done
     // correctly elsewhere AND a less accurate one (max instead of mean).
-    const holes: Array<{id:number; centre:[number,number,number]; normal:[number,number,number]; radius:number; diameter:number; confidence:number; edgeCount:number}> = [];
+    const holes: Array<{id:number; centre:[number,number,number]; normal:[number,number,number]; radius:number; diameter:number; confidence:number; edgeCount:number; warning:string|null}> = [];
     let holeId = 0;
     for (const [gmshHoleId, nodeIndices] of gmshResult.holeWallNodes) {
       // Estimate hole centre from wall nodes (radius comes from gmshResult.holeRadius)
@@ -1565,10 +1574,17 @@ app.post("/api/onshape/import", async (req, res) => {
       cx/=n; cy/=n; cz/=n;
       const r = gmshResult.holeRadius.get(gmshHoleId) ?? 0;
       holes.push({ id: holeId++, centre:[cx,cy,cz], normal:[0,0,1], radius:r,
-        diameter:r*2, confidence:0.95, edgeCount:nodeIndices.length });
+        diameter:r*2, confidence:0.95, edgeCount:nodeIndices.length, warning:null });
     }
 
-    console.log(`[onshape] ${triCount} surface tris, ${holes.length} holes`);
+    // Flag overlapping (likely Gmsh-merged) hole detections (see upload path).
+    const holeWarnings = flagMergedHoleWarnings(holes);
+    holes.forEach((h, i) => {
+      if (holeWarnings[i]) { h.warning = holeWarnings[i]; h.confidence = Math.min(h.confidence, 0.5); }
+    });
+
+    console.log(`[onshape] ${triCount} surface tris, ${holes.length} holes` +
+      (holeWarnings.filter(Boolean).length ? ` (${holeWarnings.filter(Boolean).length} flagged as possibly merged)` : ""));
 
     res.json({
       fileType:      "step",
