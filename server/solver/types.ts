@@ -88,6 +88,18 @@ export interface OrthotropicMaterial {
   readonly yieldZ:        number;   // MPa
   readonly label:         string;
   /**
+   * Unit vector (global frame) giving the material's weak / through-layer axis —
+   * the FDM layer normal. Absent or [0,0,1] means the local model axes coincide
+   * with global axes (transverse isotropy about global Z, the historical flat
+   * case). When it points elsewhere (e.g. horizontal for an upright print) the
+   * constitutive matrix is rotated to align the local 3-axis with it (Bond
+   * transform), and the Hill criterion is evaluated in that rotated frame. This
+   * replaces the scalar-swap upright approximation (issue #101) with an exact
+   * tensor rotation. In-plane azimuth about the weak axis is irrelevant (the
+   * material is isotropic in the layer plane), so only the direction matters.
+   */
+  readonly weakAxis?:     readonly [number, number, number];
+  /**
    * Mass density in kg/m³ (SI). Default: 1240 (PLA).
    * Solver converts to t/mm³ via ×1e-12: 1 kg/m³ = 1e-12 t/mm³.
    */
@@ -108,9 +120,14 @@ export interface OrthotropicMaterial {
  *   ν_xy and ν_xz are constant across densities
  *
  * Gibson-Ashby (1997) lattice scaling: E ∝ ρ^n with n ∈ [1.5, 2.5] for open-cell solids.
- * NOTE: The specific exponents (1.75, 2.1, 2.3) and linear correction factors (0.12, 0.18, 0.22)
- * are NOT sourced to any cited paper. Birosz et al. (2022) is a qualitative infill pattern
- * comparison and does not provide power-law density-modulus coefficients.
+ * The power-law FORM is cited (Gibson & Ashby; see the SOURCES tab entry
+ * "gibson_ashby1997"). The specific exponents (1.75, 2.1, 2.3) and small linear
+ * correction factors (0.12, 0.18, 0.22) are STORMFEA engineering estimates
+ * chosen WITHIN that cited range — no paper reports gyroid-specific coefficients
+ * (Birosz et al. 2022 is a qualitative pattern comparison, not a density-modulus
+ * fit). They are confidence-labelled LOW, locked by regression tests
+ * (server/tests/unit/gyroid-formula.test.ts), and can be replaced with
+ * printer-specific values via coupon calibration. Treat as bounded estimates.
  */
 export interface GyroidOrthotropic {
   readonly kind:          "gyroid-orthotropic";

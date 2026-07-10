@@ -131,3 +131,40 @@ describe("Modified Goodman: algebraic boundary on the Goodman line", () => {
     expect(r.fatigueSF).toBeCloseTo(1.0, 2);
   });
 });
+
+describe("Fatigue load ratio R (issue: R input)", () => {
+  // Same PLA/flat constants: Se = 24.05, Su = 46. peak σ_max = 20 MPa.
+  // R = 0 (pulsating): σ_a = σ_m = 10 → SF = 1.58 (see Case 1 above).
+  // R = -1 (fully reversed): σ_a = σ_max = 20, σ_m = 0.
+  //   1/SF = 20/24.05 + 0/46 = 0.83160 → SF = 1.2025 → 1.20.
+  it("R = -1 (fully reversed) gives σ_m = 0 and a lower SF than R = 0", () => {
+    const pulsating = estimateFatigue(20, 40, "pla", "flat", 0);
+    const reversed  = estimateFatigue(20, 40, "pla", "flat", -1);
+    expect(reversed.loadRatio).toBe(-1);
+    expect(reversed.fatigueSF).toBeCloseTo(1.20, 2);
+    // Fully reversed loading is more damaging than pulsating at the same peak.
+    expect(reversed.fatigueSF).toBeLessThan(pulsating.fatigueSF);
+  });
+
+  it("default R (omitted) equals R = 0 explicitly", () => {
+    const a = estimateFatigue(25, 40, "pla", "flat");
+    const b = estimateFatigue(25, 40, "pla", "flat", 0);
+    expect(a.fatigueSF).toBe(b.fatigueSF);
+    expect(a.loadRatio).toBe(0);
+  });
+
+  it("R > 0 (tension-biased) has a smaller alternating component → higher SF vs R = 0", () => {
+    // At a fixed σ_max, larger R shrinks σ_a = σ_max(1−R)/2. Since Se < Su the
+    // amplitude term dominates Goodman, so less alternating stress = less
+    // fatigue damage = higher SF (even though the mean stress rises).
+    const pulsating = estimateFatigue(25, 40, "pla", "flat", 0);
+    const biased    = estimateFatigue(25, 40, "pla", "flat", 0.5);
+    expect(biased.loadRatio).toBe(0.5);
+    expect(biased.fatigueSF).toBeGreaterThan(pulsating.fatigueSF);
+  });
+
+  it("R is clamped to [-1, 0.95] (an out-of-range value does not escape)", () => {
+    const r = estimateFatigue(20, 40, "pla", "flat", -5);
+    expect(r.loadRatio).toBe(-1);
+  });
+});

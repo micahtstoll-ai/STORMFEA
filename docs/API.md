@@ -115,7 +115,7 @@ endpoint.
 | `stepB64` | string | Required for STEP parts |
 | `triangleCount` | number | |
 | `bounds` | `{minX,maxX,minY,maxY,minZ,maxZ}` | |
-| `holes[]` | array | `{ id, centre[3], normal[3], radius, confidence?, edgeCount? }` |
+| `holes[]` | array | `{ id, centre[3], normal[3], radius, confidence?, edgeCount? }`. Upload responses may also include `warning` (overlapping/merged-hole flag). |
 | `boltHoleIds[]` | number[] | Which holes are bolted (constraints) |
 | `boltFasteners[]` | array | Optional per-hole fastener spec |
 | `forces[]` | array | `{ magnitude, direction[3], position[3], loadDistribution? }` |
@@ -124,7 +124,9 @@ endpoint.
 | `analysisType` | string | `linear_static` (default) or `modal` |
 | `computeBuckling` | boolean | Opt-in linear buckling |
 | `gravity` | `{ g, direction[3] }` | Optional body-force load |
-| `pressures[]` | array | Optional `{ magnitude, direction[3] }` surface loads |
+| `pressures[]` | array | Optional surface loads `{ magnitude, direction[3], normal?, region? }`. `magnitude` in MPa (negative = outward/suction). `normal:true` follows each triangle's own outward normal. `region` ∈ `"face"` (default, extreme face toward `direction`), `"facing"` (all faces toward `direction`), `"all"` (whole surface / hydrostatic). |
+| `fatigueLoadRatio` | number | Optional fatigue load ratio `R = σ_min/σ_max` (default `0`; clamped to `[-1, 0.95]`) |
+| `layerNormal` | `[x,y,z]` | Optional through-layer (weak) axis from the picked bed face. Present → exact weak-axis tensor rotation for upright/angled prints; absent → conservative scalar-swap fallback. Direction only (sign/azimuth immaterial). |
 | `calibration` | object | Optional active calibration profile |
 
 **Response modes**

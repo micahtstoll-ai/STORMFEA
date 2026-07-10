@@ -65,7 +65,7 @@ export function generateHtmlReport(
       <td style="padding:4px 8px">Hole ${i}</td>
       <td style="padding:4px 8px">${h.bolt?.label ?? 'unknown'}</td>
       <td style="padding:4px 8px">${h.type.replace('_', ' ')}</td>
-      <td style="padding:4px 8px;color:${h.warning?'#7a1a1a':'#1a7a40'}">${h.warning ? '⚠ ' + h.warning.slice(0,60) : '✓ OK'}</td>
+      <td style="padding:4px 8px;color:${h.warning?'#7a1a1a':'#1a7a40'}">${h.warning ? '⚠ ' + h.warning.slice(0,120) : '✓ OK'}</td>
     </tr>`).join('');
 
   const topoList = topologySuggestions.slice(0, 2).map((t, i) => `

@@ -160,19 +160,37 @@
 - [x] Anisotropic damage indicator — per-vertex XY vs Z utilization (U_XY / U_Z view modes)
 - [x] Material-property uncertainty bands — SF conservative/central/optimistic range bar
 - [x] Non-uniform force distribution — cosine-bearing (distance-weighted) bolt loading
+- [x] Hole-in-plate Kt benchmark — mesher-free structured plate-with-hole C3D10
+      fixture (`buildPlateWithHoleMesh`) run through the production solver;
+      peak/gross Kt ≈ 3.0 within 15% (`solver_validation` [24]). No longer
+      blocked on a TetGen-meshable coupon hole.
+- [x] True pressure normal-to-surface — per-triangle outward-normal traction
+      option (`assembleSurfaceTractionNormal`); a "normal to surface" checkbox
+      in the loads UI. Uniform-direction pressure remains the default.
+- [x] Box-mesh fallback honours element order — a TetGen-fallback run now builds
+      C3D10 (default) via `generateBoxMeshC3D10`, or a conforming C3D4 via
+      `generateBoxMeshC3D4`, instead of being forced to linear C3D4. The fallback
+      also carries real surface connectivity (`extractSurfaceFaces`), so surface
+      pressure loads are honoured there.
+- [x] Closely-spaced-hole detection — overlapping hole detections (the symptom of
+      Gmsh merging two hole surfaces) are flagged in the CONSTRAINTS panel
+      (`flagMergedHoleWarnings`).
+- [x] Exact upright/angled orientation (issue #101) — when a bed face is picked,
+      the orthotropic tensor is rotated (full 4th-order Bond transform,
+      `rotateC6`/`rotationAligningZTo`) to align the weak axis with the bed
+      normal, and Hill is evaluated in that frame. Replaces the scalar-swap
+      approximation (kept as a conservative fallback when no bed is picked).
+      Flat prints (weak axis +Z) are the identity, so all prior results are
+      unchanged; validated in `bond-rotation.test.ts`.
+- [x] Fatigue load ratio R — Goodman/Basquin now takes R = σ_min/σ_max
+      (default 0). Surface pressure: normal-to-surface option + region selector
+      (face/facing/all). Suction (negative) pressure allowed in the UI.
 
 ---
 
 ## IN PROGRESS / NEXT
 
-### Hole-in-plate Kt benchmark
-- [ ] Numeric stress-concentration validation (Kt ≈ 3.0) — needs a reliably
-      meshable watertight plate-with-hole fixture (the simplified coupon hole is
-      non-manifold for TetGen); deferred from the validation-benchmark work
-
-### True pressure normal-to-surface
-- [ ] Per-triangle outward-normal traction option (current pressure applies a
-      uniform traction along a chosen direction over the extreme face)
+_(nothing outstanding — see the newly-shipped items below)_
 
 ---
 
@@ -189,4 +207,7 @@
 - Fatigue estimate: LOW confidence — sparse FDM S-N data
 - Filament color: known to affect strength (η²=97.3%) — not modeled
 - All tensile data is in-plane; pull-through failure mode is extrapolated
-- **generateBoxMesh fallback always produces C3D4** — when TetGen fails and the mesh-fallback path is taken, the part is analysed with C3D4 linear elements regardless of the user's element-order selector. This is gated by the existing reliability banner but not separately flagged. Affects bending-stress accuracy (~55% underpredict) for any TetGen-fallback run.
+
+_Resolved: the TetGen box-mesh fallback previously always produced C3D4 (≈55%
+bending underprediction) regardless of the element-order selector; it now honours
+the selector (C3D10 by default) — see the shipped list above._

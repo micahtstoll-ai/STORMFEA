@@ -21,6 +21,46 @@ export interface HoleFeature {
   maxDeviation: number;
 }
 
+/**
+ * Deterministic sanity check for merged / mis-detected holes.
+ *
+ * Two distinct bolt holes cannot physically overlap. When Gmsh merges two
+ * closely-spaced hole surfaces under one tag, the circle fit produces a single
+ * hole with an inflated radius (and a centre between the two real holes), which
+ * can then overlap a neighbouring hole. This flags any hole whose detected
+ * circle overlaps another's, so the UI/report can tell the user the radius may
+ * be wrong (README "Closely-spaced holes (STEP)" caveat). Purely geometric —
+ * no mesher dependence — so it also runs on the STL and Onshape paths.
+ *
+ * Returns a warning string per input hole (null when the hole looks fine),
+ * aligned by index.
+ */
+export function flagMergedHoleWarnings(
+  holes: readonly { id?: number; centre: readonly [number, number, number]; radius: number }[],
+): (string | null)[] {
+  const warn: (string | null)[] = holes.map(() => null);
+  const label = (k: number) => holes[k]!.id ?? k;
+  const msg = (other: number) =>
+    `Overlaps hole ${other} — two closely-spaced holes may have been merged into one; ` +
+    `the detected radius/centre may be wrong. Re-run start-debug.bat and check the ` +
+    `[gmsh-debug] lines, or redefine the hole manually.`;
+  for (let i = 0; i < holes.length; i++) {
+    for (let j = i + 1; j < holes.length; j++) {
+      const a = holes[i]!, b = holes[j]!;
+      const dx = a.centre[0] - b.centre[0];
+      const dy = a.centre[1] - b.centre[1];
+      const dz = a.centre[2] - b.centre[2];
+      const dist = Math.hypot(dx, dy, dz);
+      // 0.98 leaves a hair of tolerance so exactly-tangent holes don't trip it.
+      if (dist < (a.radius + b.radius) * 0.98) {
+        if (!warn[i]) warn[i] = msg(label(j));
+        if (!warn[j]) warn[j] = msg(label(i));
+      }
+    }
+  }
+  return warn;
+}
+
 export function detectHoles(positions: Float32Array, triangleCount: number): HoleFeature[] {
 
   // ── Collect wall-facing triangle centroids + normals ────────────────────────

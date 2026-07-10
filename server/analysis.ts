@@ -15,14 +15,14 @@
  *   - Failure assessment
  */
 
-import { generateBoxMesh }                  from "./solver/meshgen.js";
+import { generateBoxMeshC3D4, generateBoxMeshC3D10, extractSurfaceFaces } from "./solver/meshgen.js";
 import { runLinearStaticWithK }            from "./solver/pipeline.js";
 import { runModalAnalysis }                from "./solver/modal.js";
 import { runLinearBuckling }              from "./solver/buckling.js";
 import { assembleK, assembleKsigma, buildSparsityPattern } from "./solver/assembly.js";
 import { buildNodeElementAdjacency }       from "./solver/adjacency.js";
 import { applyDirichletBC }    from "./solver/boundary.js";
-import { assembleForceVector, assembleBodyForce, assembleSurfaceTraction } from "./solver/load.js";
+import { assembleForceVector, assembleBodyForce, assembleSurfaceTraction, assembleSurfaceTractionNormal, selectPressureRegion } from "./solver/load.js";
 import type { ModalAnalysisResult }        from "./solver/types.js";
 import {
   buildLaminateCMatrix,
@@ -47,7 +47,9 @@ import type { SolverInput }                 from "./solver/pipeline.js";
 import type { IsotropicMaterial, AnyMaterial, OrthotropicMaterial } from "./solver/types.js";
 import { isOrthotropic, isOrthotropicLike } from "./solver/types.js";
 import { recoverElementStressComponents }   from "./solver/stress_detail.js";
+import { rotationAligningZTo, rotateStress6ToLocal } from "./solver/element.js";
 import { sprSmoothedStress, sprSmoothedStress6, recoverElementStress, nodeAveragedPrincipalStress } from "./solver/stress.js";
+import { flagMergedHoleWarnings }           from "./holes.js";
 import type { HoleFeature }                 from "./holes.js";
 import { meshWithTetGen, TetGenNotFoundError } from "./tetgen.js";
 import { meshStepWithGmsh }                 from "./gmsh_mesh.js";
@@ -584,6 +586,8 @@ function buildOrthotropicMaterialCLT(
   strengthMul:     number,
   calibration?:    CalibrationProfile | null,
   beadPropsOverride?: BeadProperties,
+  /** Through-layer (weak) axis in the global frame; see buildOrthotropicMaterial. */
+  weakAxis?:       readonly [number, number, number] | null,
 ): OrthotropicMaterial {
   const base = MATERIALS[baseMatId] ?? MATERIALS["pla"]!;
   const lhf  = layerHeightFactor(layerHeightMm);
@@ -622,35 +626,25 @@ function buildOrthotropicMaterialCLT(
     `${base.label} (CLT, ${pattern}, ${orientation}, lh=${layerHeightMm}mm, ${src})`,
   );
 
+  // Exact path (issue #101): a known through-layer axis (bed normal) → keep the
+  // natural weak-along-local-Z CLT material and attach `weakAxis` so the solver
+  // rotates the full tensor. Handles flat (+Z ⇒ identity), upright, and angled
+  // uniformly, replacing the scalar-swap approximation.
+  if (weakAxis && Math.hypot(weakAxis[0], weakAxis[1], weakAxis[2]) > 0) {
+    return { ...mat, weakAxis };
+  }
+
   if (orientation === "upright") {
-    // UPRIGHT ORIENTATION — SCALAR-SWAP APPROXIMATION (issue #101)
-    // ------------------------------------------------------------
-    // Physically, an upright print has its layer normal along a HORIZONTAL
-    // axis in the analysis frame: one in-plane direction is weak (across
-    // layers) and the other in-plane direction plus Z are strong (in-layer).
-    // The exact model is a 90° rotation of the full 6×6 C (Bond transform),
-    // which yields a material that is transversely isotropic about a
-    // horizontal axis — NOT about Z.
-    //
-    // The solver's OrthotropicMaterial type only supports transverse isotropy
-    // about global Z, so we approximate by swapping scalars: E_z takes the
-    // strong in-layer modulus (the load axis faces the strong direction) and
-    // BOTH horizontal directions take the weak through-layer modulus. This is
-    // conservative for in-plane loads (one horizontal direction is actually
-    // strong) and exact for the vertical modulus. See the SOURCES tab
-    // ("upright_swap" entry) and server/tests/unit/upright-swap.test.ts,
-    // which benchmarks this swap against the full tensor rotation.
-    //
-    // Shear moduli after the swap:
-    //   G_xy (global XY plane): this plane contains the layer normal, so
-    //     shearing it slides layers over each other → the inter-layer shear
-    //     G_xz, NOT the CLT in-plane 1/A66 (and not the isotropic fallback
-    //     E_xy/(2(1+ν)) that the constitutive builder would derive if G_xy
-    //     were omitted — that was the dropped-G_xy bug this fixes).
-    //   G_xz (planes containing global Z): the true rotated values are
-    //     G_xy (in-layer) for one plane and G_xz (inter-layer) for the other;
-    //     the transversely-isotropic type forces them equal, so keep the
-    //     conservative inter-layer value G_xz.
+    // Fallback SCALAR-SWAP APPROXIMATION when no bed is picked (weak azimuth
+    // unknown). Physically an upright print has its layer normal along a
+    // HORIZONTAL axis; the exact model is a 90° rotation of the full 6×6 C
+    // (Bond transform, now used above when weakAxis is known). Without the
+    // azimuth we approximate by swapping scalars: E_z takes the strong in-layer
+    // modulus and BOTH horizontal directions take the weak through-layer
+    // modulus — conservative (the real part is weak in only one). G_xy is set to
+    // the inter-layer shear G_xz because the global XY plane contains the layer
+    // normal after the swap (issue #101). See the "upright_swap" SOURCES entry
+    // and server/tests/unit/upright-swap.test.ts.
     return {
       kind: "orthotropic",
       E_xy: mat.E_z, E_z: mat.E_xy,
@@ -669,6 +663,14 @@ function buildOrthotropicMaterial(
   orientation:     string,
   layerHeightMm:   number,
   calibration?:    CalibrationProfile | null,
+  /**
+   * Through-layer (weak) axis in the global frame, from the bed normal. When
+   * provided, the material keeps its natural weak-along-local-Z constants and
+   * carries `weakAxis` so the solver applies an exact tensor rotation (issue
+   * #101) — this supersedes the scalar-swap upright approximation. When absent
+   * (no bed picked), the conservative scalar swap is used for upright prints.
+   */
+  weakAxis?:       readonly [number, number, number] | null,
 ): OrthotropicMaterial {
   const base = MATERIALS[baseMatId] ?? MATERIALS["pla"]!;
   const lhf  = layerHeightFactor(layerHeightMm);
@@ -691,16 +693,26 @@ function buildOrthotropicMaterial(
 
   const src = calibration ? `calibrated:${calibration.id}` : "literature";
 
+  // Natural material: weak (through-layer) axis along local Z, strong in-plane.
+  const flat: OrthotropicMaterial = {
+    kind: "orthotropic",
+    E_xy, E_z, nu_xy, nu_xz, G_xz, yieldXY, yieldZ,
+    label: `${base.label} (orthotropic, ${orientation}, lh=${layerHeightMm}mm, ${src})`,
+  };
+
+  // Exact path: a known weak axis (bed normal) → rotate the tensor to align the
+  // local weak axis with it. Handles flat (+Z ⇒ identity), upright, and angled
+  // uniformly and correctly (issue #101).
+  if (weakAxis && Math.hypot(weakAxis[0], weakAxis[1], weakAxis[2]) > 0) {
+    return { ...flat, weakAxis };
+  }
+
   if (orientation === "upright") {
-    // Scalar-swap approximation for upright prints — same reasoning as the
-    // CLT branch above (see the long comment in buildOrthotropicMaterialCLT
-    // and the "upright_swap" SOURCES entry): the swapped material keeps
-    // transverse isotropy about global Z, which makes BOTH horizontal
-    // directions weak (conservative; the real part is weak in only one).
-    // G_xy is set explicitly to the inter-layer shear modulus G_xz because
-    // the global XY plane contains the layer normal after the swap — without
-    // this the constitutive builder would silently derive an in-layer-like
-    // G_xy = E_xy/(2(1+ν)) from the swapped (weak) modulus (issue #101).
+    // Fallback scalar-swap approximation (no bed picked, so the weak azimuth is
+    // unknown): keep transverse isotropy about global Z, making BOTH horizontal
+    // directions weak (conservative; the real part is weak in only one). G_xy is
+    // set to the inter-layer shear G_xz because the global XY plane contains the
+    // layer normal after the swap (issue #101).
     return {
       kind: "orthotropic",
       E_xy: E_z, E_z: E_xy,
@@ -710,11 +722,7 @@ function buildOrthotropicMaterial(
       label: `${base.label} (orthotropic, upright, lh=${layerHeightMm}mm, ${src})`,
     };
   }
-  return {
-    kind: "orthotropic",
-    E_xy, E_z, nu_xy, nu_xz, G_xz, yieldXY, yieldZ,
-    label: `${base.label} (orthotropic, flat, lh=${layerHeightMm}mm, ${src})`,
-  };
+  return flat;
 }
 
 // ─── Print settings effect on strength ────────────────────────────────────────
@@ -984,12 +992,31 @@ export interface AnalysisRequest {
    */
   gravity?: { g: number; direction: [number, number, number] };
   /**
-   * Optional uniform surface pressure / traction loads. Each applies a traction
-   * t = magnitude·direction (magnitude in MPa = N/mm²) over the surface
-   * triangles of the extreme face in `direction`, as consistent tributary-area
-   * nodal forces. Ignored on the box-fallback mesh (no surface connectivity).
+   * Optional surface pressure / traction loads. `direction` selects the extreme
+   * face the load acts on. By default the traction is uniform:
+   * t = magnitude·(−direction) (magnitude in MPa = N/mm², positive = inward push),
+   * distributed as consistent tributary-area nodal forces. When `normal` is true
+   * the load instead follows each loaded triangle's own outward normal
+   * (t = −magnitude·n̂), i.e. a true pressure normal to a curved/non-planar face.
+   * `region` selects which triangles are loaded: 'face' (default, the extreme
+   * face toward `direction`), 'facing' (every triangle whose outward normal
+   * faces `direction`), or 'all' (the whole exterior — hydrostatic, normal mode).
+   * Honoured on the box-mesh fallback (which now carries surface connectivity).
    */
-  pressures?: { magnitude: number; direction: [number, number, number] }[];
+  pressures?: { magnitude: number; direction: [number, number, number]; normal?: boolean; region?: "face" | "facing" | "all" }[];
+  /**
+   * Fatigue load ratio R = σ_min/σ_max for the Goodman/Basquin estimate.
+   * Default 0 (pulsating 0→peak). −1 = fully reversed; R>0 = tension-biased.
+   */
+  fatigueLoadRatio?: number;
+  /**
+   * Through-layer (weak) axis in the mesh/global frame — the FDM layer normal,
+   * from the picked bed face. When present the solver rotates the orthotropic
+   * tensor to align its weak axis with it (exact upright/angled model, issue
+   * #101) instead of the scalar-swap approximation. Direction only; sign and
+   * in-plane azimuth are immaterial.
+   */
+  layerNormal?: [number, number, number];
   /**
    * Material uncertainty mode. When 'central' (default) the solver uses the literature
    * central estimates. The server always computes sfConservative and sfOptimistic alongside
@@ -1083,8 +1110,12 @@ export interface FatigueEstimate {
  * Estimate fatigue life using modified Goodman criterion + Basquin power law.
  *
  * Assumptions:
- *   - Pulsating load (R=0): σ_min=0, σ_max=peak VM, σ_m=σ_a=σ_max/2
- *     (conservative for FTC mechanisms — most see repeated 0→peak loading)
+ *   - Load ratio R = σ_min/σ_max is a user input (default 0 = pulsating).
+ *     σ_max = peak VM, σ_a = σ_max(1−R)/2, σ_m = σ_max(1+R)/2. R=0 recovers
+ *     σ_m=σ_a=σ_max/2 (repeated 0→peak, the conservative FTC default); R=−1 is
+ *     fully reversed (σ_m=0, σ_a=σ_max); R>0 is a tension-biased cycle. A
+ *     compressive mean stress (σ_m<0) is clamped to 0 in Goodman to stay
+ *     conservative (its life benefit is not credited).
  *   - Endurance limit Se ≈ 0.40 × UTS for FDM PLA (flat print)
  *     Conservative estimate: Juvinall & Marshek, and limited FDM fatigue data
  *     from Wang et al. 2020 (PLA fatigue life study)
@@ -1106,7 +1137,10 @@ export function estimateFatigue(
   effectiveYieldMPa: number,
   materialId: string,
   orientation: string,
+  /** Load ratio R = σ_min/σ_max. Default 0 (pulsating). Clamped to [-1, 0.95]. */
+  loadRatioR: number = 0,
 ): FatigueEstimate {
+  const R = Math.max(-1, Math.min(0.95, Number.isFinite(loadRatioR) ? loadRatioR : 0));
   // Base material UTS — use literature values, not FDM-reduced yield
   // UTS ≈ 1.15-1.25 × yield for PLA-like polymers
   // For FDM, we use the effective yield as the strength basis
@@ -1127,17 +1161,20 @@ export function estimateFatigue(
   // (FDM parts typically fracture near yield for brittle-ish PLA)
   const utsMPa = Math.max(effectiveYieldMPa * 1.15, Se * 1.5);
 
-  // Pulsating load (R=0): σ_m = σ_a = σ_max / 2
-  const sigma_a = peakVonMisesMPa / 2;
-  const sigma_m = peakVonMisesMPa / 2;
+  // Amplitude / mean from the load ratio R = σ_min/σ_max, with σ_max = peak VM:
+  //   σ_a = σ_max(1−R)/2,  σ_m = σ_max(1+R)/2.  R=0 → σ_m = σ_a = σ_max/2.
+  const sigma_a = peakVonMisesMPa * (1 - R) / 2;
+  const sigma_m = peakVonMisesMPa * (1 + R) / 2;
+  // Compressive mean stress is beneficial; conservatively don't credit it.
+  const sigma_m_eff = Math.max(0, sigma_m);
 
   // Modified Goodman: 1/SF = σ_a/Se + σ_m/Su
-  const goodmanDemand = (sigma_a / Se) + (sigma_m / utsMPa);
+  const goodmanDemand = (sigma_a / Se) + (sigma_m_eff / utsMPa);
   const fatigueSF     = goodmanDemand > 0 ? 1 / goodmanDemand : 999;
 
   // Basquin cycles to failure
   // σ_a,eq = σ_a / (1 - σ_m/Su)  [Goodman-corrected amplitude]
-  const sigmaEqA = sigma_a / Math.max(0.01, 1 - sigma_m / utsMPa);
+  const sigmaEqA = sigma_a / Math.max(0.01, 1 - sigma_m_eff / utsMPa);
   const sigmaf   = 1.5 * baseMaterialUTS;
   const b        = -0.1;
 
@@ -1165,9 +1202,11 @@ export function estimateFatigue(
     fatigueSF: +fatigueSF.toFixed(2),
     enduranceLimitMPa: +Se.toFixed(1),
     utsMPa: +utsMPa.toFixed(1),
-    loadRatio: 0,
+    loadRatio: R,
     confidence: "low",
-    note: `Pulsating load (R=0): ${cycleStr}. Se=${Se.toFixed(1)} MPa (${(seRatio*100).toFixed(0)}% of base UTS ${baseMaterialUTS} MPa, ${orientation} orientation). ` +
+    note: `${R === 0 ? "Pulsating load (R=0)" : `Load ratio R=${R.toFixed(2)}`}: ${cycleStr}. ` +
+          `σ_a=${sigma_a.toFixed(1)} MPa, σ_m=${sigma_m_eff.toFixed(1)} MPa. ` +
+          `Se=${Se.toFixed(1)} MPa (${(seRatio*100).toFixed(0)}% of base UTS ${baseMaterialUTS} MPa, ${orientation} orientation). ` +
           `FDM fatigue data sparse — treat as order-of-magnitude. Goodman criterion + Basquin b=-0.1. ` +
           `Source: Wang et al. 2020.`,
   };
@@ -2090,6 +2129,14 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // Use orthotropic material model — accurately captures the anisotropy of FDM parts.
   // For flat prints: E_z ≈ 0.45 × E_xy, G_xz ≈ 0.40 × G_xy (Ahn et al. 2002)
   // For upright prints: axes are swapped — the strong direction faces the load
+  // Through-layer (weak) axis from the picked bed normal, when available — the
+  // solver then applies an exact tensor rotation instead of the scalar-swap
+  // upright approximation (issue #101). Only its direction matters (sign/azimuth
+  // about the axis are immaterial). Omitted → conservative scalar-swap fallback.
+  const weakAxis: readonly [number, number, number] | null =
+    (req.layerNormal && Math.hypot(req.layerNormal[0], req.layerNormal[1], req.layerNormal[2]) > 1e-9)
+      ? req.layerNormal : null;
+
   const builtMaterial: AnyMaterial = req.print.useCLT
     ? buildOrthotropicMaterialCLT(
         req.print.materialId,
@@ -2100,6 +2147,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         strengthMul,
         req.calibration ?? null,
         req.print.beadProps,
+        weakAxis,
       )
     : buildOrthotropicMaterial(
         req.print.materialId,
@@ -2107,6 +2155,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         req.print.orientation,
         req.print.layerHeightMm ?? 0.2,
         req.calibration ?? null,
+        weakAxis,
       );
 
   // Effective mass density (issue #99): solid density × first-order solid
@@ -2174,7 +2223,13 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       // (issue #106). The box fallback below remains for genuine meshing
       // failures where TetGen ran and rejected the geometry.
       if (err instanceof TetGenNotFoundError) throw err;
-      console.warn("[analysis] TetGen failed, falling back to C3D4 box mesh (C3D10 not available in fallback):", err);
+      // Honour the element-order selector on the fallback too: a C3D10 box mesh
+      // avoids the ~55% bending underprediction that C3D4 suffers from shear
+      // locking. The box is still featureless (no holes/fillets), so the
+      // mesh-fallback reliability banner is unchanged — only element-order
+      // accuracy improves.
+      const tetOrder = (req.print.meshOrder ?? 2) as 1 | 2;
+      console.warn(`[analysis] TetGen failed, falling back to ${tetOrder === 2 ? "C3D10" : "C3D4"} box mesh:`, err);
       meshFallback = true;
       const { minX, maxX, minY, maxY, minZ, maxZ } = req.bounds;
       const spanX = maxX - minX, spanY = maxY - minY, spanZ = maxZ - minZ;
@@ -2183,7 +2238,12 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       const nx = Math.max(4, Math.round(divisions * spanX / aspect));
       const ny = Math.max(4, Math.round(divisions * spanY / aspect));
       const nz = Math.max(2, Math.round(divisions * spanZ / aspect));
-      mesh = generateBoxMesh(minX, minY, minZ, maxX, maxY, maxZ, nx, ny, nz);
+      mesh = tetOrder === 2
+        ? generateBoxMeshC3D10(minX, minY, minZ, maxX, maxY, maxZ, nx, ny, nz)
+        : generateBoxMeshC3D4(minX, minY, minZ, maxX, maxY, maxZ, nx, ny, nz);
+      // Real boundary connectivity so surface-pressure loads are honoured on the
+      // fallback (previously skipped for lack of surface faces).
+      surfaceFaces = extractSurfaceFaces(mesh);
       surfaceToNode = new Int32Array(req.triangleCount * 3);
       for (let i = 0; i < surfaceToNode.length; i++) surfaceToNode[i] = i % mesh.nodeCount;
     }
@@ -2395,46 +2455,47 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   }
 
   // ── Surface pressure / traction loads ──────────────────────────────────────
-  // A uniform traction t = P·d (P in MPa = N/mm²) applied over the surface
-  // triangles of the extreme face in direction d, distributed as consistent
-  // (tributary-area) nodal forces. Requires surface connectivity (unavailable
-  // on the box-fallback path).
+  // A traction applied over the surface triangles of the extreme face in
+  // direction d, distributed as consistent (tributary-area) nodal forces.
+  // Uniform mode: t = P·(−d) (same push on every loaded triangle). Normal mode
+  // (p.normal): t = P·(−n̂) per triangle, following each triangle's own outward
+  // normal — a true pressure on a curved/non-planar face. The fallback box mesh
+  // now carries surface connectivity, so pressure is honoured there too.
   if (req.pressures && req.pressures.length > 0) {
     if (!surfaceFaces) {
-      console.warn("[analysis] surface pressure ignored — no surface connectivity (box-mesh fallback).");
+      console.warn("[analysis] surface pressure ignored — no surface connectivity.");
     } else {
-      const triCount = Math.floor(surfaceFaces.length / 3);
       for (const p of req.pressures) {
         // Zero → no-op. Negative is allowed and means outward (tension/suction).
         if (!Number.isFinite(p.magnitude) || p.magnitude === 0) continue;
+        // Which surface triangles the pressure acts on:
+        //   'face'   (default) — the extreme face toward `direction` (a band).
+        //   'facing' — every surface triangle whose outward normal faces
+        //              `direction` (the whole windward side).
+        //   'all'    — the entire exterior surface (e.g. hydrostatic/external
+        //              pressure; only physical with normal mode).
+        const region = p.region ?? "face";
         const [dx, dy, dz] = p.direction;
         const dl = Math.hypot(dx, dy, dz);
-        if (!(dl > 0)) continue;   // undefined face for a zero direction
-        const ux = dx/dl, uy = dy/dl, uz = dz/dl;
-        // Extreme face in direction d: max projection over all mesh nodes.
-        let maxProj = -Infinity;
-        for (let n = 0; n < mesh.nodeCount; n++) {
-          const proj = (mesh.nodes[n*3]??0)*ux + (mesh.nodes[n*3+1]??0)*uy + (mesh.nodes[n*3+2]??0)*uz;
-          if (proj > maxProj) maxProj = proj;
-        }
-        // A triangle is loaded if its centroid lies within the face band.
-        const isLoaded: boolean[] = new Array(triCount);
-        let nLoaded = 0;
-        for (let t = 0; t < triCount; t++) {
-          const a = surfaceFaces[t*3]??0, b = surfaceFaces[t*3+1]??0, c = surfaceFaces[t*3+2]??0;
-          const cxp = ((mesh.nodes[a*3]??0)+(mesh.nodes[b*3]??0)+(mesh.nodes[c*3]??0))/3;
-          const cyp = ((mesh.nodes[a*3+1]??0)+(mesh.nodes[b*3+1]??0)+(mesh.nodes[c*3+1]??0))/3;
-          const czp = ((mesh.nodes[a*3+2]??0)+(mesh.nodes[b*3+2]??0)+(mesh.nodes[c*3+2]??0))/3;
-          const proj = cxp*ux + cyp*uy + czp*uz;
-          isLoaded[t] = (maxProj - proj) < 0.5;
-          if (isLoaded[t]) nLoaded++;
-        }
+        const hasDir = dl > 0;
+        const ux = hasDir ? dx/dl : 0, uy = hasDir ? dy/dl : 0, uz = hasDir ? dz/dl : 0;
+        // A direction is required to select a face/facing region and for the
+        // uniform (non-normal) traction direction. 'all' + normal needs none.
+        if ((region !== "all" || !p.normal) && !hasDir) continue;
+
+        const isLoaded = selectPressureRegion(mesh.nodes, surfaceFaces, [ux, uy, uz], region);
+        const nLoaded = isLoaded.reduce((s, on) => s + (on ? 1 : 0), 0);
         // A positive pressure pushes INWARD on the selected face (compression) —
         // the intuitive "pressure on this face" and the compressive pre-stress
-        // buckling needs. The selected face's outward normal points along +d, so
-        // an inward push is −magnitude·d. Negative magnitude → outward (tension).
-        const traction: [number,number,number] = [-p.magnitude*ux, -p.magnitude*uy, -p.magnitude*uz];
-        const pf = assembleSurfaceTraction(mesh.nodes, surfaceFaces, isLoaded, traction);
+        // buckling needs. Negative magnitude → outward (tension).
+        //   Uniform: the selected face's outward normal points along +d, so an
+        //   inward push is −magnitude·d.
+        //   Normal:  each loaded triangle uses its own outward normal n̂, so the
+        //   inward push is −magnitude·n̂ per triangle (physical on curved faces).
+        const pf = p.normal
+          ? assembleSurfaceTractionNormal(mesh.nodes, surfaceFaces, isLoaded, -p.magnitude)
+          : assembleSurfaceTraction(mesh.nodes, surfaceFaces, isLoaded,
+              [-p.magnitude*ux, -p.magnitude*uy, -p.magnitude*uz]);
         let resN = 0;
         for (let n = 0; n < mesh.nodeCount; n++) {
           const fx = pf[n*3]??0, fy = pf[n*3+1]??0, fz = pf[n*3+2]??0;
@@ -2443,7 +2504,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
             resN += Math.hypot(fx, fy, fz);
           }
         }
-        console.log(`[analysis] pressure ${p.magnitude}MPa in (${ux.toFixed(2)},${uy.toFixed(2)},${uz.toFixed(2)}): ` +
+        console.log(`[analysis] pressure ${p.magnitude}MPa ${p.normal ? "normal-to-surface" : `in (${ux.toFixed(2)},${uy.toFixed(2)},${uz.toFixed(2)})`} region=${region}: ` +
           `${nLoaded} loaded triangles, |resultant|~${resN.toFixed(2)}N`);
       }
     }
@@ -2588,6 +2649,13 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     : null;
   const utilYieldXY = orthoMatU ? orthoMatU.yieldXY : effectiveYield;
   const utilYieldZ  = orthoMatU ? orthoMatU.yieldZ  : effectiveYield;
+  // U_XY / U_Z are defined in the material frame (weak axis = local Z). For a
+  // rotated weak axis (upright/angled, issue #101) rotate the nodal stress into
+  // that frame first; null for the common weak-along-Z case.
+  const utilR = (orthoMatU && orthoMatU.weakAxis
+    && Math.hypot(...orthoMatU.weakAxis) > 0
+    && (orthoMatU.weakAxis[2] / (Math.hypot(...orthoMatU.weakAxis) || 1)) < 1 - 1e-12)
+    ? rotationAligningZTo(orthoMatU.weakAxis) : null;
 
   const nodeStress6 = result.elemStress6
     ? sprSmoothedStress6(mesh, result.elemStress6)
@@ -2598,12 +2666,16 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   const nodeSignedStress = new Float64Array(mesh.nodeCount);
   if (nodeStress6 && nodeUtilXY && nodeUtilZ) {
     for (let n = 0; n < mesh.nodeCount; n++) {
-      const sxx = nodeStress6[n*6]   ?? 0;
-      const syy = nodeStress6[n*6+1] ?? 0;
-      const szz = nodeStress6[n*6+2] ?? 0;
-      const txy = nodeStress6[n*6+3] ?? 0;
-      const tyz = nodeStress6[n*6+4] ?? 0;
-      const txz = nodeStress6[n*6+5] ?? 0;
+      let sxx = nodeStress6[n*6]   ?? 0;
+      let syy = nodeStress6[n*6+1] ?? 0;
+      let szz = nodeStress6[n*6+2] ?? 0;
+      let txy = nodeStress6[n*6+3] ?? 0;
+      let tyz = nodeStress6[n*6+4] ?? 0;
+      let txz = nodeStress6[n*6+5] ?? 0;
+      if (utilR) {
+        const L = rotateStress6ToLocal([sxx, syy, szz, txy, tyz, txz], utilR);
+        sxx = L[0]; syy = L[1]; szz = L[2]; txy = L[3]; tyz = L[4]; txz = L[5];
+      }
       const util = computeUtilizationRatios(sxx, syy, szz, txy, tyz, txz, utilYieldXY, utilYieldZ);
       nodeUtilXY[n] = util.uXY;
       nodeUtilZ[n]  = util.uZ;
@@ -3040,10 +3112,21 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     };
   }
 
+  // Detect overlapping (likely Gmsh-merged) hole detections across ALL holes so
+  // the geometry warning reaches the report too, not just the upload-time UI
+  // panel. Keyed by hole id (same check as the upload path in index.ts).
+  const mergeWarn = flagMergedHoleWarnings(req.holes);
+  const mergeById = new Map<number, string>();
+  req.holes.forEach((h, i) => { if (mergeWarn[i]) mergeById.set(h.id, mergeWarn[i]!); });
+
   for (const hole of holesForClassification) {
     const rawCls  = classifyHole(hole.radius, plateDimMin);
     const override = req.holeTypeOverrides?.[hole.id];
     const cls = applyHoleOverride(rawCls, override);
+    // A merge/overlap warning is about the detected radius/centre, so it stands
+    // even when the user has overridden the bolt type — append it either way.
+    const mw = mergeById.get(hole.id);
+    if (mw) cls.warning = [cls.warning, mw].filter(Boolean).join(" ");
     holeClassifications.push(cls);
 
     // Edge distance: distance from hole centre to nearest plate edge in XY
@@ -3302,6 +3385,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     effectiveYield,
     req.print.materialId,
     req.print.orientation,
+    req.fatigueLoadRatio ?? 0,
   );
 
   // ── Isotropic comparison ─────────────────────────────────────────────────
