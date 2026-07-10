@@ -243,7 +243,8 @@ const ANALYSE_SPEC: Spec = {
   "analysisType?": "string",
   "computeBuckling?": "boolean",
   "gravity?":      { g: "number", direction: "vec3" },
-  "pressures?":    [{ magnitude: "number", direction: "vec3" }],
+  "pressures?":    [{ magnitude: "number", direction: "vec3", "normal?": "boolean" }],
+  "fatigueLoadRatio?": "number",
   "calibration?":  "object",
 };
 
@@ -318,7 +319,10 @@ app.post("/api/analyse", async (req, res) => {
         ? { gravity: (body as any).gravity as { g: number; direction: [number, number, number] } }
         : {}),
       ...(Array.isArray((body as any).pressures)
-        ? { pressures: (body as any).pressures as { magnitude: number; direction: [number, number, number] }[] }
+        ? { pressures: (body as any).pressures as { magnitude: number; direction: [number, number, number]; normal?: boolean }[] }
+        : {}),
+      ...(typeof (body as any).fatigueLoadRatio === "number"
+        ? { fatigueLoadRatio: (body as any).fatigueLoadRatio as number }
         : {}),
     };
 

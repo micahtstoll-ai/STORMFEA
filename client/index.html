@@ -1549,6 +1549,20 @@ body:not(.has-results) #btn-stress { display: none !important; }
         </div>
       </div>
 
+      <!-- Fatigue load ratio -->
+      <div style="margin-bottom:16px;padding-top:14px;border-top:1px solid var(--border)">
+        <label style="font-size:11px;letter-spacing:.04em;color:var(--text-label);display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          FATIGUE LOAD RATIO&nbsp;R
+          <select id="s-fatigue-r" onchange="markSessionDirty()">
+            <option value="0" selected>0 · pulsating (0→peak)</option>
+            <option value="-1">−1 · fully reversed (±peak)</option>
+            <option value="0.1">0.1 · lightly tension-biased</option>
+            <option value="0.5">0.5 · tension-biased</option>
+          </select>
+        </label>
+        <div style="font-size:10px;color:var(--text-lo);margin-top:6px;line-height:1.5">R = σ_min/σ_max for the fatigue (Goodman/Basquin) estimate. Default 0 assumes repeated 0→peak loading (conservative for most FTC mechanisms). Pick −1 for a fully reversed cycle, or a positive R for a load that never fully unloads.</div>
+      </div>
+
 
       <!-- Next step CTA — updated by updateNextButtons() -->
       <div id="next-loads-wrap" class="tab-cta">
@@ -7660,6 +7674,7 @@ function buildAnalyseBody(quality, opts) {
     calibration:  getActiveProfile(),
     ...(gravityRequest() ? { gravity: gravityRequest() } : {}),
     ...(pressureRequest() ? { pressures: [pressureRequest()] } : {}),
+    fatigueLoadRatio: +(document.getElementById('s-fatigue-r')?.value ?? 0),
   };
 }
 
@@ -9716,6 +9731,7 @@ async function saveSession() {
       buckling:    !!document.getElementById('s-buckling')?.checked,
       gravity:     gravityRequest(),
       pressure:    pressureRequest(),
+      fatigueR:    +(document.getElementById('s-fatigue-r')?.value ?? 0),
     },
     calibrationId:     activeProfileId,
     holeTypeOverrides: S.holeTypeOverrides,
@@ -9860,6 +9876,7 @@ async function loadSession() {
         setVal('s-pressure-dir', (a.pressure.direction || []).join(','));
         setChk('s-pressure-normal', !!a.pressure.normal);
       } else { setChk('s-pressure', false); }
+      if (a.fatigueR != null) setVal('s-fatigue-r', a.fatigueR);
       if (typeof updateGravityUI === 'function') updateGravityUI();
       if (typeof updatePressureUI === 'function') updatePressureUI();
     }
