@@ -1541,7 +1541,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
               </select>
             </label>
           </div>
-          <div style="font-size:10px;color:var(--text-lo);margin-top:6px;line-height:1.5">Uniform traction (MPa) applied over the extreme face in the chosen direction, as a consistent surface load. Needs a solid mesh (unavailable on the box-mesh fallback).</div>
+          <div style="font-size:10px;color:var(--text-lo);margin-top:6px;line-height:1.5">Uniform pressure (MPa) on the face toward the chosen direction — a positive value pushes inward (compression), negative pulls outward. Consistent surface load; needs a solid mesh (unavailable on the box-mesh fallback).</div>
         </div>
       </div>
 
@@ -3044,6 +3044,9 @@ function loadMeshFromPositions(posB64) {
   // the model-space max extent used to auto-scale the exaggeration. A new mesh
   // invalidates any prior deflected-shape view.
   S.basePositions = geo.attributes.position.array.slice();
+  // Original crease-smoothed normals, restored when the deformed view is cleared
+  // (so un-deforming doesn't leave THREE's default area-weighted normals).
+  S.baseNormals   = geo.attributes.normal ? geo.attributes.normal.array.slice() : null;
   S._modelSizeMax = Math.max(sz.x, sz.y, sz.z);
   S._modelSize    = sz.clone();   // per-axis extents for the section plane
   resetDeform();
@@ -10563,13 +10566,21 @@ function _warpMesh(field, scale) {
   const pos  = mesh3d.geometry.attributes.position;
   const arr  = pos.array;
   const base = S.basePositions;
+  const nrm  = mesh3d.geometry.attributes.normal;
   if (!field || !scale) {
+    // Undeformed: restore the original crease-smoothed normals rather than
+    // recomputing them (computeVertexNormals discards the 35° crease shading
+    // built in buildGeometryFromPositions — see CLAUDE.md shading notes). This
+    // path runs on every mesh load via resetDeform().
     arr.set(base);
-  } else {
-    const n = Math.min(arr.length, base.length, field.length);
-    for (let i = 0; i < n; i++) arr[i] = base[i] + scale * field[i];
+    pos.needsUpdate = true;
+    if (nrm && S.baseNormals) { nrm.array.set(S.baseNormals); nrm.needsUpdate = true; }
+    return;
   }
+  const n = Math.min(arr.length, base.length, field.length);
+  for (let i = 0; i < n; i++) arr[i] = base[i] + scale * field[i];
   pos.needsUpdate = true;
+  // Deformed shape: recompute normals so lighting tracks the warped surface.
   mesh3d.geometry.computeVertexNormals();
 }
 
