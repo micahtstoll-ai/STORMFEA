@@ -119,7 +119,7 @@ endpoint.
 | `boltHoleIds[]` | number[] | Which holes are bolted (constraints) |
 | `boltFasteners[]` | array | Optional per-hole fastener spec |
 | `forces[]` | array | `{ magnitude, direction[3], position[3], loadDistribution? }` |
-| `print` | object | `{ materialId, infillPct, wallCount, pattern, orientation, layerHeightMm, meshOrder?, useCLT? }` |
+| `print` | object | `{ materialId, infillPct, wallCount, pattern, orientation, layerHeightMm, meshOrder?, useCLT?, twoRegion?, extrusionWidthMm? }`. `twoRegion: true` enables the two-region (walls vs infill) material model; `extrusionWidthMm` (default 0.45, clamped [0.1, 2.0]) sets the wall band = `wallCount × extrusionWidthMm`. |
 | `meshQuality` | `"coarse"｜"standard"｜"fine"` | Optional |
 | `analysisType` | string | `linear_static` (default) or `modal` |
 | `computeBuckling` | boolean | Opt-in linear buckling |
@@ -155,6 +155,15 @@ endpoint.
     "estimatedFailForce": 140.0,
     "yielding": true,
     "verdict": "FAIL",
+    "materialModel": {
+      "twoRegion": true,
+      "wallThicknessMm": 1.35,
+      "shellVolumeFraction": 0.41,
+      "shellYieldXYMPa": 27.5,
+      "coreYieldXYMPa": 6.1,
+      "impliedAvgStrengthMul": 0.36,
+      "globalModelStrengthMul": 0.30
+    },
     "converged": true, "cgIterations": 412, "solverMs": 1830,
     "nodeCount": 8461, "elementCount": 4210, "nodesPerElem": 10,
     "failureModes": [ /* per-mode SF + confidence */ ],

@@ -131,5 +131,36 @@ Before submitting a PR that modifies mesh visualization or stress heatmap:
 - Server Spatial Grid: `server/analysis.ts` lines 1712–1776 (nearestNodeStress function)
 - Stress Recovery: `server/solver/stress.ts` lines 376–515 (sprSmoothedStress function)
 
+## Two-Region Material Model — Invariants
+
+The opt-in two-region model (`print.twoRegion`) classifies elements into dense
+perimeter walls vs homogenized infill core (`server/twoRegion.ts`,
+`server/solver/distance.ts`, `server/solver/wallfrac.ts`, consumed via
+`ElementMaterialField` in `server/solver/types.ts`). When modifying it:
+
+1. **Flag off must stay bit-identical** — with no field, assembly/recovery/mass
+   must reproduce the legacy single-material path exactly (tested to 1e-12 on
+   full solves in `solver_validation.ts` group 25).
+2. **No NaN by construction** — the level-set volume fraction
+   (`tetFractionBelowIso`) is written per sign-case so every denominator is a
+   strictly-negative-minus-non-negative difference; keep it that way.
+3. **Blend order matters not, rotation does** — Voigt blending commutes with the
+   weakAxis (Bond) rotation ONLY because shell and core share the same
+   `weakAxis`. Never blend materials with different weak axes.
+4. **Distance field must be point-to-triangle** — nearest-NODE distance aliases
+   (3–6 mm boundary triangles vs ~1.35 mm wall band). Boundary nodes seed at
+   exactly 0.
+5. **Anchor endpoints, report divergence, never renormalize** — 100% infill and
+   all-shell parts must collapse to the uniform path; interior divergence from
+   `effectiveStrengthMultiplier` is surfaced in `summary.materialModel`, not
+   hidden.
+6. **The average material carries the scalars** — `SolverInput.material` is the
+   volume-weighted blend when the field is active; whole-part consumers (ZZ
+   error estimate, analytic hole checks) read it, per-element consumers read
+   the field. Don't mix the two up.
+7. **Worker boundary** — `binOfElement` + multi-bin `C` cross the
+   `assembly-worker.ts` postMessage payload; any field shape change must update
+   `WorkerInput` and the mixed-bin case in `test-parallel-assembly.ts`.
+
 ## Questions?
 If you need clarification on these guidelines, ask in the GitHub issue or PR description.

@@ -658,7 +658,7 @@ function buildOrthotropicMaterialCLT(
   return mat;
 }
 
-function buildOrthotropicMaterial(
+export function buildOrthotropicMaterial(
   baseMatId:       string,
   strengthMul:     number,
   orientation:     string,
