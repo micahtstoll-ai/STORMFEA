@@ -9,7 +9,7 @@
  *   directly and f_Hz = sqrt(ω²) / (2π) with no conversion factor.
  */
 
-import type { TetMesh, CSRMatrix, AnyMaterial } from "./types.js";
+import type { TetMesh, CSRMatrix, AnyMaterial, ElementMaterialField } from "./types.js";
 import { buildSparsityPattern, type SparsityPattern } from "./assembly.js";
 
 // Default mass density for PLA in kg/m³
@@ -70,6 +70,9 @@ export function assembleM(
   mesh: TetMesh,
   rho:  number,
   pattern?: SparsityPattern,
+  /** Optional per-element density (t/mm³, same unit as rho) — two-region
+   *  material field. When present, overrides the scalar rho per element. */
+  rhoOfElement?: Float64Array | null,
 ): { M: CSRMatrix; diagIdx: Int32Array } {
   const n   = mesh.nodeCount * 3;
   const npe = mesh.nodesPerElem;
@@ -93,7 +96,7 @@ export function assembleM(
       elemNodes[0] = n0; elemNodes[1] = n1; elemNodes[2] = n2; elemNodes[3] = n3;
 
       const Ve = tetVolume(mesh.nodes, n0, n1, n2, n3);
-      const scale = rho * Ve / 20;
+      const scale = (rhoOfElement ? (rhoOfElement[e] ?? rho) : rho) * Ve / 20;
 
       // Scatter: for each pair (a, b) of corner nodes and each DOF direction d
       for (let a = 0; a < 4; a++) {
@@ -155,7 +158,7 @@ export function assembleM(
       const Ve = tetVolume(mesh.nodes, n0, n1, n2, n3);
 
       // Scale = ρ × 6 × Ve  (because M_ref is for unit tet with V_ref = 1/6)
-      const scale = rho * 6.0 * Ve;
+      const scale = (rhoOfElement ? (rhoOfElement[e] ?? rho) : rho) * 6.0 * Ve;
 
       // Scatter: for each pair (a, b) of local nodes and each DOF direction d
       for (let a = 0; a < 10; a++) {
@@ -232,7 +235,11 @@ export function assembleM(
 const HRZ_C3D10_CORNER  = 1.0 / 36.0;
 const HRZ_C3D10_MIDSIDE = 4.0 / 27.0;
 
-function hrzLumpedC3D10(mesh: TetMesh, rho: number): Float64Array {
+function hrzLumpedC3D10(
+  mesh: TetMesh,
+  rho: number,
+  rhoOfElement?: Float64Array | null,
+): Float64Array {
   const lumped = new Float64Array(mesh.nodeCount * 3);
   for (let e = 0; e < mesh.elementCount; e++) {
     const base = e * 10;
@@ -240,7 +247,7 @@ function hrzLumpedC3D10(mesh: TetMesh, rho: number): Float64Array {
     const n1 = mesh.elements[base+1] ?? 0;
     const n2 = mesh.elements[base+2] ?? 0;
     const n3 = mesh.elements[base+3] ?? 0;
-    const mVe = rho * tetVolume(mesh.nodes, n0, n1, n2, n3);
+    const mVe = (rhoOfElement ? (rhoOfElement[e] ?? rho) : rho) * tetVolume(mesh.nodes, n0, n1, n2, n3);
     for (let a = 0; a < 10; a++) {
       const na = mesh.elements[base + a] ?? 0;
       const mval = mVe * (a < 4 ? HRZ_C3D10_CORNER : HRZ_C3D10_MIDSIDE);
@@ -270,17 +277,29 @@ export function assembleMass(
   material: AnyMaterial,
   type:     'consistent' | 'lumped',
   pattern?: SparsityPattern,
+  /** Optional two-region material field: per-bin densities expanded to a
+   *  per-element ρ array so mass tracks the shell/core split. */
+  field?:   ElementMaterialField,
 ): { M: CSRMatrix; diagIdx: Int32Array } | Float64Array {
   const massRhoKg = (material as { massRho?: number }).massRho ?? DEFAULT_MASS_RHO_KG_M3;
   const rho = massRhoKg * KG_M3_TO_T_MM3;
 
+  let rhoOfElement: Float64Array | null = null;
+  if (field) {
+    rhoOfElement = new Float64Array(mesh.elementCount);
+    for (let e = 0; e < mesh.elementCount; e++) {
+      const kg = field.massRho[field.binOfElement[e] ?? 0] ?? massRhoKg;
+      rhoOfElement[e] = kg * KG_M3_TO_T_MM3;
+    }
+  }
+
   if (type === 'lumped' && mesh.nodesPerElem === 10) {
     // HRZ lumping — positive-definite by construction, preserves total mass.
     // (No CSR assembly needed for the diagonal.)
-    return hrzLumpedC3D10(mesh, rho);
+    return hrzLumpedC3D10(mesh, rho, rhoOfElement);
   }
 
-  const { M, diagIdx } = assembleM(mesh, rho, pattern);
+  const { M, diagIdx } = assembleM(mesh, rho, pattern, rhoOfElement);
 
   if (type === 'consistent') {
     return { M, diagIdx };

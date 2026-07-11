@@ -159,6 +159,33 @@ export function isOrthotropicLike(m: AnyMaterial): m is OrthotropicMaterial | Gy
   return isOrthotropic(m) || isGyroidOrthotropic(m);
 }
 
+/**
+ * Per-element quantized material field for the two-region (shell/core) FDM
+ * model. Elements are binned by their wall-band volume fraction; each bin
+ * carries a prebuilt constitutive matrix and blended strength/density so the
+ * assembly and recovery hot loops only pay an Int32Array lookup per element.
+ *
+ * Absent everywhere = uniform material (legacy behavior, bit-identical).
+ * When present, `SolverInput.material` is the volume-weighted AVERAGE material
+ * and keeps feeding scalar consumers (error-estimate energy norm, criterion
+ * routing); the field overrides per-element stiffness, yield, and density.
+ */
+export interface ElementMaterialField {
+  readonly binCount:     number;
+  /** length = elementCount, values in [0, binCount) */
+  readonly binOfElement: Int32Array;
+  /** binCount × 36 prebuilt constitutive matrices (weakAxis rotation baked in) */
+  readonly C:            Float64Array;
+  /** In-plane yield per bin, MPa */
+  readonly yieldXY:      Float64Array;
+  /** Through-layer yield per bin, MPa */
+  readonly yieldZ:       Float64Array;
+  /** Mass density per bin, kg/m³ (SI, converted at assembly time) */
+  readonly massRho:      Float64Array;
+  /** Representative shell (wall) volume fraction per bin, for reporting */
+  readonly shellFrac:    Float64Array;
+}
+
 export function validateGyroidOrthotropic(mat: GyroidOrthotropic): void {
   if (mat.density < 0 || mat.density > 1.0) {
     throw new Error(`Density must be in [0, 1.0], got ${mat.density}`);
@@ -239,6 +266,13 @@ export interface SolverResult {
 
   /** Minimum safety factor across all elements. */
   readonly minSafetyFactor:   number;
+
+  /**
+   * Index of the element with the minimum safety factor (the governing
+   * hotspot). Lets region-aware consumers (e.g. fatigue under the two-region
+   * material model) read the governing element's local yield.
+   */
+  readonly governingElement?: number;
 
   /** Number of CG iterations taken. */
   readonly cgIterations:    number;

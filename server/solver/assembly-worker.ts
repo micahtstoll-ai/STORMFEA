@@ -18,7 +18,14 @@ export interface WorkerInput {
   readonly nodesPerElem: number;
   readonly nodes: Float64Array;
   readonly elements: Int32Array;
+  /** One or more constitutive matrices back to back (binCount × 36). */
   readonly C: Float64Array;
+  /**
+   * Per-element bin index into C (two-region material field), GLOBALLY
+   * indexed — chunks address elements by global index. Null/absent = uniform
+   * material (single 36-entry C).
+   */
+  readonly binOfElement?: Int32Array | null;
 }
 
 export interface CoOTriplet {
@@ -83,6 +90,7 @@ function processElementChunk(input: WorkerInput): CoOTriplet[] {
     nodes,
     elements,
     C,
+    binOfElement,
   } = input;
 
   const dpe = nodesPerElem * 3;  // DOF per element
@@ -92,6 +100,11 @@ function processElementChunk(input: WorkerInput): CoOTriplet[] {
   const elemNodes = new Int32Array(nodesPerElem);
   const scratchCoords = new Float64Array(30);  // Reused for C3D10
 
+  // Per-bin constitutive views (relative-indexed, kernels use them unchanged)
+  const binCount = C.length / 36;
+  const Cviews: Float64Array[] = [];
+  for (let b = 0; b < binCount; b++) Cviews.push(C.subarray(b * 36, b * 36 + 36));
+
   for (let e = elementStart; e < elementEnd; e++) {
     const base = e * nodesPerElem;
 
@@ -99,6 +112,8 @@ function processElementChunk(input: WorkerInput): CoOTriplet[] {
     for (let ni = 0; ni < nodesPerElem; ni++) {
       elemNodes[ni] = i32(elements, base + ni);
     }
+
+    const Ce = binOfElement ? Cviews[binOfElement[e] ?? 0]! : Cviews[0]!;
 
     // Compute element stiffness
     let ke: Float64Array;
@@ -110,14 +125,14 @@ function processElementChunk(input: WorkerInput): CoOTriplet[] {
         scratchCoords[ni * 3 + 1] = f64(nodes, n * 3 + 1);
         scratchCoords[ni * 3 + 2] = f64(nodes, n * 3 + 2);
       }
-      ke = c3d10ElementStiffness(scratchCoords, C);
+      ke = c3d10ElementStiffness(scratchCoords, Ce);
     } else {
       // C3D4: use existing function
       const na = elemNodes[0]!;
       const nb = elemNodes[1]!;
       const nc = elemNodes[2]!;
       const nd = elemNodes[3]!;
-      ke = elementStiffness(nodes, na, nb, nc, nd, C);
+      ke = elementStiffness(nodes, na, nb, nc, nd, Ce);
     }
 
     // Extract COO triplets
