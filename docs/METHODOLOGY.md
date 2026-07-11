@@ -55,6 +55,45 @@ around a 0.2 mm baseline (Farashi & Vafaee 2022).
 pattern (gyroid degrades less than rectilinear at equal infill). Wall/bead
 contributions can be added via Classical Laminate Theory (`solver/laminate.ts`).
 
+**Two-region model (walls vs infill, opt-in).** The default model above smears
+perimeter walls and infill into ONE homogenized material (walls enter only as a
+geometry-blind +10%-per-wall strength bonus). The two-region model
+(`print.twoRegion`, MATERIAL tab toggle) instead classifies each element
+geometrically:
+
+- **Wall band** = `wallCount × extrusionWidthMm` (line width auto-imported from
+  G-code, default 0.45 mm). Every corner node's exact distance to the tet-mesh
+  boundary is computed (point-to-triangle, `solver/distance.ts`); each element
+  then gets the exact **volume fraction** of itself inside the band via a
+  marching-tet level-set cut on its 4 corner distances (`solver/wallfrac.ts`).
+  Fractions — not hard labels — because volume elements (2.9–6.3 mm edges) are
+  2–5× thicker than a typical 1.35 mm wall band.
+- **Shell** carries solid-material properties (calibrated coupon values flow to
+  it unchanged); **core** carries wall-free lattice properties, strength ≈
+  linear in infill density × pattern multiplier (near zero at 0% infill — the
+  legacy curve's 0.30 intercept represents the walls and is not reused).
+  Both regions keep the full orientation anisotropy (layer bonds exist in walls
+  and infill alike).
+- Fractions are quantized into 9 bins of Voigt-blended constitutive matrices,
+  yields, and densities (`twoRegion.ts` → `ElementMaterialField`), consumed
+  per element by assembly, stress recovery, mass, and self-weight. The scalar
+  `material` becomes the volume-weighted average and keeps feeding
+  whole-part consumers (error estimate, analytic hole checks).
+- **Anchoring:** endpoints agree with the legacy model by construction (100%
+  infill → solid; thin part → all walls). In between the summary reports both
+  the implied average multiplier and the legacy global one — deliberately not
+  renormalized, because the divergence (legacy under-credits wall-dominated
+  thin sections) is what the model corrects.
+- **Validation:** a sandwich cantilever solved with the classified field
+  matches composite-EI beam theory within 0.3% where the homogenized model is
+  ~23% too soft (`solver_validation.ts` group 25); a Taguchi L9 orthogonal
+  array sweeps infill/walls/pattern/orientation for main-effect sanity.
+- **Known limits:** Voigt blending is an upper bound inside the one-element
+  transition band; nozzle-temp/flow effects on bond quality are captured
+  empirically via calibration coupons, not parametric inputs; the core yield
+  criterion remains deviatoric (Hill) — a Deshpande–Fleck–Ashby
+  pressure-dependent lattice criterion is a planned follow-up.
+
 **Print orientation (weak-axis rotation).** The weak (through-layer) axis is the
 FDM layer normal. **C** is built in the material's local frame (weak along local
 Z) and then rotated so that local Z aligns with the part's actual layer normal —
