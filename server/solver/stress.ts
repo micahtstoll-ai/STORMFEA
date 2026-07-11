@@ -37,7 +37,7 @@
  * but require additional solver infrastructure and are a future improvement.
  */
 
-import type { TetMesh, IsotropicMaterial, AnyMaterial, SolverResult } from "./types.js";
+import type { TetMesh, IsotropicMaterial, AnyMaterial, SolverResult, ElementMaterialField } from "./types.js";
 import { isOrthotropic } from "./types.js";
 import { buildAnyConstitutiveMatrix, computeGeometry, buildB, buildB_c3d10, C3D10_GAUSS, rotationAligningZTo, rotateStress6ToLocal } from "./element.js";
 import { buildNodeElementLists } from "./adjacency.js";
@@ -178,16 +178,25 @@ export function recoverElementStress(
   mesh:         TetMesh,
   displacement: Float64Array,
   mat:          AnyMaterial,
+  field?:       ElementMaterialField,
 ): {
   vonMises:      Float64Array;
   safetyFactor:  Float64Array;
   elemPrincipal: Float64Array;
   maxVonMises:   number;
   minSF:         number;
+  /** Index of the argmin-SF element (governing hotspot). */
+  governingElement: number;
   /** Cauchy stress tensor per element: [σxx,σyy,σzz,τxy,τyz,τxz] × elementCount. */
   elemStress6:   Float64Array;
 } {
-  const C = buildAnyConstitutiveMatrix(mat);
+  // Two-region material field: per-bin constitutive matrices and yields,
+  // selected per element below. Absent = single uniform material (legacy).
+  const Cs = field ? field.C : buildAnyConstitutiveMatrix(mat);
+  const binCount = Cs.length / 36;
+  const Cviews: Float64Array[] = [];
+  for (let b = 0; b < binCount; b++) Cviews.push(Cs.subarray(b * 36, b * 36 + 36));
+  const binOfElement = field ? field.binOfElement : null;
   const yieldStr = 'kind' in mat ? (mat as import("./types.js").OrthotropicMaterial).yieldXY
                                  : (mat as IsotropicMaterial).yieldStrength;
   // Hill is defined in the material frame (weak axis = local Z). For a rotated
@@ -232,9 +241,16 @@ export function recoverElementStress(
   const _eps4        = new Float64Array(6);   // C3D4: strain vector
   const _sig4        = new Float64Array(6);   // C3D4: stress vector
 
+  let governingElement = 0;
+
   for (let e = 0; e < mesh.elementCount; e++) {
     const npe  = mesh.nodesPerElem ?? 4;
     const base = e * npe;
+
+    const bin = binOfElement ? (binOfElement[e] ?? 0) : 0;
+    const C   = Cviews[bin]!;
+    const eYieldXY = field ? (field.yieldXY[bin] ?? yieldStr) : 0;
+    const eYieldZ  = field ? (field.yieldZ[bin]  ?? yieldStr) : 0;
 
     let vm = 0, sf = 999;
 
@@ -314,9 +330,10 @@ export function recoverElementStress(
       vm = Math.sqrt(0.5*((sxx-syy)**2+(syy-szz)**2+(szz-sxx)**2+6*(txy**2+tyz**2+txz**2)));
 
       if (isOrthotropic(mat)) {
-        sf = hillSF(sxx, syy, szz, txy, tyz, txz, mat.yieldXY, mat.yieldZ);
+        sf = hillSF(sxx, syy, szz, txy, tyz, txz,
+                    field ? eYieldXY : mat.yieldXY, field ? eYieldZ : mat.yieldZ);
       } else {
-        sf = vm > 1e-12 ? yieldStr/vm : 999;
+        sf = vm > 1e-12 ? (field ? eYieldXY : yieldStr)/vm : 999;
       }
 
     } else {
@@ -367,9 +384,10 @@ export function recoverElementStress(
       }
 
       if (isOrthotropic(mat)) {
-        sf = hillSF(sxx, syy, szz, txy, tyz, txz, mat.yieldXY, mat.yieldZ);
+        sf = hillSF(sxx, syy, szz, txy, tyz, txz,
+                    field ? eYieldXY : mat.yieldXY, field ? eYieldZ : mat.yieldZ);
       } else {
-        sf = vm > 1e-12 ? yieldStr/vm : 999;
+        sf = vm > 1e-12 ? (field ? eYieldXY : yieldStr)/vm : 999;
       }
     }
 
@@ -379,7 +397,7 @@ export function recoverElementStress(
     vonMises[e]     = vm;
     safetyFactor[e] = sf;
     if (vm > maxVM) maxVM = vm;
-    if (sf < minSF) minSF = sf;
+    if (sf < minSF) { minSF = sf; governingElement = e; }
 
     // Principal stresses — re-read sxx/syy/szz/txy/tyz/txz from the sig/sigAvg
     // arrays computed above. We store them as a closure variable set per-branch.
@@ -389,7 +407,7 @@ export function recoverElementStress(
     elemPrincipal[e*3+2] = ps3;
   }
 
-  return { vonMises, safetyFactor, elemPrincipal, maxVonMises: maxVM, minSF, elemStress6 };
+  return { vonMises, safetyFactor, elemPrincipal, maxVonMises: maxVM, minSF, governingElement, elemStress6 };
 }
 
 // ─── SPR (Superconvergent Patch Recovery) stress smoothing ───────────────────
@@ -916,9 +934,10 @@ export function buildSolverResult(
   solverMs:     number,
   residualCheckpoints?: readonly { iteration: number; relativeResidual: number }[],
   computeErrorEstimate: boolean = true,
+  field?:       ElementMaterialField,
 ): SolverResult {
-  const { vonMises, safetyFactor, elemPrincipal, maxVonMises, minSF, elemStress6 } =
-    recoverElementStress(mesh, displacement, mat);
+  const { vonMises, safetyFactor, elemPrincipal, maxVonMises, minSF, governingElement, elemStress6 } =
+    recoverElementStress(mesh, displacement, mat, field);
 
   // Compute Zienkiewicz-Zhu error estimates if requested
   let errorEstimate: Float32Array | undefined;
@@ -941,6 +960,7 @@ export function buildSolverResult(
     maxDisplacementMm:   maxDisplacement(displacement),
     maxVonMisesMPa:      maxVonMises,
     minSafetyFactor:     minSF,
+    governingElement,
     cgIterations,
     converged,
     solverMs,
