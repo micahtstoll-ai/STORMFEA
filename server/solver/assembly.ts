@@ -23,7 +23,7 @@
  * - K is symmetric: verified by symmetry of k_e contributions
  */
 
-import type { TetMesh, AnyMaterial, CSRMatrix } from "./types.js";
+import type { TetMesh, AnyMaterial, CSRMatrix, ElementMaterialField } from "./types.js";
 import { elementStiffness, buildAnyConstitutiveMatrix, c3d10ElementStiffness, elementGeometricStiffness, c3d10ElementGeometricStiffness } from "./element.js";
 import { Worker } from "worker_threads";
 import { fileURLToPath } from "url";
@@ -135,10 +135,14 @@ function findEntry(colIdx: Int32Array, rowPtr: Int32Array, row: number, col: num
 /**
  * Serial element-by-element assembly (original implementation).
  * Used as fallback when workers are unavailable or mesh is small.
+ *
+ * `Cs` holds one or more 6×6 constitutive matrices back to back (binCount×36);
+ * `binOfElement` selects the bin per element (null = single uniform bin).
  */
 function assembleK_serial(
   mesh: TetMesh,
-  C: Float64Array,
+  Cs: Float64Array,
+  binOfElement: Int32Array | null,
   rowPtr: Int32Array,
   colIdx: Int32Array,
   data: Float64Array,
@@ -149,9 +153,16 @@ function assembleK_serial(
   const elemNodes = new Int32Array(npe);
   const scratchCoords = new Float64Array(30);
 
+  // Subarray views are relative-indexed, so element kernels use them unchanged.
+  const binCount = Cs.length / 36;
+  const Cviews: Float64Array[] = [];
+  for (let b = 0; b < binCount; b++) Cviews.push(Cs.subarray(b * 36, b * 36 + 36));
+
   for (let e = 0; e < mesh.elementCount; e++) {
     const base = e * npe;
     for (let ni = 0; ni < npe; ni++) elemNodes[ni] = i32(mesh.elements, base + ni);
+
+    const C = binOfElement ? Cviews[binOfElement[e] ?? 0]! : Cviews[0]!;
 
     let ke: Float64Array;
     if (npe === 10) {
@@ -247,7 +258,8 @@ const PARALLEL_MIN_ELEMENTS = 1000;
  */
 async function assembleK_parallel(
   mesh: TetMesh,
-  C: Float64Array,
+  Cs: Float64Array,
+  binOfElement: Int32Array | null,
   rowPtr: Int32Array,
   colIdx: Int32Array,
   data: Float64Array,
@@ -303,14 +315,17 @@ async function assembleK_parallel(
           }
         });
 
-        // Send work to worker
+        // Send work to worker. binOfElement is globally indexed (chunks use
+        // global element indices), so the whole array ships to each worker —
+        // 4 bytes/element, smaller than the elements array already posted.
         worker.postMessage({
           elementStart: chunk.start,
           elementEnd: chunk.end,
           nodesPerElem: mesh.nodesPerElem,
           nodes: mesh.nodes,
           elements: mesh.elements,
-          C,
+          C: Cs,
+          binOfElement,
         });
       });
     });
@@ -363,12 +378,17 @@ export type SparsityPattern = {
  *             buildSparsityPattern). The pattern depends only on mesh
  *             connectivity, so K, M and Kσ for the same mesh can share one
  *             pattern instead of rebuilding it per matrix (issue #100).
+ * @param field Optional per-element material field (two-region shell/core
+ *             model). When present, each element's constitutive matrix comes
+ *             from field.C[binOfElement[e]]; `mat` is only the fallback for
+ *             the uniform case. Absent = legacy single-material behavior.
  */
 export async function assembleK(
   mesh: TetMesh,
   mat:  AnyMaterial,
   mode: 'auto' | 'serial' | 'parallel' = 'auto',
   pattern?: SparsityPattern,
+  field?: ElementMaterialField,
 ): Promise<{
   K:       CSRMatrix;
   diagIdx: Int32Array;
@@ -377,7 +397,14 @@ export async function assembleK(
 }> {
   const n   = mesh.nodeCount * 3;
   const npe = mesh.nodesPerElem;
-  const C   = buildAnyConstitutiveMatrix(mat);
+  const Cs  = field ? field.C : buildAnyConstitutiveMatrix(mat);
+  const binOfElement = field ? field.binOfElement : null;
+  if (field && field.binOfElement.length !== mesh.elementCount) {
+    throw new Error(
+      `assembleK: materialField.binOfElement length ${field.binOfElement.length} ` +
+      `!= elementCount ${mesh.elementCount}`
+    );
+  }
 
   const { rowPtr, colIdx, diagIdx } = pattern ?? buildSparsityPattern(mesh);
   const nnz = rowPtr[n] ?? 0;
@@ -389,10 +416,10 @@ export async function assembleK(
 
   // Try parallel assembly; fall back to serial if it fails or is not available
   const parallelSucceeded = tryParallel
-    ? await assembleK_parallel(mesh, C, rowPtr, colIdx, data).catch(() => false)
+    ? await assembleK_parallel(mesh, Cs, binOfElement, rowPtr, colIdx, data).catch(() => false)
     : false;
   if (!parallelSucceeded) {
-    assembleK_serial(mesh, C, rowPtr, colIdx, data);
+    assembleK_serial(mesh, Cs, binOfElement, rowPtr, colIdx, data);
   }
 
   // Log which path ran (only for meshes large enough that the choice matters —

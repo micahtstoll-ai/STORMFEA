@@ -17,6 +17,7 @@
 import type {
   TetMesh,
   AnyMaterial,
+  ElementMaterialField,
   PointForce,
   SolverResult,
   CSRMatrix,
@@ -33,6 +34,13 @@ import { computeMeshQuality }  from "./meshQuality.js";
 export interface SolverInput {
   readonly mesh:        TetMesh;
   readonly material:    AnyMaterial;
+  /**
+   * Optional per-element material field (two-region shell/core model, issue:
+   * walls vs infill). When present, `material` is the volume-weighted average
+   * material (still used by scalar consumers like the ZZ error estimate); the
+   * field overrides per-element stiffness and yields in assembly and recovery.
+   */
+  readonly materialField?: ElementMaterialField;
   readonly constraints: readonly FixedNodeSet[];
   readonly forces:      readonly PointForce[];
   readonly cgTolerance?:   number;
@@ -148,7 +156,7 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
   }
 
   _snap("before assembleK");
-  const { K, diagIdx } = await assembleK(mesh, material);
+  const { K, diagIdx } = await assembleK(mesh, material, 'auto', undefined, input.materialField);
   _snap("after assembleK");
 
   const f = assembleForceVector(mesh.nodeCount, forces);
@@ -183,7 +191,7 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
 
   const solverMs = Date.now() - t0;
   _snap("before buildSolverResult");
-  const result = buildSolverResult(mesh, cg.u, material, cg.iterations, cg.converged, solverMs, cg.residualCheckpoints);
+  const result = buildSolverResult(mesh, cg.u, material, cg.iterations, cg.converged, solverMs, cg.residualCheckpoints, true, input.materialField);
   _snap("after buildSolverResult");
   validateResult(result, mesh);
 

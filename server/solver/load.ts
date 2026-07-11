@@ -95,6 +95,13 @@ export function distributedFaceForce(
 export function assembleBodyForce(
   mesh:      TetMesh,
   bodyForce: readonly [number, number, number],
+  /**
+   * Optional per-element multiplier on the body force (two-region material
+   * field: scale[e] = ρ_element / ρ_average, so a part with dense walls and
+   * a sparse core carries its weight where the material actually is).
+   * Absent = uniform body force (legacy).
+   */
+  perElementScale?: Float64Array | null,
 ): Float64Array {
   const [bx, by, bz] = bodyForce;
   const f   = new Float64Array(mesh.nodeCount * 3);
@@ -103,6 +110,7 @@ export function assembleBodyForce(
   if (npe === 10) {
     const coords = new Float64Array(30);
     for (let e = 0; e < mesh.elementCount; e++) {
+      const s = perElementScale ? (perElementScale[e] ?? 1) : 1;
       const base = e * 10;
       for (let i = 0; i < 10; i++) {
         const n = mesh.elements[base + i] ?? 0;
@@ -113,7 +121,7 @@ export function assembleBodyForce(
       for (const gp of C3D10_GAUSS) {
         const { detJ } = buildB_c3d10(coords, gp.xi, gp.eta, gp.zeta);
         const N = c3d10ShapeFunctions(gp.xi, gp.eta, gp.zeta);
-        const vol = Math.abs(detJ) * gp.w;
+        const vol = Math.abs(detJ) * gp.w * s;
         for (let i = 0; i < 10; i++) {
           const n = mesh.elements[base + i] ?? 0;
           const w = (N[i] ?? 0) * vol;
@@ -125,11 +133,12 @@ export function assembleBodyForce(
     }
   } else {
     for (let e = 0; e < mesh.elementCount; e++) {
+      const s = perElementScale ? (perElementScale[e] ?? 1) : 1;
       const base = e * 4;
       const n0 = mesh.elements[base]   ?? 0, n1 = mesh.elements[base+1] ?? 0,
             n2 = mesh.elements[base+2] ?? 0, n3 = mesh.elements[base+3] ?? 0;
       const V = computeGeometry(mesh.nodes, n0, n1, n2, n3).V;
-      const w = V / 4;
+      const w = V / 4 * s;
       for (const n of [n0, n1, n2, n3]) {
         f[n*3]   = (f[n*3]   ?? 0) + bx * w;
         f[n*3+1] = (f[n*3+1] ?? 0) + by * w;

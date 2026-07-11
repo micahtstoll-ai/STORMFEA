@@ -32,6 +32,13 @@
 - [x] Wall count bonus (+10% per additional wall)
 - [x] Layer height factor (Farashi & Vafaee 2022 meta-analysis, n=131)
 - [x] All constants cited in Sources tab with confidence levels
+- [x] Two-region material model (opt-in) — dense perimeter walls vs homogenized
+      infill core, classified geometrically per element (exact surface-distance
+      field + marching-tet volume fractions, 9 Voigt-blended bins) instead of a
+      single averaged material; stiffness, strength, mass, self-weight, and
+      utilization all follow the split. Validated: sandwich cantilever matches
+      composite-EI theory to 0.3% (homogenized model ~23% too soft); Taguchi L9
+      orthogonal-array main-effect checks over infill/walls/pattern/orientation
 
 ### Failure Modes
 - [x] Bulk yield — FEM Hill criterion (high confidence)
@@ -190,7 +197,16 @@
 
 ## IN PROGRESS / NEXT
 
-_(nothing outstanding — see the newly-shipped items below)_
+- Section-view interior stress heatmap — color the cut face with real
+  interpolated stress (design complete: volume payload on `/api/analyse`,
+  client marching-tet slice over the stencil cap; carries per-node yield/region
+  so two-region parts show region-correct interior stress)
+- Deshpande–Fleck–Ashby core yield criterion — pressure-dependent yield for the
+  cellular infill core (σ̂² = (σ_vm² + α²σ_m²)/(1+(α/3)²)); plugs into the
+  per-bin yield hook in `recoverElementStress`; isotropic-DFA first, anisotropic
+  honeycomb extension later
+- Per-failure-mode yield selection — shell yield for bearing/thread checks on
+  wall-lined holes (slicers line holes with perimeters)
 
 ---
 

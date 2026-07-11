@@ -1440,6 +1440,105 @@ console.log("\n[24] Hole-in-plate stress concentration — Kirsch Kt ≈ 3.0");
   }
 }
 
+// ── Test group 25: two-region (shell/core) material field ────────────────────
+console.log("\n[25] Two-region material field — solve equivalence + sandwich beam");
+{
+  const { buildTwoRegionField } = await import("../twoRegion.js");
+  const { extractSurfaceFaces, generateBoxMeshC3D4 } = await import("../solver/meshgen.js");
+  const { buildAnyConstitutiveMatrix } = await import("../solver/element.js");
+
+  // [25.1] Single-bin field wrapping the uniform material must reproduce the
+  // no-field solve exactly (same K by construction → same displacements).
+  {
+    const mesh = generateBoxMeshC3D4(0, 0, 0, 20, 5, 5, 8, 2, 2);
+    const mat = {
+      kind: "orthotropic" as const,
+      E_xy: 3500, E_z: 3500, nu_xy: 0.36, nu_xz: 0.36,
+      G_xz: 3500 / (2 * 1.36), yieldXY: 50, yieldZ: 50, label: "iso-limit",
+    };
+    const fixed: number[] = [], tip: number[] = [];
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      const x = mesh.nodes[n * 3] ?? 0;
+      if (x < 1e-9) fixed.push(n);
+      if (x > 20 - 1e-9) tip.push(n);
+    }
+    const forces = tip.map(n => ({ nodeIndex: n, forceN: [0, 0, -2 / tip.length] as [number, number, number] }));
+    const field = {
+      binCount: 1,
+      binOfElement: new Int32Array(mesh.elementCount),
+      C: buildAnyConstitutiveMatrix(mat),
+      yieldXY: Float64Array.of(50), yieldZ: Float64Array.of(50),
+      massRho: Float64Array.of(1240), shellFrac: Float64Array.of(0),
+    };
+    const plain = await runLinearStatic({ mesh, material: mat, constraints: [{ nodeIndices: fixed }], forces });
+    const fielded = await runLinearStatic({ mesh, material: mat, materialField: field, constraints: [{ nodeIndices: fixed }], forces });
+    let maxDiff = 0;
+    for (let i = 0; i < plain.displacement.length; i++) {
+      const d = Math.abs((plain.displacement[i] ?? 0) - (fielded.displacement[i] ?? 0));
+      if (d > maxDiff) maxDiff = d;
+    }
+    const scale = Math.max(plain.maxDisplacementMm, 1e-12);
+    test("[25.1] single-bin field solve ≡ uniform solve (1e-12 rel)", maxDiff / scale < 1e-12,
+      `maxRelDiff=${(maxDiff / scale).toExponential(2)}`);
+    test("[25.1] min SF identical", Math.abs(plain.minSafetyFactor - fielded.minSafetyFactor) < 1e-9,
+      `plain=${plain.minSafetyFactor} fielded=${fielded.minSafetyFactor}`);
+  }
+
+  // [25.2] Sandwich cantilever: stiff skin (wall band) + soft core vs the
+  // composite-EI Euler-Bernoulli tip deflection. End-to-end: the field comes
+  // from the REAL classification (surface distances + level-set fractions) on
+  // a mesh whose elements are coarser than the band — the blending regime.
+  {
+    const L = 80, B = 8, H = 8, T_WALL = 1.5, P = 10;
+    const E_S = 3500, E_C = 700, NU = 0.36;
+    const mesh = generateBoxMeshC3D10(0, 0, 0, L, B, H, 20, 4, 4);
+    const faces = extractSurfaceFaces(mesh);
+    const isoOrtho = (E: number, label: string) => ({
+      kind: "orthotropic" as const,
+      E_xy: E, E_z: E, nu_xy: NU, nu_xz: NU, G_xz: E / (2 * (1 + NU)),
+      yieldXY: 50 * E / E_S, yieldZ: 50 * E / E_S, label, massRho: 1240 * E / E_S,
+    });
+    const tr = buildTwoRegionField(mesh, faces, isoOrtho(E_S, "skin"), isoOrtho(E_C, "core"), T_WALL);
+    test("[25.2] classification produced a mixed field", tr.field !== null,
+      `Vf=${tr.shellVolumeFraction.toFixed(3)}`);
+
+    const fixed: number[] = [], tip: number[] = [];
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      const x = mesh.nodes[n * 3] ?? 0;
+      if (x < 1e-9) fixed.push(n);
+      if (x > L - 1e-9) tip.push(n);
+    }
+    const forces = tip.map(n => ({ nodeIndex: n, forceN: [0, 0, -P / tip.length] as [number, number, number] }));
+    const r = await runLinearStatic({
+      mesh, material: tr.averageMaterial,
+      ...(tr.field ? { materialField: tr.field } : {}),
+      constraints: [{ nodeIndices: fixed }], forces,
+    });
+
+    // Tip deflection: average |uz| over the tip-face nodes
+    let uzSum = 0;
+    for (const n of tip) uzSum += Math.abs(r.displacement[n * 3 + 2] ?? 0);
+    const uzTip = uzSum / tip.length;
+
+    // Composite EI: stiff skin band of thickness t on all four sides
+    const Iouter = B * H ** 3 / 12;
+    const Iinner = (B - 2 * T_WALL) * (H - 2 * T_WALL) ** 3 / 12;
+    const EI = E_S * (Iouter - Iinner) + E_C * Iinner;
+    const deltaAnalytic = P * L ** 3 / (3 * EI);
+    test("[25.2] sandwich tip deflection matches composite EI within 15%",
+      near(uzTip, deltaAnalytic, 0.15),
+      `FE=${uzTip.toFixed(4)}mm analytic=${deltaAnalytic.toFixed(4)}mm ratio=${(uzTip / deltaAnalytic).toFixed(3)}`);
+
+    // Report the divergence from the volume-averaged uniform model (whose
+    // EI = E_avg·I_outer) — that difference is the model's point.
+    const eAvg = tr.shellVolumeFraction * E_S + (1 - tr.shellVolumeFraction) * E_C;
+    const deltaAvgModel = P * L ** 3 / (3 * eAvg * Iouter);
+    console.log(`    Vf=${(tr.shellVolumeFraction * 100).toFixed(1)}% ` +
+      `δ_FE=${uzTip.toFixed(4)} δ_composite=${deltaAnalytic.toFixed(4)} δ_avgModel=${deltaAvgModel.toFixed(4)}mm ` +
+      `(${mesh.elementCount} C3D10 elems)`);
+  }
+}
+
 // ── Summary ───────────────────────────────────────────────────────────────────
 // Runs at the END of the async IIFE, after every test group above has
 // completed. (A previous setTimeout(0) variant fired as soon as the event
