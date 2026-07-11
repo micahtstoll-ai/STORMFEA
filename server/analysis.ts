@@ -48,7 +48,7 @@ import type { IsotropicMaterial, AnyMaterial, OrthotropicMaterial, ElementMateri
 import { buildTwoRegionField, TWO_REGION_MAX_ELEMENTS } from "./twoRegion.js";
 import { isOrthotropic, isOrthotropicLike } from "./solver/types.js";
 import { recoverElementStressComponents }   from "./solver/stress_detail.js";
-import { rotationAligningZTo, rotateStress6ToLocal } from "./solver/element.js";
+import { rotationAligningZTo, rotateStress6ToLocal, computeGeometry } from "./solver/element.js";
 import { sprSmoothedStress, sprSmoothedStress6, recoverElementStress, nodeAveragedPrincipalStress } from "./solver/stress.js";
 import { flagMergedHoleWarnings }           from "./holes.js";
 import type { HoleFeature }                 from "./holes.js";
@@ -2603,7 +2603,17 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       rhoTMm3 * a * (dir[1] / dlen),
       rhoTMm3 * a * (dir[2] / dlen),
     ];
-    const bodyF = assembleBodyForce(mesh, b);
+    // Two-region field: distribute the weight where the material actually is
+    // (dense walls vs sparse core) instead of uniformly at the average density.
+    let rhoScale: Float64Array | null = null;
+    if (materialField) {
+      const avgRho = (material as { massRho?: number }).massRho ?? 1240;
+      rhoScale = new Float64Array(mesh.elementCount);
+      for (let e = 0; e < mesh.elementCount; e++) {
+        rhoScale[e] = (materialField.massRho[materialField.binOfElement[e] ?? 0] ?? avgRho) / avgRho;
+      }
+    }
+    const bodyF = assembleBodyForce(mesh, b, rhoScale);
     let loaded = 0, totX = 0, totY = 0, totZ = 0;
     for (let n = 0; n < mesh.nodeCount; n++) {
       const fx = bodyF[n*3] ?? 0, fy = bodyF[n*3+1] ?? 0, fz = bodyF[n*3+2] ?? 0;
@@ -2825,6 +2835,45 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     ? sprSmoothedStress6(mesh, result.elemStress6)
     : null;
 
+  // Two-region field: per-node yields — the volume-weighted average of the
+  // adjacent elements' bin yields, mirroring how the nodal stress itself is a
+  // patch average (SPR). One scatter pass over elements, no adjacency needed.
+  let nodeYieldXY: Float64Array | null = null;
+  let nodeYieldZ:  Float64Array | null = null;
+  if (materialField && nodeStress6) {
+    nodeYieldXY = new Float64Array(mesh.nodeCount);
+    nodeYieldZ  = new Float64Array(mesh.nodeCount);
+    const nodeVolSum = new Float64Array(mesh.nodeCount);
+    const npeY = mesh.nodesPerElem;
+    for (let e = 0; e < mesh.elementCount; e++) {
+      const bin = materialField.binOfElement[e] ?? 0;
+      const yXY = materialField.yieldXY[bin] ?? utilYieldXY;
+      const yZ  = materialField.yieldZ[bin]  ?? utilYieldZ;
+      const base = e * npeY;
+      const V = computeGeometry(
+        mesh.nodes,
+        mesh.elements[base] ?? 0, mesh.elements[base + 1] ?? 0,
+        mesh.elements[base + 2] ?? 0, mesh.elements[base + 3] ?? 0,
+      ).V;
+      for (let k = 0; k < npeY; k++) {
+        const n = mesh.elements[base + k] ?? 0;
+        nodeYieldXY[n] = (nodeYieldXY[n] ?? 0) + yXY * V;
+        nodeYieldZ[n]  = (nodeYieldZ[n]  ?? 0) + yZ * V;
+        nodeVolSum[n]  = (nodeVolSum[n]  ?? 0) + V;
+      }
+    }
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      const w = nodeVolSum[n] ?? 0;
+      if (w > 0) {
+        nodeYieldXY[n] = (nodeYieldXY[n] ?? 0) / w;
+        nodeYieldZ[n]  = (nodeYieldZ[n]  ?? 0) / w;
+      } else {
+        nodeYieldXY[n] = utilYieldXY;
+        nodeYieldZ[n]  = utilYieldZ;
+      }
+    }
+  }
+
   const nodeUtilXY = nodeStress6 ? new Float64Array(mesh.nodeCount) : null;
   const nodeUtilZ  = nodeStress6 ? new Float64Array(mesh.nodeCount) : null;
   const nodeSignedStress = new Float64Array(mesh.nodeCount);
@@ -2840,7 +2889,11 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         const L = rotateStress6ToLocal([sxx, syy, szz, txy, tyz, txz], utilR);
         sxx = L[0]; syy = L[1]; szz = L[2]; txy = L[3]; tyz = L[4]; txz = L[5];
       }
-      const util = computeUtilizationRatios(sxx, syy, szz, txy, tyz, txz, utilYieldXY, utilYieldZ);
+      const util = computeUtilizationRatios(
+        sxx, syy, szz, txy, tyz, txz,
+        nodeYieldXY ? (nodeYieldXY[n] ?? utilYieldXY) : utilYieldXY,
+        nodeYieldZ  ? (nodeYieldZ[n]  ?? utilYieldZ)  : utilYieldZ,
+      );
       nodeUtilXY[n] = util.uXY;
       nodeUtilZ[n]  = util.uZ;
       const hydro = sxx + syy + szz;
@@ -3544,9 +3597,21 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   if (recommendations.length > 0) recommendations[0]!.highlight = true;
 
   // ── Fatigue estimate ──────────────────────────────────────────────────────
+  // Two-region field: the fatigue hotspot lives in ONE region — evaluate the
+  // governing element's (argmin-SF) own stress against its own bin yield.
+  // Averaging would understate a shell hotspot's margin and overstate a core
+  // hotspot's. Uniform model: legacy maxVM vs effectiveYield.
+  let fatigueStress = maxVM;
+  let fatigueYield  = effectiveYield;
+  if (materialField && result.governingElement !== undefined) {
+    const ge  = result.governingElement;
+    const bin = materialField.binOfElement[ge] ?? 0;
+    fatigueStress = result.vonMises[ge] ?? maxVM;
+    fatigueYield  = materialField.yieldXY[bin] ?? effectiveYield;
+  }
   const fatigue = estimateFatigue(
-    maxVM,
-    effectiveYield,
+    fatigueStress,
+    fatigueYield,
     req.print.materialId,
     req.print.orientation,
     req.fatigueLoadRatio ?? 0,
