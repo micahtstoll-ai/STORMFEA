@@ -1920,8 +1920,12 @@ body:not(.has-results) #btn-stress { display: none !important; }
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
             <label for="two-region-linewidth" style="font-size:10px;color:var(--text-mid);white-space:nowrap">Line width (mm)</label>
             <input type="number" id="two-region-linewidth" min="0.1" max="2.0" step="0.05" value="0.45"
+                   oninput="updateWallBandReadout()"
                    style="width:70px;background:var(--bg-input);border:1px solid var(--border);border-radius:3px;color:var(--text-hi);font-size:11px;padding:3px 6px">
             <span style="font-size:9px;color:var(--text-lo)">auto-filled from .gcode import when available</span>
+          </div>
+          <div style="font-size:10px;color:var(--text-mid);margin-bottom:8px">
+            Wall band: <b id="wall-band-readout" style="color:var(--text-hi)">—</b>
           </div>
           <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:3px;padding:8px;font-size:10px;color:var(--text-lo);line-height:1.6">
             <b style="color:var(--warn)">Note:</b> nozzle temperature and flow rate affect layer fusing but are printer-specific — they are captured empirically by the <b style="color:var(--text-mid)">calibration coupons</b> above (print with your real settings). Calibrated solid properties flow to the walls directly; the core inherits them scaled by infill.
@@ -5310,6 +5314,17 @@ function updateOrientDerivedDisplay() {
   const sel = document.getElementById('s-orient');
   if (sel) sel.value = orient;
 }
+// Live client-side mirror of tWall = wallCount * lineWidth from
+// server/analysis.ts:2360-2361 — lets users see the wall band before running
+// a solve. Same [0.1, 2.0] clamp analysis.ts applies to extrusionWidthMm.
+function updateWallBandReadout() {
+  const readout = document.getElementById('wall-band-readout');
+  if (!readout) return;
+  const walls = +(document.getElementById('s-walls')?.value ?? 3);
+  const lineWidth = Math.min(2.0, Math.max(0.1, +(document.getElementById('two-region-linewidth')?.value ?? 0.45) || 0.45));
+  readout.textContent = (walls * lineWidth).toFixed(2) + ' mm';
+}
+
 function updateSettingsPreview() {
   if (_sessionLoaded) dispatchStateChange();
   const matId   = document.getElementById('s-material').value;
@@ -5317,6 +5332,7 @@ function updateSettingsPreview() {
   const walls   = +document.getElementById('s-walls').value;
   const pattern = document.getElementById('s-pattern').value;
   const orient  = document.getElementById('s-orient').value;
+  updateWallBandReadout();
 
   const totalMul = calcEffectiveMul(infill, walls, pattern, orient);
   const baseY    = BASE_YIELD[matId] || 50;
@@ -5787,6 +5803,19 @@ function showResults(s) {
     ? '<span style="color:var(--danger)"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Yield predicted at this load</span>'
     : '<span style="color:var(--success)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> Below yield threshold</span>';
 
+  // Two-region's whole point is to diverge from the geometry-blind legacy
+  // multiplier where the geometric wall split disagrees with it (see
+  // server/analysis.ts impliedAvgStrengthMul / globalModelStrengthMul) —
+  // surface that divergence instead of silently dropping it.
+  const mm = s.materialModel;
+  let strengthDivergenceHtml = '';
+  if (mm && mm.twoRegion && mm.impliedAvgStrengthMul != null && mm.globalModelStrengthMul) {
+    const implied = mm.impliedAvgStrengthMul, legacy = mm.globalModelStrengthMul;
+    const deltaPct = ((implied - legacy) / legacy) * 100;
+    const deltaColor = Math.abs(deltaPct) > 10 ? 'var(--warn)' : 'var(--text-label)';
+    strengthDivergenceHtml = ` · implied strength ×${implied.toFixed(2)} vs. legacy model ×${legacy.toFixed(2)} (<span style="color:${deltaColor}">${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(0)}%</span>)`;
+  }
+
   // ── Calibration status badge ─────────────────────────────────────────────
   const calibBadge = s.calibrationId
     ? `<div style="display:inline-flex;align-items:center;gap:5px;padding:3px 8px;background:var(--gold-faint);border:1px solid var(--gold-glow);border-radius:2px;font-size:9px;color:var(--success);margin-bottom:10px;letter-spacing:.06em"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="3" y1="3" x2="7" y2="7"/><line x1="7" y1="3" x2="3" y2="7"/></svg> CALIBRATED PROFILE ACTIVE</div>`
@@ -5934,7 +5963,7 @@ function showResults(s) {
 
     <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;margin-bottom:12px;font-size:11px;color:var(--text-label);line-height:1.8">
       Effective yield: ${s.effectiveYieldMPa.toFixed(1)} MPa (print settings applied)<br>
-      ${s.materialModel && s.materialModel.twoRegion ? `Material model: <b style="color:var(--text-hi)">two-region</b> — shell ${((s.materialModel.shellVolumeFraction ?? 0) * 100).toFixed(0)}% of volume (walls ${(s.materialModel.wallThicknessMm ?? 0).toFixed(2)} mm, yield ${(s.materialModel.shellYieldXYMPa ?? 0).toFixed(1)} MPa) · core yield ${(s.materialModel.coreYieldXYMPa ?? 0).toFixed(1)} MPa${s.materialModel.degraded ? ` · <span style="color:var(--warn)">degraded: ${s.materialModel.degraded}</span>` : ''}<br>` : (s.materialModel && s.materialModel.degraded ? `Material model: <span style="color:var(--warn)">two-region requested but ran uniform — ${s.materialModel.degraded}</span><br>` : '')}
+      ${s.materialModel && s.materialModel.twoRegion ? `Material model: <b style="color:var(--text-hi)">two-region</b> — shell ${((s.materialModel.shellVolumeFraction ?? 0) * 100).toFixed(0)}% of volume (walls ${(s.materialModel.wallThicknessMm ?? 0).toFixed(2)} mm, yield ${(s.materialModel.shellYieldXYMPa ?? 0).toFixed(1)} MPa) · core yield ${(s.materialModel.coreYieldXYMPa ?? 0).toFixed(1)} MPa${strengthDivergenceHtml}${s.materialModel.degraded ? ` · <span style="color:var(--warn)">degraded: ${s.materialModel.degraded}</span>` : ''}<br>` : (s.materialModel && s.materialModel.degraded ? `Material model: <span style="color:var(--warn)">two-region requested but ran uniform — ${s.materialModel.degraded}</span><br>` : '')}
       Mesh: <b style="color:var(--text-hi)">${s.nodeCount.toLocaleString()} nodes</b> · <b style="color:var(--text-hi)">${s.elementCount.toLocaleString()} elements</b> · C3D10 quadratic tet<br>
       Solver: ${s.cgIterations} CG iterations · ${s.solverMs}ms · converged=${s.converged ? 'yes' : '<span style="color:var(--warn)">no</span>'}
       ${s.governingDirection != null ? `<br>Governing direction: <b style="color:var(--text-hi)">${s.governingDirection === 'xy' ? 'XY in-plane' : 'Z inter-layer'}</b> · U<sub>XY</sub>=${(s.peakUtilXY??0).toFixed(3)} · U<sub>Z</sub>=${(s.peakUtilZ??0).toFixed(3)} ${s.governingDirection === 'xy' ? '<span style="color:var(--text-lo);font-size:10px">→ increase infill to resist</span>' : '<span style="color:var(--text-lo);font-size:10px">→ reorient or add perimeters</span>'}` : ''}
@@ -8500,6 +8529,7 @@ function onCLTToggle(enabled) {
 function onTwoRegionToggle(enabled) {
   const details = document.getElementById('two-region-details');
   if (details) details.style.display = enabled ? 'block' : 'none';
+  if (enabled) updateWallBandReadout();
 }
 
 function onCalibProfileChange(id) {
@@ -12059,6 +12089,7 @@ function applyGcodeParamsToUI(params) {
   if (params.extrusionWidthMm != null && isFinite(params.extrusionWidthMm)) {
     const lwInput = document.getElementById('two-region-linewidth');
     if (lwInput) lwInput.value = params.extrusionWidthMm.toFixed(2);
+    updateWallBandReadout();
   }
 
   const badge      = document.getElementById('gcode-import-badge');
