@@ -62,7 +62,8 @@ geometry-blind +10%-per-wall strength bonus). The two-region model
 geometrically:
 
 - **Wall band** = `wallCount × extrusionWidthMm` (line width auto-imported from
-  G-code, default 0.45 mm). Every corner node's exact distance to the tet-mesh
+  G-code, default 0.45 mm; the MATERIAL tab shows the resulting band thickness
+  live as either input changes). Every corner node's exact distance to the tet-mesh
   boundary is computed (point-to-triangle, `solver/distance.ts`); each element
   then gets the exact **volume fraction** of itself inside the band via a
   marching-tet level-set cut on its 4 corner distances (`solver/wallfrac.ts`).
@@ -83,7 +84,9 @@ geometrically:
   infill → solid; thin part → all walls). In between the summary reports both
   the implied average multiplier and the legacy global one — deliberately not
   renormalized, because the divergence (legacy under-credits wall-dominated
-  thin sections) is what the model corrects.
+  thin sections) is what the model corrects. The results panel displays this
+  divergence directly (implied vs legacy multiplier with the relative delta,
+  highlighted when it exceeds 10%).
 - **Validation:** a sandwich cantilever solved with the classified field
   matches composite-EI beam theory within 0.3% where the homogenized model is
   ~23% too soft (`solver_validation.ts` group 25); a Taguchi L9 orthogonal
