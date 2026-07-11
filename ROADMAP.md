@@ -39,6 +39,9 @@
       utilization all follow the split. Validated: sandwich cantilever matches
       composite-EI theory to 0.3% (homogenized model ~23% too soft); Taguchi L9
       orthogonal-array main-effect checks over infill/walls/pattern/orientation
+- [x] Two-region UI surfacing — live wall-band readout (wall count × line
+      width) in the MATERIAL tab; results panel shows the implied vs legacy
+      strength multiplier divergence with the relative delta
 
 ### Failure Modes
 - [x] Bulk yield — FEM Hill criterion (high confidence)
