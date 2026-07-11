@@ -532,6 +532,32 @@ h1, h2, h3 { font-weight: inherit; font-size: inherit; margin: 0; }
   color: var(--gold);
 }
 
+/* Post-solve heatmap-field selector (VIEW:) — one uniform button shape and
+   size for every stress field. Keeps the row from going ragged when the
+   optional fields (±VM, U_XY, U_Z, η) are revealed, and gives the icon-based
+   Damage button the same two-line text layout as its siblings. Visibility is
+   still controlled with inline display (flex/none) so setStressMode() can
+   rebuild className freely without disturbing which buttons are shown. */
+#stress-mode-wrap .btn.vmode-btn {
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  min-width: 58px;
+  padding: 4px 6px;
+  font-size: 10px;
+  line-height: 1;
+  text-align: center;
+}
+#stress-mode-wrap .btn.vmode-btn .vmode-abbr { font-weight: 700; line-height: 1; }
+#stress-mode-wrap .btn.vmode-btn .vmode-cap {
+  font-weight: 400;
+  font-size: 8px;
+  line-height: 1;
+  color: var(--text-lo);
+}
+#stress-mode-wrap .btn.vmode-btn.active .vmode-cap { color: var(--gold); }
+
 /* ── Intentional transitions — not a catch-all ──────────────────────────────── */
 /* Fast: interactive states only */
 .btn, select, input[type=number] { transition: border-color var(--t-fast), color var(--t-fast); }
@@ -1067,15 +1093,15 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <!-- Stress visualization mode (shown after solve) -->
       <div id="stress-mode-wrap" style="display:none;border-left:1px solid var(--border);margin-left:2px;padding-left:6px;gap:3px;align-items:center">
         <span style="font-size:9px;color:var(--text-lo);letter-spacing:.04em;margin-right:2px" title="Choose what the heatmap colors represent">VIEW:</span>
-        <button class="btn active" id="btn-vm"  onclick="setStressMode('vm')"  style="font-size:10px;padding:4px 8px;display:flex;flex-direction:column;align-items:center;gap:1px" title="von Mises stress — overall combined stress magnitude"><span style="font-weight:700">VM</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Overall</span></button>
-        <button class="btn"        id="btn-svm" onclick="setStressMode('svm')" style="font-size:10px;padding:4px 8px;display:none;flex-direction:column;align-items:center;gap:1px" title="Signed von Mises — blue=compression, white=zero, red=tension. Sign = sign of hydrostatic stress (trace of σ). Useful for distinguishing delamination risk (tension) from compressive crush."><span style="font-weight:700">±VM</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Signed</span></button>
-        <button class="btn"        id="btn-s1"  onclick="setStressMode('s1')"  style="font-size:10px;padding:4px 8px;display:flex;flex-direction:column;align-items:center;gap:1px" title="Maximum principal stress σ₁ — most tensile direction (red=tensile, blue=compressive)"><span style="font-weight:700">σ₁</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Max tension</span></button>
-        <button class="btn"        id="btn-s2"  onclick="setStressMode('s2')"  style="font-size:10px;padding:4px 8px;display:flex;flex-direction:column;align-items:center;gap:1px" title="Intermediate principal stress σ₂ (red=tensile, blue=compressive)"><span style="font-weight:700">σ₂</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Mid stress</span></button>
-        <button class="btn"        id="btn-s3"  onclick="setStressMode('s3')"  style="font-size:10px;padding:4px 8px;display:flex;flex-direction:column;align-items:center;gap:1px" title="Minimum principal stress σ₃ — most compressive direction (red=tensile, blue=compressive)"><span style="font-weight:700">σ₃</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Max compression</span></button>
-        <button class="btn"        id="btn-dmg"    onclick="setStressMode('dmg')"    style="font-size:10px;padding:4px 8px;display:flex;flex-direction:column;align-items:center;gap:1px" title="Damage ratio — stress as a fraction of material yield strength (1.0 = at yield)"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="3" y1="3" x2="7" y2="7"/><line x1="7" y1="3" x2="3" y2="7"/></svg><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Damage</span></button>
-        <button class="btn"        id="btn-xyutil" onclick="setStressMode('xyutil')" style="font-size:10px;padding:4px 8px;display:none;flex-direction:column;align-items:center;gap:1px" title="XY in-plane utilization — sqrt(σxx²+σyy²-σxx·σyy+3·σxy²) / yieldXY. Red at 1.0 = at in-plane yield. High → add infill."><span style="font-weight:700">U<sub>XY</sub></span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">In-plane use</span></button>
-        <button class="btn"        id="btn-zutil"  onclick="setStressMode('zutil')"  style="font-size:10px;padding:4px 8px;display:none;flex-direction:column;align-items:center;gap:1px" title="Z out-of-plane utilization — max(|σzz|, √3·√(σyz²+σxz²)) / yieldZ. Red at 1.0 = at inter-layer yield. High → reorient or add walls."><span style="font-weight:700">U<sub>Z</sub></span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Z-layer use</span></button>
-        <button class="btn"        id="btn-error"  onclick="setStressMode('error')"  style="font-size:10px;padding:4px 8px;display:none;flex-direction:column;align-items:center;gap:1px" title="Error estimate η — Zienkiewicz-Zhu mesh quality metric (0–1), identifies under-resolved elements"><span style="font-weight:700">η</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Mesh quality</span></button>
+        <button class="btn active vmode-btn" id="btn-vm"  onclick="setStressMode('vm')"  style="display:flex" title="von Mises stress — overall combined stress magnitude"><span class="vmode-abbr">VM</span><span class="vmode-cap">Overall</span></button>
+        <button class="btn vmode-btn"        id="btn-svm" onclick="setStressMode('svm')" style="display:none" title="Signed von Mises — blue=compression, white=zero, red=tension. Sign = sign of hydrostatic stress (trace of σ). Useful for distinguishing delamination risk (tension) from compressive crush."><span class="vmode-abbr">±VM</span><span class="vmode-cap">Signed</span></button>
+        <button class="btn vmode-btn"        id="btn-s1"  onclick="setStressMode('s1')"  style="display:flex" title="Maximum principal stress σ₁ — most tensile direction (red=tensile, blue=compressive)"><span class="vmode-abbr">σ₁</span><span class="vmode-cap">Max tension</span></button>
+        <button class="btn vmode-btn"        id="btn-s2"  onclick="setStressMode('s2')"  style="display:flex" title="Intermediate principal stress σ₂ (red=tensile, blue=compressive)"><span class="vmode-abbr">σ₂</span><span class="vmode-cap">Mid stress</span></button>
+        <button class="btn vmode-btn"        id="btn-s3"  onclick="setStressMode('s3')"  style="display:flex" title="Minimum principal stress σ₃ — most compressive direction (red=tensile, blue=compressive)"><span class="vmode-abbr">σ₃</span><span class="vmode-cap">Max compression</span></button>
+        <button class="btn vmode-btn"        id="btn-dmg"    onclick="setStressMode('dmg')"    style="display:flex" title="Damage ratio — stress as a fraction of material yield strength (1.0 = at yield)"><span class="vmode-abbr">DMG</span><span class="vmode-cap">Damage</span></button>
+        <button class="btn vmode-btn"        id="btn-xyutil" onclick="setStressMode('xyutil')" style="display:none" title="XY in-plane utilization — sqrt(σxx²+σyy²-σxx·σyy+3·σxy²) / yieldXY. Red at 1.0 = at in-plane yield. High → add infill."><span class="vmode-abbr">U<sub>XY</sub></span><span class="vmode-cap">In-plane use</span></button>
+        <button class="btn vmode-btn"        id="btn-zutil"  onclick="setStressMode('zutil')"  style="display:none" title="Z out-of-plane utilization — max(|σzz|, √3·√(σyz²+σxz²)) / yieldZ. Red at 1.0 = at inter-layer yield. High → reorient or add walls."><span class="vmode-abbr">U<sub>Z</sub></span><span class="vmode-cap">Z-layer use</span></button>
+        <button class="btn vmode-btn"        id="btn-error"  onclick="setStressMode('error')"  style="display:none" title="Error estimate η — Zienkiewicz-Zhu mesh quality metric (0–1), identifies under-resolved elements"><span class="vmode-abbr">η</span><span class="vmode-cap">Mesh quality</span></button>
       </div>
       <!-- Deformation (deflected-shape) controls (shown after solve) -->
       <div id="deform-wrap" style="display:none;border-left:1px solid var(--border);margin-left:2px;padding-left:6px;gap:5px;align-items:center">
@@ -3452,23 +3478,25 @@ function applyStressColors(stressB64, maxStress, principalStressB64, errorEstima
   const svmArray        = decodeF32(signedVonMisesB64);
   S._stressArrays = { vm: vertexStress, svm: svmArray, s1: s1Array, s2: s2Array, s3: s3Array, dmg: dmgArray, error: errorEstimate, xyutil: xyUtilArray, zutil: zUtilArray };
 
-  // Show signed VM button if array is available
+  // Show signed VM button if array is available. Reveal as 'flex' (not
+  // 'block') so the shared .vmode-btn column layout stays centered and
+  // matches the always-visible buttons.
   if (svmArray && svmArray.length > 0) {
     const btnSvm = document.getElementById('btn-svm');
-    if (btnSvm) btnSvm.style.display = 'block';
+    if (btnSvm) btnSvm.style.display = 'flex';
   }
 
   // Show error estimate button if error estimate is available
   if (errorEstimate && errorEstimate.length > 0) {
     const btnError = document.getElementById('btn-error');
-    if (btnError) btnError.style.display = 'block';
+    if (btnError) btnError.style.display = 'flex';
   }
   // Show utilization buttons if arrays are available
   if (xyUtilArray && xyUtilArray.length > 0) {
     const btnXy = document.getElementById('btn-xyutil');
     const btnZ  = document.getElementById('btn-zutil');
-    if (btnXy) btnXy.style.display = 'block';
-    if (btnZ)  btnZ.style.display  = 'block';
+    if (btnXy) btnXy.style.display = 'flex';
+    if (btnZ)  btnZ.style.display  = 'flex';
   }
 }
 
@@ -10899,7 +10927,7 @@ function setStressMode(mode) {
   S.stressMode = mode;
   ['vm','svm','s1','s2','s3','dmg','xyutil','zutil','error'].forEach(m => {
     const btn = document.getElementById('btn-'+m);
-    if (btn) btn.className = 'btn' + (m===mode?' active':'');
+    if (btn) btn.className = 'btn vmode-btn' + (m===mode?' active':'');
   });
   // Re-apply colors with current mode
   if (S._stressArrays && mesh3d) {
