@@ -1111,7 +1111,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       </div>
       <!-- Section / cutting-plane controls (shown after solve) -->
       <div id="clip-wrap" style="display:none;border-left:1px solid var(--border);margin-left:2px;padding-left:6px;gap:5px;align-items:center">
-        <button class="btn" id="btn-clip" onclick="toggleClip()" style="font-size:10px;padding:4px 8px;display:flex;flex-direction:column;align-items:center;gap:1px" title="Cut the part with a plane to inspect stress on internal / occluded surfaces. Drag the slider to move the cut; ⇄ flips which half is kept."><span style="font-weight:700">SECTION</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Cut view</span></button>
+        <button class="btn" id="btn-clip" onclick="toggleClip()" style="font-size:10px;padding:4px 8px;display:flex;flex-direction:column;align-items:center;gap:1px" title="Cut the part with a plane to inspect stress on internal / occluded surfaces. The flat grey face caps the cut where the plane passes through solid material (surface stress data does not exist there). Drag the slider to move the cut; ⇄ flips which half is kept."><span style="font-weight:700">SECTION</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Cut view</span></button>
         <span id="clip-controls" style="display:none;gap:3px;align-items:center">
           <button class="btn" id="clip-x" onclick="setClipAxis('x')" style="font-size:10px;padding:4px 7px" title="Cut along the X axis">X</button>
           <button class="btn" id="clip-y" onclick="setClipAxis('y')" style="font-size:10px;padding:4px 7px" title="Cut along the Y axis">Y</button>
@@ -10841,9 +10841,13 @@ function updateModeButtons() {
 // A single clipping plane defined in the part's local frame (geometry is
 // centered at origin). Each render frame it is re-derived into world space via
 // the mesh's world matrix, so the cut follows the part as it orbits. The display
-// mesh is a surface shell, so this reveals stress on internal / occluded
-// surfaces rather than a filled volumetric slice; the material switches to
-// double-sided while cut so those interior faces render.
+// mesh is a surface shell, so the clip alone would let you see straight into the
+// hollow interior; a stencil-buffer "cap" face is drawn on the cut plane wherever
+// the plane passes through solid material, so the part reads as a solid cross-
+// section. Holes and internal cavities intersected by the plane stay open — the
+// stencil counts back-face/front-face crossings per pixel, which is zero over
+// voids. The material also switches to double-sided while cut so interior shell
+// faces (visible through those openings) still render.
 
 function resetClip() {
   S.clipActive = false;
@@ -10855,6 +10859,7 @@ function resetClip() {
     mesh3d.material.side = THREE.FrontSide;
     mesh3d.material.needsUpdate = true;
   }
+  _disposeCapObjects();
   _syncClipUI();
 }
 
@@ -10864,15 +10869,100 @@ function toggleClip() {
   const mat = mesh3d.material;
   if (S.clipActive) {
     if (!S._clipPlane) S._clipPlane = new THREE.Plane();
+    _ensureCapObjects();
     mat.clippingPlanes = [S._clipPlane];
     mat.side = THREE.DoubleSide;
+    _setCapVisible(true);
     _updateClipPlane();
   } else {
     mat.clippingPlanes = [];
     mat.side = THREE.FrontSide;
+    _setCapVisible(false);
   }
   mat.needsUpdate = true;
   _syncClipUI();
+}
+
+// ── Stencil cap: solid face where the section plane slices through material ──
+// Standard three.js clipping-stencil technique: the clipped geometry is drawn
+// twice with color/depth writes off — back faces increment the stencil, front
+// faces decrement — so after both passes the stencil is non-zero exactly where
+// the camera can see into cut-open solid. A quad on the cut plane then renders
+// only where stencil ≠ 0 and clears the stencil for the next frame. All three
+// objects are children of mesh3d, so they inherit orbit rotation, scale, and
+// (because the writers share mesh3d's geometry) the deformed-shape warp.
+function _ensureCapObjects() {
+  if (S._cap || !mesh3d || !S._clipPlane) return;
+
+  const stencilWriter = (side, op) => new THREE.MeshBasicMaterial({
+    side,
+    colorWrite:   false,
+    depthWrite:   false,
+    depthTest:    false,        // count every crossing; the three ops are identical anyway
+    stencilWrite: true,
+    stencilFunc:  THREE.AlwaysStencilFunc,
+    stencilFail:  op,
+    stencilZFail: op,
+    stencilZPass: op,
+    clippingPlanes: [S._clipPlane],
+  });
+  const matBack  = stencilWriter(THREE.BackSide,  THREE.IncrementWrapStencilOp);
+  const matFront = stencilWriter(THREE.FrontSide, THREE.DecrementWrapStencilOp);
+  const backMesh  = new THREE.Mesh(mesh3d.geometry, matBack);
+  const frontMesh = new THREE.Mesh(mesh3d.geometry, matFront);
+  // Writers must render before the cap quad; bed grid uses renderOrder 1.
+  backMesh.renderOrder  = 2;
+  frontMesh.renderOrder = 2;
+
+  // Neutral "machined surface" grey — deliberately outside the stress colormap
+  // so the cap reads as "cut material, no surface-stress data here".
+  const capMat = new THREE.MeshPhongMaterial({
+    color: 0x8b939c,
+    shininess: 25,
+    side: THREE.DoubleSide,     // lit correctly whichever half is kept
+    stencilWrite: true,
+    stencilRef:   0,
+    stencilFunc:  THREE.NotEqualStencilFunc,
+    stencilFail:  THREE.ReplaceStencilOp,
+    stencilZFail: THREE.ReplaceStencilOp,
+    stencilZPass: THREE.ReplaceStencilOp,
+  });
+  const capGeo  = new THREE.PlaneGeometry(1, 1);
+  const capMesh = new THREE.Mesh(capGeo, capMat);
+  capMesh.renderOrder = 2.1;
+  capMesh.onAfterRender = renderer => renderer.clearStencil();
+
+  // None of these may intercept picking rays — raycast() calls
+  // intersectObject(mesh3d) recursively, and THREE's raycaster ignores
+  // the .visible flag. The cap quad in particular spans the whole bbox.
+  backMesh.raycast = frontMesh.raycast = capMesh.raycast = () => {};
+
+  mesh3d.add(backMesh, frontMesh, capMesh);
+  S._cap = { backMesh, frontMesh, capMesh, matBack, matFront, capMat, capGeo };
+}
+
+function _setCapVisible(v) {
+  if (!S._cap) return;
+  S._cap.backMesh.visible  = v;
+  S._cap.frontMesh.visible = v;
+  S._cap.capMesh.visible   = v;
+}
+
+// Detach and free the cap objects. Safe to call when the mesh they were built
+// for has already been replaced (loadMeshFromPositions removes the old mesh3d
+// before resetClip runs) — parents are tracked per-object, and the writers'
+// shared display geometry is disposed by the mesh-replacement path, not here.
+function _disposeCapObjects() {
+  const c = S._cap;
+  if (!c) return;
+  for (const m of [c.backMesh, c.frontMesh, c.capMesh]) {
+    if (m.parent) m.parent.remove(m);
+  }
+  c.capGeo.dispose();
+  c.matBack.dispose();
+  c.matFront.dispose();
+  c.capMat.dispose();
+  S._cap = null;
 }
 
 function setClipAxis(axis) {
@@ -10905,6 +10995,22 @@ function _updateClipPlane() {
   S._clipPlane.set(n.multiplyScalar(sign), -sign * off);    // keep {axis} ≷ off
   mesh3d.updateMatrixWorld();
   S._clipPlane.applyMatrix4(mesh3d.matrixWorld);            // local → world
+
+  // Keep the stencil-cap quad on the cut plane. It lives in the part's local
+  // frame (child of mesh3d), so only axis/position matter here — orbit and
+  // scale are inherited. PlaneGeometry faces +Z; rotate it to face the axis.
+  if (S._cap) {
+    const cap = S._cap.capMesh;
+    cap.rotation.set(0, 0, 0);
+    if (S.clipAxis === 'x')      cap.rotation.y = Math.PI / 2;
+    else if (S.clipAxis === 'y') cap.rotation.x = -Math.PI / 2;
+    cap.position.set(0, 0, 0);
+    cap.position[S.clipAxis] = off;
+    // Oversize to the bbox diagonal (×1.5 margin) so the quad still covers the
+    // whole cross-section under the deformed-shape view's exaggerated warp.
+    const d = Math.sqrt(sz.x * sz.x + sz.y * sz.y + sz.z * sz.z) * 1.5;
+    cap.scale.set(d, d, 1);
+  }
 }
 
 function _syncClipUI() {
