@@ -104,3 +104,40 @@ describe("buildTwoRegionField", () => {
     expect(tr.averageMaterial.weakAxis).toEqual([0, 0, 1]);
   });
 });
+
+describe("anchor policy: implied average vs legacy global multiplier", () => {
+  // The endpoints agree by construction; the interior agreement depends on
+  // whether the legacy model's geometry-blind +0.10-per-wall bonus happens to
+  // match the part's REAL wall fraction. It does for chunky sections and
+  // diverges for wall-dominated thin ones — the divergence is the model's
+  // point, so we assert BOTH directions.
+  const INFILL = 20, WALLS = 2, PATTERN = "grid", ORIENT = "flat";
+  const LINE_W = 0.45;
+  const T_WALL = WALLS * LINE_W; // 0.9mm
+
+  async function impliedFor(bx: number, by: number, bz: number, nx: number, ny: number, nz: number) {
+    const { effectiveStrengthMultiplier, coreStrengthMultiplier, orientationMultiplier } =
+      await import("../../analysis.js");
+    const m = generateBoxMeshC3D4(0, 0, 0, bx, by, bz, nx, ny, nz);
+    const f = extractSurfaceFaces(m);
+    const tr = buildTwoRegionField(m, f, SHELL, CORE, T_WALL);
+    const Vf = tr.shellVolumeFraction;
+    const coreLattice = coreStrengthMultiplier(INFILL, PATTERN, ORIENT) / orientationMultiplier(ORIENT);
+    const implied = (Vf + (1 - Vf) * coreLattice) * orientationMultiplier(ORIENT);
+    const global = effectiveStrengthMultiplier(INFILL, WALLS, PATTERN, ORIENT);
+    return { Vf, implied, global };
+  }
+
+  it("chunky coupon section (20×6): implied ≈ global within 15%", async () => {
+    const { Vf, implied, global } = await impliedFor(60, 20, 6, 30, 10, 3);
+    expect(Vf).toBeGreaterThan(0.2);
+    expect(Vf).toBeLessThan(0.6);
+    expect(Math.abs(implied - global) / global).toBeLessThan(0.15);
+  });
+
+  it("wall-dominated thin coupon (10×4): implied EXCEEDS global (legacy under-credits walls)", async () => {
+    const { Vf, implied, global } = await impliedFor(50, 10, 4, 25, 5, 2);
+    expect(Vf).toBeGreaterThan(0.45); // walls are ~half the section
+    expect(implied).toBeGreaterThan(global * 1.05);
+  });
+});
