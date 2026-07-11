@@ -1904,6 +1904,31 @@ body:not(.has-results) #btn-stress { display: none !important; }
         </div>
       </div>
 
+      <!-- Two-Region Material Model toggle -->
+      <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;margin-bottom:16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <b style="color:var(--text-hi);font-size:11px">Two-Region Material Model (walls vs infill)</b>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:10px;color:var(--text-mid)">
+            <input type="checkbox" id="two-region-toggle" onchange="onTwoRegionToggle(this.checked)" style="accent-color:var(--gold);width:13px;height:13px">
+            Enable
+          </label>
+        </div>
+        <div style="font-size:10px;color:var(--text-lo);line-height:1.7;margin-bottom:8px">
+          Classifies each element geometrically: <b style="color:var(--text-mid)">dense perimeter walls</b> (solid material) vs <b style="color:var(--text-mid)">homogenized infill core</b> (strength ~ linear in infill density × pattern), instead of one averaged material everywhere. Wall band = wall count × line width. Stiffness, strength, and mass all follow the split.
+        </div>
+        <div id="two-region-details" style="display:none">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <label for="two-region-linewidth" style="font-size:10px;color:var(--text-mid);white-space:nowrap">Line width (mm)</label>
+            <input type="number" id="two-region-linewidth" min="0.1" max="2.0" step="0.05" value="0.45"
+                   style="width:70px;background:var(--bg-input);border:1px solid var(--border);border-radius:3px;color:var(--text-hi);font-size:11px;padding:3px 6px">
+            <span style="font-size:9px;color:var(--text-lo)">auto-filled from .gcode import when available</span>
+          </div>
+          <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:3px;padding:8px;font-size:10px;color:var(--text-lo);line-height:1.6">
+            <b style="color:var(--warn)">Note:</b> nozzle temperature and flow rate affect layer fusing but are printer-specific — they are captured empirically by the <b style="color:var(--text-mid)">calibration coupons</b> above (print with your real settings). Calibrated solid properties flow to the walls directly; the core inherits them scaled by infill.
+          </div>
+        </div>
+      </div>
+
       <!-- Coupon tabs -->
       <div style="display:flex;gap:4px;margin-bottom:16px">
         <button class="btn active" id="ctab-tensile"  onclick="switchCoupon('tensile')">TENSILE</button>
@@ -5909,6 +5934,7 @@ function showResults(s) {
 
     <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;margin-bottom:12px;font-size:11px;color:var(--text-label);line-height:1.8">
       Effective yield: ${s.effectiveYieldMPa.toFixed(1)} MPa (print settings applied)<br>
+      ${s.materialModel && s.materialModel.twoRegion ? `Material model: <b style="color:var(--text-hi)">two-region</b> — shell ${((s.materialModel.shellVolumeFraction ?? 0) * 100).toFixed(0)}% of volume (walls ${(s.materialModel.wallThicknessMm ?? 0).toFixed(2)} mm, yield ${(s.materialModel.shellYieldXYMPa ?? 0).toFixed(1)} MPa) · core yield ${(s.materialModel.coreYieldXYMPa ?? 0).toFixed(1)} MPa${s.materialModel.degraded ? ` · <span style="color:var(--warn)">degraded: ${s.materialModel.degraded}</span>` : ''}<br>` : (s.materialModel && s.materialModel.degraded ? `Material model: <span style="color:var(--warn)">two-region requested but ran uniform — ${s.materialModel.degraded}</span><br>` : '')}
       Mesh: <b style="color:var(--text-hi)">${s.nodeCount.toLocaleString()} nodes</b> · <b style="color:var(--text-hi)">${s.elementCount.toLocaleString()} elements</b> · C3D10 quadratic tet<br>
       Solver: ${s.cgIterations} CG iterations · ${s.solverMs}ms · converged=${s.converged ? 'yes' : '<span style="color:var(--warn)">no</span>'}
       ${s.governingDirection != null ? `<br>Governing direction: <b style="color:var(--text-hi)">${s.governingDirection === 'xy' ? 'XY in-plane' : 'Z inter-layer'}</b> · U<sub>XY</sub>=${(s.peakUtilXY??0).toFixed(3)} · U<sub>Z</sub>=${(s.peakUtilZ??0).toFixed(3)} ${s.governingDirection === 'xy' ? '<span style="color:var(--text-lo);font-size:10px">→ increase infill to resist</span>' : '<span style="color:var(--text-lo);font-size:10px">→ reorient or add perimeters</span>'}` : ''}
@@ -7704,6 +7730,10 @@ function buildAnalyseBody(quality, opts) {
       layerHeightMm: +(document.getElementById('s-lh')?.value ?? 20) / 100,
       meshOrder:     +(document.getElementById('s-mesh-order')?.value ?? 2),
       useCLT:        !!(document.getElementById('clt-toggle')?.checked),
+      ...(document.getElementById('two-region-toggle')?.checked ? {
+        twoRegion: true,
+        extrusionWidthMm: Math.min(2.0, Math.max(0.1, +(document.getElementById('two-region-linewidth')?.value ?? 0.45) || 0.45)),
+      } : {}),
     },
     meshQuality:  quality || document.getElementById('s-mesh')?.value || 'standard',
     calibration:  getActiveProfile(),
@@ -8464,6 +8494,11 @@ function updateCalibProfileSelect() {
 
 function onCLTToggle(enabled) {
   const details = document.getElementById('clt-details');
+  if (details) details.style.display = enabled ? 'block' : 'none';
+}
+
+function onTwoRegionToggle(enabled) {
+  const details = document.getElementById('two-region-details');
   if (details) details.style.display = enabled ? 'block' : 'none';
 }
 
@@ -12017,6 +12052,13 @@ function applyGcodeParamsToUI(params) {
     imported.push('layer height ' + (clamped / 100).toFixed(2) + ' mm');
     if (raw < SLIDER_MIN) warnings.push('Layer height ' + params.layerHeightMm.toFixed(3) + ' mm is below the 0.05 mm minimum — clamped to 0.05 mm.');
     else if (raw > SLIDER_MAX) warnings.push('Layer height ' + params.layerHeightMm.toFixed(3) + ' mm exceeds the 0.35 mm maximum — clamped to 0.35 mm.');
+  }
+
+  // Prefill the two-region model's line-width input (wall band = wall count ×
+  // line width) — parseGcodeParams already range-checks to [0.1, 2.0].
+  if (params.extrusionWidthMm != null && isFinite(params.extrusionWidthMm)) {
+    const lwInput = document.getElementById('two-region-linewidth');
+    if (lwInput) lwInput.value = params.extrusionWidthMm.toFixed(2);
   }
 
   const badge      = document.getElementById('gcode-import-badge');

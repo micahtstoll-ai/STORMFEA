@@ -22,7 +22,7 @@
  *   4. Extract nModes smallest positive eigenvalues
  */
 
-import type { CSRMatrix, TetMesh, AnyMaterial, ModalAnalysisResult, ModeResult } from "./types.js";
+import type { CSRMatrix, TetMesh, AnyMaterial, ElementMaterialField, ModalAnalysisResult, ModeResult } from "./types.js";
 import { assembleK, matvec, type SparsityPattern } from "./assembly.js";
 import { assembleM, assembleMass } from "./mass.js";
 import { solvePCG, buildIC0, type IC0Factor } from "./cg.js";
@@ -89,6 +89,11 @@ export interface ModalPrebuiltK {
 export interface ModalInput {
   readonly mesh:      TetMesh;
   readonly material:  AnyMaterial;
+  /** Optional per-element material field (two-region shell/core model); see
+   *  SolverInput.materialField. Applies to both the fallback K assembly and M.
+   *  The prebuiltK path is field-consistent by construction — it reuses the
+   *  static solve's K, which was assembled with the same field. */
+  readonly materialField?: ElementMaterialField;
   /** Node indices where all 3 DOF are pinned (Dirichlet zero). */
   readonly fixedNodes: readonly number[];
   /** Number of modes to extract. Default: 10. */
@@ -635,15 +640,15 @@ export async function runModalAnalysis(input: ModalInput): Promise<ModalAnalysis
     K = { n, data: pb.Kdata.slice(), colIdx: pb.colIdx, rowPtr: pb.rowPtr };
     kDiagIdx = pb.diagIdx;
   } else {
-    const asm = await assembleK(mesh, material);
+    const asm = await assembleK(mesh, material, 'auto', undefined, input.materialField);
     K = asm.K;
     kDiagIdx = asm.diagIdx;
   }
   // M shares K's sparsity pattern (same mesh connectivity) — build it once.
   const pattern: SparsityPattern = { rowPtr: K.rowPtr, colIdx: K.colIdx, diagIdx: kDiagIdx };
   let M: CSRMatrix;
-  if ((material as { massRho?: number }).massRho !== undefined) {
-    const massResult = assembleMass(mesh, material, 'consistent', pattern) as { M: CSRMatrix; diagIdx: Int32Array };
+  if ((material as { massRho?: number }).massRho !== undefined || input.materialField) {
+    const massResult = assembleMass(mesh, material, 'consistent', pattern, input.materialField) as { M: CSRMatrix; diagIdx: Int32Array };
     M = massResult.M;
   } else {
     console.warn(
