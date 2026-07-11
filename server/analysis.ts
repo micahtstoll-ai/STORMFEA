@@ -44,7 +44,8 @@ function _snapAnalysis(label: string): void {
   _analysisLastHeapMB = heapMB;
 }
 import type { SolverInput }                 from "./solver/pipeline.js";
-import type { IsotropicMaterial, AnyMaterial, OrthotropicMaterial } from "./solver/types.js";
+import type { IsotropicMaterial, AnyMaterial, OrthotropicMaterial, ElementMaterialField } from "./solver/types.js";
+import { buildTwoRegionField, TWO_REGION_MAX_ELEMENTS } from "./twoRegion.js";
 import { isOrthotropic, isOrthotropicLike } from "./solver/types.js";
 import { recoverElementStressComponents }   from "./solver/stress_detail.js";
 import { rotationAligningZTo, rotateStress6ToLocal } from "./solver/element.js";
@@ -791,6 +792,18 @@ export const PATTERN_CONFIDENCE: Record<string, string> = {
   adaptive:     "limited data",
 };
 
+/**
+ * Layer-adhesion orientation multiplier (well-established: inter-layer bond
+ * is the weak link; flat prints load bonds in tension across the XY plane).
+ * Applies to BOTH regions of the two-region model — walls and infill are
+ * each still layered material.
+ */
+export function orientationMultiplier(orientation: string): number {
+  return orientation === "flat"    ? 0.55
+       : orientation === "upright" ? 0.90
+       : 0.75;
+}
+
 export function effectiveStrengthMultiplier(
   infillPct:   number,
   wallCount:   number,
@@ -801,11 +814,24 @@ export function effectiveStrengthMultiplier(
   const wallBonus  = (wallCount - 1) * 0.10;
   const combined   = Math.min(1.0, infillMul + wallBonus);
   const patternMul = PATTERN_MULTIPLIERS[pattern] ?? 1.0;
-  const orientMul  = orientation === "flat"    ? 0.55
-                   : orientation === "upright" ? 0.90
-                   : 0.75;
+  return combined * patternMul * orientationMultiplier(orientation);
+}
 
-  return combined * patternMul * orientMul;
+/**
+ * Strength multiplier for a WALL-FREE homogenized infill lattice (the core
+ * region of the two-region model). Unlike infillStrengthCurve — whose 0.30
+ * intercept at 0% infill represents the perimeter walls — a pure lattice
+ * carries ~nothing at 0% and scales ~linearly with relative density (same
+ * literature basis as the legacy curve, walls removed). Clamped at solid.
+ */
+export function coreStrengthMultiplier(
+  infillPct:   number,
+  pattern:     string,
+  orientation: string,
+): number {
+  const patternMul = PATTERN_MULTIPLIERS[pattern] ?? 1.0;
+  const lattice = Math.min(1.0, (infillPct / 100) * patternMul);
+  return lattice * orientationMultiplier(orientation);
 }
 
 /**
@@ -868,6 +894,19 @@ export interface PrintSettings {
    * If omitted, DEFAULT_BEAD_PROPS[materialId] is used.
    */
   beadProps?:    BeadProperties;
+  /**
+   * When true, run the two-region material model: dense perimeter walls
+   * (solid material, calibrated coupon props) vs homogenized infill core,
+   * classified geometrically per element by wall-band volume fraction.
+   * Default false — the empirical single-material model.
+   */
+  twoRegion?:    boolean;
+  /**
+   * Extrusion / line width in mm, used for the wall-band thickness
+   * (wallCount × extrusionWidthMm). Slicer G-code typically reports it;
+   * default 0.45 (0.4 nozzle typical). Clamped to [0.1, 2.0].
+   */
+  extrusionWidthMm?: number;
 }
 
 /**
@@ -1310,7 +1349,31 @@ export interface IsotropicComparison {
   explanation:        string;
 }
 
+/**
+ * Which material model produced the solve, echoed to the client so the UI
+ * can label results and show the two-region diagnostics.
+ */
+export interface MaterialModelInfo {
+  twoRegion:            boolean;
+  /** Wall-band thickness used for classification (wallCount × line width). */
+  wallThicknessMm:      number | null;
+  /** Shell (dense wall) share of part volume from the geometric classification. */
+  shellVolumeFraction:  number | null;
+  shellYieldXYMPa:      number | null;
+  coreYieldXYMPa:       number | null;
+  /**
+   * Anchor diagnostics: the volume-weighted average strength multiplier the
+   * two-region split implies vs the legacy geometry-blind global multiplier.
+   * Reported, deliberately NOT renormalized — the divergence is the point.
+   */
+  impliedAvgStrengthMul: number | null;
+  globalModelStrengthMul: number;
+  /** Set when the two-region request degraded to uniform (why). */
+  degraded?:            string;
+}
+
 export interface AnalysisResult {
+  materialModel:           MaterialModelInfo;
   vertexStress:            Float32Array;
   vertexPrincipalStress:   Float32Array;
   vertexPrincipalStress2:  Float32Array;
@@ -2162,7 +2225,9 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // volume fraction (infill % + fully-dense perimeters). Consumed by
   // assembleMass in the modal path so the mass matrix tracks infill the same
   // way the stiffness matrix already does.
-  const material: AnyMaterial = {
+  // `let`: the two-region model (below, after meshing) replaces this with the
+  // volume-weighted average of its shell/core materials.
+  let material: AnyMaterial = {
     ...builtMaterial,
     massRho: baseMat.densityKgM3 * effectiveVolumeFraction(req.print.infillPct, req.print.wallCount),
   };
@@ -2261,6 +2326,103 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     nodesPerElem: mesh.nodesPerElem,
     dof:          mesh.nodeCount * 3,
   });
+
+  // ── Two-region (shell/core) material model ─────────────────────────────────
+  // Opt-in: classify each element by its wall-band volume fraction and replace
+  // the single homogenized material with a quantized shell↔core blend field.
+  // `material` becomes the volume-weighted AVERAGE (scalar consumers keep
+  // working); the field carries the per-element stiffness/yield/density.
+  let materialField: ElementMaterialField | undefined;
+  let materialModel: MaterialModelInfo = {
+    twoRegion: false,
+    wallThicknessMm: null,
+    shellVolumeFraction: null,
+    shellYieldXYMPa: null,
+    coreYieldXYMPa: null,
+    impliedAvgStrengthMul: null,
+    globalModelStrengthMul: strengthMul,
+  };
+  if (req.print.twoRegion) {
+    const degrade = (why: string): void => {
+      console.warn(`[analysis] two-region requested but degraded to uniform: ${why}`);
+      materialModel = { ...materialModel, degraded: why };
+    };
+    if (meshFallback) {
+      // The box mesh has material where the real part has holes — a geometric
+      // wall band on it would be doubly wrong. Results are already flagged
+      // unreliable via meshFallback.
+      degrade("box-fallback mesh (no real geometry to classify)");
+    } else if (!surfaceFaces || surfaceFaces.length === 0) {
+      degrade("no boundary surface available");
+    } else if (mesh.elementCount > TWO_REGION_MAX_ELEMENTS) {
+      degrade(`mesh too large (${mesh.elementCount} > ${TWO_REGION_MAX_ELEMENTS} elements)`);
+    } else {
+      const lineWidth = Math.min(2.0, Math.max(0.1, req.print.extrusionWidthMm ?? 0.45));
+      const tWall = req.print.wallCount * lineWidth;
+
+      // Shell: solid perimeter material. strengthMul = orientMul makes the
+      // builder's E_xy = E_base × min(1, mul/0.55) evaluate to solid E for
+      // every orientation, and yieldXY = base × orientMul — the same
+      // convention the coupon calibration back-calculates, so calibrated
+      // solid props flow to the shell unchanged. No pattern multiplier, no
+      // infill knockdown, solid density.
+      const orientMul = orientationMultiplier(req.print.orientation);
+      const shellBuilt = buildOrthotropicMaterial(
+        req.print.materialId, orientMul, req.print.orientation,
+        req.print.layerHeightMm ?? 0.2, req.calibration ?? null, weakAxis,
+      );
+      const shellMat: OrthotropicMaterial = { ...shellBuilt, massRho: baseMat.densityKgM3 };
+
+      // Core: wall-free homogenized lattice. Strength ≈ linear in relative
+      // density × pattern (near 0 at 0% infill — infillStrengthCurve's 0.30
+      // intercept represents the walls and must NOT be reused here). CLT,
+      // when enabled, models the core's ply stack; the shell stays on the
+      // solid builder (perimeters are solid extrusions, not the infill ply
+      // stack). Density scales with relative density.
+      const coreMul = coreStrengthMultiplier(
+        req.print.infillPct, req.print.pattern ?? "grid", req.print.orientation,
+      );
+      const coreBuilt = req.print.useCLT
+        ? buildOrthotropicMaterialCLT(
+            req.print.materialId, req.print.infillPct, req.print.pattern ?? "grid",
+            req.print.orientation, req.print.layerHeightMm ?? 0.2, coreMul,
+            req.calibration ?? null, req.print.beadProps, weakAxis,
+          )
+        : buildOrthotropicMaterial(
+            req.print.materialId, coreMul, req.print.orientation,
+            req.print.layerHeightMm ?? 0.2, req.calibration ?? null, weakAxis,
+          );
+      const coreMat: OrthotropicMaterial = {
+        ...coreBuilt,
+        massRho: baseMat.densityKgM3 * (req.print.infillPct / 100),
+      };
+
+      const tr = buildTwoRegionField(mesh, surfaceFaces, shellMat, coreMat, tWall);
+      material = tr.averageMaterial;
+      materialField = tr.field ?? undefined;
+
+      // Anchor diagnostics: what the geometric split implies vs the legacy
+      // geometry-blind global multiplier. Reported, deliberately not
+      // renormalized — the divergence is the point of the model.
+      const Vf = tr.shellVolumeFraction;
+      const impliedAvgStrengthMul =
+        (Vf * 1.0 + (1 - Vf) * Math.min(1, (req.print.infillPct / 100) * (PATTERN_MULTIPLIERS[req.print.pattern ?? "grid"] ?? 1.0))) * orientMul;
+      materialModel = {
+        ...materialModel,
+        twoRegion: true,
+        wallThicknessMm: tWall,
+        shellVolumeFraction: Vf,
+        shellYieldXYMPa: shellMat.yieldXY,
+        coreYieldXYMPa: coreMat.yieldXY,
+        impliedAvgStrengthMul,
+      };
+      console.log(
+        `[analysis] two-region model: tWall=${tWall.toFixed(2)}mm, shell Vf=${(Vf * 100).toFixed(1)}%, ` +
+        `bins=${tr.field ? tr.field.binCount : "collapsed-to-uniform"}, ` +
+        `impliedAvgMul=${impliedAvgStrengthMul.toFixed(3)} vs globalMul=${strengthMul.toFixed(3)}`
+      );
+    }
+  }
 
   // ── Constraints: bolt hole physics ────────────────────────────────────────
   emit({ phase: "constraints", message: "Applying constraints…" });
@@ -2539,6 +2701,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   const input: SolverInput = {
     mesh,
     material,
+    ...(materialField ? { materialField } : {}),
     constraints,
     forces: effectiveForces,
     keepPristineK: wantsModal || mayBuckle,
@@ -2565,6 +2728,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       modalResult = await runModalAnalysis({
         mesh,
         material,
+        ...(materialField ? { materialField } : {}),
         fixedNodes,
         nModes: 10,
         // Reuse the statically-assembled K (pristine values + shared pattern)
@@ -2608,7 +2772,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         };
         buckDiagIdx = intermediate.diagIdx;
       } else {
-        ({ K: Kbuck, diagIdx: buckDiagIdx } = await assembleK(mesh, material));
+        ({ K: Kbuck, diagIdx: buckDiagIdx } = await assembleK(mesh, material, 'auto', undefined, materialField));
       }
       const fDummy = assembleForceVector(mesh.nodeCount, effectiveForces);
       applyDirichletBC(Kbuck, fDummy, buckDiagIdx, constraints);
@@ -3525,6 +3689,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   }
 
   return {
+    materialModel,
     vertexStress,
     vertexSignedVonMises,
     vertexXyUtil,
