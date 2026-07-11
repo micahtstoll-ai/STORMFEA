@@ -36,6 +36,7 @@ STORMFEA models the anisotropic reality.
 
 - **Transversely isotropic material model** — 5 independent elastic constants calibrated from peer-reviewed literature, with an exact weak-axis tensor rotation (Bond transform) for upright/angled prints when a bed face is picked
 - **Hill (1948) anisotropic yield criterion** — collapses to von Mises when the material is isotropic; correctly amplifies through-layer stresses when it's not (evaluated in the rotated material frame for non-flat prints)
+- **Two-region material model** (opt-in) — classifies each element geometrically into dense perimeter walls vs homogenized infill core (exact surface-distance field + per-element volume fractions) instead of one averaged material; the MATERIAL tab shows the wall band (wall count × line width) live, and results report how the geometric split diverges from the legacy global strength multiplier
 - **5 distinct failure modes** with individual confidence levels: bulk yield, net-section tension, shear-out, thread strip-out, bearing
 - **Superconvergent Patch Recovery (SPR)** stress smoothing (Zienkiewicz & Zhu 1992) — more accurate nodal stresses than direct averaging
 - **Deflected-shape visualization** — warp the mesh by the computed displacement field, with an exaggeration slider and animation; the stress heatmap follows the deformed surface
