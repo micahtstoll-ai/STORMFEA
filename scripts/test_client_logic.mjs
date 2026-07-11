@@ -340,6 +340,106 @@ console.log('\n[E] parseGcodeParams — slicer detection and parameter extractio
   }
 }
 
+// ── Test group F: section-view clip plane + stencil-cap placement ───────────
+console.log('\n[F] Section view — clip plane math and cut-face (cap) placement');
+{
+  // Extract the real _updateClipPlane and run it against mocks. This covers
+  // the plane keep-side math AND the stencil-cap quad transform added so the
+  // section view shows a solid cut face instead of a hollow interior.
+  const fnCode = extractFunction(html, '_updateClipPlane\\(\\)', '_syncClipUI');
+
+  class MockVec3 {
+    constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z; }
+    multiplyScalar(s) { this.x *= s; this.y *= s; this.z *= s; return this; }
+  }
+  class MockPlane {
+    set(normal, constant) { this.normal = normal; this.constant = constant; return this; }
+    applyMatrix4() { return this; } // identity world matrix in these tests
+  }
+  const xyzTriple = () => ({
+    x: 0, y: 0, z: 0,
+    set(x, y, z) { this.x = x; this.y = y; this.z = z; },
+  });
+  const makeCapMesh = () => ({
+    rotation: xyzTriple(), position: xyzTriple(), scale: xyzTriple(),
+  });
+
+  // modelSize (2, 4, 8) mm — deliberately unequal so an axis mix-up fails loudly
+  const runClip = (axis, pos, flip, withCap = true) => {
+    const S = {
+      clipAxis: axis, clipPos: pos, clipFlip: flip,
+      _clipPlane: new MockPlane(),
+      _modelSize: { x: 2, y: 4, z: 8 },
+      _cap: withCap ? { capMesh: makeCapMesh() } : null,
+    };
+    const mesh3d = { updateMatrixWorld() {}, matrixWorld: 'identity' };
+    const THREE = { Vector3: MockVec3 };
+    new Function('S', 'mesh3d', 'THREE', fnCode + '\n_updateClipPlane();')(S, mesh3d, THREE);
+    return S;
+  };
+
+  // F1: plane math — z axis at 75% of an 8mm extent → cut at z = +2
+  {
+    const S = runClip('z', 75, false);
+    test('F1 plane normal points +z (keep z ≥ cut)',
+      S._clipPlane.normal.x === 0 && S._clipPlane.normal.y === 0 && S._clipPlane.normal.z === 1,
+      `normal=(${S._clipPlane.normal.x},${S._clipPlane.normal.y},${S._clipPlane.normal.z})`);
+    test('F1 plane constant = -off for the kept half', S._clipPlane.constant === -2,
+      `constant=${S._clipPlane.constant}`);
+    test('F1 cap sits exactly on the cut plane (z = +2)',
+      S._cap.capMesh.position.x === 0 && S._cap.capMesh.position.y === 0 && S._cap.capMesh.position.z === 2,
+      `pos=(${S._cap.capMesh.position.x},${S._cap.capMesh.position.y},${S._cap.capMesh.position.z})`);
+    test('F1 cap needs no rotation for z axis (PlaneGeometry already faces z)',
+      S._cap.capMesh.rotation.x === 0 && S._cap.capMesh.rotation.y === 0 && S._cap.capMesh.rotation.z === 0);
+  }
+
+  // F2: cap orientation per axis
+  {
+    const Sx = runClip('x', 50, false);
+    test('F2 x-axis cut rotates cap 90° about y',
+      Math.abs(Sx._cap.capMesh.rotation.y - Math.PI / 2) < 1e-12 && Sx._cap.capMesh.rotation.x === 0,
+      `rot=(${Sx._cap.capMesh.rotation.x},${Sx._cap.capMesh.rotation.y})`);
+    const Sy = runClip('y', 50, false);
+    test('F2 y-axis cut rotates cap -90° about x',
+      Math.abs(Sy._cap.capMesh.rotation.x + Math.PI / 2) < 1e-12 && Sy._cap.capMesh.rotation.y === 0,
+      `rot=(${Sy._cap.capMesh.rotation.x},${Sy._cap.capMesh.rotation.y})`);
+  }
+
+  // F3: flip inverts the kept half but the cut face stays at the same spot
+  {
+    const S = runClip('z', 75, true);
+    test('F3 flipped plane normal points -z', S._clipPlane.normal.z === -1,
+      `nz=${S._clipPlane.normal.z}`);
+    test('F3 flipped plane constant sign inverts', S._clipPlane.constant === 2,
+      `constant=${S._clipPlane.constant}`);
+    test('F3 cap position unchanged by flip', S._cap.capMesh.position.z === 2,
+      `z=${S._cap.capMesh.position.z}`);
+  }
+
+  // F4: cap quad covers the whole cross-section — half-size must be at least
+  // the bbox half-diagonal so no corner of the cut can poke past the cap
+  {
+    const S = runClip('x', 50, false);
+    const diag = Math.sqrt(2 * 2 + 4 * 4 + 8 * 8);
+    test('F4 cap quad side ≥ bbox diagonal (covers any cut cross-section)',
+      S._cap.capMesh.scale.x >= diag && S._cap.capMesh.scale.y >= diag,
+      `scale=${S._cap.capMesh.scale.x}, diag=${diag.toFixed(3)}`);
+  }
+
+  // F5: slider extremes stay inside the model and cap objects being absent
+  // (section toggled before first activation) must not throw
+  {
+    const S0 = runClip('y', 0, false);
+    const S100 = runClip('y', 100, false);
+    test('F5 pos=0 cuts at -extent/2, pos=100 at +extent/2',
+      S0._cap.capMesh.position.y === -2 && S100._cap.capMesh.position.y === 2,
+      `y0=${S0._cap.capMesh.position.y}, y100=${S100._cap.capMesh.position.y}`);
+    let threw = false;
+    try { runClip('z', 50, false, false); } catch { threw = true; }
+    test('F5 no cap objects yet (S._cap null) does not throw', !threw);
+  }
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 if (failed > 0) {
