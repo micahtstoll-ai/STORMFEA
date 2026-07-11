@@ -11518,13 +11518,21 @@ function showDemoStep() {
   // Remove old overlay
   if (demoOverlayEl) demoOverlayEl.remove();
 
-  // Create demo callout
+  // Hide transient viewer hints so the callout never lands on top of them.
+  // (The callout is anchored inside the viewer pane; #hint/#bed-indicator share
+  //  the same bottom-centre slot.) Their prior display is restored in endDemoMode.
+  hideViewerHintsForDemo();
+
+  // Create demo callout — anchored to the VIEWER pane, not the window, so it
+  // never overlaps the control-panel UI on the right (ANALYSE button, sticky
+  // results bar, export). Centred near the bottom of the viewer, lifted above
+  // the hint bar and clear of the bottom-right legend on normal widths.
   demoOverlayEl = document.createElement('div');
   demoOverlayEl.style.cssText = `
-    position:fixed;bottom:80px;left:50%;transform:translateX(-50%);
-    width:min(480px,90vw);background:var(--bg-card);
+    position:absolute;bottom:16px;left:50%;transform:translateX(-50%);
+    width:min(440px,calc(100% - 32px));background:var(--bg-card);
     border:1px solid var(--gold-glow);border-radius:6px;
-    padding:16px 18px;z-index:9999;
+    padding:16px 18px;z-index:70;
     box-shadow:0 4px 32px rgba(0,0,0,0.8);
   `;
   const progress = DEMO_STEPS.map((_,i) =>
@@ -11556,7 +11564,7 @@ function showDemoStep() {
       </div>
     </div>
   `;
-  document.body.appendChild(demoOverlayEl);
+  (document.getElementById('viewer') || document.body).appendChild(demoOverlayEl);
 
   // Auto-advance — unless duration is null (manual advance, e.g. waiting on a solve).
   if (demoTimer) clearTimeout(demoTimer);
@@ -11578,10 +11586,34 @@ function prevDemoStep() {
   showDemoStep();
 }
 
+// While the demo callout occupies the viewer's bottom-centre slot, tuck away the
+// transient hints that share it so nothing overlaps. Remember their prior inline
+// display so we can put them back exactly as they were.
+let _demoHiddenHints = null;
+function hideViewerHintsForDemo() {
+  if (_demoHiddenHints) return; // already hidden for this demo run
+  _demoHiddenHints = {};
+  ['hint', 'bed-indicator'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    _demoHiddenHints[id] = el.style.display;
+    el.style.display = 'none';
+  });
+}
+function restoreViewerHintsAfterDemo() {
+  if (!_demoHiddenHints) return;
+  Object.entries(_demoHiddenHints).forEach(([id, display]) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = display;
+  });
+  _demoHiddenHints = null;
+}
+
 function endDemoMode() {
   S._isDemoSession = false;
   if (demoTimer) clearTimeout(demoTimer);
   if (demoOverlayEl) { demoOverlayEl.remove(); demoOverlayEl = null; }
+  restoreViewerHintsAfterDemo();
   switchTab('setup');
 }
 
