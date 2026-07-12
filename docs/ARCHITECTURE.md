@@ -58,27 +58,34 @@ delegated to two external binaries (**TetGen** for STL, **Gmsh** for STEP).
    fails, a structured box-mesh fallback runs — it honours the element-order
    selector (C3D10 by default) and carries surface connectivity, so pressure
    loads still apply.
-5. **Constraints & loads.** `analysis.ts` selects constraint nodes around bolted
+5. **Material.** `analysis.ts` builds the orthotropic material from print
+   settings (literature constants or a calibrated profile). With
+   `print.twoRegion` on, `server/twoRegion.ts` classifies each element into
+   dense perimeter shell vs Gibson-Ashby-homogenized infill core
+   (`solver/lattice.ts` laws via `buildCoreMaterial`) and emits a per-element
+   material field consumed by assembly, recovery, and mass.
+6. **Constraints & loads.** `analysis.ts` selects constraint nodes around bolted
    holes and builds the load set (point forces, body force / gravity, surface
    pressure).
-6. **Solve.** `server/solver/pipeline.ts` (`runLinearStatic` /
+7. **Solve.** `server/solver/pipeline.ts` (`runLinearStatic` /
    `runLinearStaticWithK`) drives the kernel: assemble **K** → apply Dirichlet
    BCs → **PCG** solve for displacements **u**.
-7. **Stress recovery.** `server/solver/stress.ts` recovers element stresses,
+8. **Stress recovery.** `server/solver/stress.ts` recovers element stresses,
    smooths them with **SPR**, and computes the **Hill** anisotropic safety factor.
-8. **Post-process.** `analysis.ts` runs the 5 bolt-region failure modes, the
+9. **Post-process.** `analysis.ts` runs the 5 bolt-region failure modes, the
    Goodman fatigue estimate, and print recommendations; optionally runs modal
    (`modal.ts`) and buckling (`buckling.ts`).
-9. **Response.** Per-vertex stress/displacement fields (base64 Float32) + a
-   summary go back to the client, which colors the mesh. `POST /api/report`
-   renders an HTML report; PDF export happens client-side.
+10. **Response.** Per-vertex stress/displacement fields (base64 Float32) + a
+    summary go back to the client, which colors the mesh. `POST /api/report`
+    renders an HTML report; PDF export happens client-side.
 
 ## Server modules (`server/`)
 
 | Module | Responsibility |
 |--------|----------------|
 | `index.ts` | Express app, all ~29 routes, request validation, error envelope, startup binary probe |
-| `analysis.ts` | The orchestrator (~3,500 lines): meshing calls, constraint/load setup, 5 failure modes, fatigue, recommendations, bolt database |
+| `analysis.ts` | The orchestrator (~4,000 lines): meshing calls, material construction (incl. the two-region shell/core build, `buildCoreMaterial`), constraint/load setup, 5 failure modes, fatigue, recommendations, bolt database |
+| `twoRegion.ts` | Two-region (shell/core) classification: wall-band volume fractions → quantized 9-bin `ElementMaterialField` (true Voigt blends of the rotated endpoint **C** matrices) + volume-weighted average material |
 | `stl.ts` | Binary/ASCII STL parser |
 | `holes.ts` | Cylindrical hole detection from STL geometry; overlapping/merged-hole warning (`flagMergedHoleWarnings`) |
 | `tetgen.ts` | TetGen wrapper (STL → volume mesh), binary probe, C3D10 midnode ordering |
@@ -103,7 +110,7 @@ types → element → assembly (+ assembly-worker) → boundary → load → cg
 
 | Module | Responsibility |
 |--------|----------------|
-| `types.ts` | Mesh (`TetMesh`), material (isotropic / orthotropic / gyroid), and result interfaces; C3D10 node-ordering convention |
+| `types.ts` | Mesh (`TetMesh`), material (isotropic / orthotropic / gyroid), per-element material field (`ElementMaterialField`), and result interfaces; C3D10 node-ordering convention |
 | `element.ts` | C3D4 + C3D10 element stiffness, B-matrix, constitutive matrix **C**, geometric stiffness; weak-axis tensor rotation (`rotateC6`, `rotationAligningZTo`, `rotateStress6ToLocal`) for the Bond-transform orientation model |
 | `assembly.ts` | Global stiffness **K** in CSR (two-pass), sparsity pattern, matvec; parallel path via `assembly-worker.ts` |
 | `boundary.ts` | Dirichlet BCs via the penalty method |
@@ -116,6 +123,9 @@ types → element → assembly (+ assembly-worker) → boundary → load → cg
 | `modal.ts` | Modal eigensolver (subspace iteration, shift-invert) → natural frequencies + mode shapes |
 | `buckling.ts` | Linear buckling: geometric stiffness + inverse power iteration → Buckling Load Factor |
 | `laminate.ts` | Classical Laminate Theory bead/wall property contributions |
+| `lattice.ts` | Gibson-Ashby infill homogenization: per-pattern-family power laws (scalar + per-axis), pattern multipliers, floors, exact ρ=1 anchors |
+| `distance.ts` | Exact point-to-triangle node→surface distance field (spatial grid) for wall-band classification |
+| `wallfrac.ts` | Per-element wall-band volume fractions via a marching-tet level-set cut (no-NaN by construction) |
 | `meshgen.ts` | Box/fallback mesh generation (C3D4 + C3D10, conforming), boundary-face extraction (`extractSurfaceFaces`) so the fallback carries surface connectivity |
 | `meshQuality.ts` | Element quality metrics |
 | `adjacency.ts` | Node–element adjacency (used by SPR patches and constraint selection) |

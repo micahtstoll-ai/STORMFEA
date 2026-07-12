@@ -70,11 +70,39 @@ geometrically:
   Fractions — not hard labels — because volume elements (2.9–6.3 mm edges) are
   2–5× thicker than a typical 1.35 mm wall band.
 - **Shell** carries solid-material properties (calibrated coupon values flow to
-  it unchanged); **core** carries wall-free lattice properties, strength ≈
-  linear in infill density × pattern multiplier (near zero at 0% infill — the
-  legacy curve's 0.30 intercept represents the walls and is not reused).
-  Both regions keep the full orientation anisotropy (layer bonds exist in walls
-  and infill alike).
+  it unchanged); **core** carries wall-free lattice properties from
+  Gibson-Ashby power laws in relative density (`solver/lattice.ts`), applied as
+  PER-AXIS scale factors on the solid's natural-frame constants
+  (`buildCoreMaterial` in `analysis.ts`): stiffness `g(ρ) = ρⁿ·(1 − c(1−ρ))`
+  per axis and strength `s(ρ) = min(1, patternMul·ρᵐ)` — near zero at 0%
+  infill (floored at 10⁻³×solid; the legacy curve's 0.30 intercept represents
+  the walls and is not reused). Exponents are per pattern family, confidence
+  LOW, regression-locked, calibration-overridable (an override routes to a
+  single scalar law — one fitted exponent can't say which axis it belongs to):
+
+  | Family | Patterns | n in-plane (c) | n through-layer (c) | n G_xz (c) | n G_xy | Strength m |
+  |---|---|---|---|---|---|---|
+  | TPMS-like 3-D | gyroid, cubic, adaptive | 1.75 (0.12) | 2.1 (0.18) | 2.3 (0.22) | derived | 1.25 (stretch-dominated) |
+  | extruded walls | grid, lines, honeycomb, trihexagon, concentric | 2.0 (0.10) | 1.0 (rule of mixtures) | 1.5 (0.10) | 3.0 (honeycomb bending) | 1.5 (bending-dominated) |
+  | sparse | lightning | 2.0 ×0.3 prefactor | 2.0 | 2.0 | derived | 1.5 |
+
+  Extruded-wall infill is continuous along the build axis, so its through-layer
+  law is the mildest and the core's anisotropy INVERTS at low density (E_z >
+  E_xy). Because ν_zx = ν_xz·E_z/E_xy would then exceed the thermodynamic
+  stability limit, ν_xz is scaled by `min(1, gXY/gZ, gZ/gXY)` — symmetric so
+  the bound holds in the natural frame and after the upright scalar swap
+  alike. Per-bin constitutive matrices are true Voigt blends of the two
+  rotated endpoint matrices `C_b = f·C_shell + (1−f)·C_core` (engineering-
+  constant blending would no longer agree once the ratios diverge); the
+  scalar `averageMaterial` remains an engineering-constant blend, a
+  first-order approximation used only by scalar consumers.
+
+  Anchors: every `g(1) = 1` and `s(1) = min(1, patternMul)` exactly, so 100%
+  infill reproduces the solid bit-for-bit and collapses to the uniform path.
+  Orientation does not enter core stiffness (only the weakAxis rotation /
+  scalar swap does, applied AFTER the natural-frame scaling); it still scales
+  strength. Both regions keep the full orientation anisotropy (layer bonds
+  exist in walls and infill alike).
 - Fractions are quantized into 9 bins of Voigt-blended constitutive matrices,
   yields, and densities (`twoRegion.ts` → `ElementMaterialField`), consumed
   per element by assembly, stress recovery, mass, and self-weight. The scalar
