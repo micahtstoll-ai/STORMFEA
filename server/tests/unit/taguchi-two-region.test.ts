@@ -28,9 +28,9 @@ import { describe, it, expect } from "vitest";
 import { buildTwoRegionField } from "../../twoRegion.js";
 import {
   buildOrthotropicMaterial,
-  coreStrengthMultiplier,
   orientationMultiplier,
 } from "../../analysis.js";
+import { latticeStiffnessScale, latticeStrengthFraction } from "../../solver/lattice.js";
 import { generateBoxMeshC3D4, extractSurfaceFaces } from "../../solver/meshgen.js";
 import { runLinearStatic } from "../../solver/pipeline.js";
 import type { OrthotropicMaterial } from "../../solver/types.js";
@@ -82,13 +82,23 @@ function executeRun(run: number, levels: readonly [number, number, number, numbe
   const orient = ORIENT[levels[3] - 1]!;
 
   const orientMul = orientationMultiplier(orient);
-  const coreMul = coreStrengthMultiplier(infill, pattern, orient);
   const shell: OrthotropicMaterial = {
     ...buildOrthotropicMaterial(MAT_ID, orientMul, orient, LH, null, null),
     massRho: 1240,
   };
+  // Core mirrors the production wiring (analysis.ts two-region block):
+  // Gibson-Ashby scales applied to the SOLID lattice base (= the shell build).
+  const gStiff = latticeStiffnessScale(pattern, infill / 100);
+  const sStr   = latticeStrengthFraction(pattern, infill / 100);
   const core: OrthotropicMaterial = {
-    ...buildOrthotropicMaterial(MAT_ID, coreMul, orient, LH, null, null),
+    ...shell,
+    E_xy: shell.E_xy * gStiff,
+    E_z:  shell.E_z  * gStiff,
+    G_xz: shell.G_xz * gStiff,
+    ...(shell.G_xy !== undefined ? { G_xy: shell.G_xy * gStiff } : {}),
+    yieldXY: shell.yieldXY * sStr,
+    yieldZ:  shell.yieldZ  * sStr,
+    label: `${shell.label} · GA ${pattern} lattice ρ=${infill}%`,
     massRho: 1240 * infill / 100,
   };
 
@@ -96,7 +106,7 @@ function executeRun(run: number, levels: readonly [number, number, number, numbe
   const tr = buildTwoRegionField(mesh, faces, shell, core, tWall);
   const Vf = tr.shellVolumeFraction;
 
-  const lattice = coreMul / orientMul; // min(1, ρ·patternMul)
+  const lattice = sStr; // s(ρ) = min(1, patternMul·ρ^m)
   const implied = (Vf + (1 - Vf) * lattice) * orientMul;
 
   let binYieldsMonotone = true;
@@ -136,13 +146,13 @@ describe("Taguchi L9 sweep — per-run invariants", () => {
     "run %i: shell > core, mixed field, monotone bins, bounded average, finite",
     (_run, r) => {
       // Shell must strictly out-YIELD the wall-free lattice at every point of
-      // the array (infill ≤ 80% keeps min(1, ρ·pattern) < 1). Stiffness is
-      // only ≥: the builder's E = E_base·min(1, mul/0.55) convention CLAMPS
-      // stiffness at solid once the multiplier passes 0.55, so a dense core
-      // in a favorable orientation legally matches shell E — a real model
-      // property this array exposed (runs 7 and 8), not a defect.
+      // the array (infill ≤ 80% keeps s(ρ) = min(1, patternMul·ρ^m) < 1).
+      // Stiffness is now strict too: g(ρ) = ρ^n·(1−c(1−ρ)) < 1 for every
+      // ρ < 1, and orientation no longer enters core stiffness (the legacy
+      // min(1, mul/0.55) clamp let a dense core in a favorable orientation
+      // match shell E — runs 7 and 8 under the old model).
       expect(r.shell.yieldXY).toBeGreaterThan(r.core.yieldXY);
-      expect(r.shell.E_xy).toBeGreaterThanOrEqual(r.core.E_xy);
+      expect(r.shell.E_xy).toBeGreaterThan(r.core.E_xy);
       // Specimen is thick enough that every run stays a genuine two-region mix
       expect(r.Vf).toBeGreaterThan(0.05);
       expect(r.Vf).toBeLessThan(0.95);

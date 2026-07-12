@@ -70,11 +70,25 @@ geometrically:
   Fractions — not hard labels — because volume elements (2.9–6.3 mm edges) are
   2–5× thicker than a typical 1.35 mm wall band.
 - **Shell** carries solid-material properties (calibrated coupon values flow to
-  it unchanged); **core** carries wall-free lattice properties, strength ≈
-  linear in infill density × pattern multiplier (near zero at 0% infill — the
-  legacy curve's 0.30 intercept represents the walls and is not reused).
-  Both regions keep the full orientation anisotropy (layer bonds exist in walls
-  and infill alike).
+  it unchanged); **core** carries wall-free lattice properties from
+  Gibson-Ashby power laws in relative density (`solver/lattice.ts`), applied as
+  scale factors on the solid: stiffness `g(ρ) = ρⁿ·(1 − c(1−ρ))` and strength
+  `s(ρ) = min(1, patternMul·ρᵐ)` — near zero at 0% infill (floored at
+  10⁻³×solid; the legacy curve's 0.30 intercept represents the walls and is
+  not reused). Exponents are per pattern family, confidence LOW,
+  regression-locked, calibration-overridable:
+
+  | Family | Patterns | Stiffness n (corr c) | Strength m |
+  |---|---|---|---|
+  | TPMS-like 3-D | gyroid, cubic, adaptive | 1.75 (0.12) | 1.25 (stretch-dominated) |
+  | extruded walls | grid, lines, honeycomb, trihexagon, concentric | 2.0 (0.10) | 1.5 (bending-dominated) |
+  | sparse | lightning | 2.0 ×0.3 prefactor | 1.5 |
+
+  Anchors: `g(1) = 1` and `s(1) = min(1, patternMul)` exactly, so 100% infill
+  reproduces the solid bit-for-bit and collapses to the uniform path.
+  Orientation does not enter core stiffness (only the weakAxis rotation /
+  scalar swap does); it still scales strength. Both regions keep the full
+  orientation anisotropy (layer bonds exist in walls and infill alike).
 - Fractions are quantized into 9 bins of Voigt-blended constitutive matrices,
   yields, and densities (`twoRegion.ts` → `ElementMaterialField`), consumed
   per element by assembly, stress recovery, mass, and self-weight. The scalar
