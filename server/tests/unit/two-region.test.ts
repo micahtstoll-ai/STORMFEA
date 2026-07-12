@@ -106,11 +106,13 @@ describe("buildTwoRegionField", () => {
 });
 
 describe("anchor policy: implied average vs legacy global multiplier", () => {
-  // The endpoints agree by construction; the interior agreement depends on
-  // whether the legacy model's geometry-blind +0.10-per-wall bonus happens to
-  // match the part's REAL wall fraction. It does for chunky sections and
-  // diverges for wall-dominated thin ones — the divergence is the model's
-  // point, so we assert BOTH directions.
+  // The endpoints agree by construction; the interior DIVERGES in two ways,
+  // both deliberate (report, never renormalize):
+  //  1. The Gibson-Ashby strength law credits low-ρ infill less than the
+  //     legacy linear curve (s(0.2) = 0.2^1.5 ≈ 0.089 vs linear 0.20), so
+  //     implied < global wherever the core matters.
+  //  2. The legacy model's geometry-blind +0.10-per-wall bonus under-credits
+  //     wall-dominated thin sections, so implied > global there.
   const INFILL = 20, WALLS = 2, PATTERN = "grid", ORIENT = "flat";
   const LINE_W = 0.45;
   const T_WALL = WALLS * LINE_W; // 0.9mm
@@ -128,14 +130,21 @@ describe("anchor policy: implied average vs legacy global multiplier", () => {
     return { Vf, implied, global };
   }
 
-  it("chunky coupon section (20×6): implied ≈ global within 15%", async () => {
+  it("chunky coupon section (20×6): implied BELOW global but within 25% (GA law credits low-ρ infill less)", async () => {
+    // Derivation at 20% grid flat, Vf ≈ 0.38: s(0.2) = 0.2^1.5 ≈ 0.089, so
+    // implied ≈ (0.38 + 0.62·0.089)·0.55 ≈ 0.24 vs global 0.297 → ~17% below.
+    // Under the legacy linear core (s = 0.20) this was ~11%; the widening is
+    // the power law's statement, not drift to be renormalized away.
     const { Vf, implied, global } = await impliedFor(60, 20, 6, 30, 10, 3);
     expect(Vf).toBeGreaterThan(0.2);
     expect(Vf).toBeLessThan(0.6);
-    expect(Math.abs(implied - global) / global).toBeLessThan(0.15);
+    expect(implied).toBeLessThan(global);
+    expect(Math.abs(implied - global) / global).toBeLessThan(0.25);
   });
 
   it("wall-dominated thin coupon (10×4): implied EXCEEDS global (legacy under-credits walls)", async () => {
+    // Vf ≈ 0.57 dominates: implied ≈ (0.57 + 0.43·0.089)·0.55 ≈ 0.33 vs
+    // global 0.297 — the wall effect outweighs the GA infill knockdown.
     const { Vf, implied, global } = await impliedFor(50, 10, 4, 25, 5, 2);
     expect(Vf).toBeGreaterThan(0.45); // walls are ~half the section
     expect(implied).toBeGreaterThan(global * 1.05);

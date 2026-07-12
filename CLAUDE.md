@@ -161,6 +161,15 @@ perimeter walls vs homogenized infill core (`server/twoRegion.ts`,
 7. **Worker boundary** — `binOfElement` + multi-bin `C` cross the
    `assembly-worker.ts` postMessage payload; any field shape change must update
    `WorkerInput` and the mixed-bin case in `test-parallel-assembly.ts`.
+8. **Core homogenization anchors** — the core is the SOLID material times
+   Gibson-Ashby scale factors (`server/solver/lattice.ts`); at ρ=1 those
+   factors are exactly 1.0 so the core reproduces the solid bit-for-bit
+   (the `materialsEqual` collapse depends on it — never re-derive the ρ=1
+   material through a parallel formula chain). Scales are floored at
+   1e-3×solid (0% infill must build a positive-definite C, not crash), and
+   orientation must never enter core STIFFNESS — only the weakAxis
+   rotation/scalar-swap and the strength multiplier do. Exponents are LOW
+   confidence, locked by `server/tests/unit/core-lattice.test.ts`.
 
 ## Questions?
 If you need clarification on these guidelines, ask in the GitHub issue or PR description.

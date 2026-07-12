@@ -5814,6 +5814,13 @@ function showResults(s) {
     const deltaPct = ((implied - legacy) / legacy) * 100;
     const deltaColor = Math.abs(deltaPct) > 10 ? 'var(--warn)' : 'var(--text-label)';
     strengthDivergenceHtml = ` · implied strength ×${implied.toFixed(2)} vs. legacy model ×${legacy.toFixed(2)} (<span style="color:${deltaColor}">${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(0)}%</span>)`;
+    // Gibson-Ashby core homogenization diagnostics (mm.core absent on older
+    // servers — guard keeps the UI compatible).
+    if (mm.core && mm.core.model === 'gibson-ashby') {
+      strengthDivergenceHtml += ` · core E ×${mm.core.stiffnessScale.toFixed(3)} of solid ` +
+        `(Gibson-Ashby ρ<sup>${mm.core.stiffnessExponent}</sup>, ${mm.core.patternFamily}, ` +
+        `${mm.core.confidence} confidence${mm.core.floored ? ', floored' : ''})`;
+    }
   }
 
   // ── Calibration status badge ─────────────────────────────────────────────
@@ -8316,9 +8323,9 @@ const SOURCES_DB = [
         id: "gibson_ashby1997",
         citation: "Gibson LJ, Ashby MF. Cellular Solids: Structure and Properties. 2nd ed. Cambridge University Press; 1997.",
         url: "https://doi.org/10.1017/CBO9781139878326",
-        usedFor: "Density–modulus scaling for the gyroid infill constitutive model: E ∝ ρⁿ with n ≈ 1.5–2.5 for open-cell lattices",
+        usedFor: "Density scaling of the homogenized infill core (two-region model) and the gyroid constitutive model: stiffness E ∝ ρⁿ with n ≈ 1.5–2.5 for open-cell lattices; strength σ ∝ ρ^1.5 for bending-dominated collapse, ~ρ^1.2–1.3 for stretch-dominated topologies",
         confidence: "low",
-        note: "Establishes the power-law FORM only. STORMFEA's gyroid exponents (E_xy ρ^1.75, E_z ρ^2.1, G_xz ρ^2.3) and small linear corrections are engineering estimates chosen WITHIN this cited range — no paper reports gyroid-specific coefficients. They are locked by regression tests (gyroid-formula.test.ts) and can be replaced with printer-specific values via coupon calibration.",
+        note: "Establishes the power-law FORMS only. STORMFEA's per-family exponents (server/solver/lattice.ts: TPMS-like ρ^1.75 stiffness / ρ^1.25 strength; extruded-wall patterns ρ^2.0 / ρ^1.5; gyroid per-axis E_xy ρ^1.75, E_z ρ^2.1, G_xz ρ^2.3) and small linear corrections are engineering estimates chosen WITHIN the cited ranges — no paper reports pattern-specific coefficients. They are locked by regression tests (core-lattice.test.ts, gyroid-formula.test.ts) and overridable per calibration profile.",
       },
       {
         id: "comprehensive2025",
