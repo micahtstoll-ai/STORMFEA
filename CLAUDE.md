@@ -144,9 +144,14 @@ perimeter walls vs homogenized infill core (`server/twoRegion.ts`,
 2. **No NaN by construction** — the level-set volume fraction
    (`tetFractionBelowIso`) is written per sign-case so every denominator is a
    strictly-negative-minus-non-negative difference; keep it that way.
-3. **Blend order matters not, rotation does** — Voigt blending commutes with the
-   weakAxis (Bond) rotation ONLY because shell and core share the same
-   `weakAxis`. Never blend materials with different weak axes.
+3. **Per-bin C is a true Voigt matrix blend** — `C_b = f·C_shell + (1−f)·C_core`
+   of the two ROTATED endpoint matrices (`twoRegion.ts` bin loop). Blending
+   after the weakAxis (Bond) rotation is exact because the rotation is linear
+   in C's entries — valid ONLY while shell and core share the same `weakAxis`.
+   Never blend materials with different weak axes, and never revert to
+   blending engineering constants: that only equals the matrix blend when
+   shell and core share every modulus ratio, which the anisotropic core laws
+   deliberately break.
 4. **Distance field must be point-to-triangle** — nearest-NODE distance aliases
    (3–6 mm boundary triangles vs ~1.35 mm wall band). Boundary nodes seed at
    exactly 0.
@@ -157,10 +162,22 @@ perimeter walls vs homogenized infill core (`server/twoRegion.ts`,
 6. **The average material carries the scalars** — `SolverInput.material` is the
    volume-weighted blend when the field is active; whole-part consumers (ZZ
    error estimate, analytic hole checks) read it, per-element consumers read
-   the field. Don't mix the two up.
+   the field. Don't mix the two up. Note it blends ENGINEERING CONSTANTS — a
+   first-order approximation of the Voigt C average once the core's ratios
+   diverge from the shell's — acceptable because its consumers are scalar and
+   every degenerate path returns an exact endpoint material.
 7. **Worker boundary** — `binOfElement` + multi-bin `C` cross the
    `assembly-worker.ts` postMessage payload; any field shape change must update
    `WorkerInput` and the mixed-bin case in `test-parallel-assembly.ts`.
+8. **Core homogenization anchors** — the core is the SOLID material times
+   Gibson-Ashby scale factors (`server/solver/lattice.ts`); at ρ=1 those
+   factors are exactly 1.0 so the core reproduces the solid bit-for-bit
+   (the `materialsEqual` collapse depends on it — never re-derive the ρ=1
+   material through a parallel formula chain). Scales are floored at
+   1e-3×solid (0% infill must build a positive-definite C, not crash), and
+   orientation must never enter core STIFFNESS — only the weakAxis
+   rotation/scalar-swap and the strength multiplier do. Exponents are LOW
+   confidence, locked by `server/tests/unit/core-lattice.test.ts`.
 
 ## Questions?
 If you need clarification on these guidelines, ask in the GitHub issue or PR description.

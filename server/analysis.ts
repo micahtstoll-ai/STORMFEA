@@ -46,6 +46,15 @@ function _snapAnalysis(label: string): void {
 import type { SolverInput }                 from "./solver/pipeline.js";
 import type { IsotropicMaterial, AnyMaterial, OrthotropicMaterial, ElementMaterialField } from "./solver/types.js";
 import { buildTwoRegionField, TWO_REGION_MAX_ELEMENTS } from "./twoRegion.js";
+import {
+  LATTICE_PARAMS,
+  LATTICE_STIFFNESS_FLOOR,
+  PATTERN_MULTIPLIERS,
+  latticeStiffnessScale,
+  latticeStiffnessScales,
+  latticeStrengthFraction,
+  patternFamilyOf,
+} from "./solver/lattice.js";
 import { isOrthotropic, isOrthotropicLike } from "./solver/types.js";
 import { recoverElementStressComponents }   from "./solver/stress_detail.js";
 import { rotationAligningZTo, rotateStress6ToLocal, computeGeometry } from "./solver/element.js";
@@ -433,6 +442,14 @@ export interface CalibrationProfile {
   E_z_over_E_xy:    number;
   yieldZ_over_yieldXY: number;
   G_xz_over_G_xy:   number;
+  /**
+   * Optional overrides for the two-region core's Gibson-Ashby exponents
+   * (solver/lattice.ts). Escape hatch for printer-specific lattice data —
+   * there is no coupon-fitting workflow for these yet. Absent/null = family
+   * defaults. Older stored profiles simply lack the keys.
+   */
+  latticeStiffExp?:    number | null;
+  latticeStrengthExp?: number | null;
 }
 
 export const COUPON_DIMS = {
@@ -578,6 +595,30 @@ const FDM_ORTHO_RATIOS = {
 };
 
 
+/**
+ * Fallback SCALAR-SWAP APPROXIMATION for upright prints when no bed is picked
+ * (weak azimuth unknown). Physically an upright print has its layer normal
+ * along a HORIZONTAL axis; the exact model is a 90° rotation of the full 6×6
+ * C (Bond transform, used when weakAxis is known). Without the azimuth we
+ * approximate by swapping scalars: E_z takes the strong in-layer modulus and
+ * BOTH horizontal directions take the weak through-layer modulus —
+ * conservative (the real part is weak in only one). G_xy is set to the
+ * inter-layer shear G_xz because the global XY plane contains the layer
+ * normal after the swap (issue #101). See the "upright_swap" SOURCES entry
+ * and server/tests/unit/upright-swap.test.ts.
+ *
+ * The input must be in the NATURAL frame (weak axis = local Z) and must not
+ * carry a weakAxis — swapping an already-rotated material is meaningless.
+ */
+export function applyUprightScalarSwap(mat: OrthotropicMaterial): OrthotropicMaterial {
+  return {
+    ...mat,
+    E_xy: mat.E_z, E_z: mat.E_xy,
+    G_xy: mat.G_xz, G_xz: mat.G_xz,
+    yieldXY: mat.yieldZ, yieldZ: mat.yieldXY,
+  };
+}
+
 function buildOrthotropicMaterialCLT(
   baseMatId:       string,
   infillPct:       number,
@@ -636,24 +677,9 @@ function buildOrthotropicMaterialCLT(
   }
 
   if (orientation === "upright") {
-    // Fallback SCALAR-SWAP APPROXIMATION when no bed is picked (weak azimuth
-    // unknown). Physically an upright print has its layer normal along a
-    // HORIZONTAL axis; the exact model is a 90° rotation of the full 6×6 C
-    // (Bond transform, now used above when weakAxis is known). Without the
-    // azimuth we approximate by swapping scalars: E_z takes the strong in-layer
-    // modulus and BOTH horizontal directions take the weak through-layer
-    // modulus — conservative (the real part is weak in only one). G_xy is set to
-    // the inter-layer shear G_xz because the global XY plane contains the layer
-    // normal after the swap (issue #101). See the "upright_swap" SOURCES entry
-    // and server/tests/unit/upright-swap.test.ts.
-    return {
-      kind: "orthotropic",
-      E_xy: mat.E_z, E_z: mat.E_xy,
-      nu_xy: mat.nu_xy, nu_xz: mat.nu_xz,
-      G_xy: mat.G_xz, G_xz: mat.G_xz,
-      yieldXY: mat.yieldZ, yieldZ: mat.yieldXY,
-      label: mat.label.replace(`, ${orientation}`, ", upright"),
-    };
+    // Fallback scalar-swap approximation when no bed is picked — see
+    // applyUprightScalarSwap.
+    return applyUprightScalarSwap(mat);
   }
   return mat;
 }
@@ -709,19 +735,9 @@ export function buildOrthotropicMaterial(
   }
 
   if (orientation === "upright") {
-    // Fallback scalar-swap approximation (no bed picked, so the weak azimuth is
-    // unknown): keep transverse isotropy about global Z, making BOTH horizontal
-    // directions weak (conservative; the real part is weak in only one). G_xy is
-    // set to the inter-layer shear G_xz because the global XY plane contains the
-    // layer normal after the swap (issue #101).
-    return {
-      kind: "orthotropic",
-      E_xy: E_z, E_z: E_xy,
-      nu_xy, nu_xz,
-      G_xy: G_xz, G_xz,
-      yieldXY: yieldZ, yieldZ: yieldXY,
-      label: `${base.label} (orthotropic, upright, lh=${layerHeightMm}mm, ${src})`,
-    };
+    // Fallback scalar-swap approximation (no bed picked, so the weak azimuth
+    // is unknown) — see applyUprightScalarSwap.
+    return applyUprightScalarSwap(flat);
   }
   return flat;
 }
@@ -764,20 +780,10 @@ function infillStrengthCurve(pct: number): number {
   return 0.30 + (pct / 100) * 0.70;
 }
 
-// Pattern multipliers — conservative, treat as approximate guidance only
-// The spread between patterns is kept small because the literature is inconsistent.
-// The main variable that matters is orientation, not pattern.
-const PATTERN_MULTIPLIERS: Record<string, number> = {
-  grid:         1.00,  // baseline
-  lines:        0.92,  // weakest — unidirectional, highly anisotropic
-  gyroid:       1.08,  // near-isotropic benefit — modest advantage
-  cubic:        1.05,  // similar to gyroid for structural loads
-  honeycomb:    1.03,  // strong in compression axis, competitive in tension
-  trihexagon:   1.04,  // similar to honeycomb
-  lightning:    0.50,  // decorative only, minimal structural contribution
-  concentric:   0.88,  // weak structurally
-  adaptive:     1.04,  // variable density, similar to cubic
-};
+// Pattern multipliers — conservative, treat as approximate guidance only.
+// Moved to solver/lattice.ts (imported above) so the strength prefactor lives
+// beside the Gibson-Ashby exponent tables; values are unchanged, keeping the
+// legacy uniform path bit-identical.
 
 // Pattern uncertainty — shown to user so they know how reliable each value is
 export const PATTERN_CONFIDENCE: Record<string, string> = {
@@ -821,17 +827,145 @@ export function effectiveStrengthMultiplier(
  * Strength multiplier for a WALL-FREE homogenized infill lattice (the core
  * region of the two-region model). Unlike infillStrengthCurve — whose 0.30
  * intercept at 0% infill represents the perimeter walls — a pure lattice
- * carries ~nothing at 0% and scales ~linearly with relative density (same
- * literature basis as the legacy curve, walls removed). Clamped at solid.
+ * carries ~nothing at 0% and follows a Gibson-Ashby power law in relative
+ * density (solver/lattice.ts: s(ρ) = min(1, patternMul·ρ^m), m per pattern
+ * family). Clamped at solid; anchored s(1) = min(1, patternMul), identical
+ * to the legacy linear curve's ρ=1 value.
  */
 export function coreStrengthMultiplier(
   infillPct:   number,
   pattern:     string,
   orientation: string,
+  strengthExpOverride?: number | null,
 ): number {
-  const patternMul = PATTERN_MULTIPLIERS[pattern] ?? 1.0;
-  const lattice = Math.min(1.0, (infillPct / 100) * patternMul);
-  return lattice * orientationMultiplier(orientation);
+  return latticeStrengthFraction(pattern, infillPct / 100, strengthExpOverride)
+       * orientationMultiplier(orientation);
+}
+
+/**
+ * Build the two-region CORE material: the wall-free homogenized infill
+ * lattice, produced by applying per-axis Gibson-Ashby scale factors
+ * (solver/lattice.ts) to the SOLID lattice base material.
+ *
+ * Frame handling: the per-axis laws are defined in the NATURAL frame (local
+ * Z = layer normal = build axis — for extruded-wall patterns the walls are
+ * continuous along that axis, so E_z keeps the mildest law and the core's
+ * anisotropy INVERTS at low density). Scaling must therefore happen before
+ * any frame transform:
+ *  - real weakAxis: the builder returns natural constants + the axis; the
+ *    rotation is applied later in the constitutive builder (after scaling).
+ *  - upright with no bed picked: the builder would scalar-swap; we suppress
+ *    the swap by requesting the identity axis [0,0,1], scale the natural
+ *    constants, then apply the swap and drop the injected axis.
+ *
+ * Poisson guard: with inverted anisotropy an unscaled ν_xz makes
+ * ν_zx = ν_xz·E_z/E_xy exceed the thermodynamic stability limit in
+ * buildOrthotropicConstitutiveMatrix; scaling ν_xz by min(1, gXY/gZ) bounds
+ * 2·ν_xz·ν_zx by its solid value, keeping every bin positive definite.
+ *
+ * Anchors (CLAUDE.md two-region invariant #8): every scale factor is exactly
+ * 1.0 at 100% infill, so the core reproduces the solid/shell bit-for-bit and
+ * the materialsEqual collapse in buildTwoRegionField keeps firing. A
+ * calibration latticeStiffExp override routes to the scalar
+ * (isotropic-in-ratio) law — a single fitted exponent can't say which axis
+ * it belongs to.
+ *
+ * CLT: the solid base is built at 100% infill so the laminate's internal
+ * linear A×ρ scaling is a no-op — the Gibson-Ashby laws are the ONLY density
+ * knockdown. Mass stays linear (volume is volume).
+ */
+export function buildCoreMaterial(
+  materialId:    string,
+  infillPct:     number,
+  pattern:       string,
+  orientation:   string,
+  layerHeightMm: number,
+  calibration:   CalibrationProfile | null,
+  useCLT:        boolean,
+  beadProps:     BeadProperties | undefined,
+  weakAxis:      readonly [number, number, number] | null,
+): OrthotropicMaterial {
+  const baseMat = MATERIALS[materialId] ?? MATERIALS["pla"]!;
+  const rho = infillPct / 100;
+  const orientMul = orientationMultiplier(orientation);
+  const sStr = latticeStrengthFraction(pattern, rho, calibration?.latticeStrengthExp);
+
+  const uprightNoBed = !weakAxis && orientation === "upright";
+  const solidAxis: readonly [number, number, number] | null =
+    uprightNoBed ? [0, 0, 1] : weakAxis;
+  const solid = useCLT
+    ? buildOrthotropicMaterialCLT(materialId, 100, pattern, orientation, layerHeightMm,
+        orientMul, calibration, beadProps, solidAxis)
+    : buildOrthotropicMaterial(materialId, orientMul, orientation, layerHeightMm,
+        calibration, solidAxis);
+
+  let scaled: OrthotropicMaterial;
+  if (calibration?.latticeStiffExp != null) {
+    const g = latticeStiffnessScale(pattern, rho, calibration.latticeStiffExp);
+    scaled = {
+      ...solid,
+      E_xy: solid.E_xy * g,
+      E_z:  solid.E_z  * g,
+      G_xz: solid.G_xz * g,
+      ...(solid.G_xy !== undefined ? { G_xy: solid.G_xy * g } : {}),
+    };
+  } else {
+    const { gXY, gZ, gGxz, gGxy } = latticeStiffnessScales(pattern, rho);
+    // In-plane shear: explicit wall-network law when the family defines one
+    // (walls25d — Gibson-Ashby honeycomb ρ³ bending mode); otherwise follow
+    // E_xy so an explicit CLT G_xy scales consistently and a derived G_xy
+    // stays derived from the scaled E_xy.
+    const gxyCore = gGxy !== null
+      ? (solid.G_xy ?? solid.E_xy / (2 * (1 + solid.nu_xy))) * gGxy
+      : solid.G_xy !== undefined ? solid.G_xy * gXY
+      : undefined;
+    // SYMMETRIC Poisson guard: whichever way the per-axis laws skew the
+    // anisotropy, the guarded 2·ν_xz·ν_zx stays bounded by its solid value —
+    // in the natural frame AND after the upright scalar swap (which inverts
+    // E_z/E_xy; the one-sided min(1, gXY/gZ) guard would let a swapped
+    // tpms3d core at low ρ violate positive-definiteness). min(1,1,1) = 1
+    // at ρ=1 keeps the anchor exact.
+    const nu_xz = solid.nu_xz * Math.min(1, gXY / gZ, gZ / gXY);
+    scaled = {
+      ...solid,
+      E_xy: solid.E_xy * gXY,
+      E_z:  solid.E_z  * gZ,
+      G_xz: solid.G_xz * gGxz,
+      nu_xz,
+      ...(gxyCore !== undefined ? { G_xy: gxyCore } : {}),
+    };
+  }
+
+  let framed: OrthotropicMaterial = scaled;
+  if (uprightNoBed) {
+    const { weakAxis: _identityAxis, ...swapped } = applyUprightScalarSwap(scaled);
+    framed = swapped;
+  }
+
+  // Defensive stability check on the FINAL frame (mirrors
+  // buildOrthotropicConstitutiveMatrix): clamp + warn rather than throw
+  // during bin construction. Unreachable for the family tables (the
+  // symmetric guard bounds the product by its solid value in both frames);
+  // protects against pathological calibration/coefficient combinations.
+  {
+    const nu_zx = framed.nu_xz * framed.E_z / framed.E_xy;
+    const delta = (1 - framed.nu_xy) - 2 * framed.nu_xz * nu_zx;
+    if (delta <= 0) {
+      console.warn(
+        `[core-lattice] Poisson stability clamp (Δ=${delta.toFixed(4)}) for ` +
+        `${pattern} at ρ=${rho.toFixed(2)} — setting core ν_xz to 0`,
+      );
+      framed = { ...framed, nu_xz: 0 };
+    }
+  }
+
+  return {
+    ...framed,
+    yieldXY: framed.yieldXY * sStr,
+    yieldZ:  framed.yieldZ  * sStr,
+    label: `${solid.label} · GA ${pattern} lattice ρ=${infillPct}%`,
+    massRho: baseMat.densityKgM3 * rho,
+  };
 }
 
 /**
@@ -1368,6 +1502,25 @@ export interface MaterialModelInfo {
    */
   impliedAvgStrengthMul: number | null;
   globalModelStrengthMul: number;
+  /**
+   * Core (infill) homogenization diagnostics — present when the two-region
+   * model ran with the Gibson-Ashby lattice laws (solver/lattice.ts).
+   */
+  core?: {
+    model:             "gibson-ashby";
+    patternFamily:     "tpms3d" | "walls25d" | "sparse";
+    /** Effective in-plane stiffness exponent n (after calibration override). */
+    stiffnessExponent: number;
+    /** Strength exponent m (after calibration override). */
+    strengthExponent:  number;
+    /** g(ρ) = E_core / E_solid at the requested infill. */
+    stiffnessScale:    number;
+    /** s(ρ) = σ_core / σ_solid at the requested infill (pattern-clamped). */
+    strengthScale:     number;
+    /** True when g(ρ) hit the 1e-3 low-density floor. */
+    floored:           boolean;
+    confidence:        "LOW";
+  };
   /** Set when the two-region request degraded to uniform (why). */
   degraded?:            string;
 }
@@ -2373,29 +2526,25 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       );
       const shellMat: OrthotropicMaterial = { ...shellBuilt, massRho: baseMat.densityKgM3 };
 
-      // Core: wall-free homogenized lattice. Strength ≈ linear in relative
-      // density × pattern (near 0 at 0% infill — infillStrengthCurve's 0.30
-      // intercept represents the walls and must NOT be reused here). CLT,
-      // when enabled, models the core's ply stack; the shell stays on the
-      // solid builder (perimeters are solid extrusions, not the infill ply
-      // stack). Density scales with relative density.
-      const coreMul = coreStrengthMultiplier(
-        req.print.infillPct, req.print.pattern ?? "grid", req.print.orientation,
+      // Core: wall-free homogenized lattice — per-axis Gibson-Ashby power
+      // laws applied to the solid lattice base (see buildCoreMaterial: frame
+      // handling, Poisson guard, ρ=1 anchors, CLT-at-100% composition; near 0
+      // at 0% infill — infillStrengthCurve's 0.30 intercept represents the
+      // walls and must NOT be reused here). The shell stays on the solid
+      // builder: perimeters are solid extrusions, not the infill ply stack.
+      const rho = req.print.infillPct / 100;
+      const pattern = req.print.pattern ?? "grid";
+      // Reporting scales: the in-plane stiffness law and the strength
+      // fraction. The core itself is built with the full per-axis set
+      // (anisotropic families) inside buildCoreMaterial.
+      const gStiff = latticeStiffnessScale(pattern, rho, req.calibration?.latticeStiffExp);
+      const sStr   = latticeStrengthFraction(pattern, rho, req.calibration?.latticeStrengthExp);
+
+      const coreMat = buildCoreMaterial(
+        req.print.materialId, req.print.infillPct, pattern, req.print.orientation,
+        req.print.layerHeightMm ?? 0.2, req.calibration ?? null,
+        req.print.useCLT ?? false, req.print.beadProps, weakAxis,
       );
-      const coreBuilt = req.print.useCLT
-        ? buildOrthotropicMaterialCLT(
-            req.print.materialId, req.print.infillPct, req.print.pattern ?? "grid",
-            req.print.orientation, req.print.layerHeightMm ?? 0.2, coreMul,
-            req.calibration ?? null, req.print.beadProps, weakAxis,
-          )
-        : buildOrthotropicMaterial(
-            req.print.materialId, coreMul, req.print.orientation,
-            req.print.layerHeightMm ?? 0.2, req.calibration ?? null, weakAxis,
-          );
-      const coreMat: OrthotropicMaterial = {
-        ...coreBuilt,
-        massRho: baseMat.densityKgM3 * (req.print.infillPct / 100),
-      };
 
       const tr = buildTwoRegionField(mesh, surfaceFaces, shellMat, coreMat, tWall);
       material = tr.averageMaterial;
@@ -2403,10 +2552,12 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
 
       // Anchor diagnostics: what the geometric split implies vs the legacy
       // geometry-blind global multiplier. Reported, deliberately not
-      // renormalized — the divergence is the point of the model.
+      // renormalized — the divergence is the point of the model. Reuses the
+      // exact sStr that built the core, so the diagnostic can never
+      // desynchronize from the material.
       const Vf = tr.shellVolumeFraction;
-      const impliedAvgStrengthMul =
-        (Vf * 1.0 + (1 - Vf) * Math.min(1, (req.print.infillPct / 100) * (PATTERN_MULTIPLIERS[req.print.pattern ?? "grid"] ?? 1.0))) * orientMul;
+      const impliedAvgStrengthMul = (Vf * 1.0 + (1 - Vf) * sStr) * orientMul;
+      const family = patternFamilyOf(pattern);
       materialModel = {
         ...materialModel,
         twoRegion: true,
@@ -2415,6 +2566,16 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         shellYieldXYMPa: shellMat.yieldXY,
         coreYieldXYMPa: coreMat.yieldXY,
         impliedAvgStrengthMul,
+        core: {
+          model: "gibson-ashby",
+          patternFamily: family,
+          stiffnessExponent: req.calibration?.latticeStiffExp ?? LATTICE_PARAMS[family].stiffExpXY,
+          strengthExponent:  req.calibration?.latticeStrengthExp ?? LATTICE_PARAMS[family].strengthExp,
+          stiffnessScale: gStiff,
+          strengthScale:  sStr,
+          floored: gStiff <= LATTICE_STIFFNESS_FLOOR,
+          confidence: "LOW",
+        },
       };
       console.log(
         `[analysis] two-region model: tWall=${tWall.toFixed(2)}mm, shell Vf=${(Vf * 100).toFixed(1)}%, ` +

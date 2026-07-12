@@ -42,6 +42,22 @@
 - [x] Two-region UI surfacing — live wall-band readout (wall count × line
       width) in the MATERIAL tab; results panel shows the implied vs legacy
       strength multiplier divergence with the relative delta
+- [x] Gibson-Ashby core homogenization (Stage 1) — the two-region infill core
+      now scales the solid material by per-pattern-family power laws
+      (`solver/lattice.ts`: TPMS-like ρ^1.75 stiffness / ρ^1.25 strength,
+      extruded-wall patterns ρ^2.0 / ρ^1.5, lightning ×0.3) instead of
+      linearly in density; orientation no longer leaks into core stiffness;
+      0%-infill no longer crashes (10⁻³ floor); exponents confidence-LOW,
+      regression-locked (core-lattice.test.ts), calibration-overridable;
+      results panel reports the core model + E_core/E_solid
+- [x] Anisotropic core homogenization (Stage 2) — per-axis Gibson-Ashby laws
+      in the natural material frame (`buildCoreMaterial`): extruded-wall
+      patterns are rule-of-mixtures ρ^1.0 along the build axis but ρ^2 in
+      plane and ρ^3 in in-plane shear (anisotropy INVERTS at low density,
+      with a symmetric Poisson guard keeping every bin positive definite);
+      TPMS keeps the locked per-axis gyroid laws; upright-no-bed scaling
+      happens before the scalar swap; `twoRegion.ts` bins are now true Voigt
+      blends of the rotated endpoint C matrices
 
 ### Failure Modes
 - [x] Bulk yield — FEM Hill criterion (high confidence)

@@ -27,6 +27,7 @@
  */
 
 import type { IsotropicMaterial, OrthotropicMaterial, GyroidOrthotropic, AnyMaterial } from "./types.js";
+import { gibsonAshbyModulus, LATTICE_PARAMS } from "./lattice.js";
 
 // ─── Safe typed-array access ──────────────────────────────────────────────────
 function f64(arr: Float64Array, i: number): number {
@@ -297,13 +298,17 @@ export function buildGyroidConstitutiveMatrix(mat: GyroidOrthotropic): Float64Ar
     throw new Error(`Gyroid density must be in [0, 1.0], got ${density}`);
   }
 
-  // Power-law degradation — exponents and correction factors are unverified (no citable source).
+  // Power-law degradation — generalized Gibson-Ashby form shared with the
+  // two-region core homogenization (solver/lattice.ts, tpms3d family); the
+  // PLA base moduli (3500/2275/1143) are this material kind's historical
+  // hardcoded solids. Exponents and correction factors are engineering
+  // estimates (confidence LOW, regression-locked by gyroid-formula.test.ts).
   const rho = density;
-  const one_minus_rho = 1 - rho;
+  const ga = LATTICE_PARAMS.tpms3d;
 
-  const E_xy = 3500 * Math.pow(rho, 1.75) * (1 - 0.12 * one_minus_rho);
-  const E_z  = 2275 * Math.pow(rho, 2.1)  * (1 - 0.18 * one_minus_rho);
-  const G_xz = 1143 * Math.pow(rho, 2.3)  * (1 - 0.22 * one_minus_rho);
+  const E_xy = gibsonAshbyModulus(3500, rho, ga.stiffExpXY,  ga.stiffCorrXY);
+  const E_z  = gibsonAshbyModulus(2275, rho, ga.stiffExpZ,   ga.stiffCorrZ);
+  const G_xz = gibsonAshbyModulus(1143, rho, ga.stiffExpGxz, ga.stiffCorrGxz);
 
   // Handle edge case: ρ ≈ 0 (very low density → very small stiffness)
   if (rho < 0.01 && (E_xy < 1 || E_z < 1 || G_xz < 1)) {

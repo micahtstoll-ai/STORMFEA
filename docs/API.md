@@ -119,7 +119,7 @@ endpoint.
 | `boltHoleIds[]` | number[] | Which holes are bolted (constraints) |
 | `boltFasteners[]` | array | Optional per-hole fastener spec |
 | `forces[]` | array | `{ magnitude, direction[3], position[3], loadDistribution? }` |
-| `print` | object | `{ materialId, infillPct, wallCount, pattern, orientation, layerHeightMm, meshOrder?, useCLT?, twoRegion?, extrusionWidthMm? }`. `twoRegion: true` enables the two-region (walls vs infill) material model; `extrusionWidthMm` (default 0.45, clamped [0.1, 2.0]) sets the wall band = `wallCount × extrusionWidthMm`. |
+| `print` | object | `{ materialId, infillPct, wallCount, pattern, orientation, layerHeightMm, meshOrder?, useCLT?, beadProps?, twoRegion?, extrusionWidthMm? }`. `twoRegion: true` enables the two-region (walls vs infill) material model — the infill core follows Gibson-Ashby power laws in density per pattern family (see `materialModel.core` in the response); `extrusionWidthMm` (default 0.45, clamped [0.1, 2.0]) sets the wall band = `wallCount × extrusionWidthMm`. |
 | `meshQuality` | `"coarse"｜"standard"｜"fine"` | Optional |
 | `analysisType` | string | `linear_static` (default) or `modal` |
 | `computeBuckling` | boolean | Opt-in linear buckling |
@@ -127,7 +127,7 @@ endpoint.
 | `pressures[]` | array | Optional surface loads `{ magnitude, direction[3], normal?, region? }`. `magnitude` in MPa (negative = outward/suction). `normal:true` follows each triangle's own outward normal. `region` ∈ `"face"` (default, extreme face toward `direction`), `"facing"` (all faces toward `direction`), `"all"` (whole surface / hydrostatic). |
 | `fatigueLoadRatio` | number | Optional fatigue load ratio `R = σ_min/σ_max` (default `0`; clamped to `[-1, 0.95]`) |
 | `layerNormal` | `[x,y,z]` | Optional through-layer (weak) axis from the picked bed face. Present → exact weak-axis tensor rotation for upright/angled prints; absent → conservative scalar-swap fallback. Direction only (sign/azimuth immaterial). |
-| `calibration` | object | Optional active calibration profile |
+| `calibration` | object | Optional active calibration profile. May carry optional `latticeStiffExp` / `latticeStrengthExp` overrides for the two-region core's Gibson-Ashby exponents. |
 
 **Response modes**
 
@@ -160,9 +160,19 @@ endpoint.
       "wallThicknessMm": 1.35,
       "shellVolumeFraction": 0.41,
       "shellYieldXYMPa": 27.5,
-      "coreYieldXYMPa": 6.1,
+      "coreYieldXYMPa": 2.5,
       "impliedAvgStrengthMul": 0.36,
-      "globalModelStrengthMul": 0.30
+      "globalModelStrengthMul": 0.30,
+      "core": {
+        "model": "gibson-ashby",
+        "patternFamily": "walls25d",
+        "stiffnessExponent": 2.0,
+        "strengthExponent": 1.5,
+        "stiffnessScale": 0.0368,
+        "strengthScale": 0.0894,
+        "floored": false,
+        "confidence": "LOW"
+      }
     },
     "converged": true, "cgIterations": 412, "solverMs": 1830,
     "nodeCount": 8461, "elementCount": 4210, "nodesPerElem": 10,
