@@ -189,7 +189,7 @@ export function generateHtmlReport(
             fatigue.estimatedCycles < 100000 ? `⚠ ~${fatigue.estimatedCycles.toLocaleString()} cycles — fatigue concern` :
             `✓ ~${fatigue.estimatedCycles.toLocaleString()} cycles`}
         </div>
-        <div style="color:#666">Fatigue SF: ${fatigue.fatigueSF}× &nbsp;·&nbsp; Se: ${fatigue.enduranceLimitMPa} MPa &nbsp;·&nbsp; <span style="color:#888">LOW CONFIDENCE</span></div>
+        <div style="color:#666">Fatigue SF: ${fatigue.fatigueSF}× &nbsp;·&nbsp; Se: ${fatigue.enduranceLimitMPa} MPa &nbsp;·&nbsp; ${confBadge(fatigue.confidence)}</div>
       </div>
     </div>
   </div>

@@ -559,9 +559,10 @@ app.get("/api/calibration/coupon/:type", (req, res) => {
 // ── Calibration endpoints ─────────────────────────────────────────────────────
 import {
   backCalculateProfile,
+  fitFatigueProfile,
   COUPON_DIMS,
 } from "./analysis.js";
-import type { CalibrationProfile } from "./analysis.js";
+import type { CalibrationProfile, FatigueCouponPoint } from "./analysis.js";
 import fs   from "fs";
 import os   from "os";
 
@@ -621,6 +622,41 @@ app.post("/api/calibration/calculate", (req, res) => {
     })) return;
     const profile = backCalculateProfile(req.body);
     res.json({ profile });
+  } catch (e) {
+    res.status(400).json({ error: String(e) });
+  }
+});
+
+// POST /api/calibration/fatigue — fit an S-N (Basquin) curve from cyclic coupon
+// points, returning the fatigue calibration fields to merge into a profile.
+// This is the fatigue analogue of /calibration/calculate: real cyclic-test data
+// replaces the literature Se/UTS + Basquin b, and lifts fatigue LOW→MEDIUM.
+app.post("/api/calibration/fatigue", (req, res) => {
+  try {
+    const body = req.body as {
+      materialId?: string;
+      utsMPa?: number;
+      enduranceLifeCycles?: number;
+      points?: FatigueCouponPoint[];
+    };
+    if (!Array.isArray(body.points) || body.points.length < 2) {
+      res.status(400).json({
+        error: "Need at least 2 fatigue coupon points",
+        field: "points",
+        hint:  "send points: [{ stressAmplitudeMPa, cycles }, …] with ≥2 entries at distinct cycle counts",
+      });
+      return;
+    }
+    const uts = typeof body.utsMPa === "number" && body.utsMPa > 0 ? body.utsMPa : 55;
+    const fit = fitFatigueProfile(body.points, uts, body.enduranceLifeCycles ?? 1e6);
+    res.json({
+      fit,
+      fatigueFields: {
+        fatigueSeRatio:  +fit.seRatio.toFixed(4),
+        fatigueBasquinB: +fit.basquinB.toFixed(4),
+        fatigueUTS_MPa:  uts,
+      },
+    });
   } catch (e) {
     res.status(400).json({ error: String(e) });
   }

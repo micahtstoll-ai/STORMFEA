@@ -18,6 +18,15 @@
  * and overridable per calibration profile. The tpms3d stiffness coefficients
  * are the pre-existing gyroid estimates (element.ts, gyroid-formula.test.ts).
  *
+ * NUMERICAL HOMOGENIZATION (server/homogenize.ts) exists to raise this from a
+ * guess-within-a-range to a solver-derived value, but its first-order cell (a
+ * single circular perforation) is stress-concentration-dominated (n≈2.5–3, the
+ * hole's Kt≈3 compliance) and does NOT reproduce a periodic wall network's
+ * n≈2 — so it corroborates the METHOD (validated against isolated-hole theory,
+ * solver_validation group 26) but is NOT yet evidence to lift these exponents
+ * above LOW. The concrete path to MEDIUM is a periodic SQUARE-void RVE with
+ * multi-direction load averaging (or physical coupon calibration → HIGH).
+ *
  * ANCHOR INVARIANT (CLAUDE.md two-region invariant #8): g(1) = 1 and
  * s(1) = min(1, patternMul) EXACTLY (IEEE-754: Math.pow(1, n) === 1 and
  * 1 − c·0 === 1), so consumers that multiply solid properties by these scales

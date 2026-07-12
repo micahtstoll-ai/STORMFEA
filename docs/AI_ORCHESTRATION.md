@@ -49,7 +49,7 @@ Before running code generation prompts, the following validation phrase must be 
       E_z(ρ)  = 2275 × ρ^2.1  × (1 - 0.18(1-ρ))
       G_xz(ρ) = 1143 × ρ^2.3  × (1 - 0.22(1-ρ))
       ```
-    - Exponents (1.75, 2.1, 2.3) based on empirical gyroid lattice compression tests (Birosz et al. 2022, Hikmat et al. 2023)
+    - Power-law FORM is cited (Gibson & Ashby 1997; the pattern-effect direction is supported by Birosz et al. 2022, Hikmat et al. 2023). The specific exponents (1.75, 2.1, 2.3) are STORMFEA engineering estimates chosen WITHIN the cited open-cell ranges — no paper reports these pattern-specific coefficients. Confidence LOW; regression-locked (gyroid-formula.test.ts) and calibration-overridable
     - Linear correction factors [(1 - α(1-ρ))]: account for strut curvature and surface roughness effects near 0% and 100% density
   
   * **Implementation Architecture:**
@@ -63,14 +63,14 @@ Before running code generation prompts, the following validation phrase must be 
     - Invariants checked:
       1. Matrix symmetry: C[i,j] = C[j,i] within 1e-10 (numerical precision limit)
       2. Positive definiteness: All eigenvalues > 0 (verified via Cholesky decomposition success)
-      3. Density scaling: E_xy(50%) / E_xy(20%) ≈ 5.17× (empirically observed ratio from literature)
+      3. Density scaling: E_xy(50%) / E_xy(20%) ≈ 5.17× (ratio implied by the chosen power-law exponent, not an independently measured value)
       4. Anisotropy preservation: E_z < E_xy (vertical direction softer than in-plane — artifact of FDM layering)
       5. Shear decoupling: C[0:3, 3:6] ≈ 0 (normal and shear blocks independent for transversely isotropic material)
     - Edge cases: Rejects density < 0, density > 1, invalid Poisson's ratio (ν ≥ 0.5)
   
   * **Decision Rationale:**
     - Chose power-law (not linear) model because gyroid lattice shows non-linear stiffness degradation — linear underestimates stiffness at high density, overestimates at low density
-    - Different exponents for E_xy vs. E_z reflect that vertical struts (along Z) are longer and more compliant than horizontal struts — empirically justified
+    - Different exponents for E_xy vs. E_z reflect that vertical struts (along Z) are longer and more compliant than horizontal struts — a modeling choice within the cited Gibson-Ashby ranges, not a fitted result
     - Constant Poisson's ratio (ν_xy=0.38, ν_xz=0.28) simplifies input (one fewer parameter) and is valid for most composite lattices over practical density range
     - Correction factors small (α ∈ [0.12, 0.22]) to preserve dominant power-law behavior while accounting for geometry effects near boundaries
 
