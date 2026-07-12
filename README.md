@@ -37,6 +37,7 @@ STORMFEA models the anisotropic reality.
 - **Transversely isotropic material model** — 5 independent elastic constants calibrated from peer-reviewed literature, with an exact weak-axis tensor rotation (Bond transform) for upright/angled prints when a bed face is picked
 - **Hill (1948) anisotropic yield criterion** — collapses to von Mises when the material is isotropic; correctly amplifies through-layer stresses when it's not (evaluated in the rotated material frame for non-flat prints)
 - **Two-region material model** (opt-in) — classifies each element geometrically into dense perimeter walls vs homogenized infill core (exact surface-distance field + per-element volume fractions) instead of one averaged material; the MATERIAL tab shows the wall band (wall count × line width) live, and results report how the geometric split diverges from the legacy global strength multiplier
+- **Gibson-Ashby infill homogenization** — the infill core follows cellular-solid power laws in density (E ∝ ρ^1.75–2.0 by pattern family, not the naive linear scaling), with per-axis anisotropy: extruded-wall patterns (grid/lines/honeycomb) stay stiff along the build axis but soften as ρ²–ρ³ in-plane, while TPMS patterns (gyroid/cubic) degrade near-isotropically; exponents are confidence-labelled and calibration-overridable
 - **5 distinct failure modes** with individual confidence levels: bulk yield, net-section tension, shear-out, thread strip-out, bearing
 - **Superconvergent Patch Recovery (SPR)** stress smoothing (Zienkiewicz & Zhu 1992) — more accurate nodal stresses than direct averaging
 - **Deflected-shape visualization** — warp the mesh by the computed displacement field, with an exaggeration slider and animation; the stress heatmap follows the deformed surface
@@ -64,6 +65,7 @@ STORMFEA models the anisotropic reality.
 | Failure modes | Bulk yield only | 5 modes with confidence levels |
 | Mesh convergence | Manual | Automatic (fine mesh in background) |
 | Layer height effect | Not modeled | −15% to +10% on Z-direction properties |
+| Walls vs infill | One smeared material | Opt-in two-region model: solid perimeter shell + Gibson-Ashby lattice core, blended per element |
 | FDM calibration | Not possible | 3-coupon physical calibration |
 
 ---
@@ -183,7 +185,8 @@ The **lap shear coupon** directly measures inter-layer bond strength — the sin
 stormfea/
 ├── server/
 │   ├── index.ts          Express routes (upload, analyse, calibrate, Onshape)
-│   ├── analysis.ts       FEM pipeline, failure modes, fatigue (~3,500 lines)
+│   ├── analysis.ts       FEM pipeline, failure modes, fatigue (~4,000 lines)
+│   ├── twoRegion.ts      Two-region (shell/core) material field builder
 │   ├── stl.ts            Binary/ASCII STL parser
 │   ├── holes.ts          Cylindrical hole detection from STL geometry
 │   ├── tetgen.ts         TetGen wrapper (STL → .node/.ele)
@@ -194,13 +197,24 @@ stormfea/
 │   ├── demo_part.ts      Sample bracket for one-click judge demo
 │   ├── report.ts         PDF report generation
 │   └── solver/
-│       ├── types.ts      Material interfaces (Isotropic, Orthotropic)
+│       ├── types.ts      Material interfaces + per-element material field
 │       ├── element.ts    C3D4 + C3D10 elements, constitutive matrix, B matrix
-│       ├── assembly.ts   Global stiffness matrix assembly (CSR)
+│       ├── lattice.ts    Gibson-Ashby infill homogenization laws (per pattern family)
+│       ├── laminate.ts   Classical Laminate Theory in-plane stiffness (opt-in CLT)
+│       ├── distance.ts   Exact point-to-triangle surface distance field
+│       ├── wallfrac.ts   Per-element wall-band volume fractions (marching tet)
+│       ├── adjacency.ts  Node → element adjacency (O(1) lookups)
+│       ├── assembly.ts   Global stiffness matrix assembly (CSR, parallel workers)
+│       ├── assembly-worker.ts  Worker-thread element assembly
 │       ├── boundary.ts   Dirichlet BCs (penalty method)
 │       ├── load.ts       Neumann BCs (nodal forces)
+│       ├── mass.ts       Mass matrix assembly (modal / self-weight)
+│       ├── modal.ts      Natural-frequency eigensolver
+│       ├── buckling.ts   Linear buckling (geometric stiffness) eigensolver
 │       ├── cg.ts         Preconditioned Conjugate Gradient solver
 │       ├── pipeline.ts   runLinearStatic() entry point
+│       ├── meshgen.ts    Box-mesh fallback generators + surface extraction
+│       ├── meshQuality.ts  Element quality metrics (Jacobian, aspect ratio)
 │       ├── stress.ts     SPR recovery, Hill criterion, nodal averaging
 │       └── stress_detail.ts  Full stress tensor (σxx,σyy,σzz,τxy,τyz,τxz)
 ├── client/
@@ -244,6 +258,7 @@ stormfea/
 - **Bearing failure confidence: LOW** — no FDM-specific bearing test data in literature
 - **Fatigue confidence: LOW** — sparse FDM S-N curve data; estimate only (the load ratio R is selectable, but the underlying S-N data gap remains)
 - **Upright/angled orientation** — modeled exactly (weak-axis tensor rotation) when a bed face is picked; without one, an upright print falls back to a conservative scalar-swap approximation
+- **Infill homogenization exponents** — the Gibson-Ashby power-law FORM is literature-cited, but the specific per-pattern-family exponents are engineering estimates within the cited ranges (confidence LOW, regression-locked, overridable per calibration profile); pattern strength multipliers are likewise approximate, as pattern-ranking literature is inconsistent
 - **Filament color** affects strength (η² = 97.3% in one study) — not modeled
 - **Layer height correction** is a linear approximation; valid within ±0.15 mm of nominal
 - **Element order** — both STL (TetGen `-o2`) and STEP (Gmsh) uploads default to quadratic C3D10 elements; TetGen's mid-node ordering permutation is verified empirically and pinned by a regression test (`server/tests/unit/tetgen-c3d10.test.ts`). Linear C3D4 is selectable in the MATERIAL tab for faster solves, but underpredicts bending stress by ~55% due to shear locking. The box-mesh fallback now honours the element-order selector too (C3D10 by default), so a TetGen-fallback run is no longer forced to C3D4.
@@ -271,7 +286,7 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the ful
 
 1. Fork → create a branch (`git checkout -b fix/my-fix`)
 2. Make changes; if touching physics, verify the 65% stiffness / 58% bond constants are unchanged
-3. Run `npm run test` — everything must pass: 265 vitest unit tests across 29 files, 99 solver validation tests in `solver_validation.ts`, the parallel-assembly equivalence suite, and 41 client logic checks (a few vitest tests self-skip where the TetGen/Gmsh binaries are absent, so the raw totals show a handful of skips)
+3. Run `npm run test` — everything must pass: 328 vitest unit tests across 34 files, 103 solver validation tests in `solver_validation.ts`, the parallel-assembly equivalence suite, and 53 client logic checks (a few vitest tests self-skip where the TetGen/Gmsh binaries are absent, so the raw totals show a handful of skips)
 4. Open a pull request using the provided template
 
 ---
