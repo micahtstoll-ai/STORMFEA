@@ -21,7 +21,7 @@ import { spawn }         from "child_process";
 import { parseSTL }      from "./stl.js";
 import { detectHoles, flagMergedHoleWarnings }   from "./holes.js";
 import { runAnalysis, AnalysisAbortError }   from "./analysis.js";
-import type { ForceSpec, PrintSettings, AnalysisResult } from "./analysis.js";
+import type { ForceSpec, PrintSettings, AnalysisSettings, AnalysisResult } from "./analysis.js";
 import { expect as expectShape, ValidationError } from "./validate.js";
 import type { Spec } from "./validate.js";
 
@@ -237,12 +237,18 @@ const ANALYSE_SPEC: Spec = {
   print: {
     materialId: "string", infillPct: "number", wallCount: "number",
     pattern: "string", orientation: "string", layerHeightMm: "number",
-    "meshOrder?": "number", "useCLT?": "boolean", "beadProps?": "object",
-    "twoRegion?": "boolean", "extrusionWidthMm?": "number",
+    "extrusionWidthMm?": "number",
   },
-  "meshQuality?":  "coarse|standard|fine",
-  "analysisType?": "string",
-  "computeBuckling?": "boolean",
+  "analysis?": {
+    "meshQuality?":     "coarse|standard|fine",
+    "meshOrder?":       "number",
+    "analysisType?":    "string",
+    "computeBuckling?": "boolean",
+    "uncertaintyMode?": "string",
+    "useCLT?":          "boolean",
+    "beadProps?":       "object",
+    "twoRegion?":       "boolean",
+  },
   "gravity?":      { g: "number", direction: "vec3" },
   "pressures?":    [{ magnitude: "number", direction: "vec3", "normal?": "boolean", "region?": "face|facing|all" }],
   "fatigueLoadRatio?": "number",
@@ -273,7 +279,7 @@ app.post("/api/analyse", async (req, res) => {
       boltHoleIds: number[];
       forces: ForceSpec[];
       print: PrintSettings;
-      meshQuality: string;
+      analysis?: Partial<AnalysisSettings>;
     };
 
     // Decode positions
@@ -297,7 +303,21 @@ app.post("/api/analyse", async (req, res) => {
       maxDeviation: h.maxDeviation ?? 0,
     }));
 
-    console.log(`[analyse] fileType=${body.fileType} bolts=[${body.boltHoleIds}] forces=${body.forces.length} mesh=${body.meshQuality}`);
+    // Analysis settings — group the numerical-method knobs with defaults so a
+    // partial (or omitted) `analysis` object still solves. This mirrors the
+    // AnalysisSettings shape in analysis.ts; the print object stays part-only.
+    const analysis: AnalysisSettings = {
+      meshQuality:     (body.analysis?.meshQuality ?? "standard") as "coarse" | "standard" | "fine",
+      meshOrder:       (body.analysis?.meshOrder === 1 ? 1 : 2),
+      analysisType:    (body.analysis?.analysisType === "modal" ? "modal" : "linear_static"),
+      computeBuckling: body.analysis?.computeBuckling === true,
+      uncertaintyMode: (body.analysis?.uncertaintyMode ?? "central") as "central" | "conservative" | "optimistic",
+      useCLT:          body.analysis?.useCLT === true,
+      ...(body.analysis?.beadProps ? { beadProps: body.analysis.beadProps } : {}),
+      twoRegion:       body.analysis?.twoRegion === true,
+    };
+
+    console.log(`[analyse] fileType=${body.fileType} bolts=[${body.boltHoleIds}] forces=${body.forces.length} mesh=${analysis.meshQuality}`);
 
     // ── Assemble runAnalysis arguments (shared by both response modes) ──────────
     const ANALYSE_TIMEOUT_MS = 120_000;
@@ -312,9 +332,7 @@ app.post("/api/analyse", async (req, res) => {
       ...(((body as any).boltFasteners) ? { boltFasteners: (body as any).boltFasteners } : {}),
       forces:        body.forces,
       print:         body.print,
-      meshQuality:   body.meshQuality,
-      analysisType:  ((body as any).analysisType ?? 'linear_static') as 'linear_static' | 'modal',
-      computeBuckling: (body as any).computeBuckling === true,
+      analysis,
       // gravity is validated by ANALYSE_SPEC ({ g:number, direction:vec3 }) when
       // present, so it can be passed through directly.
       ...((body as any).gravity

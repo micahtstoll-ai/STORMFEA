@@ -1087,6 +1087,11 @@ export interface ForceSpec {
   loadDistribution?: 'uniform' | 'cosine_bearing';
 }
 
+/**
+ * Print settings describe the physical part as manufactured — the material and
+ * the slicer parameters that shape it. They are distinct from AnalysisSettings,
+ * which describe how the simulation is run (see below).
+ */
 export interface PrintSettings {
   materialId:    string;
   infillPct:     number;
@@ -1094,8 +1099,42 @@ export interface PrintSettings {
   pattern:       string;
   orientation:   string;
   layerHeightMm: number;
+  /**
+   * Extrusion / line width in mm, used for the wall-band thickness
+   * (wallCount × extrusionWidthMm). Slicer G-code typically reports it;
+   * default 0.45 (0.4 nozzle typical). Clamped to [0.1, 2.0]. Consumed by the
+   * two-region model (whose `twoRegion` flag lives in AnalysisSettings) — this
+   * is a genuine slicer/print parameter, so it stays with the print settings.
+   */
+  extrusionWidthMm?: number;
+}
+
+/**
+ * Analysis settings describe the numerical method and what to compute — the
+ * mesh, the solver material model, and which extra solves to run. They are
+ * orthogonal to PrintSettings: the same physical part can be analysed at
+ * different fidelities or with different constitutive models.
+ */
+export interface AnalysisSettings {
+  /** Mesh density preset: trades solve time against accuracy. */
+  meshQuality:   "coarse" | "standard" | "fine";
   /** Element order: 1 = C3D4 linear, 2 = C3D10 quadratic (default). */
   meshOrder?:    1 | 2;
+  /** Default: 'linear_static'. 'modal' also computes natural frequencies. */
+  analysisType?: 'linear_static' | 'modal';
+  /**
+   * When true, also run a linear buckling (eigenvalue) analysis and report the
+   * Buckling Load Factor. Opt-in because the eigen-solve adds solve time; works
+   * for both C3D4 and C3D10 meshes.
+   */
+  computeBuckling?: boolean;
+  /**
+   * Material uncertainty mode. When 'central' (default) the solver uses the
+   * literature central estimates. The server always computes sfConservative and
+   * sfOptimistic alongside the central SF regardless of this field — it is
+   * reserved for future single-mode runs.
+   */
+  uncertaintyMode?: 'central' | 'conservative' | 'optimistic';
   /**
    * When true, use Classical Laminate Theory (CLT) to compute effective in-plane
    * stiffness from first principles (ply stack + rotation + A-matrix inversion).
@@ -1110,16 +1149,11 @@ export interface PrintSettings {
   /**
    * When true, run the two-region material model: dense perimeter walls
    * (solid material, calibrated coupon props) vs homogenized infill core,
-   * classified geometrically per element by wall-band volume fraction.
-   * Default false — the empirical single-material model.
+   * classified geometrically per element by wall-band volume fraction. The
+   * wall band uses print.extrusionWidthMm. Default false — the empirical
+   * single-material model.
    */
   twoRegion?:    boolean;
-  /**
-   * Extrusion / line width in mm, used for the wall-band thickness
-   * (wallCount × extrusionWidthMm). Slicer G-code typically reports it;
-   * default 0.45 (0.4 nozzle typical). Clamped to [0.1, 2.0].
-   */
-  extrusionWidthMm?: number;
 }
 
 /**
@@ -1221,20 +1255,13 @@ export interface AnalysisRequest {
   boltHoleIds:   number[];
   /** Applied forces */
   forces:        ForceSpec[];
-  /** Print settings */
+  /** Print settings — the physical part (material + slicer parameters). */
   print:         PrintSettings;
-  meshQuality:   string;
+  /** Analysis settings — the numerical method (mesh, solver models, extra solves). */
+  analysis:      AnalysisSettings;
   calibration?:  CalibrationProfile | null;
   /** User-specified bolt type overrides per hole id, e.g. {0: 'M3_clearance', 1: 'M3_tapped'} */
   holeTypeOverrides?: Record<number, string> | null;
-  /** Default: 'linear_static'. Set to 'modal' to also compute natural frequencies. */
-  analysisType?: 'linear_static' | 'modal';
-  /**
-   * When true, also run a linear buckling (eigenvalue) analysis and report the
-   * Buckling Load Factor. Opt-in because the eigen-solve adds solve time; works
-   * for both C3D4 and C3D10 meshes.
-   */
-  computeBuckling?: boolean;
   /**
    * Optional uniform body-force (self-weight / robot acceleration) load.
    *   g         — acceleration magnitude in multiples of standard gravity
@@ -1269,12 +1296,6 @@ export interface AnalysisRequest {
    * in-plane azimuth are immaterial.
    */
   layerNormal?: [number, number, number];
-  /**
-   * Material uncertainty mode. When 'central' (default) the solver uses the literature
-   * central estimates. The server always computes sfConservative and sfOptimistic alongside
-   * the central SF regardless of this field — it is reserved for future single-mode runs.
-   */
-  uncertaintyMode?: 'central' | 'conservative' | 'optimistic';
   /**
    * Optional progress callback (issue #109). Invoked at each phase boundary and,
    * when the solve streams, at CG residual checkpoints. Non-serializable, so it
@@ -2446,7 +2467,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     (req.layerNormal && Math.hypot(req.layerNormal[0], req.layerNormal[1], req.layerNormal[2]) > 1e-9)
       ? req.layerNormal : null;
 
-  const builtMaterial: AnyMaterial = req.print.useCLT
+  const builtMaterial: AnyMaterial = req.analysis.useCLT
     ? buildOrthotropicMaterialCLT(
         req.print.materialId,
         req.print.infillPct,
@@ -2455,7 +2476,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         req.print.layerHeightMm ?? 0.2,
         strengthMul,
         req.calibration ?? null,
-        req.print.beadProps,
+        req.analysis.beadProps,
         weakAxis,
       )
     : buildOrthotropicMaterial(
@@ -2496,8 +2517,8 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       standard: { clMin: 0.3, clMax: 3.0, clCurv: 20 },
       fine:     { clMin: 0.2, clMax: 2.0, clCurv: 30 },
     };
-    const opts = clOpts[req.meshQuality as keyof typeof clOpts] ?? clOpts.standard;
-    const elementOrder = req.print.meshOrder ?? 2;
+    const opts = clOpts[req.analysis.meshQuality as keyof typeof clOpts] ?? clOpts.standard;
+    const elementOrder = req.analysis.meshOrder ?? 2;
     _snapAnalysis("before Gmsh mesh");
     console.log("[analysis] meshing STEP with Gmsh...");
     gmshResult = await meshStepWithGmsh(req.stepBuffer, { ...opts, elementOrder });
@@ -2513,14 +2534,14 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     // ── STL path: TetGen ─────────────────────────────────────────────────────
     try {
       _snapAnalysis("before TetGen mesh");
-      const tetOrder = (req.print.meshOrder ?? 2) as 1 | 2;
+      const tetOrder = (req.analysis.meshOrder ?? 2) as 1 | 2;
       // Map the coarse/standard/fine selector to TetGen's max-volume (-a) switch
       // so the control actually affects STL mesh density. 'standard' keeps the
       // historical 10 mm³. (Previously the selector only affected the STEP path.)
-      const tetMaxVol = req.meshQuality === "fine" ? 3
-                      : req.meshQuality === "coarse" ? 30
+      const tetMaxVol = req.analysis.meshQuality === "fine" ? 3
+                      : req.analysis.meshQuality === "coarse" ? 30
                       : 10;
-      console.log(`[analysis] meshing with TetGen (order=${tetOrder}, maxVol=${tetMaxVol}mm³, quality=${req.meshQuality})...`);
+      console.log(`[analysis] meshing with TetGen (order=${tetOrder}, maxVol=${tetMaxVol}mm³, quality=${req.analysis.meshQuality})...`);
       const tetResult = await meshWithTetGen(req.positions, req.triangleCount, tetOrder, tetMaxVol);
       mesh          = tetResult.mesh;
       surfaceToNode = tetResult.surfaceToNode;
@@ -2539,12 +2560,12 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       // locking. The box is still featureless (no holes/fillets), so the
       // mesh-fallback reliability banner is unchanged — only element-order
       // accuracy improves.
-      const tetOrder = (req.print.meshOrder ?? 2) as 1 | 2;
+      const tetOrder = (req.analysis.meshOrder ?? 2) as 1 | 2;
       console.warn(`[analysis] TetGen failed, falling back to ${tetOrder === 2 ? "C3D10" : "C3D4"} box mesh:`, err);
       meshFallback = true;
       const { minX, maxX, minY, maxY, minZ, maxZ } = req.bounds;
       const spanX = maxX - minX, spanY = maxY - minY, spanZ = maxZ - minZ;
-      const divisions = req.meshQuality === "fine" ? 32 : req.meshQuality === "coarse" ? 12 : 22;
+      const divisions = req.analysis.meshQuality === "fine" ? 32 : req.analysis.meshQuality === "coarse" ? 12 : 22;
       const aspect = Math.max(spanX, spanY, spanZ);
       const nx = Math.max(4, Math.round(divisions * spanX / aspect));
       const ny = Math.max(4, Math.round(divisions * spanY / aspect));
@@ -2588,7 +2609,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     impliedAvgStrengthMul: null,
     globalModelStrengthMul: strengthMul,
   };
-  if (req.print.twoRegion) {
+  if (req.analysis.twoRegion) {
     const degrade = (why: string): void => {
       console.warn(`[analysis] two-region requested but degraded to uniform: ${why}`);
       materialModel = { ...materialModel, degraded: why };
@@ -2636,7 +2657,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       const coreMat = buildCoreMaterial(
         req.print.materialId, req.print.infillPct, pattern, req.print.orientation,
         req.print.layerHeightMm ?? 0.2, req.calibration ?? null,
-        req.print.useCLT ?? false, req.print.beadProps, weakAxis,
+        req.analysis.useCLT ?? false, req.analysis.beadProps, weakAxis,
       );
 
       const tr = buildTwoRegionField(mesh, surfaceFaces, shellMat, coreMat, tWall);
@@ -2960,8 +2981,8 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // pristine copy of K's value array; each consumer applies its own BC flavor
   // to its own copy. rowPtr/colIdx/diagIdx (the sparsity pattern) depend only
   // on mesh connectivity and are shared by K, M and Kσ.
-  const wantsModal = req.analysisType === 'modal';
-  const mayBuckle  = req.computeBuckling === true;
+  const wantsModal = req.analysis.analysisType === 'modal';
+  const mayBuckle  = req.analysis.computeBuckling === true;
   const input: SolverInput = {
     mesh,
     material,
@@ -3012,7 +3033,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
 
   // ── Linear buckling analysis ───────────────────────────────────────────────
   // Compute the Buckling Load Factor (BLF) using the pre-stress from the
-  // static solve. Opt-in (req.computeBuckling) because the eigen-solve adds
+  // static solve. Opt-in (req.analysis.computeBuckling) because the eigen-solve adds
   // solve time; runs for both C3D4 and C3D10 meshes. Failures are non-fatal:
   // the buckling result is marked "unchecked" rather than crashing the analysis.
   let bucklingBLF: number | undefined;
