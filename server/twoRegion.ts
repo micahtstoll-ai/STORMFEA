@@ -10,14 +10,21 @@
  * import cycle); it only depends on solver-side geometry primitives.
  *
  * Blending notes:
- * - Constitutive matrices are Voigt (iso-strain) blends C_b = f·C_shell +
- *   (1−f)·C_core. Voigt is an upper bound on the true transition-element
- *   stiffness; it only affects the one-element-thick blend band and matches
- *   the codebase's first-order homogenized philosophy. Because the Bond
- *   (weakAxis) rotation is linear in C's entries and shell/core share the
- *   same weakAxis, blending commutes with the rotation.
+ * - Per-bin constitutive matrices are TRUE Voigt (iso-strain) blends of the
+ *   two rotated endpoint matrices, C_b = f·C_shell + (1−f)·C_core. Voigt is
+ *   an upper bound on the true transition-element stiffness; it only affects
+ *   the one-element-thick blend band and matches the codebase's first-order
+ *   homogenized philosophy. Blending after the Bond (weakAxis) rotation is
+ *   exact because the rotation is linear in C's entries — valid ONLY while
+ *   shell and core share the same weakAxis.
  * - Yields and density blend linearly in volume fraction (consistent with
  *   Voigt).
+ * - averageMaterial blends ENGINEERING CONSTANTS (blendMaterial below):
+ *   identical to the Voigt C average when shell and core share all ratios,
+ *   a first-order approximation once the anisotropic core laws make the
+ *   ratios diverge. Acceptable because its only consumers are scalar
+ *   (ZZ error-estimate energy norm, analytic hole checks, criterion
+ *   routing) and every degenerate path returns an exact endpoint material.
  */
 
 import type {
@@ -55,7 +62,13 @@ export interface TwoRegionResult {
   wallThicknessMm: number;
 }
 
-/** Linear blend of two orthotropic materials (f = shell fraction). */
+/**
+ * Linear blend of two orthotropic materials' ENGINEERING CONSTANTS
+ * (f = shell fraction). Used for averageMaterial (scalar consumers) and the
+ * exact degenerate endpoints (f ∈ {0, 1}) only — the per-bin constitutive
+ * matrices blend the rotated C matrices directly (see the bin loop), which
+ * differs from this once shell and core stop sharing modulus ratios.
+ */
 function blendMaterial(
   shell: OrthotropicMaterial,
   core: OrthotropicMaterial,
@@ -209,19 +222,32 @@ export function buildTwoRegionField(
   }
 
   // ── Quantize into bins ────────────────────────────────────────────────────
+  // TRUE Voigt (iso-strain) blend: each bin's constitutive matrix is the
+  // entrywise blend of the two ROTATED endpoint matrices, C_b = f·C_shell +
+  // (1−f)·C_core. Blending after the weakAxis (Bond) rotation is exact
+  // because the rotation is linear in C's entries — valid only while shell
+  // and core share one weakAxis (invariant #3). Blending engineering
+  // constants instead (the pre-anisotropic-core implementation) only agreed
+  // with this when shell and core shared every modulus ratio and Poisson
+  // ratio; the per-axis core laws broke that proportionality. Endpoint bins
+  // (f = 0, 1) are the endpoint matrices bit-for-bit. Yields and density
+  // stay linear scalar blends (consistent with Voigt).
   const N = TWO_REGION_BIN_COUNT;
   const C = new Float64Array(N * 36);
   const yieldXY = new Float64Array(N);
   const yieldZ = new Float64Array(N);
   const massRho = new Float64Array(N);
   const shellFrac = new Float64Array(N);
+  const Cshell = buildAnyConstitutiveMatrix(shellMat as AnyMaterial);
+  const Ccore  = buildAnyConstitutiveMatrix(coreMat as AnyMaterial);
   for (let b = 0; b < N; b++) {
     const f = b / (N - 1);
-    const m = blendMaterial(shellMat, coreMat, f, `bin ${b}`);
-    C.set(buildAnyConstitutiveMatrix(m as AnyMaterial), b * 36);
-    yieldXY[b] = m.yieldXY;
-    yieldZ[b] = m.yieldZ;
-    massRho[b] = m.massRho ?? 0;
+    for (let i = 0; i < 36; i++) {
+      C[b * 36 + i] = f * (Cshell[i] ?? 0) + (1 - f) * (Ccore[i] ?? 0);
+    }
+    yieldXY[b]   = f * shellMat.yieldXY + (1 - f) * coreMat.yieldXY;
+    yieldZ[b]    = f * shellMat.yieldZ  + (1 - f) * coreMat.yieldZ;
+    massRho[b]   = f * (shellMat.massRho ?? 0) + (1 - f) * (coreMat.massRho ?? 0);
     shellFrac[b] = f;
   }
 

@@ -50,6 +50,14 @@
       0%-infill no longer crashes (10⁻³ floor); exponents confidence-LOW,
       regression-locked (core-lattice.test.ts), calibration-overridable;
       results panel reports the core model + E_core/E_solid
+- [x] Anisotropic core homogenization (Stage 2) — per-axis Gibson-Ashby laws
+      in the natural material frame (`buildCoreMaterial`): extruded-wall
+      patterns are rule-of-mixtures ρ^1.0 along the build axis but ρ^2 in
+      plane and ρ^3 in in-plane shear (anisotropy INVERTS at low density,
+      with a symmetric Poisson guard keeping every bin positive definite);
+      TPMS keeps the locked per-axis gyroid laws; upright-no-bed scaling
+      happens before the scalar swap; `twoRegion.ts` bins are now true Voigt
+      blends of the rotated endpoint C matrices
 
 ### Failure Modes
 - [x] Bulk yield — FEM Hill criterion (high confidence)
@@ -218,11 +226,6 @@
   honeycomb extension later
 - Per-failure-mode yield selection — shell yield for bearing/thread checks on
   wall-lined holes (slicers line holes with perimeters)
-- Anisotropic core homogenization (Stage 2) — per-axis Gibson-Ashby laws
-  (extruded-wall patterns: rule-of-mixtures ρ^1.0 along the build axis,
-  ρ^2–3 in-plane; per-axis columns already in `solver/lattice.ts`
-  LATTICE_PARAMS) with true Voigt matrix blending of the per-bin C in
-  `twoRegion.ts`
 
 ---
 

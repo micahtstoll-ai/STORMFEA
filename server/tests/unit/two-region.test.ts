@@ -8,6 +8,7 @@
 import { describe, it, expect } from "vitest";
 import { buildTwoRegionField, TWO_REGION_BIN_COUNT } from "../../twoRegion.js";
 import { generateBoxMeshC3D4, extractSurfaceFaces } from "../../solver/meshgen.js";
+import { buildAnyConstitutiveMatrix } from "../../solver/element.js";
 import type { OrthotropicMaterial } from "../../solver/types.js";
 
 const SHELL: OrthotropicMaterial = {
@@ -102,6 +103,40 @@ describe("buildTwoRegionField", () => {
     const coreW: OrthotropicMaterial = { ...CORE, weakAxis: [0, 0, 1] as const };
     const tr = buildTwoRegionField(mesh, faces, shellW, coreW, 1.35);
     expect(tr.averageMaterial.weakAxis).toEqual([0, 0, 1]);
+  });
+});
+
+describe("true Voigt matrix blending (anisotropic core)", () => {
+  // Core with a DIFFERENT E_z/E_xy ratio than the shell — the anisotropic
+  // lattice families produce exactly this (walls25d inverts the anisotropy),
+  // and engineering-constant blending would NOT equal the matrix blend here.
+  const CORE_ANISO: OrthotropicMaterial = {
+    kind: "orthotropic",
+    E_xy: 200, E_z: 900, nu_xy: 0.35, nu_xz: 0.10, G_xz: 80,
+    yieldXY: 8, yieldZ: 5, label: "core (inverted anisotropy)", massRho: 200,
+  };
+
+  it("endpoint bins equal the endpoint matrices bit-for-bit", () => {
+    const tr = buildTwoRegionField(mesh, faces, SHELL, CORE_ANISO, 1.35);
+    const f = tr.field!;
+    const N = f.binCount;
+    const Cshell = buildAnyConstitutiveMatrix(SHELL);
+    const Ccore = buildAnyConstitutiveMatrix(CORE_ANISO);
+    for (let i = 0; i < 36; i++) {
+      expect(f.C[0 * 36 + i]).toBe(Ccore[i]!);
+      expect(f.C[(N - 1) * 36 + i]).toBe(Cshell[i]!);
+    }
+  });
+
+  it("mid bin is the entrywise mean of the endpoint matrices", () => {
+    const tr = buildTwoRegionField(mesh, faces, SHELL, CORE_ANISO, 1.35);
+    const f = tr.field!;
+    const mid = (f.binCount - 1) / 2;
+    const Cshell = buildAnyConstitutiveMatrix(SHELL);
+    const Ccore = buildAnyConstitutiveMatrix(CORE_ANISO);
+    for (let i = 0; i < 36; i++) {
+      expect(f.C[mid * 36 + i]).toBeCloseTo((Cshell[i]! + Ccore[i]!) / 2, 10);
+    }
   });
 });
 
