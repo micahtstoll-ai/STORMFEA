@@ -249,7 +249,8 @@ export function computeBulkSF(params: {
  * Modes checked:
  *  1. Bulk yield (from FEM) — high confidence
  *  2. Net-section tension — high confidence (classical formula)
- *  3. Shear-out — high confidence (classical formula, applies to lateral loads)
+ *  3. Shear-out — medium confidence (classical formula, but inter-layer shear
+ *     strength is estimated as a fraction of yield)
  *  4. Thread strip-out — medium confidence (inter-layer shear estimated)
  *  5. Bearing failure — low confidence (FDM-specific data lacking)
  *
@@ -450,6 +451,84 @@ export interface CalibrationProfile {
    */
   latticeStiffExp?:    number | null;
   latticeStrengthExp?: number | null;
+  /**
+   * Optional fatigue calibration fitted from cyclic coupon data
+   * (POST /api/calibration/fatigue → fitFatigueProfile). Absent/null = the
+   * literature default S-N model (confidence LOW). Present = a printer-specific
+   * S-N fit that flips estimateFatigue to MEDIUM confidence, exactly as a
+   * measured bearing coupon flips the bearing mode LOW→MEDIUM.
+   */
+  fatigueSeRatio?:   number | null;   // endurance ratio Se/UTS at the endurance life
+  fatigueBasquinB?:  number | null;   // fitted Basquin exponent b (negative)
+  fatigueUTS_MPa?:   number | null;   // UTS used as the S-N strength basis
+}
+
+/** One (stress amplitude, cycles-to-failure) point from a fatigue coupon. */
+export interface FatigueCouponPoint {
+  stressAmplitudeMPa: number;
+  cycles:             number;
+}
+
+export interface FatigueFit {
+  /** Fitted Basquin exponent b (σ_a = σ_f′·N^b), negative. */
+  basquinB:   number;
+  /** Fitted fatigue-strength coefficient σ_f′ (MPa). */
+  sigmaF_MPa: number;
+  /** Endurance limit Se at `enduranceLifeCycles` (MPa). */
+  se_MPa:     number;
+  /** Se / UTS. */
+  seRatio:    number;
+  /** RMS residual of the log-log fit (fit-quality diagnostic). */
+  logRms:     number;
+}
+
+/**
+ * Least-squares fit of the Basquin S-N law σ_a = σ_f′·N^b to measured coupon
+ * points, in log-log space (ln σ_a = ln σ_f′ + b·ln N). Needs ≥2 points at
+ * distinct lives. The endurance limit is read off the fitted line at
+ * `enduranceLifeCycles` (default 1e6). This turns real cyclic-test data into
+ * the two constants estimateFatigue otherwise takes from literature.
+ */
+export function fitFatigueProfile(
+  points: FatigueCouponPoint[],
+  utsMPa: number,
+  enduranceLifeCycles = 1e6,
+): FatigueFit {
+  const pts = points.filter(p => p.stressAmplitudeMPa > 0 && p.cycles > 0);
+  if (pts.length < 2) {
+    throw new Error("fitFatigueProfile needs ≥2 coupon points with positive amplitude and cycles.");
+  }
+  // Linear regression of y=ln σ_a on x=ln N.
+  let sx = 0, sy = 0, sxx = 0, sxy = 0;
+  const n = pts.length;
+  for (const p of pts) {
+    const x = Math.log(p.cycles);
+    const y = Math.log(p.stressAmplitudeMPa);
+    sx += x; sy += y; sxx += x * x; sxy += x * y;
+  }
+  const denom = n * sxx - sx * sx;
+  if (Math.abs(denom) < 1e-12) {
+    throw new Error("fitFatigueProfile: coupon points must span distinct cycle counts.");
+  }
+  const b = (n * sxy - sx * sy) / denom;           // slope
+  const lnSigmaF = (sy - b * sx) / n;              // intercept
+  const sigmaF = Math.exp(lnSigmaF);
+
+  let sq = 0;
+  for (const p of pts) {
+    const predicted = lnSigmaF + b * Math.log(p.cycles);
+    sq += (predicted - Math.log(p.stressAmplitudeMPa)) ** 2;
+  }
+  const logRms = Math.sqrt(sq / n);
+
+  const se = sigmaF * Math.pow(enduranceLifeCycles, b);
+  return {
+    basquinB:   b,
+    sigmaF_MPa: sigmaF,
+    se_MPa:     se,
+    seRatio:    utsMPa > 0 ? se / utsMPa : 0,
+    logRms,
+  };
 }
 
 export const COUPON_DIMS = {
@@ -1312,8 +1391,16 @@ export function estimateFatigue(
   orientation: string,
   /** Load ratio R = σ_min/σ_max. Default 0 (pulsating). Clamped to [-1, 0.95]. */
   loadRatioR: number = 0,
+  /**
+   * Optional fatigue calibration (from a fitted cyclic-coupon profile). When it
+   * supplies an endurance ratio, the literature Se/UTS and Basquin b are
+   * replaced by the measured values and confidence rises LOW→MEDIUM — mirroring
+   * how a bearing coupon lifts the bearing mode.
+   */
+  calib?: { fatigueSeRatio?: number | null; fatigueBasquinB?: number | null; fatigueUTS_MPa?: number | null } | null,
 ): FatigueEstimate {
   const R = Math.max(-1, Math.min(0.95, Number.isFinite(loadRatioR) ? loadRatioR : 0));
+  const isCalibrated = calib != null && calib.fatigueSeRatio != null && Number.isFinite(calib.fatigueSeRatio);
   // Base material UTS — use literature values, not FDM-reduced yield
   // UTS ≈ 1.15-1.25 × yield for PLA-like polymers
   // For FDM, we use the effective yield as the strength basis
@@ -1321,13 +1408,18 @@ export function estimateFatigue(
   const BASE_UTS: Record<string, number> = {
     pla:  65, petg: 55, abs: 48, tpu: 30, pa12: 58, asa: 48,
   };
-  const baseMaterialUTS = BASE_UTS[materialId] ?? 55;
+  const baseMaterialUTS = (isCalibrated && calib?.fatigueUTS_MPa != null)
+    ? calib.fatigueUTS_MPa
+    : (BASE_UTS[materialId] ?? 55);
 
-  // Endurance limit Se — orientation-adjusted, based on BASE UTS
-  // Flat prints: Se ≈ 0.37 × UTS (inter-layer bonds are the weak link)
-  // Upright:    Se ≈ 0.43 × UTS
-  // Source: Wang et al. 2020 PLA fatigue, Juvinall §7
-  const seRatio = orientation === 'upright' ? 0.43 : 0.37;
+  // Endurance limit Se — from calibrated coupon data when available, otherwise
+  // the orientation-adjusted literature ratio:
+  //   Flat prints: Se ≈ 0.37 × UTS (inter-layer bonds are the weak link)
+  //   Upright:    Se ≈ 0.43 × UTS
+  //   Source: Wang et al. 2020 PLA fatigue, Juvinall §7
+  const seRatio = isCalibrated
+    ? calib!.fatigueSeRatio!
+    : (orientation === 'upright' ? 0.43 : 0.37);
   const Se = baseMaterialUTS * seRatio;
 
   // For Goodman, we need UTS. Use effective yield as a proxy for actual UTS
@@ -1349,7 +1441,7 @@ export function estimateFatigue(
   // σ_a,eq = σ_a / (1 - σ_m/Su)  [Goodman-corrected amplitude]
   const sigmaEqA = sigma_a / Math.max(0.01, 1 - sigma_m_eff / utsMPa);
   const sigmaf   = 1.5 * baseMaterialUTS;
-  const b        = -0.1;
+  const b        = (isCalibrated && calib?.fatigueBasquinB != null) ? calib.fatigueBasquinB : -0.1;
 
   let estimatedCycles: number | null = null;
   if (sigmaEqA <= Se) {
@@ -1376,12 +1468,13 @@ export function estimateFatigue(
     enduranceLimitMPa: +Se.toFixed(1),
     utsMPa: +utsMPa.toFixed(1),
     loadRatio: R,
-    confidence: "low",
+    confidence: isCalibrated ? "medium" : "low",
     note: `${R === 0 ? "Pulsating load (R=0)" : `Load ratio R=${R.toFixed(2)}`}: ${cycleStr}. ` +
           `σ_a=${sigma_a.toFixed(1)} MPa, σ_m=${sigma_m_eff.toFixed(1)} MPa. ` +
-          `Se=${Se.toFixed(1)} MPa (${(seRatio*100).toFixed(0)}% of base UTS ${baseMaterialUTS} MPa, ${orientation} orientation). ` +
-          `FDM fatigue data sparse — treat as order-of-magnitude. Goodman criterion + Basquin b=-0.1. ` +
-          `Source: Wang et al. 2020.`,
+          `Se=${Se.toFixed(1)} MPa (${(seRatio*100).toFixed(0)}% of ${isCalibrated ? "measured" : "base"} UTS ${baseMaterialUTS.toFixed(0)} MPa, ${orientation} orientation). ` +
+          (isCalibrated
+            ? `Using CALIBRATED S-N fit from cyclic coupon data (Se/UTS and Basquin b=${b.toFixed(3)} measured on your printer/filament). Goodman criterion + Basquin.`
+            : `FDM fatigue data sparse — treat as order-of-magnitude. Goodman criterion + Basquin b=-0.1. Run a fatigue coupon (POST /api/calibration/fatigue) to raise confidence. Source: Wang et al. 2020.`),
   };
 }
 
@@ -3583,6 +3676,12 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     //   ≥ 3.0  PASS     — comfortable margin.
     const BLF_FAIL_THRESHOLD     = 1.5;
     const BLF_MARGINAL_THRESHOLD = 3.0;
+    // Representative imperfection knockdown (mid of the cited 10–40% band): the
+    // fraction of the linear eigenvalue that survives real FDM geometry
+    // imperfections and load eccentricity. Reported as an informational
+    // imperfection-adjusted BLF; the VERDICT thresholds above already embed this
+    // margin, so it is NOT applied again to `sf` (that would double-count).
+    const BLF_IMPERFECTION_KNOCKDOWN = 0.75;
     const totalForceN = req.forces.reduce((s, f) => s + f.magnitude, 0) || 1;
     if (bucklingTensile) {
       allFailureModes.push({
@@ -3598,15 +3697,20 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       const blfVerdict = blf < BLF_FAIL_THRESHOLD     ? "FAIL"
                        : blf < BLF_MARGINAL_THRESHOLD ? "MARGINAL" : "PASS";
       const convergeNote = bucklingConverged ? "" : " (iteration did not converge — treat as estimate)";
+      const adjustedBLF = blf * BLF_IMPERFECTION_KNOCKDOWN;
       allFailureModes.push({
         mode:       "Linear buckling (BLF)",
         sf:          +blf.toFixed(3),
         failForceN:  +(totalForceN * blf).toFixed(0),
         checked:     true,
         confidence:  "low",
-        note:        `BLF ${blf.toFixed(2)}× → ${blfVerdict}. Linear buckling overestimates real BLF by 10–40% for ` +
-                     `imperfect FDM geometry. Critical for thin walls, channels, and gussets. Verdict thresholds ` +
-                     `(FAIL <1.5×, MARGINAL <3.0×) are STORMFEA design-basis values — see SOURCES tab.${convergeNote}`,
+        note:        `BLF ${blf.toFixed(2)}× → ${blfVerdict}. The eigenvalue itself is validated: the solver ` +
+                     `reproduces the closed-form Euler critical load to <5% (solver_validation group 16), so the ` +
+                     `COMPUTED buckling load is high-confidence. The mode stays LOW overall only because real FDM ` +
+                     `geometry imperfections and load eccentricity knock ~10–40% off that ideal value ` +
+                     `(imperfection-adjusted ≈ ${adjustedBLF.toFixed(2)}×) — an empirical de-rating that needs ` +
+                     `physical buckling coupons to pin down. Critical for thin walls, channels, and gussets. Verdict ` +
+                     `thresholds (FAIL <1.5×, MARGINAL <3.0×) already embed this knockdown — see SOURCES tab.${convergeNote}`,
       });
     } else if (bucklingIndeterminate) {
       // Eigensolver converged only to a negative (tension-driven) eigenvalue,
@@ -3776,6 +3880,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     req.print.materialId,
     req.print.orientation,
     req.fatigueLoadRatio ?? 0,
+    req.calibration ?? null,
   );
 
   // ── Isotropic comparison ─────────────────────────────────────────────────

@@ -1539,6 +1539,65 @@ console.log("\n[25] Two-region material field — solve equivalence + sandwich b
   }
 }
 
+// ── Test group 26: Numerical homogenization harness (perforated-plate cell) ──
+console.log("\n[26] Numerical homogenization — perforated-plate cell vs isolated-hole theory");
+{
+  try {
+    const { homogenizePerforatedPlate } = await import("../homogenize.js");
+    const iso = { E: 3500, nu: 0.36, yieldStrength: 50, label: "homog-pla" };
+
+    // Dilute regime only (small holes): meshes stay well-conditioned and the
+    // apparent-modulus drop can be checked against classical isolated-hole
+    // compliance. This validates the HARNESS (the code that produces the
+    // degradation curve), not the infill exponent — a single circular hole is
+    // stress-concentration-dominated (Kt≈3) and deliberately over-softens
+    // relative to a periodic wall network, which is exactly why it does NOT by
+    // itself justify raising the walls25d confidence (see server/homogenize.ts).
+    const res = await homogenizePerforatedPlate({
+      material: iso, holeFractions: [0.15, 0.25, 0.35],
+    });
+
+    // [26.1] Solid-cell method recovers E_solid within the coupon-FEA noise
+    // floor (~5%): the same clamp/discretization bias that gives coupon Kt≈1.05.
+    const eErr = Math.abs(res.eSolidMeasuredMPa - iso.E) / iso.E;
+    test("[26.1] solid cell recovers E_solid (within 5%)", eErr < 0.05,
+      `E_measured=${res.eSolidMeasuredMPa.toFixed(1)}MPa nominal=${iso.E} relErr=${(eErr*100).toFixed(2)}%`);
+
+    // [26.2] Degradation is monotonic: lower density ⇒ lower stiffness scale.
+    let monotonic = true;
+    for (let i = 1; i < res.samples.length; i++) {
+      const a = res.samples[i-1]!, b = res.samples[i]!;
+      if (!(b.rho < a.rho && b.gStiff < a.gStiff)) monotonic = false;
+    }
+    test("[26.2] g(ρ) monotonic decreasing", monotonic,
+      res.samples.map(s => `(${s.rho.toFixed(3)},${s.gStiff.toFixed(3)})`).join(" "));
+
+    // [26.3] Dilute limit matches classical isolated-hole compliance: for a
+    // circular hole under uniaxial tension the apparent-modulus drop per unit
+    // void fraction f = 1−ρ approaches ~2–3 (the hole's Kt≈3 compliance). The
+    // most-dilute sample must land in [1.8, 3.2].
+    const s0 = res.samples[0]!;
+    const f0 = 1 - s0.rho;
+    const dropPerF = (1 - s0.gStiff) / f0;
+    test("[26.3] dilute drop/void-fraction ≈ isolated-hole theory [1.8,3.2]",
+      dropPerF > 1.8 && dropPerF < 3.2,
+      `ρ=${s0.rho.toFixed(4)} f=${f0.toFixed(4)} g=${s0.gStiff.toFixed(4)} drop/f=${dropPerF.toFixed(3)}`);
+
+    // [26.4] Fit is clean (small log residual) — the harness produces a
+    // well-defined power-law exponent (reported for the record; NOT asserted
+    // against the infill value, which a circular-hole cell cannot reproduce).
+    test("[26.4] power-law fit residual small (logRMS < 0.05)", res.logRmsResidual < 0.05,
+      `n_fit=${res.fittedExponent.toFixed(3)} logRMS=${res.logRmsResidual.toFixed(4)}`);
+    console.log(`    E_solid=${res.eSolidMeasuredMPa.toFixed(1)}MPa n_fit=${res.fittedExponent.toFixed(3)} ` +
+      `(circular-hole cell — concentration-dominated, > Gibson-Ashby wall-network range by design)`);
+  } catch (err) {
+    test("[26.1] homogenization harness did not throw", false, String(err));
+    test("[26.2] g(ρ) monotonic decreasing", false);
+    test("[26.3] dilute drop/void-fraction ≈ isolated-hole theory", false);
+    test("[26.4] power-law fit residual small", false);
+  }
+}
+
 // ── Summary ───────────────────────────────────────────────────────────────────
 // Runs at the END of the async IIFE, after every test group above has
 // completed. (A previous setTimeout(0) variant fired as soon as the event

@@ -67,6 +67,11 @@
 - [x] Bearing (hole wall) — conservative estimate, flagged low confidence
 - [x] All modes layer-height-aware
 - [x] Bearing confidence raises to medium with calibrated profile
+- [x] Fatigue (Goodman/Basquin) — low confidence; raises to medium with a fitted
+      cyclic-coupon S-N profile (`POST /api/calibration/fatigue`)
+- [x] Linear buckling — eigenvalue validated to <5% vs closed-form Euler
+      (solver_validation group 16); stays low overall pending an empirical FDM
+      imperfection knockdown
 
 ### Bolt & Hole Identification
 - [x] Metric M2–M12 and inch #2-56 through 1/2-13
