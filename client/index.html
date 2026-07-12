@@ -826,6 +826,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
     <button class="tab-btn"        data-tab="orient"      onclick="switchTab('orient')">ORIENT</button>
     <button class="tab-btn"        data-tab="loads"       onclick="switchTab('loads')">LOADS</button>
     <button class="tab-btn"        data-tab="material"    onclick="switchTab('material')">MATERIAL</button>
+    <button class="tab-btn"        data-tab="analysis"    onclick="switchTab('analysis')">ANALYSIS</button>
     <button class="tab-btn"        data-tab="results"     onclick="switchTab('results')">RESULTS</button>
     <!-- Utility separator -->
     <div style="width:1px;background:var(--border);align-self:stretch;flex-shrink:0;margin:0 4px"></div>
@@ -1611,7 +1612,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
     <!-- MATERIAL TAB -->
     <div id="tab-material" style="display:none;padding:var(--sp-2) var(--sp-3)">
 
-      <h2 class="section-title" style="margin-bottom:14px">MATERIAL & SOLVER</h2>
+      <h2 class="section-title" style="margin-bottom:14px">MATERIAL & PRINT</h2>
 
       <div style="margin-bottom:16px">
         <label for="s-material">Material</label>
@@ -1710,8 +1711,39 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <div id="orient-derived-nav" style="font-size:10px;margin-top:4px;display:none"></div>
       </div>
 
-      <div style="margin-bottom:16px;padding-top:14px;border-top:1px solid var(--border)">
-        <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:14px">SOLVER TUNING</div>
+      <!-- Effective strength preview -->
+      <div id="material-preview" style="margin-top:20px;padding:12px 14px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
+        <div style="font-size:11px;color:var(--text-label);letter-spacing:.04em;margin-bottom:8px">EFFECTIVE STRENGTH ESTIMATE</div>
+        <div id="preview-content" style="font-size:10px;color:var(--text-mid);line-height:1.8"></div>
+        <div style="font-size:10px;color:var(--text-mid);margin-top:8px;line-height:1.6">
+          Infill reduces effective stiffness and yield strength.<br>
+          Layer orientation determines inter-layer vs in-layer loading.
+        </div>
+      </div>
+
+      <!-- Next step CTA — updated by updateNextButtons() -->
+      <div id="next-material-wrap" class="tab-cta">
+        <button id="next-material" class="btn primary"
+          style="width:100%;font-family:'Rajdhani',sans-serif;letter-spacing:.08em;opacity:0.4;cursor:default"
+          onclick="nextStepFromTab('material')" disabled>
+          Continue to Analysis →
+        </button>
+        <div id="next-material-hint" style="font-size:var(--text-xs);color:var(--text-lo);text-align:center;margin-top:var(--sp-1);min-height:12px;font-family:'DM Mono',monospace"></div>
+      </div>
+        </div>
+
+    <!-- ANALYSIS TAB — the numerical method (mesh, solver models, extra solves),
+         separated from the physical print settings in the MATERIAL tab. -->
+    <div id="tab-analysis" style="display:none;padding:var(--sp-2) var(--sp-3)">
+
+      <h2 class="section-title" style="margin-bottom:14px">ANALYSIS</h2>
+      <div style="font-size:10px;color:var(--text-lo);margin-bottom:16px;line-height:1.6">
+        These settings control <b style="color:var(--text-mid)">how the simulation runs</b> —
+        mesh density, element type, and which material model and extra solves to
+        use. They are independent of the print settings, which describe the part itself.
+      </div>
+
+      <div style="margin-bottom:16px">
         <label for="s-mesh">Mesh quality (affects solve time)</label>
         <select id="s-mesh">
           <option value="coarse">Coarse — fast (~5s), lower accuracy</option>
@@ -1756,26 +1788,80 @@ body:not(.has-results) #btn-stress { display: none !important; }
         </div>
       </div>
 
-      <!-- Effective strength preview -->
-      <div id="material-preview" style="margin-top:20px;padding:12px 14px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
-        <div style="font-size:11px;color:var(--text-label);letter-spacing:.04em;margin-bottom:8px">EFFECTIVE STRENGTH ESTIMATE</div>
-        <div id="preview-content" style="font-size:10px;color:var(--text-mid);line-height:1.8"></div>
-        <div style="font-size:10px;color:var(--text-mid);margin-top:8px;line-height:1.6">
-          Infill reduces effective stiffness and yield strength.<br>
-          Layer orientation determines inter-layer vs in-layer loading.
+      <!-- Material model toggles — moved here from CALIBRATE so all analysis
+           controls live together. Element IDs preserved for session save/restore. -->
+      <div style="margin-bottom:14px;padding-top:14px;border-top:1px solid var(--border)">
+        <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:14px">MATERIAL MODEL</div>
+      </div>
+
+      <!-- Advanced Infill Model toggle -->
+      <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;margin-bottom:16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <b style="color:var(--text-hi);font-size:11px">Advanced Infill Model (CLT)</b>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:10px;color:var(--text-mid)">
+            <input type="checkbox" id="clt-toggle" onchange="onCLTToggle(this.checked)" style="accent-color:var(--gold);width:13px;height:13px">
+            Enable
+          </label>
+        </div>
+        <div style="font-size:10px;color:var(--text-lo);line-height:1.7;margin-bottom:8px">
+          Uses <b style="color:var(--text-mid)">Classical Laminate Theory</b> to compute effective stiffness from bead properties + ply angles — replacing the empirical pattern multipliers with a physically derived model. Stiffness now scales correctly with infill density and deposition angle.
+        </div>
+        <div id="clt-details" style="display:none">
+          <div style="font-size:10px;color:var(--text-lo);line-height:1.8;margin-bottom:8px">
+            <b style="color:var(--text-mid)">Ply angle stacks by pattern:</b><br>
+            Grid → [0°, 90°] equal share &nbsp;·&nbsp; Lines → [0°] only &nbsp;·&nbsp; Gyroid/Cubic/Honeycomb → [0°, 60°, −60°] quasi-isotropic &nbsp;·&nbsp; Concentric → [0°]
+          </div>
+          <div style="font-size:10px;color:var(--text-lo);line-height:1.8;margin-bottom:8px">
+            <b style="color:var(--text-mid)">Validation targets (from Ahn et al. 2002):</b><br>
+            100% infill, 0° only → should recover single-bead E ≈ 3700 MPa (PLA)<br>
+            ±45° at 100% → lower E, higher G than 0° only<br>
+            E* vs density (10–100%) should match Ahn Fig. 5 within 15%
+          </div>
+          <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:3px;padding:8px;font-size:10px;color:var(--text-lo)">
+            <b style="color:var(--warn)">Note:</b> CLT uses bead-level E₁, E₂, G₁₂ from literature defaults. For best accuracy, calibrate these in the CALIBRATE tab by printing 0° and 90° dog-bone tensile coupons and entering the results.
+          </div>
+        </div>
+      </div>
+
+      <!-- Two-Region Material Model toggle -->
+      <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;margin-bottom:16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <b style="color:var(--text-hi);font-size:11px">Two-Region Material Model (walls vs infill)</b>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:10px;color:var(--text-mid)">
+            <input type="checkbox" id="two-region-toggle" onchange="onTwoRegionToggle(this.checked)" style="accent-color:var(--gold);width:13px;height:13px">
+            Enable
+          </label>
+        </div>
+        <div style="font-size:10px;color:var(--text-lo);line-height:1.7;margin-bottom:8px">
+          Classifies each element geometrically: <b style="color:var(--text-mid)">dense perimeter walls</b> (solid material) vs <b style="color:var(--text-mid)">homogenized infill core</b> (strength ~ linear in infill density × pattern), instead of one averaged material everywhere. Wall band = wall count × line width. Stiffness, strength, and mass all follow the split.
+        </div>
+        <div id="two-region-details" style="display:none">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <label for="two-region-linewidth" style="font-size:10px;color:var(--text-mid);white-space:nowrap">Line width (mm)</label>
+            <input type="number" id="two-region-linewidth" min="0.1" max="2.0" step="0.05" value="0.45"
+                   oninput="updateWallBandReadout()"
+                   style="width:70px;background:var(--bg-input);border:1px solid var(--border);border-radius:3px;color:var(--text-hi);font-size:11px;padding:3px 6px">
+            <span style="font-size:9px;color:var(--text-lo)">auto-filled from .gcode import when available</span>
+          </div>
+          <div style="font-size:10px;color:var(--text-mid);margin-bottom:8px">
+            Wall band: <b id="wall-band-readout" style="color:var(--text-hi)">—</b>
+          </div>
+          <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:3px;padding:8px;font-size:10px;color:var(--text-lo);line-height:1.6">
+            <b style="color:var(--warn)">Note:</b> nozzle temperature and flow rate affect layer fusing but are printer-specific — they are captured empirically by the <b style="color:var(--text-mid)">calibration coupons</b> in the CALIBRATE tab (print with your real settings). Calibrated solid properties flow to the walls directly; the core inherits them scaled by infill.
+          </div>
         </div>
       </div>
 
       <!-- Next step CTA — updated by updateNextButtons() -->
-      <div id="next-material-wrap" class="tab-cta">
-        <button id="next-material" class="btn primary"
+      <div id="next-analysis-wrap" class="tab-cta">
+        <button id="next-analysis" class="btn primary"
           style="width:100%;font-family:'Rajdhani',sans-serif;letter-spacing:.08em;opacity:0.4;cursor:default"
-          onclick="nextStepFromTab('material')" disabled>
-          Next: Analyse →
+          onclick="nextStepFromTab('analysis')" disabled>
+          Run Analysis →
         </button>
-        <div id="next-material-hint" style="font-size:var(--text-xs);color:var(--text-lo);text-align:center;margin-top:var(--sp-1);min-height:12px;font-family:'DM Mono',monospace"></div>
+        <div id="next-analysis-hint" style="font-size:var(--text-xs);color:var(--text-lo);text-align:center;margin-top:var(--sp-1);min-height:12px;font-family:'DM Mono',monospace"></div>
       </div>
-        </div>
+    </div>
 
     <!-- RESULTS TAB -->
     <div id="tab-results" style="display:none;padding:0;display:flex;flex-direction:column;overflow:hidden">
@@ -1875,63 +1961,9 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <div id="calib-import-status" style="font-size:10px;color:var(--text-lo);margin-top:4px;min-height:14px"></div>
       </div>
 
-      <!-- Advanced Infill Model toggle -->
-      <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;margin-bottom:16px">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-          <b style="color:var(--text-hi);font-size:11px">Advanced Infill Model (CLT)</b>
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:10px;color:var(--text-mid)">
-            <input type="checkbox" id="clt-toggle" onchange="onCLTToggle(this.checked)" style="accent-color:var(--gold);width:13px;height:13px">
-            Enable
-          </label>
-        </div>
-        <div style="font-size:10px;color:var(--text-lo);line-height:1.7;margin-bottom:8px">
-          Uses <b style="color:var(--text-mid)">Classical Laminate Theory</b> to compute effective stiffness from bead properties + ply angles — replacing the empirical pattern multipliers with a physically derived model. Stiffness now scales correctly with infill density and deposition angle.
-        </div>
-        <div id="clt-details" style="display:none">
-          <div style="font-size:10px;color:var(--text-lo);line-height:1.8;margin-bottom:8px">
-            <b style="color:var(--text-mid)">Ply angle stacks by pattern:</b><br>
-            Grid → [0°, 90°] equal share &nbsp;·&nbsp; Lines → [0°] only &nbsp;·&nbsp; Gyroid/Cubic/Honeycomb → [0°, 60°, −60°] quasi-isotropic &nbsp;·&nbsp; Concentric → [0°]
-          </div>
-          <div style="font-size:10px;color:var(--text-lo);line-height:1.8;margin-bottom:8px">
-            <b style="color:var(--text-mid)">Validation targets (from Ahn et al. 2002):</b><br>
-            100% infill, 0° only → should recover single-bead E ≈ 3700 MPa (PLA)<br>
-            ±45° at 100% → lower E, higher G than 0° only<br>
-            E* vs density (10–100%) should match Ahn Fig. 5 within 15%
-          </div>
-          <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:3px;padding:8px;font-size:10px;color:var(--text-lo)">
-            <b style="color:var(--warn)">Note:</b> CLT uses bead-level E₁, E₂, G₁₂ from literature defaults. For best accuracy, calibrate these by printing 0° and 90° dog-bone tensile coupons and entering the results above.
-          </div>
-        </div>
-      </div>
-
-      <!-- Two-Region Material Model toggle -->
-      <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;margin-bottom:16px">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-          <b style="color:var(--text-hi);font-size:11px">Two-Region Material Model (walls vs infill)</b>
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:10px;color:var(--text-mid)">
-            <input type="checkbox" id="two-region-toggle" onchange="onTwoRegionToggle(this.checked)" style="accent-color:var(--gold);width:13px;height:13px">
-            Enable
-          </label>
-        </div>
-        <div style="font-size:10px;color:var(--text-lo);line-height:1.7;margin-bottom:8px">
-          Classifies each element geometrically: <b style="color:var(--text-mid)">dense perimeter walls</b> (solid material) vs <b style="color:var(--text-mid)">homogenized infill core</b> (strength ~ linear in infill density × pattern), instead of one averaged material everywhere. Wall band = wall count × line width. Stiffness, strength, and mass all follow the split.
-        </div>
-        <div id="two-region-details" style="display:none">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-            <label for="two-region-linewidth" style="font-size:10px;color:var(--text-mid);white-space:nowrap">Line width (mm)</label>
-            <input type="number" id="two-region-linewidth" min="0.1" max="2.0" step="0.05" value="0.45"
-                   oninput="updateWallBandReadout()"
-                   style="width:70px;background:var(--bg-input);border:1px solid var(--border);border-radius:3px;color:var(--text-hi);font-size:11px;padding:3px 6px">
-            <span style="font-size:9px;color:var(--text-lo)">auto-filled from .gcode import when available</span>
-          </div>
-          <div style="font-size:10px;color:var(--text-mid);margin-bottom:8px">
-            Wall band: <b id="wall-band-readout" style="color:var(--text-hi)">—</b>
-          </div>
-          <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:3px;padding:8px;font-size:10px;color:var(--text-lo);line-height:1.6">
-            <b style="color:var(--warn)">Note:</b> nozzle temperature and flow rate affect layer fusing but are printer-specific — they are captured empirically by the <b style="color:var(--text-mid)">calibration coupons</b> above (print with your real settings). Calibrated solid properties flow to the walls directly; the core inherits them scaled by infill.
-          </div>
-        </div>
-      </div>
+      <!-- Note: the CLT and Two-Region material-model toggles moved to the
+           ANALYSIS tab (they are solver settings, not calibration inputs). The
+           coupon results below still feed those models when enabled. -->
 
       <!-- Coupon tabs -->
       <div style="display:flex;gap:4px;margin-bottom:16px">
@@ -6456,14 +6488,14 @@ function renderBoltLoadTable(s) {
 // user back to where they left off (issue #110). Util tabs (prefs/debug/
 // calibrate/sources) are intentionally not tracked here.
 let _activeMainTab = 'setup';
-const _PERSISTABLE_TABS = ['setup','orient','loads','material','results'];
+const _PERSISTABLE_TABS = ['setup','orient','loads','material','analysis','results'];
 
 function switchTab(name) {
   if (_PERSISTABLE_TABS.includes(name)) _activeMainTab = name;
   if (name === 'material') syncAppearanceBtns();
   updateNextButtons();
   if (typeof updateHintBar === 'function') updateHintBar();
-  ['setup','orient','loads','material','results','prefs','calibrate','sources','debug'].forEach(t => {
+  ['setup','orient','loads','material','analysis','results','prefs','calibrate','sources','debug'].forEach(t => {
     const el = document.getElementById('tab-' + t);
     if (el) el.style.display = t === name ? 'block' : 'none';
     const btn = document.querySelector(`[data-tab="${t}"]`);
@@ -6674,10 +6706,11 @@ function computeWorkflowState() {
 // or runs analysis if all steps are complete.
 
 function nextStepFromTab(fromTab) {
-  const sequence = ['setup', 'orient', 'loads', 'material', 'results'];
+  const sequence = ['setup', 'orient', 'loads', 'material', 'analysis', 'results'];
   const { canAnalyse } = computeWorkflowState();
 
-  if (fromTab === 'material' && canAnalyse) {
+  // The ANALYSIS tab is the final setup step — its button runs the solve.
+  if (fromTab === 'analysis' && canAnalyse) {
     runAnalysis();
     return;
   }
@@ -6742,16 +6775,29 @@ function updateNextButtons() {
     fill.style.background = pct === 100 ? 'var(--gold)' : 'var(--gold-dim)';
   }
 
-  // Material tab button — becomes "Run Analysis" when ready
+  // Material tab button — advances to the ANALYSIS tab (print settings are done).
   const sb  = document.getElementById('next-material');
   const sht = document.getElementById('next-material-hint');
   if (sb) {
-    sb.disabled = !canAnalyse;
-    sb.style.opacity = canAnalyse ? '1' : '0.4';
-    sb.style.cursor  = canAnalyse ? 'pointer' : 'default';
-    sb.textContent   = canAnalyse ? 'Run Analysis ->' : 'Complete setup first ->';
-    if (sht) sht.textContent = canAnalyse
-      ? 'Print settings applied. Click to run analysis.'
+    sb.disabled = !hasFile;
+    sb.style.opacity = hasFile ? '1' : '0.4';
+    sb.style.cursor  = hasFile ? 'pointer' : 'default';
+    sb.textContent   = 'Continue to Analysis ->';
+    if (sht) sht.textContent = hasFile
+      ? 'Print settings applied. Next: choose analysis settings.'
+      : 'Upload a part first.';
+  }
+
+  // Analysis tab button — becomes "Run Analysis" when all setup is complete.
+  const ab2 = document.getElementById('next-analysis');
+  const aht = document.getElementById('next-analysis-hint');
+  if (ab2) {
+    ab2.disabled = !canAnalyse;
+    ab2.style.opacity = canAnalyse ? '1' : '0.4';
+    ab2.style.cursor  = canAnalyse ? 'pointer' : 'default';
+    ab2.textContent   = canAnalyse ? 'Run Analysis ->' : 'Complete setup first ->';
+    if (aht) aht.textContent = canAnalyse
+      ? 'Analysis settings applied. Click to run analysis.'
       : (blockingReason || '');
   }
 }
@@ -7733,11 +7779,6 @@ function deriveOrientString() {
 function buildAnalyseBody(quality, opts) {
   if (!S.fileData) return null;
   return {
-    // Modal and buckling are opt-in (each adds solve cost) and only requested on
-    // the primary solve — not the background fine-mesh convergence check or A/B
-    // comparison runs.
-    analysisType:    (opts && opts.modal) ? 'modal' : 'linear_static',
-    computeBuckling: !!(opts && opts.buckling),
     positionsB64:  S.fileData.positionsB64,
     stepB64:       S.fileData.stepB64 || null,
     fileType:      S.fileData.fileType || 'stl',
@@ -7757,6 +7798,7 @@ function buildAnalyseBody(quality, opts) {
       position:f.position,
       ...(f.loadDistribution ? { loadDistribution: f.loadDistribution } : {}),
     })),
+    // Print settings — the physical part (material + slicer parameters).
     print: {
       materialId:    document.getElementById('s-material').value,
       infillPct:     +document.getElementById('s-infill').value,
@@ -7764,14 +7806,24 @@ function buildAnalyseBody(quality, opts) {
       pattern:       document.getElementById('s-pattern').value,
       orientation:   deriveOrientString(),
       layerHeightMm: +(document.getElementById('s-lh')?.value ?? 20) / 100,
-      meshOrder:     +(document.getElementById('s-mesh-order')?.value ?? 2),
-      useCLT:        !!(document.getElementById('clt-toggle')?.checked),
+      // extrusionWidthMm (line width) is a slicer/print param — sent only when
+      // the two-region model (an analysis setting) needs the wall-band width.
       ...(document.getElementById('two-region-toggle')?.checked ? {
-        twoRegion: true,
         extrusionWidthMm: Math.min(2.0, Math.max(0.1, +(document.getElementById('two-region-linewidth')?.value ?? 0.45) || 0.45)),
       } : {}),
     },
-    meshQuality:  quality || document.getElementById('s-mesh')?.value || 'standard',
+    // Analysis settings — the numerical method (mesh, solver models, extra solves).
+    // Modal and buckling are opt-in (each adds solve cost) and only requested on
+    // the primary solve — not the background fine-mesh convergence check or A/B
+    // comparison runs.
+    analysis: {
+      meshQuality:     quality || document.getElementById('s-mesh')?.value || 'standard',
+      meshOrder:       +(document.getElementById('s-mesh-order')?.value ?? 2),
+      analysisType:    (opts && opts.modal) ? 'modal' : 'linear_static',
+      computeBuckling: !!(opts && opts.buckling),
+      useCLT:          !!(document.getElementById('clt-toggle')?.checked),
+      twoRegion:       !!(document.getElementById('two-region-toggle')?.checked),
+    },
     calibration:  getActiveProfile(),
     ...(gravityRequest() ? { gravity: gravityRequest() } : {}),
     ...(pressureRequest() ? { pressures: [pressureRequest()] } : {}),
