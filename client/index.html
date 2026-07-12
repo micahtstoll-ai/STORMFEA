@@ -6072,7 +6072,7 @@ function showResults(s) {
               s.fatigue.estimatedCycles < 100000 ? '<svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Fatigue concern — monitor this part' :
               '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> Adequate fatigue life for competition'}
           </span>
-          <span style="font-size:10px;color:var(--text-lo);border:1px solid var(--border);padding:1px 5px;border-radius:2px">LOW CONFIDENCE</span>
+          <span style="font-size:10px;color:${s.fatigue.confidence==='medium'?'var(--warn)':'var(--text-lo)'};border:1px solid var(--border);padding:1px 5px;border-radius:2px">${(s.fatigue.confidence||'low').toUpperCase()} CONFIDENCE</span>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;font-size:10px;color:var(--text-lo);margin-bottom:6px">
           <div>Cycles: <b style="color:var(--text-mid)">${s.fatigue.estimatedCycles === null ? '∞' : s.fatigue.estimatedCycles.toLocaleString()}</b></div>
@@ -9221,7 +9221,7 @@ function drawDetailCanvas() {
     ctx.fillStyle = TEXT_LO;
     ctx.fillText(
       `Endurance limit ${fat.enduranceLimitMPa.toFixed(1)} MPa  ·  UTS ${fat.utsMPa.toFixed(1)} MPa  ·  ` +
-      `Fatigue SF ${fat.fatigueSF.toFixed(2)}×  ·  Load ratio ${fat.loadRatio}`,
+      `Fatigue SF ${fat.fatigueSF.toFixed(2)}×  ·  Load ratio ${fat.loadRatio}  ·  ${(fat.confidence||'low').toUpperCase()} confidence`,
       MX, RY
     );
     if (fat.fatigueConcern) {
