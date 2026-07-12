@@ -181,6 +181,43 @@ export function latticeStiffnessScale(
   return Math.max(LATTICE_STIFFNESS_FLOOR, gibsonAshbyModulus(p.stiffPrefactor, r, n, p.stiffCorrXY));
 }
 
+/** Per-axis stiffness scale factors in the NATURAL material frame
+ *  (local Z = layer normal = build axis). */
+export interface LatticeAxisScales {
+  /** Scales E_xy (and, when gGxy is null, the derived G_xy). */
+  readonly gXY:  number;
+  /** Scales E_z — the through-layer modulus. For extruded-wall patterns the
+   *  walls are continuous ALONG the build axis, so this law is the mildest
+   *  (rule of mixtures, n = 1) and the core's anisotropy inverts at low ρ. */
+  readonly gZ:   number;
+  /** Scales G_xz. */
+  readonly gGxz: number;
+  /** Explicit in-plane shear scale (walls25d: the classic Gibson-Ashby
+   *  honeycomb ρ³ bending mode); null = derive G_xy from the scaled E_xy. */
+  readonly gGxy: number | null;
+}
+
+/**
+ * Stage-2 per-axis stiffness knockdowns for the anisotropic core model.
+ * Applied to the solid's NATURAL-frame constants BEFORE any weakAxis
+ * rotation or upright scalar swap (scaling and frame handling only commute
+ * for the scalar law). Same anchors and floor as latticeStiffnessScale:
+ * every factor is exactly pf at ρ=1 and floored at LATTICE_STIFFNESS_FLOOR.
+ */
+export function latticeStiffnessScales(pattern: string, rho: number): LatticeAxisScales {
+  const p = LATTICE_PARAMS[patternFamilyOf(pattern)];
+  const r = clampRho(rho);
+  const floor = LATTICE_STIFFNESS_FLOOR;
+  return {
+    gXY:  Math.max(floor, gibsonAshbyModulus(p.stiffPrefactor, r, p.stiffExpXY,  p.stiffCorrXY)),
+    gZ:   Math.max(floor, gibsonAshbyModulus(p.stiffPrefactor, r, p.stiffExpZ,   p.stiffCorrZ)),
+    gGxz: Math.max(floor, gibsonAshbyModulus(p.stiffPrefactor, r, p.stiffExpGxz, p.stiffCorrGxz)),
+    gGxy: p.stiffExpGxy === null
+      ? null
+      : Math.max(floor, gibsonAshbyModulus(p.stiffPrefactor, r, p.stiffExpGxy, 0)),
+  };
+}
+
 /**
  * Wall-free lattice strength fraction s(ρ) = max(floor, min(1, patternMul·ρ^m)).
  *

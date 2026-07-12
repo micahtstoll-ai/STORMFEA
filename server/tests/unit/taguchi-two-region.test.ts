@@ -27,10 +27,11 @@
 import { describe, it, expect } from "vitest";
 import { buildTwoRegionField } from "../../twoRegion.js";
 import {
+  buildCoreMaterial,
   buildOrthotropicMaterial,
   orientationMultiplier,
 } from "../../analysis.js";
-import { latticeStiffnessScale, latticeStrengthFraction } from "../../solver/lattice.js";
+import { latticeStrengthFraction } from "../../solver/lattice.js";
 import { generateBoxMeshC3D4, extractSurfaceFaces } from "../../solver/meshgen.js";
 import { runLinearStatic } from "../../solver/pipeline.js";
 import type { OrthotropicMaterial } from "../../solver/types.js";
@@ -86,21 +87,11 @@ function executeRun(run: number, levels: readonly [number, number, number, numbe
     ...buildOrthotropicMaterial(MAT_ID, orientMul, orient, LH, null, null),
     massRho: 1240,
   };
-  // Core mirrors the production wiring (analysis.ts two-region block):
-  // Gibson-Ashby scales applied to the SOLID lattice base (= the shell build).
-  const gStiff = latticeStiffnessScale(pattern, infill / 100);
-  const sStr   = latticeStrengthFraction(pattern, infill / 100);
-  const core: OrthotropicMaterial = {
-    ...shell,
-    E_xy: shell.E_xy * gStiff,
-    E_z:  shell.E_z  * gStiff,
-    G_xz: shell.G_xz * gStiff,
-    ...(shell.G_xy !== undefined ? { G_xy: shell.G_xy * gStiff } : {}),
-    yieldXY: shell.yieldXY * sStr,
-    yieldZ:  shell.yieldZ  * sStr,
-    label: `${shell.label} · GA ${pattern} lattice ρ=${infill}%`,
-    massRho: 1240 * infill / 100,
-  };
+  // The REAL production core builder (per-axis Gibson-Ashby laws applied in
+  // the natural frame, upright scalar swap, Poisson guard) — no test-local
+  // mirror to drift out of sync with analysis.ts.
+  const sStr = latticeStrengthFraction(pattern, infill / 100);
+  const core = buildCoreMaterial(MAT_ID, infill, pattern, orient, LH, null, false, undefined, null);
 
   const tWall = walls * LINE_W;
   const tr = buildTwoRegionField(mesh, faces, shell, core, tWall);

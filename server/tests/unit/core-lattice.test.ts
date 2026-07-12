@@ -23,39 +23,37 @@ import {
   PATTERN_MULTIPLIERS,
   gibsonAshbyModulus,
   latticeStiffnessScale,
+  latticeStiffnessScales,
   latticeStrengthFraction,
   patternFamilyOf,
 } from "../../solver/lattice.js";
 import { buildAnyConstitutiveMatrix } from "../../solver/element.js";
 import { buildTwoRegionField } from "../../twoRegion.js";
 import { generateBoxMeshC3D4, extractSurfaceFaces } from "../../solver/meshgen.js";
-import { buildOrthotropicMaterial, orientationMultiplier } from "../../analysis.js";
+import {
+  buildCoreMaterial,
+  buildOrthotropicMaterial,
+  orientationMultiplier,
+  type CalibrationProfile,
+} from "../../analysis.js";
 import type { OrthotropicMaterial } from "../../solver/types.js";
 
 const ALL_PATTERNS = Object.keys(PATTERN_FAMILY);
 const STRUCTURAL = ALL_PATTERNS.filter(p => patternFamilyOf(p) !== "sparse");
 
-/** Mirror of the production core wiring (analysis.ts two-region block):
- *  Gibson-Ashby scales applied to the SOLID lattice base material. */
-function buildProductionStyleCore(
-  shellSolid: OrthotropicMaterial,
-  pattern: string,
+/** The production core builder, defaulted to the plain (non-CLT) path. */
+function makeCore(
   infillPct: number,
+  pattern: string,
+  orientation = "flat",
+  weakAxis: readonly [number, number, number] | null = null,
+  calibration: CalibrationProfile | null = null,
+  layerHeightMm = 0.2,
 ): OrthotropicMaterial {
-  const rho = infillPct / 100;
-  const g = latticeStiffnessScale(pattern, rho);
-  const s = latticeStrengthFraction(pattern, rho);
-  return {
-    ...shellSolid,
-    E_xy: shellSolid.E_xy * g,
-    E_z:  shellSolid.E_z  * g,
-    G_xz: shellSolid.G_xz * g,
-    ...(shellSolid.G_xy !== undefined ? { G_xy: shellSolid.G_xy * g } : {}),
-    yieldXY: shellSolid.yieldXY * s,
-    yieldZ:  shellSolid.yieldZ  * s,
-    label: `${shellSolid.label} · GA ${pattern} lattice ρ=${infillPct}%`,
-    massRho: 1240 * rho,
-  };
+  return buildCoreMaterial(
+    "pla", infillPct, pattern, orientation, layerHeightMm,
+    calibration, false, undefined, weakAxis,
+  );
 }
 
 // ─── Exact endpoint anchors (invariant #8) ───────────────────────────────────
@@ -73,11 +71,22 @@ describe("ρ=1 anchors are exact (toBe, not closeTo)", () => {
     }
   });
 
-  it("solid × scale reproduces the solid bit-for-bit at 100% infill", () => {
+  it("per-axis scales are exactly 1.0 at ρ=1 for every structural pattern", () => {
+    for (const p of STRUCTURAL) {
+      const s = latticeStiffnessScales(p, 1);
+      expect(s.gXY).toBe(1.0);
+      expect(s.gZ).toBe(1.0);
+      expect(s.gGxz).toBe(1.0);
+      if (s.gGxy !== null) expect(s.gGxy).toBe(1.0);
+    }
+  });
+
+  it("the production core reproduces the solid bit-for-bit at 100% infill", () => {
     const solid = buildOrthotropicMaterial("pla", 0.55, "flat", 0.2, null, null);
-    const core = buildProductionStyleCore({ ...solid, massRho: 1240 }, "grid", 100);
+    const core = makeCore(100, "grid");
     expect(core.E_xy).toBe(solid.E_xy);
     expect(core.E_z).toBe(solid.E_z);
+    expect(core.nu_xz).toBe(solid.nu_xz);
     expect(core.yieldXY).toBe(solid.yieldXY);
     expect(core.yieldZ).toBe(solid.yieldZ);
   });
@@ -160,11 +169,7 @@ describe("low-density floor", () => {
   });
 
   it("0% infill core builds a valid constitutive matrix (previously threw on E=0)", () => {
-    const solid: OrthotropicMaterial = {
-      ...buildOrthotropicMaterial("pla", 0.55, "flat", 0.2, null, null),
-      massRho: 1240,
-    };
-    const core = buildProductionStyleCore(solid, "grid", 0);
+    const core = makeCore(0, "grid");
     expect(core.E_xy).toBeGreaterThan(0);
     expect(() => buildAnyConstitutiveMatrix(core)).not.toThrow();
     const C = buildAnyConstitutiveMatrix(core);
@@ -178,7 +183,7 @@ describe("low-density floor", () => {
       ...buildOrthotropicMaterial("pla", 0.55, "flat", 0.2, null, null),
       massRho: 1240,
     };
-    const core = buildProductionStyleCore(solid, "grid", 0);
+    const core = makeCore(0, "grid");
     const tr = buildTwoRegionField(mesh, faces, solid, core, 0.9);
     expect(tr.field).not.toBeNull();
     for (let i = 0; i < tr.field!.C.length; i++) {
@@ -195,14 +200,8 @@ describe("orientation is decoupled from core stiffness", () => {
   // legacy path scaled stiffness by min(1, coreMul/0.55), leaking orientMul
   // into core E (upright cores were 1.64× stiffer than flat at equal ρ).
   it("flat and angled cores have identical stiffness; yields scale with orientMul", () => {
-    const mk = (orient: string) => {
-      const solid: OrthotropicMaterial = {
-        ...buildOrthotropicMaterial("pla", orientationMultiplier(orient), orient, 0.2, null, null),
-        massRho: 1240,
-      };
-      return buildProductionStyleCore(solid, "gyroid", 40);
-    };
-    const flat = mk("flat"), angled = mk("angled");
+    const flat = makeCore(40, "gyroid", "flat");
+    const angled = makeCore(40, "gyroid", "angled");
     expect(angled.E_xy).toBe(flat.E_xy);
     expect(angled.E_z).toBe(flat.E_z);
     expect(angled.yieldXY / flat.yieldXY).toBeCloseTo(
@@ -221,9 +220,94 @@ describe("100% infill collapses to the uniform solid path", () => {
       ...buildOrthotropicMaterial("pla", 0.55, "flat", 0.2, null, null),
       massRho: 1240,
     };
-    const core = buildProductionStyleCore(solid, pattern, 100);
+    const core = makeCore(100, pattern);
     const tr = buildTwoRegionField(mesh, faces, solid, core, 0.9);
     expect(tr.field).toBeNull();
     expect(tr.averageMaterial.E_xy).toBeCloseTo(solid.E_xy, 12);
+  });
+});
+
+// ─── Stage 2: per-axis anisotropic core ──────────────────────────────────────
+
+describe("per-axis lattice laws (natural frame)", () => {
+  it("walls25d inverts the anisotropy at low ρ (continuous walls along the build axis)", () => {
+    const s = latticeStiffnessScales("grid", 0.2);
+    expect(s.gZ).toBeGreaterThan(s.gXY);      // ρ^1 ≫ ρ^2
+    expect(s.gGxy).not.toBeNull();
+    expect(s.gGxy!).toBeLessThan(s.gXY);      // ρ³ wall-bending shear is softest
+  });
+
+  it("tpms3d degrades E_z faster than E_xy and G_xz fastest (locked gyroid ordering)", () => {
+    const s = latticeStiffnessScales("gyroid", 0.2);
+    expect(s.gZ).toBeLessThan(s.gXY);
+    expect(s.gGxz).toBeLessThan(s.gZ);
+    expect(s.gGxy).toBeNull();
+  });
+
+  it("walls25d core E_z/E_xy ratio exceeds the solid's and grows as ρ drops", () => {
+    const solid = buildOrthotropicMaterial("pla", 0.55, "flat", 0.2, null, null);
+    const ratioSolid = solid.E_z / solid.E_xy;
+    const r40 = makeCore(40, "grid");
+    const r15 = makeCore(15, "grid");
+    expect(r40.E_z / r40.E_xy).toBeGreaterThan(ratioSolid);
+    expect(r15.E_z / r15.E_xy).toBeGreaterThan(r40.E_z / r40.E_xy);
+  });
+});
+
+describe("buildCoreMaterial frame handling + stability", () => {
+  it("positive-definite C for every pattern × ρ × layer height × frame", () => {
+    const rhos = [0, 0.05, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0];
+    const lhs = [0.1, 0.2, 0.3];
+    const frames: ReadonlyArray<readonly [string, readonly [number, number, number] | null]> = [
+      ["flat", null], ["angled", null], ["upright", null],
+      ["upright", [1, 0, 0]], ["flat", [0, 0, 1]],
+    ];
+    for (const p of ALL_PATTERNS) {
+      for (const rho of rhos) {
+        for (const lh of lhs) {
+          for (const [orient, axis] of frames) {
+            const core = makeCore(rho * 100, p, orient, axis, null, lh);
+            expect(() => buildAnyConstitutiveMatrix(core)).not.toThrow();
+          }
+        }
+      }
+    }
+  });
+
+  it("upright-no-bed: scaling happens in the natural frame, then the scalar swap", () => {
+    // Natural constants (swap suppressed via the identity axis), per-axis
+    // scaled, then swapped: global E_z carries the natural in-plane law and
+    // global E_xy the natural through-layer law.
+    const nat = buildOrthotropicMaterial("pla", 0.90, "upright", 0.2, null, [0, 0, 1]);
+    const s = latticeStiffnessScales("grid", 0.2);
+    const core = makeCore(20, "grid", "upright");
+    expect(core.weakAxis).toBeUndefined();
+    expect(core.E_z).toBeCloseTo(nat.E_xy * s.gXY, 8);
+    expect(core.E_xy).toBeCloseTo(nat.E_z * s.gZ, 8);
+    expect(core.G_xy).toBeCloseTo(nat.G_xz * s.gGxz, 8); // swap: G_xy ← inter-layer shear
+  });
+
+  it("a real weakAxis is carried through with natural constants (rotation happens in C)", () => {
+    const core = makeCore(20, "grid", "upright", [1, 0, 0]);
+    expect(core.weakAxis).toEqual([1, 0, 0]);
+    const nat = buildOrthotropicMaterial("pla", 0.90, "upright", 0.2, null, [1, 0, 0]);
+    const s = latticeStiffnessScales("grid", 0.2);
+    expect(core.E_xy).toBeCloseTo(nat.E_xy * s.gXY, 8);
+    expect(core.E_z).toBeCloseTo(nat.E_z * s.gZ, 8);
+  });
+
+  it("calibration stiffness-exponent override routes to the scalar (ratio-preserving) law", () => {
+    const cal: CalibrationProfile = {
+      id: "t", label: "t", materialId: "pla", layerHeightMm: 0.2, createdAt: "",
+      yieldXY_MPa: null, yieldZ_MPa: null, E_xy_MPa: null, bearingStr_MPa: null,
+      shearStr_MPa: null, E_z_over_E_xy: 0.65, yieldZ_over_yieldXY: 0.58,
+      G_xz_over_G_xy: 0.40, latticeStiffExp: 1.0,
+    };
+    const core = makeCore(50, "grid", "flat", null, cal);
+    const solid = buildOrthotropicMaterial("pla", 0.55, "flat", 0.2, cal, null);
+    const g = latticeStiffnessScale("grid", 0.5, 1.0); // 0.475
+    expect(core.E_xy).toBeCloseTo(solid.E_xy * g, 8);
+    expect(core.E_z).toBeCloseTo(solid.E_z * g, 8);   // ratios preserved
+    expect(core.nu_xz).toBe(solid.nu_xz);             // no Poisson guard needed
   });
 });
