@@ -95,7 +95,15 @@ function makePlateStep(L: number, W: number, H: number, holeR: number): Buffer {
 
 const PLA_PRINT: AnalysisRequest['print'] = {
   materialId: 'pla', infillPct: 100, wallCount: 3,
-  pattern: 'grid', orientation: 'flat', layerHeightMm: 0.2, meshOrder: 2,
+  pattern: 'grid', orientation: 'flat', layerHeightMm: 0.2,
+};
+
+// meshOrder is deliberately omitted here: this exercises the AnalysisSettings
+// default (meshOrder ?? 2 → C3D10) in analysis.ts. The gate-1 test below asserts
+// nodesPerElem === 10, so a partial analysis object that still meshes quadratic
+// proves the default kicks in after the print/analysis split.
+const STD_ANALYSIS: AnalysisRequest['analysis'] = {
+  meshQuality: 'standard',
 };
 
 // ─── Gate 1: STL → TetGen → C3D10 → solve ────────────────────────────────────
@@ -118,7 +126,7 @@ describe.skipIf(!tetgen.found)('STL upload → TetGen → analyse (issue #108, r
       boltHoleIds: [0],
       forces: [{ magnitude: 50, direction: [1, 0, 0], position: [R, 0, H] }],
       print: PLA_PRINT,
-      meshQuality: 'standard',
+      analysis: STD_ANALYSIS,
     };
     const t0 = Date.now();
     result = await runAnalysis(req);
@@ -191,7 +199,7 @@ describe.skipIf(!gmsh.found)('STEP upload → Gmsh → analyse (issue #108, requ
       boltHoleIds: [], // empty → the STEP path auto-constrains every detected hole
       forces: [{ magnitude: 100, direction: [1, 0, 0], position: [L, W / 2, H / 2] }],
       print: PLA_PRINT,
-      meshQuality: 'fine',
+      analysis: { meshQuality: 'fine', meshOrder: 2 },
     };
     const t0 = Date.now();
     const result = await runAnalysis(req);
