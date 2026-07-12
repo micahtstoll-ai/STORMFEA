@@ -252,8 +252,13 @@ cycle count) with an FDM-specific endurance ratio `Se/UTS = 0.37` (Wang et al.
 2020). The **load ratio** `R = σ_min/σ_max` is a user input (default `0`,
 pulsating): `σ_a = σ_max(1−R)/2`, `σ_m = σ_max(1+R)/2`, with compressive mean
 stress conservatively clamped to zero. `R = −1` is fully reversed; `R > 0` is a
-tension-biased cycle. Confidence is LOW — FDM S-N data is sparse — so it is
-reported as an estimate, not a guarantee.
+tension-biased cycle. Confidence is LOW by default — published FDM S-N data is
+sparse — so it is reported as an estimate, not a guarantee. A team can raise it
+to MEDIUM by fitting their own S-N curve: enter cyclic-coupon (σ_amplitude,
+cycles) points at `POST /api/calibration/fatigue`, which least-squares fits the
+Basquin exponent `b` and endurance ratio `Se/UTS`; those measured constants then
+replace the literature defaults and lift the fatigue mode to MEDIUM confidence
+(the same LOW→MEDIUM data gate the bearing coupon uses).
 
 ---
 
