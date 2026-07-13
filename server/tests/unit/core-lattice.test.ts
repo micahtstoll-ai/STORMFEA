@@ -82,7 +82,7 @@ describe("ρ=1 anchors are exact (toBe, not closeTo)", () => {
   });
 
   it("the production core reproduces the solid bit-for-bit at 100% infill", () => {
-    const solid = buildOrthotropicMaterial("pla", 0.55, "flat", 0.2, null, null);
+    const solid = buildOrthotropicMaterial("pla", 1.0, "flat", 0.2, null, null);
     const core = makeCore(100, "grid");
     expect(core.E_xy).toBe(solid.E_xy);
     expect(core.E_z).toBe(solid.E_z);
@@ -180,7 +180,7 @@ describe("low-density floor", () => {
     const mesh = generateBoxMeshC3D4(0, 0, 0, 20, 12, 8, 10, 6, 4);
     const faces = extractSurfaceFaces(mesh);
     const solid: OrthotropicMaterial = {
-      ...buildOrthotropicMaterial("pla", 0.55, "flat", 0.2, null, null),
+      ...buildOrthotropicMaterial("pla", 1.0, "flat", 0.2, null, null),
       massRho: 1240,
     };
     const core = makeCore(0, "grid");
@@ -194,18 +194,25 @@ describe("low-density floor", () => {
 
 // ─── Orientation decoupling ──────────────────────────────────────────────────
 
-describe("orientation is decoupled from core stiffness", () => {
-  // Production builds the core solid with strengthMul = orientMul, whose
-  // min(1, orientMul/0.55) clamp yields solid E for EVERY orientation. The
-  // legacy path scaled stiffness by min(1, coreMul/0.55), leaking orientMul
-  // into core E (upright cores were 1.64× stiffer than flat at equal ρ).
-  it("flat and angled cores have identical stiffness; yields scale with orientMul", () => {
+describe("orientation is decoupled from core stiffness and strength (audit A4)", () => {
+  // Production builds the core solid with strengthMul = 1.0 — orientation is
+  // resolved by the criterion (weakAxis rotation / scalar swap), not a scalar
+  // on the material. The ONLY exception is the angled-no-bed fallback (no
+  // directional model exists there), which keeps the legacy 0.75.
+  it("flat and angled cores have identical stiffness; angled-no-bed yields carry the 0.75 fallback", () => {
     const flat = makeCore(40, "gyroid", "flat");
     const angled = makeCore(40, "gyroid", "angled");
     expect(angled.E_xy).toBe(flat.E_xy);
     expect(angled.E_z).toBe(flat.E_z);
-    expect(angled.yieldXY / flat.yieldXY).toBeCloseTo(
-      orientationMultiplier("angled") / orientationMultiplier("flat"), 12);
+    expect(flat.yieldXY).toBeCloseTo(50 * latticeStrengthFraction("gyroid", 0.4), 10);
+    expect(angled.yieldXY / flat.yieldXY).toBeCloseTo(orientationMultiplier("angled"), 12);
+  });
+
+  it("an angled core WITH a bed face gets no scalar penalty (exact tensor path)", () => {
+    const flat = makeCore(40, "gyroid", "flat");
+    const angledBed = makeCore(40, "gyroid", "angled", [0, Math.SQRT1_2, Math.SQRT1_2]);
+    expect(angledBed.yieldXY).toBeCloseTo(flat.yieldXY, 12);
+    expect(angledBed.yieldZ).toBeCloseTo(flat.yieldZ, 12);
   });
 });
 
@@ -217,7 +224,7 @@ describe("100% infill collapses to the uniform solid path", () => {
 
   it.each(["grid", "gyroid"])("pattern %s: field is null (materialsEqual fires)", (pattern) => {
     const solid: OrthotropicMaterial = {
-      ...buildOrthotropicMaterial("pla", 0.55, "flat", 0.2, null, null),
+      ...buildOrthotropicMaterial("pla", 1.0, "flat", 0.2, null, null),
       massRho: 1240,
     };
     const core = makeCore(100, pattern);
@@ -245,7 +252,7 @@ describe("per-axis lattice laws (natural frame)", () => {
   });
 
   it("walls25d core E_z/E_xy ratio exceeds the solid's and grows as ρ drops", () => {
-    const solid = buildOrthotropicMaterial("pla", 0.55, "flat", 0.2, null, null);
+    const solid = buildOrthotropicMaterial("pla", 1.0, "flat", 0.2, null, null);
     const ratioSolid = solid.E_z / solid.E_xy;
     const r40 = makeCore(40, "grid");
     const r15 = makeCore(15, "grid");
@@ -278,7 +285,7 @@ describe("buildCoreMaterial frame handling + stability", () => {
     // Natural constants (swap suppressed via the identity axis), per-axis
     // scaled, then swapped: global E_z carries the natural in-plane law and
     // global E_xy the natural through-layer law.
-    const nat = buildOrthotropicMaterial("pla", 0.90, "upright", 0.2, null, [0, 0, 1]);
+    const nat = buildOrthotropicMaterial("pla", 1.0, "upright", 0.2, null, [0, 0, 1]);
     const s = latticeStiffnessScales("grid", 0.2);
     const core = makeCore(20, "grid", "upright");
     expect(core.weakAxis).toBeUndefined();
@@ -290,7 +297,7 @@ describe("buildCoreMaterial frame handling + stability", () => {
   it("a real weakAxis is carried through with natural constants (rotation happens in C)", () => {
     const core = makeCore(20, "grid", "upright", [1, 0, 0]);
     expect(core.weakAxis).toEqual([1, 0, 0]);
-    const nat = buildOrthotropicMaterial("pla", 0.90, "upright", 0.2, null, [1, 0, 0]);
+    const nat = buildOrthotropicMaterial("pla", 1.0, "upright", 0.2, null, [1, 0, 0]);
     const s = latticeStiffnessScales("grid", 0.2);
     expect(core.E_xy).toBeCloseTo(nat.E_xy * s.gXY, 8);
     expect(core.E_z).toBeCloseTo(nat.E_z * s.gZ, 8);
@@ -304,7 +311,7 @@ describe("buildCoreMaterial frame handling + stability", () => {
       G_xz_over_G_xy: 0.40, latticeStiffExp: 1.0,
     };
     const core = makeCore(50, "grid", "flat", null, cal);
-    const solid = buildOrthotropicMaterial("pla", 0.55, "flat", 0.2, cal, null);
+    const solid = buildOrthotropicMaterial("pla", 1.0, "flat", 0.2, cal, null);
     const g = latticeStiffnessScale("grid", 0.5, 1.0); // 0.475
     expect(core.E_xy).toBeCloseTo(solid.E_xy * g, 8);
     expect(core.E_z).toBeCloseTo(solid.E_z * g, 8);   // ratios preserved

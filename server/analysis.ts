@@ -30,6 +30,14 @@ import {
   PATTERN_PLY_ANGLES,
   type BeadProperties,
 } from "./solver/laminate.js";
+import {
+  predictBondMultipliers,
+  hasProcessSettings,
+  type ProcessSettings,
+  type BondModelCoeffs,
+  type BondPrediction,
+} from "./solver/bond.js";
+export { fitBondCoeffs, type BondSweepPoint } from "./solver/bond.js";
 
 // ─── Memory profiling snap helper ────────────────────────────────────────────
 // Activated by STORMFEA_PROFILE_MEMORY=1. Mirrors the helper in pipeline.ts.
@@ -58,7 +66,11 @@ import {
 import { isOrthotropic, isOrthotropicLike } from "./solver/types.js";
 import { recoverElementStressComponents }   from "./solver/stress_detail.js";
 import { rotationAligningZTo, rotateStress6ToLocal, computeGeometry } from "./solver/element.js";
-import { sprSmoothedStress, sprSmoothedStress6, recoverElementStress, nodeAveragedPrincipalStress } from "./solver/stress.js";
+import {
+  sprSmoothedStress, sprSmoothedStress6, recoverElementStress, nodeAveragedPrincipalStress,
+  fdmInterfaceUtilization, interlaminarShearOf, INTERFACE_FRICTION_MU,
+  type CriterionKind,
+} from "./solver/stress.js";
 import { flagMergedHoleWarnings }           from "./holes.js";
 import type { HoleFeature }                 from "./holes.js";
 import { meshWithTetGen, TetGenNotFoundError } from "./tetgen.js";
@@ -208,18 +220,19 @@ export interface FailureModeResult {
 /**
  * Headline "bulk yield" safety factor for the verdict (issue #97).
  *
- * For orthotropic/gyroid materials the solver already evaluates the Hill
- * (1948) anisotropic criterion per element (recoverElementStress →
- * SolverResult.minSafetyFactor, using the calibrated yieldXY/yieldZ of the
- * material actually solved). That is the number that must drive the verdict:
- * the von Mises SF (effectiveYield / maxVM) applies the in-plane yield in all
- * directions and overestimates the margin of Z-dominated stress states by up
- * to yieldXY/yieldZ (~1.7×).
+ * For orthotropic materials the solver already evaluates the anisotropic
+ * criterion per element (recoverElementStress → SolverResult.minSafetyFactor,
+ * using the calibrated allowables of the material actually solved) — by
+ * default the FDM dual criterion (bulk von Mises + interlayer interface),
+ * or Hill (1948) on the hill-legacy path. That is the number that must drive
+ * the verdict: the von Mises SF (effectiveYield / maxVM) applies the in-plane
+ * yield in all directions and overestimates the margin of Z-dominated stress
+ * states by up to yieldXY/yieldZ (~1.7×).
  *
  * The von Mises SF is still returned for display/comparison.
  */
 export function computeBulkSF(params: {
-  /** SolverResult.minSafetyFactor — Hill-based for orthotropic materials */
+  /** SolverResult.minSafetyFactor — anisotropic-criterion-based for orthotropic materials */
   minSafetyFactor:   number;
   /** SolverResult.maxVonMisesMPa */
   maxVonMisesMPa:    number;
@@ -227,16 +240,21 @@ export function computeBulkSF(params: {
   effectiveYieldMPa: number;
   /** The material the solver actually ran with */
   material:          AnyMaterial;
-}): { sf: number; criterion: "hill" | "von-mises"; vonMisesSF: number } {
+  /** Which criterion recoverElementStress evaluated (default fdm-interface). */
+  criterionUsed?:    CriterionKind;
+}): { sf: number; criterion: "fdm-interface" | "hill" | "von-mises"; vonMisesSF: number } {
   const { minSafetyFactor, maxVonMisesMPa, effectiveYieldMPa, material } = params;
   const vonMisesSF = effectiveYieldMPa / (maxVonMisesMPa || 0.001);
-  // Only OrthotropicMaterial gets the Hill criterion in recoverElementStress
-  // (GyroidOrthotropic falls back to von Mises there, but against the
-  // material's own yield — still preferable to the literature-only scalar).
+  // Only OrthotropicMaterial gets the anisotropic criterion in
+  // recoverElementStress (GyroidOrthotropic falls back to von Mises there,
+  // but against the material's own yield — still preferable to the
+  // literature-only scalar).
   if (isOrthotropicLike(material) && isFinite(minSafetyFactor)) {
     return {
       sf:        minSafetyFactor,
-      criterion: isOrthotropic(material) ? "hill" : "von-mises",
+      criterion: !isOrthotropic(material) ? "von-mises"
+               : (params.criterionUsed ?? "fdm-interface") === "hill-legacy" ? "hill"
+               : "fdm-interface",
       vonMisesSF,
     };
   }
@@ -270,11 +288,19 @@ export function checkFailureModes(params: {
   effectiveYieldMPa: number;
   bulkSF:           number;
   /** Which criterion produced bulkSF — labels the "Bulk yield" entry. */
-  bulkCriterion?:   "hill" | "von-mises";
+  bulkCriterion?:   "fdm-interface" | "hill" | "von-mises";
   orientation:      string;
   layerHeightMm:    number;
   calibratedBearingStrMPa?: number | null;
   bearingStressMult?: number;
+  /**
+   * Interlaminar shear allowable S_zs of the solved material (MPa) — the
+   * lap-shear-calibrated (or bond-model-predicted) value. When present it
+   * replaces the legacy Sy × 0.42/0.58 × lhf estimate for shear-out and
+   * thread strip-out (audit A5: those checks now consume the same allowable
+   * the FEM interface criterion uses).
+   */
+  interlayerShearMPa?: number | null;
 }): FailureModeResult[] {
   const { holeClass, plateThicknessMm, edgeDistMm, holeSeparationMm,
           appliedForceN, effectiveYieldMPa, bulkSF, orientation,
@@ -290,16 +316,18 @@ export function checkFailureModes(params: {
   const Sy   = effectiveYieldMPa;
   const lhf  = layerHeightFactor(layerHeightMm);
 
-  // Inter-layer shear strength.
-  // Base ratio updated from literature review (June 2026):
+  // Inter-layer shear strength: the material's own interlaminar allowable
+  // when available (same S_zs the FEM interface criterion uses); otherwise
+  // the legacy estimate as a fraction of yield.
+  // Legacy base ratio (literature review June 2026):
   //   flat:   0.42 (was 0.40) — conservative, Z-direction failure
   //   upright: 0.58 (was 0.55) — aligned with yieldZ/yieldXY = 0.58
   // Source: Cojocaru et al. 2019 measured 0.59; Rodriguez et al. 2001 ~0.50.
-  // Using 0.42/0.58 as slightly conservative central estimates.
   const shearBase     = orientation === "upright" ? 0.58 : 0.42;
-  const shearStrength = Sy * shearBase * lhf;
-
-  const lhNote = `layer height ${layerHeightMm}mm (factor ${lhf.toFixed(2)}×)`;
+  const shearStrength = params.interlayerShearMPa ?? (Sy * shearBase * lhf);
+  const shearSrcNote  = params.interlayerShearMPa != null
+    ? `material interlaminar allowable S_zs = ${shearStrength.toFixed(1)} MPa`
+    : `${(shearBase*100).toFixed(0)}% of yield × layer height ${layerHeightMm}mm (factor ${lhf.toFixed(2)}×)`;
 
   // ── 1. Bulk yield (from FEM) ──────────────────────────────────────────────
   results.push({
@@ -308,7 +336,9 @@ export function checkFailureModes(params: {
     failForceN:  F * bulkSF,
     checked:     true,
     confidence:  "high",
-    note:        bulkCriterion === "hill"
+    note:        bulkCriterion === "fdm-interface"
+      ? "FDM dual criterion from FEM — bulk (bead) von Mises + interlayer interface (tension/shear interaction). Most reliable result."
+      : bulkCriterion === "hill"
       ? "Hill (1948) anisotropic yield criterion from FEM — accounts for the weaker inter-layer (Z) direction. Most reliable result."
       : "Von Mises stress from FEM vs effective yield. Most reliable result.",
   });
@@ -353,7 +383,7 @@ export function checkFailureModes(params: {
       failForceN:  +(F * sf_shear).toFixed(0),
       checked:     true,
       confidence:  "medium",
-      note:        `Two shear planes from hole to plate edge. Inter-layer shear strength: ${shearStrength.toFixed(0)} MPa (${(shearBase*100).toFixed(0)}% of yield × ${lhNote}).`,
+      note:        `Two shear planes from hole to plate edge. Inter-layer shear strength: ${shearStrength.toFixed(0)} MPa (${shearSrcNote}).`,
     });
   }
 
@@ -443,6 +473,27 @@ export interface CalibrationProfile {
   E_z_over_E_xy:    number;
   yieldZ_over_yieldXY: number;
   G_xz_over_G_xy:   number;
+  /**
+   * Interlaminar shear allowable S_zs from the lap-shear coupon (Kt-corrected
+   * peak, MPa). Independent of yieldZ since the criterion decoupling (audit
+   * A5) — lap-shear is no longer converted into yieldZ unless no Z-tension
+   * measurement exists. Absent on older stored profiles.
+   */
+  interShear_MPa?:  number | null;
+  /** S_zs / S_zt ratio applied to the final yieldZ; default 1/√3 when absent. */
+  interShear_over_yieldZ?: number | null;
+  /**
+   * True when yieldZ_MPa was DERIVED from the lap-shear measurement via the
+   * legacy Hill relation (τ/0.58) because no Z-tension coupon was entered —
+   * flags the delamination row's confidence as literature-grade.
+   */
+  yieldZFromShear?: boolean;
+  /**
+   * Printer/filament-fitted bead-penetration bond-model coefficients from a
+   * process sweep (POST /api/calibration/bond-sweep → fitBondCoeffs). Absent
+   * = literature defaults (confidence LOW).
+   */
+  bondCoeffs?: BondModelCoeffs | null;
   /**
    * Optional overrides for the two-region core's Gibson-Ashby exponents
    * (solver/lattice.ts). Escape hatch for printer-specific lattice data —
@@ -538,6 +589,18 @@ export const COUPON_DIMS = {
     gaugeLengthMm:  50.0,
     description:    "Standard dog-bone, print flat, pull along length",
   },
+  /**
+   * Same dog-bone geometry as `tensile`, printed STANDING ON END so the gauge
+   * axis is the build (Z) direction — every layer interface in the gauge is
+   * loaded in pure opening tension. Measures the bond tensile allowable S_zt
+   * (yieldZ) DIRECTLY (audit A5). Uniform gauge ⇒ Kt ≈ 1, plain F/A.
+   */
+  zTensile: {
+    gaugeWidthMm:   10.0,
+    gaugeThickMm:    4.0,
+    gaugeLengthMm:  50.0,
+    description:    "Dog-bone printed STANDING (gauge axis = build Z), pull along length — measures inter-layer tensile strength",
+  },
   lapShear: {
     overlapWidthMm:  20.0,
     overlapLengthMm: 20.0,
@@ -563,6 +626,14 @@ export function backCalculateProfile(params: {
   lapShearFailN:   number | null;
   bearingFailN:    number | null;
   tensileDeflMm:   number | null;
+  /**
+   * Failure load of the upright-printed Z-tension dog-bone (N). Measures the
+   * bond tensile allowable S_zt (yieldZ) DIRECTLY — with it present, the
+   * lap-shear coupon stays a pure interlaminar-shear measurement instead of
+   * being converted into yieldZ via the legacy Hill τ/0.58 relation
+   * (audit A5). Uniform gauge ⇒ plain F/A, no Kt.
+   */
+  zTensileFailN?:  number | null;
   /**
    * Stress-concentration factors from FEA-in-the-loop (see coupon_fea.ts).
    * Kt = peak/nominal stress for that coupon's geometry. Converts the nominal
@@ -597,15 +668,33 @@ export function backCalculateProfile(params: {
     E_xy_MPa = strain > 0 ? stress / strain : null;
   }
 
+  // Z-tension: direct measurement of the bond tensile allowable S_zt. Same
+  // uniform dog-bone gauge as the flat tensile coupon (printed standing), so
+  // it is the same ASTM-style F/A with no Kt.
+  let yieldZ_MPa:    number | null = null;
+  let yieldZFromShear = false;
+  const zTensileFailN = params.zTensileFailN ?? null;
+  if (zTensileFailN !== null) {
+    const areaZ = COUPON_DIMS.zTensile.gaugeWidthMm * COUPON_DIMS.zTensile.gaugeThickMm;
+    yieldZ_MPa = zTensileFailN / areaZ;
+  }
+
   // Lap-shear: the single-lap joint concentrates shear at the overlap ends, so
   // nominal F/A_overlap underestimates the true peak. Multiply by Kt (from the
-  // solver) to get the peak-based interlaminar shear strength.
-  let shearStr_MPa: number | null = null;
-  let yieldZ_MPa:   number | null = null;
+  // solver) to get the peak-based interlaminar shear strength S_zs. It stays
+  // an INDEPENDENT allowable (audit A5); only when no Z-tension coupon was
+  // run is it also converted into yieldZ via the legacy Hill τ_z = Z/√3
+  // relation (τ/0.58) — flagged so consumers know yieldZ is derived.
+  let shearStr_MPa:  number | null = null;
+  let interShear_MPa: number | null = null;
   if (lapShearFailN !== null) {
     const area   = COUPON_DIMS.lapShear.overlapWidthMm * COUPON_DIMS.lapShear.overlapLengthMm;
     shearStr_MPa = ktLapShear * (lapShearFailN / area);
-    yieldZ_MPa   = shearStr_MPa / 0.58;
+    interShear_MPa = shearStr_MPa;
+    if (yieldZ_MPa === null) {
+      yieldZ_MPa = shearStr_MPa / 0.58;
+      yieldZFromShear = true;
+    }
   }
 
   // Bearing: contact at the hole wall concentrates stress at the bore. Nominal
@@ -618,6 +707,13 @@ export function backCalculateProfile(params: {
 
   const finalYieldXY = yieldXY_MPa ?? lit.yieldMPa;
   const finalYieldZ  = yieldZ_MPa  ?? lit.yieldMPa * FDM_ORTHO_RATIOS.yieldZ_over_yieldXY;
+  // S_zs/S_zt ratio: measured when both interlayer coupons exist; 1/√3 (the
+  // legacy Hill equivalence) otherwise. When yieldZ was DERIVED from the
+  // shear measurement the "measured" ratio would be 0.58 by construction —
+  // identical to the default within rounding — so the default is used.
+  const interShearRatio = (interShear_MPa !== null && !yieldZFromShear && finalYieldZ > 0)
+    ? interShear_MPa / finalYieldZ
+    : null;
 
   return {
     id, label, materialId, layerHeightMm,
@@ -627,6 +723,9 @@ export function backCalculateProfile(params: {
     E_xy_MPa,
     bearingStr_MPa,
     shearStr_MPa,
+    interShear_MPa,
+    interShear_over_yieldZ: interShearRatio,
+    yieldZFromShear,
     E_z_over_E_xy:       FDM_ORTHO_RATIOS.E_z_over_E_xy,
     yieldZ_over_yieldXY: finalYieldZ / finalYieldXY,
     G_xz_over_G_xy:      FDM_ORTHO_RATIOS.G_xz_over_G_xy,
@@ -644,6 +743,16 @@ const MATERIALS: Record<string, { E: number; nu: number; yieldMPa: number; densi
   pa12:  { E: 1700,  nu: 0.40, yieldMPa: 48,  densityKgM3: 1010, label: "PA12 (Nylon)" },
   asa:   { E: 2100,  nu: 0.35, yieldMPa: 40,  densityKgM3: 1070, label: "ASA"   },
 };
+
+/** Literature in-plane yield for a material id (bond-sweep fit fallback). */
+export function literatureYieldMPa(materialId: string): number {
+  return (MATERIALS[materialId] ?? MATERIALS["pla"]!).yieldMPa;
+}
+
+/** Literature yieldZ/yieldXY ratio (bond-sweep fit fallback). */
+export function literatureYieldZRatio(): number {
+  return FDM_ORTHO_RATIOS.yieldZ_over_yieldXY;
+}
 
 /**
  * FDM orthotropic property ratios — updated from literature review June 2026.
@@ -673,6 +782,18 @@ const FDM_ORTHO_RATIOS = {
   yieldZ_over_yieldXY: 0.58,   // raised from 0.50 — better supported by 2019 measurements
 };
 
+/**
+ * Default interlaminar-shear-to-Z-tension ratio S_zs/S_zt = 1/√3 ≈ 0.577.
+ *
+ * This is exactly the transverse-shear yield the legacy Hill (1948)
+ * coefficients L = M = 3/(2Z²) hard-wired (τ_z,yield = Z/√3), kept as the
+ * DEFAULT so uncalibrated through-layer results match the legacy criterion.
+ * It stops being an assumption once BOTH interlayer coupons are run: the
+ * Z-tension coupon measures S_zt directly and the lap-shear coupon measures
+ * S_zs directly (audit A5 — lap-shear is no longer converted into yieldZ).
+ */
+export const INTERSHEAR_OVER_YIELDZ_DEFAULT = 1 / Math.sqrt(3);
+
 
 /**
  * Fallback SCALAR-SWAP APPROXIMATION for upright prints when no bed is picked
@@ -690,6 +811,11 @@ const FDM_ORTHO_RATIOS = {
  * carry a weakAxis — swapping an already-rotated material is meaningless.
  */
 export function applyUprightScalarSwap(mat: OrthotropicMaterial): OrthotropicMaterial {
+  // yieldZShear (interlaminar shear) rides along unchanged via the spread:
+  // it belongs to the physical layer interface, which the swap relabels but
+  // does not alter. The swapped material is analysed with the hill-legacy
+  // criterion anyway (the interface criterion needs a known weak axis, which
+  // the no-bed swap deliberately does not have — see runAnalysis).
   return {
     ...mat,
     E_xy: mat.E_z, E_z: mat.E_xy,
@@ -709,6 +835,8 @@ function buildOrthotropicMaterialCLT(
   beadPropsOverride?: BeadProperties,
   /** Through-layer (weak) axis in the global frame; see buildOrthotropicMaterial. */
   weakAxis?:       readonly [number, number, number] | null,
+  /** Bead-penetration bond multipliers (process settings present); see bond.ts. */
+  bondRel?:        BondPrediction | null,
 ): OrthotropicMaterial {
   const base = MATERIALS[baseMatId] ?? MATERIALS["pla"]!;
   const lhf  = layerHeightFactor(layerHeightMm);
@@ -721,15 +849,31 @@ function buildOrthotropicMaterialCLT(
   const bead = beadPropsOverride ?? DEFAULT_BEAD_PROPS[baseMatId] ?? DEFAULT_BEAD_PROPS["pla"]!;
   const plyStack = PATTERN_PLY_ANGLES[pattern] ?? PATTERN_PLY_ANGLES["grid"]!;
 
-  const yieldXY = yieldXY_base * strengthMul;
-  const yieldZ  = yieldXY * yZ_ratio * lhf;
+  // Orientation is resolved by the constitutive rotation + anisotropic
+  // criterion, so strengthMul must arrive orientation-free (audit A4). Sole
+  // exception: an angled print with no bed picked has no directional model at
+  // all (the natural frame would be treated as flat), so the legacy 0.75
+  // scalar is kept as a conservative fallback until a bed face is chosen.
+  const angledNoBedMul = angledNoBedFallbackMul(orientation, weakAxis);
+
+  // Bead-penetration bond model (audit A6): process-settings multipliers on
+  // the interlayer properties, relative to the reference condition, applied
+  // ON TOP of the layer-height factor. 1.0 when no process block is present.
+  const bondS = bondRel?.relStrength  ?? 1.0;
+  const bondE = bondRel?.relStiffness ?? 1.0;
+
+  const yieldXY = yieldXY_base * strengthMul * angledNoBedMul;
+  const yieldZ  = yieldXY * yZ_ratio * lhf * bondS;
+  const yieldZShear = yieldZ * (calibration?.interShear_over_yieldZ ?? INTERSHEAR_OVER_YIELDZ_DEFAULT);
 
   // Derive Z-direction properties from the empirical bond model
-  // (CLT only replaces in-plane stiffness; Z is still bond-dominated)
-  const E_xy_empirical = (calibration?.E_xy_MPa ?? base.E) * Math.min(1.0, strengthMul / 0.55);
-  const E_z    = E_xy_empirical * E_z_ratio * lhf;
+  // (CLT only replaces in-plane stiffness; Z is still bond-dominated).
+  // min(1, strengthMul): stiffness saturates at solid — identical to the
+  // legacy min(1, mul/0.55) once the 0.55 orientation factor left the mul.
+  const E_xy_empirical = (calibration?.E_xy_MPa ?? base.E) * Math.min(1.0, strengthMul);
+  const E_z    = E_xy_empirical * E_z_ratio * lhf * bondE;
   const G_xy   = E_xy_empirical / (2 * (1 + base.nu));
-  const G_xz   = G_xy * Gxz_ratio * lhf;
+  const G_xz   = G_xy * Gxz_ratio * lhf * bondE;
   const nu_xz  = FDM_ORTHO_RATIOS.nu_xz;
 
   const src = calibration ? `CLT:calibrated:${calibration.id}` : "CLT:literature";
@@ -746,21 +890,22 @@ function buildOrthotropicMaterialCLT(
     yieldZ,
     `${base.label} (CLT, ${pattern}, ${orientation}, lh=${layerHeightMm}mm, ${src})`,
   );
+  const matZS: OrthotropicMaterial = { ...mat, yieldZShear };
 
   // Exact path (issue #101): a known through-layer axis (bed normal) → keep the
   // natural weak-along-local-Z CLT material and attach `weakAxis` so the solver
   // rotates the full tensor. Handles flat (+Z ⇒ identity), upright, and angled
   // uniformly, replacing the scalar-swap approximation.
   if (weakAxis && Math.hypot(weakAxis[0], weakAxis[1], weakAxis[2]) > 0) {
-    return { ...mat, weakAxis };
+    return { ...matZS, weakAxis };
   }
 
   if (orientation === "upright") {
     // Fallback scalar-swap approximation when no bed is picked — see
     // applyUprightScalarSwap.
-    return applyUprightScalarSwap(mat);
+    return applyUprightScalarSwap(matZS);
   }
-  return mat;
+  return matZS;
 }
 
 export function buildOrthotropicMaterial(
@@ -777,6 +922,8 @@ export function buildOrthotropicMaterial(
    * (no bed picked), the conservative scalar swap is used for upright prints.
    */
   weakAxis?:       readonly [number, number, number] | null,
+  /** Bead-penetration bond multipliers (process settings present); see bond.ts. */
+  bondRel?:        BondPrediction | null,
 ): OrthotropicMaterial {
   const base = MATERIALS[baseMatId] ?? MATERIALS["pla"]!;
   const lhf  = layerHeightFactor(layerHeightMm);
@@ -788,21 +935,31 @@ export function buildOrthotropicMaterial(
   const yZ_ratio     = calibration?.yieldZ_over_yieldXY ?? FDM_ORTHO_RATIOS.yieldZ_over_yieldXY;
   const Gxz_ratio    = calibration?.G_xz_over_G_xy  ?? FDM_ORTHO_RATIOS.G_xz_over_G_xy;
 
-  const E_xy    = E_xy_base    * Math.min(1.0, strengthMul / 0.55);
-  const E_z     = E_xy         * E_z_ratio * lhf;
+  // See buildOrthotropicMaterialCLT: strengthMul is orientation-free (audit
+  // A4); min(1, strengthMul) keeps stiffness saturated at solid; the angled
+  // no-bed case keeps the legacy 0.75 scalar as a conservative fallback.
+  const angledNoBedMul = angledNoBedFallbackMul(orientation, weakAxis);
+  // Bead-penetration bond model multipliers (audit A6); 1.0 without process
+  // settings — see buildOrthotropicMaterialCLT.
+  const bondS = bondRel?.relStrength  ?? 1.0;
+  const bondE = bondRel?.relStiffness ?? 1.0;
+
+  const E_xy    = E_xy_base    * Math.min(1.0, strengthMul);
+  const E_z     = E_xy         * E_z_ratio * lhf * bondE;
   const G_xy    = E_xy         / (2 * (1 + base.nu));
-  const G_xz    = G_xy         * Gxz_ratio * lhf;
+  const G_xz    = G_xy         * Gxz_ratio * lhf * bondE;
   const nu_xy   = base.nu;
   const nu_xz   = FDM_ORTHO_RATIOS.nu_xz;
-  const yieldXY = yieldXY_base * strengthMul;
-  const yieldZ  = yieldXY      * yZ_ratio  * lhf;
+  const yieldXY = yieldXY_base * strengthMul * angledNoBedMul;
+  const yieldZ  = yieldXY      * yZ_ratio  * lhf * bondS;
+  const yieldZShear = yieldZ * (calibration?.interShear_over_yieldZ ?? INTERSHEAR_OVER_YIELDZ_DEFAULT);
 
   const src = calibration ? `calibrated:${calibration.id}` : "literature";
 
   // Natural material: weak (through-layer) axis along local Z, strong in-plane.
   const flat: OrthotropicMaterial = {
     kind: "orthotropic",
-    E_xy, E_z, nu_xy, nu_xz, G_xz, yieldXY, yieldZ,
+    E_xy, E_z, nu_xy, nu_xz, G_xz, yieldXY, yieldZ, yieldZShear,
     label: `${base.label} (orthotropic, ${orientation}, lh=${layerHeightMm}mm, ${src})`,
   };
 
@@ -889,17 +1046,62 @@ export function orientationMultiplier(orientation: string): number {
        : 0.75;
 }
 
+/**
+ * The one orientation scalar left in the SOLVED-material path (audit A4): an
+ * "angled" print with NO bed face picked has no directional model — the
+ * material would otherwise be built in the flat frame and analysed as if its
+ * layers were flat. The legacy conservative 0.75 multiplier is kept for that
+ * case only. Returns 1.0 everywhere else: "flat" is the exact natural frame,
+ * "upright" is handled by the scalar swap, and any picked bed face gives the
+ * exact weakAxis tensor rotation.
+ */
+export function angledNoBedFallbackMul(
+  orientation: string,
+  weakAxis?: readonly [number, number, number] | null,
+): number {
+  const hasAxis = !!weakAxis && Math.hypot(weakAxis[0], weakAxis[1], weakAxis[2]) > 0;
+  return (!hasAxis && orientation !== "flat" && orientation !== "upright")
+    ? orientationMultiplier(orientation)
+    : 1.0;
+}
+
 export function effectiveStrengthMultiplier(
   infillPct:   number,
   wallCount:   number,
   pattern:     string,
   orientation: string,
 ): number {
+  return materialStrengthMultiplier(infillPct, wallCount, pattern)
+       * orientationMultiplier(orientation);
+}
+
+/**
+ * Strength multiplier for the SOLVED material (layer-model audit, finding A4).
+ *
+ * Excludes orientation: the solver's constitutive model and failure criterion
+ * already resolve load-vs-layer direction exactly (weakAxis tensor rotation +
+ * anisotropic yield), so an orientation scalar here would double-count the
+ * layer penalty — the legacy 0.55× flat multiplier encoded the same physics
+ * as the yieldZ/yieldXY = 0.58 ratio, stacking to an unphysical
+ * 0.55 × 0.58 ≈ 0.32 through-layer strength and knocking a flat part's
+ * IN-PLANE strength (its coupon-measured yieldXY) to 0.55× for no reason.
+ * infill/walls/pattern stay: they describe how much load-bearing section
+ * exists, which the continuum mesh cannot see.
+ *
+ * effectiveStrengthMultiplier (above) KEEPS orientation and remains the
+ * quick scalar ESTIMATOR for recommendations / what-if ranking only — it
+ * approximates the direction effect without solving.
+ */
+export function materialStrengthMultiplier(
+  infillPct: number,
+  wallCount: number,
+  pattern:   string,
+): number {
   const infillMul  = infillStrengthCurve(infillPct);
   const wallBonus  = (wallCount - 1) * 0.10;
   const combined   = Math.min(1.0, infillMul + wallBonus);
   const patternMul = PATTERN_MULTIPLIERS[pattern] ?? 1.0;
-  return combined * patternMul * orientationMultiplier(orientation);
+  return combined * patternMul;
 }
 
 /**
@@ -910,15 +1112,16 @@ export function effectiveStrengthMultiplier(
  * density (solver/lattice.ts: s(ρ) = min(1, patternMul·ρ^m), m per pattern
  * family). Clamped at solid; anchored s(1) = min(1, patternMul), identical
  * to the legacy linear curve's ρ=1 value.
+ *
+ * Orientation-free (audit A4): direction is the criterion's job. The core is
+ * still layered material — its through-layer weakness enters via yieldZ.
  */
 export function coreStrengthMultiplier(
   infillPct:   number,
   pattern:     string,
-  orientation: string,
   strengthExpOverride?: number | null,
 ): number {
-  return latticeStrengthFraction(pattern, infillPct / 100, strengthExpOverride)
-       * orientationMultiplier(orientation);
+  return latticeStrengthFraction(pattern, infillPct / 100, strengthExpOverride);
 }
 
 /**
@@ -963,20 +1166,26 @@ export function buildCoreMaterial(
   useCLT:        boolean,
   beadProps:     BeadProperties | undefined,
   weakAxis:      readonly [number, number, number] | null,
+  /** Bond-model multipliers — the core is layered material too; see bond.ts. */
+  bondRel?:      BondPrediction | null,
 ): OrthotropicMaterial {
   const baseMat = MATERIALS[materialId] ?? MATERIALS["pla"]!;
   const rho = infillPct / 100;
-  const orientMul = orientationMultiplier(orientation);
   const sStr = latticeStrengthFraction(pattern, rho, calibration?.latticeStrengthExp);
 
   const uprightNoBed = !weakAxis && orientation === "upright";
   const solidAxis: readonly [number, number, number] | null =
     uprightNoBed ? [0, 0, 1] : weakAxis;
+  // strengthMul = 1.0: the solid lattice base is the full-strength printed
+  // material — orientation is the criterion's job (audit A4; the builder
+  // itself applies the angled-no-bed fallback when applicable). Note the
+  // uprightNoBed identity axis suppresses BOTH the swap and the fallback
+  // here; the swap is applied manually below, after scaling.
   const solid = useCLT
     ? buildOrthotropicMaterialCLT(materialId, 100, pattern, orientation, layerHeightMm,
-        orientMul, calibration, beadProps, solidAxis)
-    : buildOrthotropicMaterial(materialId, orientMul, orientation, layerHeightMm,
-        calibration, solidAxis);
+        1.0, calibration, beadProps, solidAxis, bondRel)
+    : buildOrthotropicMaterial(materialId, 1.0, orientation, layerHeightMm,
+        calibration, solidAxis, bondRel);
 
   let scaled: OrthotropicMaterial;
   if (calibration?.latticeStiffExp != null) {
@@ -1042,6 +1251,9 @@ export function buildCoreMaterial(
     ...framed,
     yieldXY: framed.yieldXY * sStr,
     yieldZ:  framed.yieldZ  * sStr,
+    // Interlaminar shear follows the same lattice strength fraction as the
+    // other strengths (the bond area thins with density like the walls do).
+    yieldZShear: interlaminarShearOf(framed) * sStr,
     label: `${solid.label} · GA ${pattern} lattice ρ=${infillPct}%`,
     massRho: baseMat.densityKgM3 * rho,
   };
@@ -1107,6 +1319,14 @@ export interface PrintSettings {
    * is a genuine slicer/print parameter, so it stays with the print settings.
    */
   extrusionWidthMm?: number;
+  /**
+   * Optional process settings (nozzle/bed temperature, print speed, cooling
+   * fan, ambient). When ANY field is present the bead-penetration bond model
+   * (server/solver/bond.ts, audit A6) predicts interlayer strength/stiffness
+   * multipliers RELATIVE to the reference condition and applies them on top
+   * of layerHeightFactor. Absent → legacy layer-height-only path, unchanged.
+   */
+  process?: ProcessSettings;
 }
 
 /**
@@ -1154,6 +1374,15 @@ export interface AnalysisSettings {
    * single-material model.
    */
   twoRegion?:    boolean;
+  /**
+   * Failure criterion override. Default (absent): "fdm-interface" — the
+   * decoupled dual criterion (bulk von Mises + interlayer interface,
+   * docs/layer-model-audit.md A1–A3) — except on the upright-no-bed
+   * scalar-swap fallback, which stays "hill-legacy" because the interface
+   * criterion needs a known weak axis. Set "hill-legacy" explicitly to
+   * compare against the pre-audit Hill (1948) criterion.
+   */
+  criterion?:    "fdm-interface" | "hill-legacy";
 }
 
 /**
@@ -1499,16 +1728,21 @@ export function estimateFatigue(
   };
 }
 
-// ─── Anisotropic utilization ratios (Hill-derived, dual-criterion heatmap) ────
+// ─── Anisotropic utilization ratios (dual-criterion heatmap) ─────────────────
 /**
  * Per-node anisotropic utilization ratios:
  *
  *   U_XY = sqrt(σxx² + σyy² − σxx·σyy + 3·τxy²) / yieldXY
  *          (in-plane von Mises measure vs in-plane yield Y)
- *   U_Z  = max(|σzz|, √3·sqrt(τyz² + τxz²)) / yieldZ
- *          (through-layer normal or interlayer shear vs bond yield Z;
- *           the √3 factor comes from Hill L = M = 3/(2Z²), i.e. the shear
- *           yield in Z-planes is Z/√3)
+ *   U_Z  = interface utilization of the layer-plane traction
+ *          (fdmInterfaceUtilization: tension-only ⟨σzz⟩₊/S_zt interacting
+ *           quadratically with τ_z/S_zs; under compression the friction-
+ *           reduced shear only — audit A3: compression no longer counts
+ *           toward bond failure).
+ *
+ * With the default S_zs = yieldZ/√3, tension-side values match the legacy
+ * Hill-derived U_Z for pure states; compressive σzz now reads 0 instead of
+ * |σzz|/yieldZ.
  *
  * Exported for unit testing (tests/unit/hill-utilization.test.ts).
  */
@@ -1516,12 +1750,68 @@ export function computeUtilizationRatios(
   sxx: number, syy: number, szz: number,
   txy: number, tyz: number, txz: number,
   yieldXY: number, yieldZ: number,
+  yieldZShear?: number,
+  mu: number = INTERFACE_FRICTION_MU,
 ): { uXY: number; uZ: number } {
   const uXY = Math.sqrt(Math.max(0, sxx*sxx + syy*syy - sxx*syy + 3*txy*txy)) / yieldXY;
-  const normalZ = Math.abs(szz);
-  const shearZ  = Math.sqrt(3) * Math.sqrt(tyz*tyz + txz*txz);
-  const uZ = Math.max(normalZ, shearZ) / yieldZ;
-  return { uXY, uZ };
+  const zs = yieldZShear ?? yieldZ * INTERSHEAR_OVER_YIELDZ_DEFAULT;
+  const { combined } = fdmInterfaceUtilization(szz, tyz, txz, yieldZ, zs, mu);
+  return { uXY, uZ: combined };
+}
+
+/**
+ * Peak interlayer-interface utilizations over all elements, decomposed into
+ * the tension (delamination-onset) and shear terms — the FEM-field inputs
+ * for the two interlayer failure-mode rows. The combined tension⊕shear
+ * interaction already governs the headline SF via the dual criterion; these
+ * rows report each mechanism's own margin (SF = 1/peak-utilization), so
+ * "breaking upon the layers" and "layers sliding" are visible — and
+ * calibratable — separately. Returns null for non-orthotropic materials.
+ */
+export function computeInterfaceModePeaks(
+  mesh:        import("./solver/types.js").TetMesh,
+  elemStress6: Float64Array,
+  material:    AnyMaterial,
+  field?:      ElementMaterialField | null,
+): {
+  sfTension: number; peakTensionMPa: number; allowTensionMPa: number;
+  sfShear:   number; peakShearMPa:   number; allowShearMPa:   number;
+} | null {
+  if (!isOrthotropic(material)) return null;
+  const axis = material.weakAxis;
+  const weakR = (axis && Math.hypot(axis[0], axis[1], axis[2]) > 0
+    && (axis[2] / (Math.hypot(axis[0], axis[1], axis[2]) || 1)) < 1 - 1e-12)
+    ? rotationAligningZTo(axis) : null;
+  const matZ  = material.yieldZ;
+  const matZS = interlaminarShearOf(material);
+  let maxUT = 0, maxUS = 0;
+  let tStress = 0, tAllow = matZ;
+  let sStress = 0, sAllow = matZS;
+  for (let e = 0; e < mesh.elementCount; e++) {
+    let szz = elemStress6[e * 6 + 2] ?? 0;
+    let tyz = elemStress6[e * 6 + 4] ?? 0;
+    let txz = elemStress6[e * 6 + 5] ?? 0;
+    if (weakR) {
+      const L = rotateStress6ToLocal([
+        elemStress6[e * 6] ?? 0, elemStress6[e * 6 + 1] ?? 0, szz,
+        elemStress6[e * 6 + 3] ?? 0, tyz, txz,
+      ], weakR);
+      szz = L[2]; tyz = L[4]; txz = L[5];
+    }
+    const bin = field ? (field.binOfElement[e] ?? 0) : 0;
+    const yZ  = field ? (field.yieldZ[bin] ?? matZ) : matZ;
+    const yZS = field ? (field.yieldZShear[bin] ?? matZS) : matZS;
+    const u = fdmInterfaceUtilization(szz, tyz, txz, yZ, yZS);
+    if (u.uTension > maxUT) { maxUT = u.uTension; tStress = Math.max(0, szz); tAllow = yZ; }
+    if (u.uShear > maxUS) { maxUS = u.uShear; sStress = u.uShear * yZS; sAllow = yZS; }
+  }
+  const clampSF = (v: number) => Math.min(Math.max(v, 0), 999);
+  return {
+    sfTension: clampSF(maxUT > 1e-9 ? 1 / maxUT : 999),
+    peakTensionMPa: tStress, allowTensionMPa: tAllow,
+    sfShear:   clampSF(maxUS > 1e-9 ? 1 / maxUS : 999),
+    peakShearMPa: sStress, allowShearMPa: sAllow,
+  };
 }
 
 // ─── Cosine-bearing nodal force distribution ──────────────────────────────────
@@ -1637,6 +1927,20 @@ export interface MaterialModelInfo {
   };
   /** Set when the two-region request degraded to uniform (why). */
   degraded?:            string;
+  /**
+   * Bead-penetration bond model diagnostics — present when process settings
+   * activated it (server/solver/bond.ts, audit A6).
+   */
+  bond?: {
+    relStrength:    number;
+    relStiffness:   number;
+    interfaceTempC: number;
+    substrateTempC: number;
+    coolTimeConstS: number;
+    clamped:        boolean;
+    confidence:     "low" | "medium";
+    note:           string;
+  };
 }
 
 export interface AnalysisResult {
@@ -1651,8 +1955,10 @@ export interface AnalysisResult {
   maxDisplacementMm:      number;
   effectiveYieldMPa:      number;
   safetyFactor:           number | null;
-  /** Which yield criterion produced the headline safetyFactor (issue #97) */
-  sfCriterion:            "hill" | "von-mises";
+  /** Which yield criterion produced the headline safetyFactor (issue #97).
+   *  "fdm-interface" = the decoupled dual criterion (default);
+   *  "hill" = legacy Hill 1948 (upright-no-bed fallback or explicit opt-in). */
+  sfCriterion:            "fdm-interface" | "hill" | "von-mises";
   /**
    * Von Mises SF (effectiveYield / maxVM) — what a conventional isotropic
    * check gives on the same stress field. Kept for display/comparison next
@@ -2448,17 +2754,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
 
   // ── Material + print settings ───────────────────────────────────────────────
   const baseMat = MATERIALS[req.print.materialId] ?? MATERIALS["pla"]!;
-  const strengthMul = effectiveStrengthMultiplier(
-    req.print.infillPct,
-    req.print.wallCount,
-    req.print.pattern ?? "grid",
-    req.print.orientation,
-  );
-  const effectiveYield = baseMat.yieldMPa * strengthMul;
 
-  // Use orthotropic material model — accurately captures the anisotropy of FDM parts.
-  // For flat prints: E_z ≈ 0.45 × E_xy, G_xz ≈ 0.40 × G_xy (Ahn et al. 2002)
-  // For upright prints: axes are swapped — the strong direction faces the load
   // Through-layer (weak) axis from the picked bed normal, when available — the
   // solver then applies an exact tensor rotation instead of the scalar-swap
   // upright approximation (issue #101). Only its direction matters (sign/azimuth
@@ -2466,6 +2762,42 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   const weakAxis: readonly [number, number, number] | null =
     (req.layerNormal && Math.hypot(req.layerNormal[0], req.layerNormal[1], req.layerNormal[2]) > 1e-9)
       ? req.layerNormal : null;
+
+  // Orientation-free material multiplier (audit A4): the criterion resolves
+  // load-vs-layer direction; only the angled-no-bed case keeps a scalar
+  // fallback (no directional model exists there).
+  const strengthMul = materialStrengthMultiplier(
+    req.print.infillPct,
+    req.print.wallCount,
+    req.print.pattern ?? "grid",
+  );
+  const orientFallbackMul = angledNoBedFallbackMul(req.print.orientation, weakAxis);
+  const effectiveYield = baseMat.yieldMPa * strengthMul * orientFallbackMul;
+
+  // Failure criterion: the FDM dual criterion by default; the upright-no-bed
+  // scalar swap keeps the legacy Hill evaluation (the interface criterion
+  // needs a known weak axis, which the swap deliberately does not have).
+  const criterion: CriterionKind = req.analysis.criterion
+    ?? ((req.print.orientation === "upright" && !weakAxis) ? "hill-legacy" : "fdm-interface");
+
+  // Bead-penetration bond model (audit A6): only active when the request
+  // carries process settings; otherwise the legacy layer-height-only path
+  // runs bit-identically (bondRel = null → all multipliers 1.0).
+  const bondRel: BondPrediction | null = hasProcessSettings(req.print.process)
+    ? predictBondMultipliers(
+        req.print.materialId,
+        req.print.layerHeightMm ?? 0.2,
+        req.print.process,
+        req.calibration?.bondCoeffs ?? null,
+      )
+    : null;
+  if (bondRel) {
+    console.log(`[analysis] bond model active: ${bondRel.note}`);
+  }
+
+  // Use orthotropic material model — accurately captures the anisotropy of FDM parts.
+  // For flat prints: E_z ≈ 0.65 × E_xy, yieldZ ≈ 0.58 × yieldXY.
+  // For upright prints: axes are swapped — the strong direction faces the load.
 
   const builtMaterial: AnyMaterial = req.analysis.useCLT
     ? buildOrthotropicMaterialCLT(
@@ -2478,6 +2810,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         req.calibration ?? null,
         req.analysis.beadProps,
         weakAxis,
+        bondRel,
       )
     : buildOrthotropicMaterial(
         req.print.materialId,
@@ -2486,6 +2819,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         req.print.layerHeightMm ?? 0.2,
         req.calibration ?? null,
         weakAxis,
+        bondRel,
       );
 
   // Effective mass density (issue #99): solid density × first-order solid
@@ -2607,7 +2941,17 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     shellYieldXYMPa: null,
     coreYieldXYMPa: null,
     impliedAvgStrengthMul: null,
-    globalModelStrengthMul: strengthMul,
+    globalModelStrengthMul: strengthMul * orientFallbackMul,
+    ...(bondRel ? { bond: {
+      relStrength:    +bondRel.relStrength.toFixed(4),
+      relStiffness:   +bondRel.relStiffness.toFixed(4),
+      interfaceTempC: +bondRel.interfaceTempC.toFixed(1),
+      substrateTempC: +bondRel.substrateTempC.toFixed(1),
+      coolTimeConstS: +bondRel.coolTimeConstS.toFixed(2),
+      clamped:        bondRel.clamped,
+      confidence:     bondRel.confidence,
+      note:           bondRel.note,
+    } } : {}),
   };
   if (req.analysis.twoRegion) {
     const degrade = (why: string): void => {
@@ -2627,16 +2971,16 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       const lineWidth = Math.min(2.0, Math.max(0.1, req.print.extrusionWidthMm ?? 0.45));
       const tWall = req.print.wallCount * lineWidth;
 
-      // Shell: solid perimeter material. strengthMul = orientMul makes the
-      // builder's E_xy = E_base × min(1, mul/0.55) evaluate to solid E for
-      // every orientation, and yieldXY = base × orientMul — the same
-      // convention the coupon calibration back-calculates, so calibrated
-      // solid props flow to the shell unchanged. No pattern multiplier, no
-      // infill knockdown, solid density.
-      const orientMul = orientationMultiplier(req.print.orientation);
+      // Shell: solid perimeter material at full strength (strengthMul = 1.0)
+      // — exactly the convention the coupon calibration back-calculates
+      // (coupons are printed flat and pulled in-plane), so calibrated solid
+      // props flow to the shell unchanged. Orientation is the criterion's
+      // job (audit A4); the builder applies the angled-no-bed fallback
+      // itself. No pattern multiplier, no infill knockdown, solid density.
       const shellBuilt = buildOrthotropicMaterial(
-        req.print.materialId, orientMul, req.print.orientation,
+        req.print.materialId, 1.0, req.print.orientation,
         req.print.layerHeightMm ?? 0.2, req.calibration ?? null, weakAxis,
+        bondRel,
       );
       const shellMat: OrthotropicMaterial = { ...shellBuilt, massRho: baseMat.densityKgM3 };
 
@@ -2658,6 +3002,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         req.print.materialId, req.print.infillPct, pattern, req.print.orientation,
         req.print.layerHeightMm ?? 0.2, req.calibration ?? null,
         req.analysis.useCLT ?? false, req.analysis.beadProps, weakAxis,
+        bondRel,
       );
 
       const tr = buildTwoRegionField(mesh, surfaceFaces, shellMat, coreMat, tWall);
@@ -2670,7 +3015,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       // exact sStr that built the core, so the diagnostic can never
       // desynchronize from the material.
       const Vf = tr.shellVolumeFraction;
-      const impliedAvgStrengthMul = (Vf * 1.0 + (1 - Vf) * sStr) * orientMul;
+      const impliedAvgStrengthMul = (Vf * 1.0 + (1 - Vf) * sStr) * orientFallbackMul;
       const family = patternFamilyOf(pattern);
       materialModel = {
         ...materialModel,
@@ -2987,6 +3332,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     mesh,
     material,
     ...(materialField ? { materialField } : {}),
+    criterion,
     constraints,
     forces: effectiveForces,
     keepPristineK: wantsModal || mayBuckle,
@@ -3091,13 +3437,17 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
 
   // ── SPR-smoothed nodal stress tensor + anisotropic utilization ratios ────────
   // U_XY = sqrt(σxx²+σyy²-σxx·σyy+3·σxy²) / yieldXY  (in-plane von Mises / yieldXY)
-  // U_Z  = max(|σzz|, sqrt(3)·sqrt(σyz²+σxz²)) / yieldZ  (out-of-plane / yieldZ)
-  // G_ratio=1/sqrt(3) from Hill L=M=3/(2Z²) → shear yield in Z-planes = yieldZ/sqrt(3)
+  // U_Z  = interlayer interface utilization (tension-only ⟨σzz⟩₊/S_zt ⊕
+  //        τ_z/S_zs quadratic interaction; friction-reduced shear under
+  //        compression — see computeUtilizationRatios / audit A3)
   const orthoMatU = isOrthotropic(material)
     ? (material as import("./solver/types.js").OrthotropicMaterial)
     : null;
   const utilYieldXY = orthoMatU ? orthoMatU.yieldXY : effectiveYield;
   const utilYieldZ  = orthoMatU ? orthoMatU.yieldZ  : effectiveYield;
+  const utilYieldZS = orthoMatU
+    ? interlaminarShearOf(orthoMatU)
+    : effectiveYield * INTERSHEAR_OVER_YIELDZ_DEFAULT;
   // U_XY / U_Z are defined in the material frame (weak axis = local Z). For a
   // rotated weak axis (upright/angled, issue #101) rotate the nodal stress into
   // that frame first; null for the common weak-along-Z case.
@@ -3115,15 +3465,18 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // patch average (SPR). One scatter pass over elements, no adjacency needed.
   let nodeYieldXY: Float64Array | null = null;
   let nodeYieldZ:  Float64Array | null = null;
+  let nodeYieldZS: Float64Array | null = null;
   if (materialField && nodeStress6) {
     nodeYieldXY = new Float64Array(mesh.nodeCount);
     nodeYieldZ  = new Float64Array(mesh.nodeCount);
+    nodeYieldZS = new Float64Array(mesh.nodeCount);
     const nodeVolSum = new Float64Array(mesh.nodeCount);
     const npeY = mesh.nodesPerElem;
     for (let e = 0; e < mesh.elementCount; e++) {
       const bin = materialField.binOfElement[e] ?? 0;
       const yXY = materialField.yieldXY[bin] ?? utilYieldXY;
       const yZ  = materialField.yieldZ[bin]  ?? utilYieldZ;
+      const yZS = materialField.yieldZShear[bin] ?? utilYieldZS;
       const base = e * npeY;
       const V = computeGeometry(
         mesh.nodes,
@@ -3134,6 +3487,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         const n = mesh.elements[base + k] ?? 0;
         nodeYieldXY[n] = (nodeYieldXY[n] ?? 0) + yXY * V;
         nodeYieldZ[n]  = (nodeYieldZ[n]  ?? 0) + yZ * V;
+        nodeYieldZS[n] = (nodeYieldZS[n] ?? 0) + yZS * V;
         nodeVolSum[n]  = (nodeVolSum[n]  ?? 0) + V;
       }
     }
@@ -3142,9 +3496,11 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       if (w > 0) {
         nodeYieldXY[n] = (nodeYieldXY[n] ?? 0) / w;
         nodeYieldZ[n]  = (nodeYieldZ[n]  ?? 0) / w;
+        nodeYieldZS[n] = (nodeYieldZS[n] ?? 0) / w;
       } else {
         nodeYieldXY[n] = utilYieldXY;
         nodeYieldZ[n]  = utilYieldZ;
+        nodeYieldZS[n] = utilYieldZS;
       }
     }
   }
@@ -3168,6 +3524,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         sxx, syy, szz, txy, tyz, txz,
         nodeYieldXY ? (nodeYieldXY[n] ?? utilYieldXY) : utilYieldXY,
         nodeYieldZ  ? (nodeYieldZ[n]  ?? utilYieldZ)  : utilYieldZ,
+        nodeYieldZS ? (nodeYieldZS[n] ?? utilYieldZS) : utilYieldZS,
       );
       nodeUtilXY[n] = util.uXY;
       nodeUtilZ[n]  = util.uZ;
@@ -3528,6 +3885,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     maxVonMisesMPa:    maxVM,
     effectiveYieldMPa: effectiveYield,
     material,
+    criterionUsed:     criterion,
   });
   const sf         = bulk.sf;
   const sfVonMises = bulk.vonMisesSF;
@@ -3669,6 +4027,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       orientation:       req.print.orientation,
       layerHeightMm:     req.print.layerHeightMm ?? 0.2,
       calibratedBearingStrMPa: req.calibration?.bearingStr_MPa ?? null,
+      interlayerShearMPa: isOrthotropicLike(material) ? interlaminarShearOf(material) : null,
       ...(bearingStressMult > 1.0 ? { bearingStressMult } : {}),
     });
 
@@ -3756,6 +4115,43 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         checked:     false,
         confidence:  "unchecked",
         note:        "Buckling analysis not available for this mesh type or solver configuration.",
+      });
+    }
+  }
+
+  // ── Interlayer failure modes (FEM field decomposition) ─────────────────────
+  // The dual criterion already folds the tension⊕shear interaction into the
+  // headline SF; these rows decompose the layer interface into its two
+  // mechanisms so delamination onset ("breaking upon the layers") and
+  // interlayer shear are reported — and calibrated — separately.
+  if (result.elemStress6 && criterion === "fdm-interface" && isOrthotropic(material)) {
+    const peaks = computeInterfaceModePeaks(mesh, result.elemStress6, material, materialField ?? null);
+    if (peaks) {
+      const zCal = req.calibration?.yieldZ_MPa != null && req.calibration?.yieldZFromShear !== true;
+      const sCal = req.calibration?.interShear_MPa != null;
+      allFailureModes.push({
+        mode:       "Interlayer tension (delamination onset)",
+        sf:          +peaks.sfTension.toFixed(3),
+        failForceN:  +(totalForce2 * peaks.sfTension).toFixed(0),
+        checked:     true,
+        confidence:  zCal ? "medium" : "low",
+        note: `Peak through-layer opening stress ⟨σzz⟩₊ = ${peaks.peakTensionMPa.toFixed(2)} MPa vs bond tensile allowable ` +
+              `S_zt = ${peaks.allowTensionMPa.toFixed(1)} MPa ` +
+              (zCal ? `(CALIBRATED from your Z-tension coupon). `
+                    : `(literature ratio ${(FDM_ORTHO_RATIOS.yieldZ_over_yieldXY * 100).toFixed(0)}% of in-plane yield — print the Z-tension coupon to calibrate). `) +
+              `Compression does not open the interface; the tension⊕shear interaction is already in the headline criterion.`,
+      });
+      allFailureModes.push({
+        mode:       "Interlayer shear",
+        sf:          +peaks.sfShear.toFixed(3),
+        failForceN:  +(totalForce2 * peaks.sfShear).toFixed(0),
+        checked:     true,
+        confidence:  sCal ? "medium" : "low",
+        note: `Peak driving interlayer shear (friction-credited under compression) = ${peaks.peakShearMPa.toFixed(2)} MPa vs ` +
+              `interlaminar allowable S_zs = ${peaks.allowShearMPa.toFixed(1)} MPa ` +
+              (sCal ? `(CALIBRATED from your lap-shear coupon). `
+                    : `(default S_zt/√3 — run the lap-shear coupon to measure it directly). `) +
+              `Layers sliding over each other; governs shear-loaded joints and short overhangs.`,
       });
     }
   }
@@ -4019,8 +4415,36 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   const lhfOptimistic   = Math.max(0.85, Math.min(1.10, 1.00 + (0.2 - lhMm) * 0.7));
   const lhMul_low  = lhfCentral > 0 ? lhfConservative / lhfCentral : 1;
   const lhMul_high = lhfCentral > 0 ? lhfOptimistic   / lhfCentral : 1;
-  const sfLow  = +(sf * yieldMul_low  * lhMul_low).toFixed(2);
-  const sfHigh = +(sf * yieldMul_high * lhMul_high).toFixed(2);
+
+  // With the dual criterion the banded constants (yieldZ ratio, layer-height
+  // slope) enter ONLY the interface mechanism — scaling both interface
+  // allowables by m scales its SF by exactly m, while the bulk (bead) SF uses
+  // yieldXY and does not move. So the band applies when the governing hotspot
+  // is interface-governed and collapses to the central SF when it is
+  // bulk-governed (the legacy blanket multiplication overstated uncertainty
+  // for in-plane-governed parts). hill-legacy keeps the blanket behavior.
+  let bandScalesSF = true;
+  if (criterion === "fdm-interface" && isOrthotropic(material)
+      && result.elemStress6 && result.governingElement !== undefined) {
+    const g = result.governingElement;
+    const s6 = result.elemStress6;
+    let gsxx = s6[g*6] ?? 0, gsyy = s6[g*6+1] ?? 0, gszz = s6[g*6+2] ?? 0;
+    let gtxy = s6[g*6+3] ?? 0, gtyz = s6[g*6+4] ?? 0, gtxz = s6[g*6+5] ?? 0;
+    if (utilR) {
+      const L = rotateStress6ToLocal([gsxx, gsyy, gszz, gtxy, gtyz, gtxz], utilR);
+      gsxx = L[0]; gsyy = L[1]; gszz = L[2]; gtxy = L[3]; gtyz = L[4]; gtxz = L[5];
+    }
+    const gBin = materialField ? (materialField.binOfElement[g] ?? 0) : 0;
+    const gYXY = materialField ? (materialField.yieldXY[gBin] ?? utilYieldXY) : utilYieldXY;
+    const gYZ  = materialField ? (materialField.yieldZ[gBin]  ?? utilYieldZ)  : utilYieldZ;
+    const gYZS = materialField ? (materialField.yieldZShear[gBin] ?? utilYieldZS) : utilYieldZS;
+    const gvm = Math.sqrt(0.5*((gsxx-gsyy)**2+(gsyy-gszz)**2+(gszz-gsxx)**2) + 3*(gtxy*gtxy+gtyz*gtyz+gtxz*gtxz));
+    const uBulk = gvm / gYXY;
+    const uInt  = fdmInterfaceUtilization(gszz, gtyz, gtxz, gYZ, gYZS).combined;
+    bandScalesSF = uInt >= uBulk;
+  }
+  const sfLow  = +(bandScalesSF ? sf * yieldMul_low  * lhMul_low  : sf).toFixed(2);
+  const sfHigh = +(bandScalesSF ? sf * yieldMul_high * lhMul_high : sf).toFixed(2);
 
   // ── Governing utilization direction ──────────────────────────────────────
   let governingDirection: 'xy' | 'z' | null = null;

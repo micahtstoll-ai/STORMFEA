@@ -167,6 +167,109 @@ export function hillEquivalentStress(
   return yieldXY * Math.sqrt(Math.max(0, twoF));
 }
 
+// ─── FDM dual criterion: bulk (bead) yield + interlayer interface failure ────
+/**
+ * Which failure criterion the recovery pass evaluates for orthotropic-like
+ * materials. "fdm-interface" is the default; "hill-legacy" keeps the Hill
+ * (1948) quadratic for comparison and for the upright-no-bed scalar-swap
+ * fallback (the interface criterion needs a known weak axis; the swap
+ * deliberately has none).
+ */
+export type CriterionKind = "fdm-interface" | "hill-legacy";
+
+/**
+ * Friction coefficient for the Mohr–Coulomb enhancement of interlayer shear
+ * capacity under through-layer COMPRESSION. Polymer-on-polymer sliding
+ * friction ~0.2–0.4; 0.3 is a LOW-confidence engineering default (locked by
+ * fdm-criterion.test.ts, overridable in a future calibration hook).
+ */
+export const INTERFACE_FRICTION_MU = 0.3;
+
+/**
+ * FDM dual failure criterion — safety factor for a stress state expressed in
+ * the MATERIAL frame (weak/layer-normal axis = local z). Replaces the Hill
+ * (1948) quadratic (layer-model audit A1–A3):
+ *
+ * 1. BULK (bead) yield — von Mises against the in-plane yield Y:
+ *      SF_bulk = Y / σ_vm
+ *    Azimuth-invariant by construction (fixes A1: the calibrated Hill form
+ *    with N = 3/(2Y²) ≠ F+2H was not rotationally symmetric about the layer
+ *    normal — a 45° azimuth rotation of the same in-plane shear state moved
+ *    yield from 0.577·Y to ≈0.99·Y at Z = 0.58Y). A norm cannot go negative,
+ *    which also fixes A2 (the clamped-negative quadratic form that reported
+ *    SF = 999 for in-plane tension–compression states when Z < Y/2).
+ *
+ * 2. INTERFACE (layer-bond) failure — quadratic interaction of the layer-
+ *    plane traction (Brewer & Lagace 1988 / Hashin 1980 interlaminar form),
+ *    tension-only normal term (fixes A3):
+ *      σzz > 0:  U = √( (σzz/S_zt)² + (τ_z/S_zs)² ),  SF_int = 1/U
+ *      σzz ≤ 0:  Mohr–Coulomb friction credit — the compressive normal
+ *                carries part of the shear:
+ *                SF_int = τ_z > μ·|σzz|  ?  S_zs / (τ_z − μ·|σzz|)  :  999
+ *    with τ_z = √(τyz² + τxz²), S_zt = yieldZ (through-layer tension) and
+ *    S_zs = yieldZShear (interlaminar shear, default yieldZ/√3 = the exact
+ *    transverse-shear yield the legacy Hill coefficients L = M = 3/(2Z²)
+ *    encoded — so through-layer results match legacy at the defaults).
+ *
+ * SF = min(SF_bulk, SF_int). Both mechanisms scale linearly with load, so
+ * the SFs are exact closed forms. In the isotropic limit (S_zt = Y,
+ * S_zs = Y/√3) the criterion reproduces von Mises for every uniaxial, shear,
+ * and normal+transverse-shear state; hydrostatic-tension-dominated states are
+ * intentionally interface-governed (a bonded interface separates under
+ * triaxial tension; von Mises is blind to it).
+ */
+export function fdmDualCriterionSF(
+  sxx: number, syy: number, szz: number,
+  txy: number, tyz: number, txz: number,
+  yieldXY: number, yieldZ: number, yieldZShear: number,
+  mu: number = INTERFACE_FRICTION_MU,
+): number {
+  const vm = Math.sqrt(
+    0.5 * ((sxx - syy) ** 2 + (syy - szz) ** 2 + (szz - sxx) ** 2)
+    + 3 * (txy * txy + tyz * tyz + txz * txz),
+  );
+  const sfBulk = vm > 1e-12 ? yieldXY / vm : 999;
+
+  const tau = Math.hypot(tyz, txz);
+  let sfInt = 999;
+  if (szz > 0) {
+    const u = Math.sqrt((szz / yieldZ) ** 2 + (tau / yieldZShear) ** 2);
+    if (u > 1e-12) sfInt = 1 / u;
+  } else {
+    const tEff = tau + mu * szz;   // szz ≤ 0 ⇒ friction reduces the driving shear
+    if (tEff > 1e-12) sfInt = yieldZShear / tEff;
+  }
+  return Math.min(sfBulk, sfInt);
+}
+
+/**
+ * Interface-utilization split for heatmaps and failure-mode reporting, in the
+ * MATERIAL frame. Same physics as fdmDualCriterionSF's interface term:
+ *   uTension = ⟨σzz⟩₊ / S_zt              (delamination-onset opening)
+ *   uShear   = tension: τ_z / S_zs; compression: ⟨τ_z − μ|σzz|⟩₊ / S_zs
+ *   combined = tension: √(uTension² + uShear²); compression: uShear
+ * combined = 1 ⇔ SF_int = 1.
+ */
+export function fdmInterfaceUtilization(
+  szz: number, tyz: number, txz: number,
+  yieldZ: number, yieldZShear: number,
+  mu: number = INTERFACE_FRICTION_MU,
+): { uTension: number; uShear: number; combined: number } {
+  const tau = Math.hypot(tyz, txz);
+  if (szz > 0) {
+    const uTension = szz / yieldZ;
+    const uShear = tau / yieldZShear;
+    return { uTension, uShear, combined: Math.hypot(uTension, uShear) };
+  }
+  const uShear = Math.max(0, tau + mu * szz) / yieldZShear;
+  return { uTension: 0, uShear, combined: uShear };
+}
+
+/** Interlaminar shear allowable of a material: explicit, or the yieldZ/√3 legacy-Hill equivalence. */
+export function interlaminarShearOf(mat: { yieldZ: number; yieldZShear?: number }): number {
+  return mat.yieldZShear ?? mat.yieldZ / Math.sqrt(3);
+}
+
 // ─── Per-element stress recovery ─────────────────────────────────────────────
 
 /**
@@ -179,6 +282,7 @@ export function recoverElementStress(
   displacement: Float64Array,
   mat:          AnyMaterial,
   field?:       ElementMaterialField,
+  criterion:    CriterionKind = "fdm-interface",
 ): {
   vonMises:      Float64Array;
   safetyFactor:  Float64Array;
@@ -199,23 +303,28 @@ export function recoverElementStress(
   const binOfElement = field ? field.binOfElement : null;
   const yieldStr = 'kind' in mat ? (mat as import("./types.js").OrthotropicMaterial).yieldXY
                                  : (mat as IsotropicMaterial).yieldStrength;
-  // Hill is defined in the material frame (weak axis = local Z). For a rotated
-  // weak axis (upright/angled prints, issue #101) the global stress must be
-  // expressed in that frame before evaluating Hill. weakR = null for the common
+  // Both criteria are defined in the material frame (weak axis = local Z).
+  // For a rotated weak axis (upright/angled prints, issue #101) the global
+  // stress must be expressed in that frame first. weakR = null for the common
   // weak-along-Z case, so the hot loop pays nothing there.
   const weakR = (isOrthotropic(mat) && mat.weakAxis && !_isPlusZUnit(mat.weakAxis))
     ? rotationAligningZTo(mat.weakAxis) : null;
-  const hillSF = (
+  // Uniform-material interlaminar shear allowable (per-bin values override).
+  const matZShear = isOrthotropic(mat) ? interlaminarShearOf(mat) : 0;
+  const anisoSF = (
     sxx: number, syy: number, szz: number, txy: number, tyz: number, txz: number,
-    yieldXY: number, yieldZ: number,
+    yieldXY: number, yieldZ: number, yieldZShear: number,
   ): number => {
     let a = sxx, b = syy, c = szz, d = txy, e2 = tyz, f = txz;
     if (weakR) {
       const L = rotateStress6ToLocal([sxx, syy, szz, txy, tyz, txz], weakR);
       a = L[0]; b = L[1]; c = L[2]; d = L[3]; e2 = L[4]; f = L[5];
     }
-    const sigHill = hillEquivalentStress(a, b, c, d, e2, f, yieldXY, yieldZ);
-    return sigHill > 1e-12 ? yieldXY / sigHill : 999;
+    if (criterion === "hill-legacy") {
+      const sigHill = hillEquivalentStress(a, b, c, d, e2, f, yieldXY, yieldZ);
+      return sigHill > 1e-12 ? yieldXY / sigHill : 999;
+    }
+    return fdmDualCriterionSF(a, b, c, d, e2, f, yieldXY, yieldZ, yieldZShear);
   };
   const vonMises     = new Float64Array(mesh.elementCount);
   const safetyFactor = new Float64Array(mesh.elementCount);
@@ -251,6 +360,7 @@ export function recoverElementStress(
     const C   = Cviews[bin]!;
     const eYieldXY = field ? (field.yieldXY[bin] ?? yieldStr) : 0;
     const eYieldZ  = field ? (field.yieldZ[bin]  ?? yieldStr) : 0;
+    const eYieldZS = field ? (field.yieldZShear[bin] ?? (eYieldZ / Math.sqrt(3))) : 0;
 
     let vm = 0, sf = 999;
 
@@ -330,8 +440,9 @@ export function recoverElementStress(
       vm = Math.sqrt(0.5*((sxx-syy)**2+(syy-szz)**2+(szz-sxx)**2+6*(txy**2+tyz**2+txz**2)));
 
       if (isOrthotropic(mat)) {
-        sf = hillSF(sxx, syy, szz, txy, tyz, txz,
-                    field ? eYieldXY : mat.yieldXY, field ? eYieldZ : mat.yieldZ);
+        sf = anisoSF(sxx, syy, szz, txy, tyz, txz,
+                     field ? eYieldXY : mat.yieldXY, field ? eYieldZ : mat.yieldZ,
+                     field ? eYieldZS : matZShear);
       } else {
         sf = vm > 1e-12 ? (field ? eYieldXY : yieldStr)/vm : 999;
       }
@@ -384,8 +495,9 @@ export function recoverElementStress(
       }
 
       if (isOrthotropic(mat)) {
-        sf = hillSF(sxx, syy, szz, txy, tyz, txz,
-                    field ? eYieldXY : mat.yieldXY, field ? eYieldZ : mat.yieldZ);
+        sf = anisoSF(sxx, syy, szz, txy, tyz, txz,
+                     field ? eYieldXY : mat.yieldXY, field ? eYieldZ : mat.yieldZ,
+                     field ? eYieldZS : matZShear);
       } else {
         sf = vm > 1e-12 ? (field ? eYieldXY : yieldStr)/vm : 999;
       }
@@ -935,9 +1047,10 @@ export function buildSolverResult(
   residualCheckpoints?: readonly { iteration: number; relativeResidual: number }[],
   computeErrorEstimate: boolean = true,
   field?:       ElementMaterialField,
+  criterion:    CriterionKind = "fdm-interface",
 ): SolverResult {
   const { vonMises, safetyFactor, elemPrincipal, maxVonMises, minSF, governingElement, elemStress6 } =
-    recoverElementStress(mesh, displacement, mat, field);
+    recoverElementStress(mesh, displacement, mat, field, criterion);
 
   // Compute Zienkiewicz-Zhu error estimates if requested
   let errorEstimate: Float32Array | undefined;

@@ -243,6 +243,19 @@ export function generateTensileCoupon(): Buffer {
 }
 
 /**
+ * Z-tension coupon: the SAME dog-bone geometry as the tensile coupon
+ * (COUPON_DIMS.zTensile mirrors COUPON_DIMS.tensile), but printed STANDING ON
+ * END so the gauge axis is the build (Z) direction — every layer interface in
+ * the gauge is loaded in pure opening tension. Measures the bond tensile
+ * allowable S_zt directly (layer-model audit A5). Uniform gauge ⇒ Kt ≈ 1,
+ * plain F/A. Print instructions (standing orientation, brim, 100% infill)
+ * live in the client CALIBRATE panel; the geometry is orientation-agnostic.
+ */
+export function generateZTensileCoupon(): Buffer {
+  return generateTensileCoupon();
+}
+
+/**
  * Lap shear coupon.
  * Two 20×40×4mm tabs with 20×20mm overlap (printed as one piece with a notch).
  * Total: 20mm wide × 60mm long × 4mm thick.

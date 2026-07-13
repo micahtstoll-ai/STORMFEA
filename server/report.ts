@@ -33,7 +33,14 @@ export function generateHtmlReport(
     failureModes, holeClassifications, fatigue, singularity,
     topologySuggestions, calibrationId,
     converged, meshFallback,
+    sfCriterion, safetyfactorLow, safetyFactorHigh,
+    isotropicComparison, materialModel,
   } = result;
+
+  const criterionLabel =
+    sfCriterion === "fdm-interface" ? "FDM dual criterion (bulk von Mises + interlayer interface)"
+    : sfCriterion === "hill"        ? "Hill (1948) anisotropic criterion (legacy path)"
+    : "Von Mises";
 
   const govMode = failureModes.find(m => m.checked);
   // When the solve didn't converge or fell back to a box mesh, the SF is not
@@ -194,6 +201,26 @@ export function generateHtmlReport(
     </div>
   </div>
 
+  <!-- Material model & criterion -->
+  <div style="margin-bottom:14px">
+    <div class="section-title">Material Model</div>
+    <div style="font-size:10px;color:#444;line-height:1.7">
+      <b>Failure criterion:</b> ${criterionLabel}.
+      ${safetyfactorLow !== null && safetyFactorHigh !== null && safetyFactor !== null
+        ? `&nbsp;·&nbsp; <b>SF uncertainty band:</b> ${safetyfactorLow.toFixed(2)}× (conservative) — ${safetyFactor.toFixed(2)}× — ${safetyFactorHigh.toFixed(2)}× (optimistic), from the interlayer-property literature ranges.`
+        : ``}
+      ${materialModel.twoRegion
+        ? `<br><b>Two-region model:</b> ${((materialModel.shellVolumeFraction ?? 0) * 100).toFixed(0)}% dense wall band (${materialModel.wallThicknessMm?.toFixed(2)} mm) over a homogenized ${materialModel.core ? materialModel.core.patternFamily + " Gibson-Ashby" : ""} infill core; shell yield ${materialModel.shellYieldXYMPa?.toFixed(1)} MPa vs core ${materialModel.coreYieldXYMPa?.toFixed(1)} MPa.`
+        : ``}
+      ${materialModel.bond
+        ? `<br><b>Bead-penetration bond model (${materialModel.bond.confidence.toUpperCase()} confidence):</b> interlayer strength ×${materialModel.bond.relStrength.toFixed(2)}, stiffness ×${materialModel.bond.relStiffness.toFixed(2)} vs typical settings — interface ${materialModel.bond.interfaceTempC.toFixed(0)}°C on a ${materialModel.bond.substrateTempC.toFixed(0)}°C substrate, τ_cool ${materialModel.bond.coolTimeConstS.toFixed(1)} s${materialModel.bond.clamped ? " (clamped)" : ""}.`
+        : ``}
+      ${isotropicComparison
+        ? `<br><b>vs conventional isotropic FEA:</b> ${isotropicComparison.explanation}`
+        : ``}
+    </div>
+  </div>
+
   <!-- Holes + Topology -->
   <div class="grid2">
     <div>
@@ -213,7 +240,7 @@ export function generateHtmlReport(
 
   <!-- Footer -->
   <div class="footer">
-    <div>STORMFEA · Nordic Storm FTC 5962 · FDM-Aware FEA — Orthotropic Model + Hill Criterion + SPR Smoothing</div>
+    <div>STORMFEA · Nordic Storm FTC 5962 · FDM-Aware FEA — Orthotropic Model + ${sfCriterion === "hill" ? "Hill Criterion" : "Dual Criterion (bulk + interlayer interface)"} + SPR Smoothing</div>
     <div>For comparison and ranking only — not safety certification</div>
   </div>
 

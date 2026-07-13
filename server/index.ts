@@ -238,6 +238,15 @@ const ANALYSE_SPEC: Spec = {
     materialId: "string", infillPct: "number", wallCount: "number",
     pattern: "string", orientation: "string", layerHeightMm: "number",
     "extrusionWidthMm?": "number",
+    // Optional process block — activates the bead-penetration bond model
+    // (server/solver/bond.ts). Absent → legacy layer-height factor only.
+    "process?": {
+      "nozzleTempC?":   "number",
+      "bedTempC?":      "number",
+      "printSpeedMmS?": "number",
+      "coolingFanPct?": "number",
+      "ambientTempC?":  "number",
+    },
   },
   "analysis?": {
     "meshQuality?":     "coarse|standard|fine",
@@ -248,6 +257,7 @@ const ANALYSE_SPEC: Spec = {
     "useCLT?":          "boolean",
     "beadProps?":       "object",
     "twoRegion?":       "boolean",
+    "criterion?":       "fdm-interface|hill-legacy",
   },
   "gravity?":      { g: "number", direction: "vec3" },
   "pressures?":    [{ magnitude: "number", direction: "vec3", "normal?": "boolean", "region?": "face|facing|all" }],
@@ -519,6 +529,7 @@ app.post("/api/analyse", async (req, res) => {
 // ── Coupon STL download ───────────────────────────────────────────────────────
 import {
   generateTensileCoupon,
+  generateZTensileCoupon,
   generateLapShearCoupon,
   generateBearingCoupon,
 } from "./coupon_stl.js";
@@ -554,6 +565,10 @@ app.get("/api/calibration/coupon/:type", (req, res) => {
       case "tensile":
         buf = generateTensileCoupon();
         filename = "stressform_tensile_coupon.stl";
+        break;
+      case "ztensile":
+        buf = generateZTensileCoupon();
+        filename = "stressform_ztensile_coupon.stl";
         break;
       case "lapshear":
         buf = generateLapShearCoupon();
@@ -636,6 +651,7 @@ app.post("/api/calibration/calculate", (req, res) => {
       // the checker treats as absent — so they are declared optional here.
       "tensileFailN?": "number", "lapShearFailN?": "number",
       "bearingFailN?": "number", "tensileDeflMm?": "number",
+      "zTensileFailN?": "number",
       "ktLapShear?": "number", "ktBearing?": "number",
     })) return;
     const profile = backCalculateProfile(req.body);
@@ -675,6 +691,61 @@ app.post("/api/calibration/fatigue", (req, res) => {
         fatigueUTS_MPa:  uts,
       },
     });
+  } catch (e) {
+    res.status(400).json({ error: String(e) });
+  }
+});
+
+// POST /api/calibration/bond-sweep — fit the bead-penetration bond model's
+// coefficients {hConv, activationEnergyKJmol, strengthPrefactor} to a process
+// sweep of Z-tension coupons printed at varied nozzle temp / speed / fan /
+// layer height. The returned bondCoeffs merge into a profile (like the
+// fatigue fit) and lift the bond model LOW→MEDIUM confidence.
+app.post("/api/calibration/bond-sweep", async (req, res) => {
+  try {
+    if (!validateBody(req, res, {
+      materialId: "string",
+      "yieldXY_MPa?": "number",
+      "yieldZ_over_yieldXY?": "number",
+      points: [{
+        layerHeightMm: "number",
+        "measuredSztMPa?": "number",
+        "zTensileFailN?":  "number",
+        "nozzleTempC?": "number", "printSpeedMmS?": "number",
+        "coolingFanPct?": "number", "bedTempC?": "number", "ambientTempC?": "number",
+      }],
+    })) return;
+    const { fitBondCoeffs, layerHeightFactor, literatureYieldMPa, literatureYieldZRatio, COUPON_DIMS: CD } =
+      await import("./analysis.js");
+    const body = req.body as {
+      materialId: string;
+      yieldXY_MPa?: number;
+      yieldZ_over_yieldXY?: number;
+      points: Array<Record<string, number | undefined>>;
+    };
+    // Accept either a directly measured strength or the raw coupon failure
+    // load (converted with the Z-tension gauge area, same as backCalculate).
+    const areaZ = CD.zTensile.gaugeWidthMm * CD.zTensile.gaugeThickMm;
+    const points = body.points.map(p => ({
+      layerHeightMm:  p["layerHeightMm"]!,
+      nozzleTempC:    p["nozzleTempC"],
+      printSpeedMmS:  p["printSpeedMmS"],
+      coolingFanPct:  p["coolingFanPct"],
+      bedTempC:       p["bedTempC"],
+      ambientTempC:   p["ambientTempC"],
+      measuredSztMPa: p["measuredSztMPa"] ?? ((p["zTensileFailN"] ?? 0) / areaZ),
+    }));
+    if (points.some(p => !(p.measuredSztMPa > 0))) {
+      res.status(400).json({
+        error: "Every sweep point needs measuredSztMPa or zTensileFailN > 0",
+        field: "points",
+      });
+      return;
+    }
+    const yieldXY = body.yieldXY_MPa ?? literatureYieldMPa(body.materialId);
+    const yZRatio = body.yieldZ_over_yieldXY ?? literatureYieldZRatio();
+    const fit = fitBondCoeffs(body.materialId, points, yieldXY, yZRatio, layerHeightFactor);
+    res.json({ fit, bondFields: { bondCoeffs: fit.coeffs } });
   } catch (e) {
     res.status(400).json({ error: String(e) });
   }
