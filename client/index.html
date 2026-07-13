@@ -2742,7 +2742,11 @@ function initThree() {
   // ── Permanent gold build-plate grid at Y=0 (XZ plane) ─────────────────────
   // GridHelper lies in the XZ plane by default with Y-up — exactly what we want.
   const GRID_SIZE = 6, GRID_DIVS = 12;
-  const gridMesh = new THREE.GridHelper(GRID_SIZE, GRID_DIVS, 0xC9A227, 0x5a4510);
+  const GRID_COLORS = {
+    dark: { primary: 0xC9A227, secondary: 0x5a4510 },
+    light: { primary: 0x5d5229, secondary: 0x8b8b8b }
+  };
+  const gridMesh = new THREE.GridHelper(GRID_SIZE, GRID_DIVS, GRID_COLORS.dark.primary, GRID_COLORS.dark.secondary);
   gridMesh.position.y = -0.001; // fractionally below Y=0 to avoid z-fighting
   gridMesh.renderOrder = 1;
   scene.add(gridMesh);
@@ -8091,6 +8095,12 @@ function toggleTheme() {
   html.setAttribute('data-theme', next);
   document.getElementById('theme-icon').innerHTML = buildThemeIcon(next);
   if (renderer) renderer.setClearColor(next === 'dark' ? 0x070604 : 0xeeeae3, 0);
+  // Update build-plate grid colors for theme
+  if (scene._bedGrid) {
+    const colors = next === 'dark' ? GRID_COLORS.dark : GRID_COLORS.light;
+    scene._bedGrid.children[0].material.color.setHex(colors.primary);
+    scene._bedGrid.children[1].material.color.setHex(colors.secondary);
+  }
   localStorage.setItem('sf-theme', next);
   syncAppearanceBtns();
 }
