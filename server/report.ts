@@ -210,7 +210,11 @@ export function generateHtmlReport(
         ? `&nbsp;·&nbsp; <b>SF uncertainty band:</b> ${safetyfactorLow.toFixed(2)}× (conservative) — ${safetyFactor.toFixed(2)}× — ${safetyFactorHigh.toFixed(2)}× (optimistic), from the interlayer-property literature ranges.`
         : ``}
       ${materialModel.twoRegion
-        ? `<br><b>Two-region model:</b> ${((materialModel.shellVolumeFraction ?? 0) * 100).toFixed(0)}% dense wall band (${materialModel.wallThicknessMm?.toFixed(2)} mm) over a homogenized ${materialModel.core ? materialModel.core.patternFamily + " Gibson-Ashby" : ""} infill core; shell yield ${materialModel.shellYieldXYMPa?.toFixed(1)} MPa vs core ${materialModel.coreYieldXYMPa?.toFixed(1)} MPa.`
+        ? `<br><b>Two-region model:</b> ${((materialModel.shellVolumeFraction ?? 0) * 100).toFixed(0)}% dense wall band (perimeter ${materialModel.wallThicknessMm?.toFixed(2)} mm${
+            materialModel.skinTopThicknessMm != null
+              ? `, top skin ${materialModel.skinTopThicknessMm.toFixed(2)} mm, bottom skin ${materialModel.skinBotThicknessMm?.toFixed(2)} mm${materialModel.skinBuildAxis === "assumed-z-up" ? " — skins assumed Z-up (no bed picked)" : ""}`
+              : ``
+          }) over a homogenized ${materialModel.core ? materialModel.core.patternFamily + " Gibson-Ashby" : ""} infill core; shell yield ${materialModel.shellYieldXYMPa?.toFixed(1)} MPa vs core ${materialModel.coreYieldXYMPa?.toFixed(1)} MPa.`
         : ``}
       ${materialModel.bond
         ? `<br><b>Bead-penetration bond model (${materialModel.bond.confidence.toUpperCase()} confidence):</b> interlayer strength ×${materialModel.bond.relStrength.toFixed(2)}, stiffness ×${materialModel.bond.relStiffness.toFixed(2)} vs typical settings — interface ${materialModel.bond.interfaceTempC.toFixed(0)}°C on a ${materialModel.bond.substrateTempC.toFixed(0)}°C substrate, τ_cool ${materialModel.bond.coolTimeConstS.toFixed(1)} s${materialModel.bond.clamped ? " (clamped)" : ""}.`

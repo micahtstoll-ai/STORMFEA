@@ -218,3 +218,134 @@ export function computeNodeSurfaceDistances(
 
   return dist;
 }
+
+/**
+ * Per-corner-node band PENETRATION for a multi-thickness wall/skin model:
+ * the minimum over boundary triangles of (distance-to-triangle − that
+ * triangle's band thickness). Values < 0 mean the node lies inside SOME band.
+ *
+ * This generalizes the single-thickness classifier: the two-region field
+ * subtracts one `tWall` from a plain distance, but floors/ceilings (top/bottom
+ * solid skins) are thicker than the vertical perimeter band. Giving each
+ * boundary triangle its own band thickness `faceBand[t]` and taking the union
+ * of the resulting bands is exactly `φ = minₜ(distₜ − faceBand[t])`, evaluated
+ * here directly so `wallfrac.ts` can run the same marching-tet volume on it.
+ *
+ * When every triangle shares one band thickness `t`, this returns
+ * `minₜ(distₜ) − t` — bit-identical to `computeNodeSurfaceDistances(...) − t`,
+ * so the legacy single-band path is a special case.
+ *
+ * @param mesh          Tet mesh (C3D4 or C3D10; midside nodes are skipped).
+ * @param surfaceFaces  Boundary triangle corner-node index triples.
+ * @param faceBand      Per-triangle band thickness (length = triCount), mm.
+ * @param dMax          Search/clamp radius. MUST exceed the largest band plus
+ *                      the longest element edge so band-straddling elements
+ *                      keep un-clamped corners (the caller passes
+ *                      max(band) + maxCornerEdge). Deep-core nodes report dMax.
+ * @returns             Float64Array of length nodeCount: φ per corner node
+ *                      (negative inside a band); midside / deep-core nodes dMax.
+ */
+export function computeNodeBandPenetration(
+  mesh: TetMesh,
+  surfaceFaces: Int32Array,
+  faceBand: Float64Array,
+  dMax: number,
+): Float64Array {
+  const nodeCount = mesh.nodeCount;
+  const nodes = mesh.nodes;
+  const phi = new Float64Array(nodeCount).fill(dMax);
+  const triCount = Math.floor(surfaceFaces.length / 3);
+  if (triCount === 0 || dMax <= 0) return phi;
+
+  // Corner-node set: the level set only reads corners (first 4 per element).
+  // Unlike the distance field there is no boundary-node shortcut — a surface
+  // node's penetration is −(its triangle's band), which depends on the class.
+  const isCorner = new Uint8Array(nodeCount);
+  const npe = mesh.nodesPerElem;
+  for (let e = 0; e < mesh.elementCount; e++) {
+    const base = e * npe;
+    for (let k = 0; k < 4; k++) {
+      const n = mesh.elements[base + k] ?? 0;
+      if (n >= 0 && n < nodeCount) isCorner[n] = 1;
+    }
+  }
+
+  // ── Triangle-bucketed spatial grid (same keying as above) ────────────────
+  let xMin = Infinity, yMin = Infinity, zMin = Infinity;
+  let xMax = -Infinity, yMax = -Infinity, zMax = -Infinity;
+  for (let n = 0; n < nodeCount; n++) {
+    const x = nodes[n * 3] ?? 0, y = nodes[n * 3 + 1] ?? 0, z = nodes[n * 3 + 2] ?? 0;
+    if (x < xMin) xMin = x; if (x > xMax) xMax = x;
+    if (y < yMin) yMin = y; if (y > yMax) yMax = y;
+    if (z < zMin) zMin = z; if (z > zMax) zMax = z;
+  }
+  const CELL = Math.max(dMax, 1e-6);
+  const gW = Math.max(1, Math.ceil((xMax - xMin) / CELL) + 1);
+  const gH = Math.max(1, Math.ceil((yMax - yMin) / CELL) + 1);
+  const gD = Math.max(1, Math.ceil((zMax - zMin) / CELL) + 1);
+  const ci = (x: number) => Math.min(gW - 1, Math.max(0, Math.floor((x - xMin) / CELL)));
+  const cj = (y: number) => Math.min(gH - 1, Math.max(0, Math.floor((y - yMin) / CELL)));
+  const ck = (z: number) => Math.min(gD - 1, Math.max(0, Math.floor((z - zMin) / CELL)));
+  const key = (i: number, j: number, k: number) => (i * gH + j) * gD + k;
+
+  const grid = new Map<number, number[]>();
+  for (let t = 0; t < triCount; t++) {
+    const na = surfaceFaces[t * 3] ?? 0, nb = surfaceFaces[t * 3 + 1] ?? 0, nc = surfaceFaces[t * 3 + 2] ?? 0;
+    const ax = nodes[na * 3] ?? 0, ay = nodes[na * 3 + 1] ?? 0, az = nodes[na * 3 + 2] ?? 0;
+    const bx = nodes[nb * 3] ?? 0, by = nodes[nb * 3 + 1] ?? 0, bz = nodes[nb * 3 + 2] ?? 0;
+    const cx = nodes[nc * 3] ?? 0, cy = nodes[nc * 3 + 1] ?? 0, cz = nodes[nc * 3 + 2] ?? 0;
+    const i0 = ci(Math.min(ax, bx, cx)), i1 = ci(Math.max(ax, bx, cx));
+    const j0 = cj(Math.min(ay, by, cy)), j1 = cj(Math.max(ay, by, cy));
+    const k0 = ck(Math.min(az, bz, cz)), k1 = ck(Math.max(az, bz, cz));
+    for (let i = i0; i <= i1; i++) {
+      for (let j = j0; j <= j1; j++) {
+        for (let k = k0; k <= k1; k++) {
+          const kk = key(i, j, k);
+          const bucket = grid.get(kk);
+          if (bucket) bucket.push(t);
+          else grid.set(kk, [t]);
+        }
+      }
+    }
+  }
+
+  // ── Per-node query ───────────────────────────────────────────────────────
+  // Any triangle whose band reaches the node has distance < band ≤ max(band) <
+  // dMax = CELL, so it lies in the node's cell or a neighbour — one ring is
+  // sufficient for the sign of φ. Triangles farther than dMax give a large
+  // positive penetration and cannot lower a negative min.
+  for (let n = 0; n < nodeCount; n++) {
+    if (!isCorner[n]) continue;
+    const px = nodes[n * 3] ?? 0, py = nodes[n * 3 + 1] ?? 0, pz = nodes[n * 3 + 2] ?? 0;
+    const i0 = ci(px), j0 = cj(py), k0 = ck(pz);
+    let best = dMax;
+    for (let di = -1; di <= 1; di++) {
+      const i = i0 + di;
+      if (i < 0 || i >= gW) continue;
+      for (let dj = -1; dj <= 1; dj++) {
+        const j = j0 + dj;
+        if (j < 0 || j >= gH) continue;
+        for (let dk = -1; dk <= 1; dk++) {
+          const k = k0 + dk;
+          if (k < 0 || k >= gD) continue;
+          const bucket = grid.get(key(i, j, k));
+          if (!bucket) continue;
+          for (const t of bucket) {
+            const na = surfaceFaces[t * 3] ?? 0, nb = surfaceFaces[t * 3 + 1] ?? 0, nc = surfaceFaces[t * 3 + 2] ?? 0;
+            const d = pointTriangleDistance(
+              px, py, pz,
+              nodes[na * 3] ?? 0, nodes[na * 3 + 1] ?? 0, nodes[na * 3 + 2] ?? 0,
+              nodes[nb * 3] ?? 0, nodes[nb * 3 + 1] ?? 0, nodes[nb * 3 + 2] ?? 0,
+              nodes[nc * 3] ?? 0, nodes[nc * 3 + 1] ?? 0, nodes[nc * 3 + 2] ?? 0,
+            );
+            const pen = d - (faceBand[t] ?? 0);
+            if (pen < best) best = pen;
+          }
+        }
+      }
+    }
+    phi[n] = best;
+  }
+
+  return phi;
+}

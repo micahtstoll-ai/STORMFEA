@@ -1320,6 +1320,19 @@ export interface PrintSettings {
    */
   extrusionWidthMm?: number;
   /**
+   * Number of solid TOP layers (ceiling skin). Consumed by the two-region
+   * model to give the top solid skin its own band thickness
+   * (topLayers × layerHeightMm), independent of the vertical perimeter band
+   * (wallCount × extrusionWidthMm). Clamped to [0, 64]. Absent → the top skin
+   * falls back to the perimeter band thickness (legacy behavior, unchanged).
+   */
+  topLayers?: number;
+  /**
+   * Number of solid BOTTOM layers (floor skin); see topLayers. Bottoms are
+   * commonly thicker than tops, so the two are independent. Clamped to [0, 64].
+   */
+  bottomLayers?: number;
+  /**
    * Optional process settings (nozzle/bed temperature, print speed, cooling
    * fan, ambient). When ANY field is present the bead-penetration bond model
    * (server/solver/bond.ts, audit A6) predicts interlayer strength/stiffness
@@ -1893,8 +1906,21 @@ export interface IsotropicComparison {
  */
 export interface MaterialModelInfo {
   twoRegion:            boolean;
-  /** Wall-band thickness used for classification (wallCount × line width). */
+  /** Perimeter wall-band thickness used for classification (wallCount × line width). */
   wallThicknessMm:      number | null;
+  /**
+   * Top/bottom solid-skin (floor/ceiling) band thicknesses, mm — present when
+   * the two-region model classified independent skins (topLayers/bottomLayers
+   * supplied). Null when skins were not modeled (fell back to the perimeter band).
+   */
+  skinTopThicknessMm?:  number | null;
+  skinBotThicknessMm?:  number | null;
+  /**
+   * Build axis the skin classification used. "bed" = the picked bed normal;
+   * "assumed-z-up" = no bed picked, so global +Z was assumed (skins may be
+   * misplaced if the part is not modeled Z-up). Absent when skins not modeled.
+   */
+  skinBuildAxis?:       "bed" | "assumed-z-up";
   /** Shell (dense wall) share of part volume from the geometric classification. */
   shellVolumeFraction:  number | null;
   shellYieldXYMPa:      number | null;
@@ -3005,7 +3031,26 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         bondRel,
       );
 
-      const tr = buildTwoRegionField(mesh, surfaceFaces, shellMat, coreMat, tWall);
+      // Independent floor/ceiling (top/bottom solid skin) bands: their
+      // thickness is layers × layer height, generally different from the
+      // vertical perimeter band. Skins are the SAME solid material as the
+      // perimeters (same weak axis), so only the geometry changes. When the
+      // user supplies no skin layer counts, the skin bands default to tWall and
+      // the classifier reduces bit-identically to the single-band path.
+      const layerH = req.print.layerHeightMm ?? 0.2;
+      const clampLayers = (n: number | undefined): number | undefined =>
+        n === undefined ? undefined : Math.min(64, Math.max(0, n));
+      const topLayers = clampLayers(req.print.topLayers);
+      const botLayers = clampLayers(req.print.bottomLayers);
+      const skinRequested = topLayers !== undefined || botLayers !== undefined;
+      const tSkinTop = topLayers !== undefined ? topLayers * layerH : tWall;
+      const tSkinBot = botLayers !== undefined ? botLayers * layerH : tWall;
+      // Build axis for skin geometry: the picked bed normal, else assume Z-up.
+      const skinBuildAxis: "bed" | "assumed-z-up" = weakAxis ? "bed" : "assumed-z-up";
+      const buildAxis = weakAxis ?? ([0, 0, 1] as const);
+      const skin = skinRequested ? { buildAxis, tSkinTop, tSkinBot } : undefined;
+
+      const tr = buildTwoRegionField(mesh, surfaceFaces, shellMat, coreMat, tWall, skin);
       material = tr.averageMaterial;
       materialField = tr.field ?? undefined;
 
@@ -3021,6 +3066,9 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         ...materialModel,
         twoRegion: true,
         wallThicknessMm: tWall,
+        skinTopThicknessMm: skinRequested ? tSkinTop : null,
+        skinBotThicknessMm: skinRequested ? tSkinBot : null,
+        ...(skinRequested ? { skinBuildAxis } : {}),
         shellVolumeFraction: Vf,
         shellYieldXYMPa: shellMat.yieldXY,
         coreYieldXYMPa: coreMat.yieldXY,
@@ -3037,7 +3085,11 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         },
       };
       console.log(
-        `[analysis] two-region model: tWall=${tWall.toFixed(2)}mm, shell Vf=${(Vf * 100).toFixed(1)}%, ` +
+        `[analysis] two-region model: tWall=${tWall.toFixed(2)}mm, ` +
+        (skinRequested
+          ? `skins top=${tSkinTop.toFixed(2)}mm bot=${tSkinBot.toFixed(2)}mm (${skinBuildAxis}), `
+          : ``) +
+        `shell Vf=${(Vf * 100).toFixed(1)}%, ` +
         `bins=${tr.field ? tr.field.binCount : "collapsed-to-uniform"}, ` +
         `impliedAvgMul=${impliedAvgStrengthMul.toFixed(3)} vs globalMul=${strengthMul.toFixed(3)}`
       );

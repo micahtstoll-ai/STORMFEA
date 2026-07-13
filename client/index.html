@@ -1862,7 +1862,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
           </label>
         </div>
         <div style="font-size:10px;color:var(--text-lo);line-height:1.7;margin-bottom:8px">
-          Classifies each element geometrically: <b style="color:var(--text-mid)">dense perimeter walls</b> (solid material) vs <b style="color:var(--text-mid)">homogenized infill core</b> (strength ~ linear in infill density × pattern), instead of one averaged material everywhere. Wall band = wall count × line width. Stiffness, strength, and mass all follow the split.
+          Classifies each element geometrically: <b style="color:var(--text-mid)">dense perimeter walls</b> (solid material) vs <b style="color:var(--text-mid)">homogenized infill core</b> (strength ~ linear in infill density × pattern), instead of one averaged material everywhere. Wall band = wall count × line width; <b style="color:var(--text-mid)">top/bottom solid skins</b> (floors/ceilings) get their own band = layer count × layer height. Stiffness, strength, and mass all follow the split.
         </div>
         <div id="two-region-details" style="display:none">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
@@ -1874,6 +1874,15 @@ body:not(.has-results) #btn-stress { display: none !important; }
           </div>
           <div style="font-size:10px;color:var(--text-mid);margin-bottom:8px">
             Wall band: <b id="wall-band-readout" style="color:var(--text-hi)">—</b>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+            <label for="two-region-top-layers" style="font-size:10px;color:var(--text-mid);white-space:nowrap">Top layers</label>
+            <input type="number" id="two-region-top-layers" min="0" max="64" step="1" value="4"
+                   style="width:56px;background:var(--bg-input);border:1px solid var(--border);border-radius:3px;color:var(--text-hi);font-size:11px;padding:3px 6px">
+            <label for="two-region-bottom-layers" style="font-size:10px;color:var(--text-mid);white-space:nowrap">Bottom layers</label>
+            <input type="number" id="two-region-bottom-layers" min="0" max="64" step="1" value="4"
+                   style="width:56px;background:var(--bg-input);border:1px solid var(--border);border-radius:3px;color:var(--text-hi);font-size:11px;padding:3px 6px">
+            <span style="font-size:9px;color:var(--text-lo)">solid floor/ceiling skins (× layer height); needs a picked bed for exact placement</span>
           </div>
           <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:3px;padding:8px;font-size:10px;color:var(--text-lo);line-height:1.6">
             <b style="color:var(--warn)">Note:</b> nozzle temperature and flow rate affect layer fusing but are printer-specific — they are captured empirically by the <b style="color:var(--text-mid)">calibration coupons</b> in the CALIBRATE tab (print with your real settings). Calibrated solid properties flow to the walls directly; the core inherits them scaled by infill.
@@ -7930,6 +7939,16 @@ function buildAnalyseBody(quality, opts) {
       // the two-region model (an analysis setting) needs the wall-band width.
       ...(document.getElementById('two-region-toggle')?.checked ? {
         extrusionWidthMm: Math.min(2.0, Math.max(0.1, +(document.getElementById('two-region-linewidth')?.value ?? 0.45) || 0.45)),
+        // Independent floor/ceiling solid-skin layer counts (× layer height →
+        // skin band thickness, distinct from the perimeter wall band).
+        ...(function() {
+          const skin = {};
+          const tv = document.getElementById('two-region-top-layers')?.value;
+          const bv = document.getElementById('two-region-bottom-layers')?.value;
+          if (tv !== undefined && tv !== '' && isFinite(+tv)) skin.topLayers = Math.min(64, Math.max(0, +tv));
+          if (bv !== undefined && bv !== '' && isFinite(+bv)) skin.bottomLayers = Math.min(64, Math.max(0, +bv));
+          return skin;
+        })(),
       } : {}),
       // Optional process block — any field present activates the
       // bead-penetration bond model server-side.

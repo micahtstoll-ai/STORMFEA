@@ -238,6 +238,9 @@ const ANALYSE_SPEC: Spec = {
     materialId: "string", infillPct: "number", wallCount: "number",
     pattern: "string", orientation: "string", layerHeightMm: "number",
     "extrusionWidthMm?": "number",
+    // Optional solid top/bottom (floor/ceiling) skin layer counts — feed the
+    // two-region model's independent skin bands (topLayers × layerHeight).
+    "topLayers?": "number", "bottomLayers?": "number",
     // Optional process block — activates the bead-penetration bond model
     // (server/solver/bond.ts). Absent → legacy layer-height factor only.
     "process?": {
