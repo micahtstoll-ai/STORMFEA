@@ -10824,13 +10824,21 @@ function showTopologyMarkers(suggestions) {
 
   if (!mesh3d || !suggestions?.length) return;
 
-  const scale  = mesh3d.userData.scale || 1;
   const offset = mesh3d.userData.offset || new THREE.Vector3();
+  // The mesh is centered (geometry translated by -offset), then scaled AND
+  // rotated by mesh3d.matrixWorld. A raw STL point maps to geometry-local
+  // (p - offset), and matrixWorld then applies scale + orientation rotation.
+  // Transforming through matrixWorld (rather than a manual (p-offset)*scale)
+  // keeps the diamonds glued to the surface after the part is oriented to the
+  // bed — same path the peak-stress sphere uses.
+  mesh3d.updateMatrixWorld();
 
   suggestions.forEach((s, i) => {
-    const wx = (s.position[0] - offset.x) * scale;
-    const wy = (s.position[1] - offset.y) * scale;
-    const wz = (s.position[2] - offset.z) * scale;
+    const worldPos = new THREE.Vector3(
+      s.position[0] - offset.x,
+      s.position[1] - offset.y,
+      s.position[2] - offset.z,
+    ).applyMatrix4(mesh3d.matrixWorld);
 
     // Diamond marker (octahedron)
     const geo = new THREE.OctahedronGeometry(0.04, 0);
@@ -10840,7 +10848,7 @@ function showTopologyMarkers(suggestions) {
       opacity: 0.85,
     });
     const marker = new THREE.Mesh(geo, mat);
-    marker.position.set(wx, wy, wz);
+    marker.position.copy(worldPos);
 
     // Pulse animation
     let t = i * 0.5;

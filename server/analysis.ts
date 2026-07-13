@@ -4201,11 +4201,14 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   );
 
   // ── Topology suggestions ──────────────────────────────────────────────────
-  const meshOffset: [number, number, number] = [
-    (req.bounds.minX + req.bounds.maxX) / 2,
-    (req.bounds.minY + req.bounds.maxY) / 2,
-    req.bounds.minZ,
-  ];
+  // mesh.nodes are already in the raw STL/world mm frame (TetGen meshes
+  // req.positions, the box fallback spans req.bounds, and force/hole node
+  // matching indexes these coords directly). So cluster centroids need no
+  // un-normalization: pass scale=1 and a zero offset. A non-zero offset here
+  // shifts every suggestion off the real stress region by half the part in
+  // X/Y (and by minZ in Z), which is what made the diamond markers miss the
+  // high-stress clusters and mis-report their near-edge/near-top context.
+  const meshOffset: [number, number, number] = [0, 0, 0];
   const topologySuggestions = generateTopologySuggestions(
     vertexStress,
     mesh.nodes,
