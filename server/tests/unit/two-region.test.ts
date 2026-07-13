@@ -153,21 +153,25 @@ describe("anchor policy: implied average vs legacy global multiplier", () => {
   const T_WALL = WALLS * LINE_W; // 0.9mm
 
   async function impliedFor(bx: number, by: number, bz: number, nx: number, ny: number, nz: number) {
-    const { effectiveStrengthMultiplier, coreStrengthMultiplier, orientationMultiplier } =
+    const { materialStrengthMultiplier, coreStrengthMultiplier } =
       await import("../../analysis.js");
     const m = generateBoxMeshC3D4(0, 0, 0, bx, by, bz, nx, ny, nz);
     const f = extractSurfaceFaces(m);
     const tr = buildTwoRegionField(m, f, SHELL, CORE, T_WALL);
     const Vf = tr.shellVolumeFraction;
-    const coreLattice = coreStrengthMultiplier(INFILL, PATTERN, ORIENT) / orientationMultiplier(ORIENT);
-    const implied = (Vf + (1 - Vf) * coreLattice) * orientationMultiplier(ORIENT);
-    const global = effectiveStrengthMultiplier(INFILL, WALLS, PATTERN, ORIENT);
+    // Orientation-free on both sides (audit A4): flat carries no fallback
+    // scalar, so implied and global compare pure section/lattice models.
+    const coreLattice = coreStrengthMultiplier(INFILL, PATTERN);
+    const implied = Vf + (1 - Vf) * coreLattice;
+    const global = materialStrengthMultiplier(INFILL, WALLS, PATTERN);
     return { Vf, implied, global };
   }
 
   it("chunky coupon section (20×6): implied BELOW global but within 25% (GA law credits low-ρ infill less)", async () => {
-    // Derivation at 20% grid flat, Vf ≈ 0.38: s(0.2) = 0.2^1.5 ≈ 0.089, so
-    // implied ≈ (0.38 + 0.62·0.089)·0.55 ≈ 0.24 vs global 0.297 → ~17% below.
+    // Derivation at 20% grid, Vf ≈ 0.38: s(0.2) = 0.2^1.5 ≈ 0.089, so
+    // implied ≈ 0.38 + 0.62·0.089 ≈ 0.44 vs global 0.54 → ~17% below.
+    // (The legacy 0.55 orientation factor multiplied BOTH sides, so the
+    // relative gap is unchanged by its removal — audit A4.)
     // Under the legacy linear core (s = 0.20) this was ~11%; the widening is
     // the power law's statement, not drift to be renormalized away.
     const { Vf, implied, global } = await impliedFor(60, 20, 6, 30, 10, 3);
@@ -178,8 +182,8 @@ describe("anchor policy: implied average vs legacy global multiplier", () => {
   });
 
   it("wall-dominated thin coupon (10×4): implied EXCEEDS global (legacy under-credits walls)", async () => {
-    // Vf ≈ 0.57 dominates: implied ≈ (0.57 + 0.43·0.089)·0.55 ≈ 0.33 vs
-    // global 0.297 — the wall effect outweighs the GA infill knockdown.
+    // Vf ≈ 0.57 dominates: implied ≈ 0.57 + 0.43·0.089 ≈ 0.61 vs
+    // global 0.54 — the wall effect outweighs the GA infill knockdown.
     const { Vf, implied, global } = await impliedFor(50, 10, 4, 25, 5, 2);
     expect(Vf).toBeGreaterThan(0.45); // walls are ~half the section
     expect(implied).toBeGreaterThan(global * 1.05);

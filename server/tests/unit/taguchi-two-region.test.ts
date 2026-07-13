@@ -29,7 +29,7 @@ import { buildTwoRegionField } from "../../twoRegion.js";
 import {
   buildCoreMaterial,
   buildOrthotropicMaterial,
-  orientationMultiplier,
+  angledNoBedFallbackMul,
 } from "../../analysis.js";
 import { latticeStrengthFraction } from "../../solver/lattice.js";
 import { generateBoxMeshC3D4, extractSurfaceFaces } from "../../solver/meshgen.js";
@@ -82,9 +82,11 @@ function executeRun(run: number, levels: readonly [number, number, number, numbe
   const pattern = PATTERN[levels[2] - 1]!;
   const orient = ORIENT[levels[3] - 1]!;
 
-  const orientMul = orientationMultiplier(orient);
+  // Production convention (audit A4): shell at full strength (mul = 1.0) —
+  // orientation is the criterion's job; the builder applies the angled-no-bed
+  // 0.75 fallback itself when applicable.
   const shell: OrthotropicMaterial = {
-    ...buildOrthotropicMaterial(MAT_ID, orientMul, orient, LH, null, null),
+    ...buildOrthotropicMaterial(MAT_ID, 1.0, orient, LH, null, null),
     massRho: 1240,
   };
   // The REAL production core builder (per-axis Gibson-Ashby laws applied in
@@ -98,7 +100,7 @@ function executeRun(run: number, levels: readonly [number, number, number, numbe
   const Vf = tr.shellVolumeFraction;
 
   const lattice = sStr; // s(ρ) = min(1, patternMul·ρ^m)
-  const implied = (Vf + (1 - Vf) * lattice) * orientMul;
+  const implied = (Vf + (1 - Vf) * lattice) * angledNoBedFallbackMul(orient, null);
 
   let binYieldsMonotone = true;
   let allFinite = Number.isFinite(Vf) && Number.isFinite(implied);
@@ -151,9 +153,10 @@ describe("Taguchi L9 sweep — per-run invariants", () => {
       expect(r.binYieldsMonotone).toBe(true);
       expect(r.avgBounded).toBe(true);
       expect(r.allFinite).toBe(true);
-      // Implied average multiplier can never exceed the orientation-limited solid
-      const orientMul = orientationMultiplier(ORIENT[r.levels[3] - 1]!);
-      expect(r.implied).toBeLessThanOrEqual(orientMul + 1e-12);
+      // Implied average multiplier can never exceed the solid (the only
+      // orientation scalar left is the angled-no-bed fallback — audit A4)
+      const fallbackMul = angledNoBedFallbackMul(ORIENT[r.levels[3] - 1]!, null);
+      expect(r.implied).toBeLessThanOrEqual(fallbackMul + 1e-12);
       expect(r.implied).toBeGreaterThan(0);
     },
   );
@@ -177,12 +180,22 @@ describe("Taguchi L9 sweep — main effects (level means, balanced array)", () =
     expect(m[2]).toBeGreaterThan(m[1]!);
   });
 
-  it("D (orientation): mean implied multiplier orders flat < angled < upright", () => {
-    // orientationMultiplier: flat 0.55 < angled 0.75 < upright 0.90; balanced
-    // over the other factors, the level means must preserve that order.
-    const m = [1, 2, 3].map(l => meanWhere(3, l, r => r.implied));
-    expect(m[1]).toBeGreaterThan(m[0]!); // angled > flat
-    expect(m[2]).toBeGreaterThan(m[1]!); // upright > angled
+  it("D (orientation): no material scalar except the angled-no-bed fallback (audit A4)", () => {
+    // Orientation no longer scales the solved material — the criterion
+    // resolves direction. Deterministic builder-level lock instead of a
+    // level-mean ordering (the old flat 0.55 < angled 0.75 < upright 0.90
+    // ordering was the double-count this replaces):
+    const flat    = buildOrthotropicMaterial(MAT_ID, 1.0, "flat",    LH, null, null);
+    const angled  = buildOrthotropicMaterial(MAT_ID, 1.0, "angled",  LH, null, null);
+    const upright = buildOrthotropicMaterial(MAT_ID, 1.0, "upright", LH, null, null);
+    // Angled with no bed: no directional model exists → legacy 0.75 fallback
+    expect(angled.yieldXY / flat.yieldXY).toBeCloseTo(0.75, 12);
+    // Upright with no bed: conservative scalar SWAP (a relabeling), no extra penalty
+    expect(upright.yieldXY).toBeCloseTo(flat.yieldZ, 12);
+    expect(upright.yieldZ).toBeCloseTo(flat.yieldXY, 12);
+    // Any picked bed face → exact tensor path, no scalar at all
+    const angledBed = buildOrthotropicMaterial(MAT_ID, 1.0, "angled", LH, null, [0, Math.SQRT1_2, Math.SQRT1_2]);
+    expect(angledBed.yieldXY).toBeCloseTo(flat.yieldXY, 12);
   });
 
   it("B (walls): mean implied multiplier increases with wall count (more solid shell)", () => {

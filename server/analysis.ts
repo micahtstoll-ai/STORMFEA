@@ -721,12 +721,21 @@ function buildOrthotropicMaterialCLT(
   const bead = beadPropsOverride ?? DEFAULT_BEAD_PROPS[baseMatId] ?? DEFAULT_BEAD_PROPS["pla"]!;
   const plyStack = PATTERN_PLY_ANGLES[pattern] ?? PATTERN_PLY_ANGLES["grid"]!;
 
-  const yieldXY = yieldXY_base * strengthMul;
+  // Orientation is resolved by the constitutive rotation + anisotropic
+  // criterion, so strengthMul must arrive orientation-free (audit A4). Sole
+  // exception: an angled print with no bed picked has no directional model at
+  // all (the natural frame would be treated as flat), so the legacy 0.75
+  // scalar is kept as a conservative fallback until a bed face is chosen.
+  const angledNoBedMul = angledNoBedFallbackMul(orientation, weakAxis);
+
+  const yieldXY = yieldXY_base * strengthMul * angledNoBedMul;
   const yieldZ  = yieldXY * yZ_ratio * lhf;
 
   // Derive Z-direction properties from the empirical bond model
-  // (CLT only replaces in-plane stiffness; Z is still bond-dominated)
-  const E_xy_empirical = (calibration?.E_xy_MPa ?? base.E) * Math.min(1.0, strengthMul / 0.55);
+  // (CLT only replaces in-plane stiffness; Z is still bond-dominated).
+  // min(1, strengthMul): stiffness saturates at solid — identical to the
+  // legacy min(1, mul/0.55) once the 0.55 orientation factor left the mul.
+  const E_xy_empirical = (calibration?.E_xy_MPa ?? base.E) * Math.min(1.0, strengthMul);
   const E_z    = E_xy_empirical * E_z_ratio * lhf;
   const G_xy   = E_xy_empirical / (2 * (1 + base.nu));
   const G_xz   = G_xy * Gxz_ratio * lhf;
@@ -788,13 +797,18 @@ export function buildOrthotropicMaterial(
   const yZ_ratio     = calibration?.yieldZ_over_yieldXY ?? FDM_ORTHO_RATIOS.yieldZ_over_yieldXY;
   const Gxz_ratio    = calibration?.G_xz_over_G_xy  ?? FDM_ORTHO_RATIOS.G_xz_over_G_xy;
 
-  const E_xy    = E_xy_base    * Math.min(1.0, strengthMul / 0.55);
+  // See buildOrthotropicMaterialCLT: strengthMul is orientation-free (audit
+  // A4); min(1, strengthMul) keeps stiffness saturated at solid; the angled
+  // no-bed case keeps the legacy 0.75 scalar as a conservative fallback.
+  const angledNoBedMul = angledNoBedFallbackMul(orientation, weakAxis);
+
+  const E_xy    = E_xy_base    * Math.min(1.0, strengthMul);
   const E_z     = E_xy         * E_z_ratio * lhf;
   const G_xy    = E_xy         / (2 * (1 + base.nu));
   const G_xz    = G_xy         * Gxz_ratio * lhf;
   const nu_xy   = base.nu;
   const nu_xz   = FDM_ORTHO_RATIOS.nu_xz;
-  const yieldXY = yieldXY_base * strengthMul;
+  const yieldXY = yieldXY_base * strengthMul * angledNoBedMul;
   const yieldZ  = yieldXY      * yZ_ratio  * lhf;
 
   const src = calibration ? `calibrated:${calibration.id}` : "literature";
@@ -889,17 +903,62 @@ export function orientationMultiplier(orientation: string): number {
        : 0.75;
 }
 
+/**
+ * The one orientation scalar left in the SOLVED-material path (audit A4): an
+ * "angled" print with NO bed face picked has no directional model — the
+ * material would otherwise be built in the flat frame and analysed as if its
+ * layers were flat. The legacy conservative 0.75 multiplier is kept for that
+ * case only. Returns 1.0 everywhere else: "flat" is the exact natural frame,
+ * "upright" is handled by the scalar swap, and any picked bed face gives the
+ * exact weakAxis tensor rotation.
+ */
+export function angledNoBedFallbackMul(
+  orientation: string,
+  weakAxis?: readonly [number, number, number] | null,
+): number {
+  const hasAxis = !!weakAxis && Math.hypot(weakAxis[0], weakAxis[1], weakAxis[2]) > 0;
+  return (!hasAxis && orientation !== "flat" && orientation !== "upright")
+    ? orientationMultiplier(orientation)
+    : 1.0;
+}
+
 export function effectiveStrengthMultiplier(
   infillPct:   number,
   wallCount:   number,
   pattern:     string,
   orientation: string,
 ): number {
+  return materialStrengthMultiplier(infillPct, wallCount, pattern)
+       * orientationMultiplier(orientation);
+}
+
+/**
+ * Strength multiplier for the SOLVED material (layer-model audit, finding A4).
+ *
+ * Excludes orientation: the solver's constitutive model and failure criterion
+ * already resolve load-vs-layer direction exactly (weakAxis tensor rotation +
+ * anisotropic yield), so an orientation scalar here would double-count the
+ * layer penalty — the legacy 0.55× flat multiplier encoded the same physics
+ * as the yieldZ/yieldXY = 0.58 ratio, stacking to an unphysical
+ * 0.55 × 0.58 ≈ 0.32 through-layer strength and knocking a flat part's
+ * IN-PLANE strength (its coupon-measured yieldXY) to 0.55× for no reason.
+ * infill/walls/pattern stay: they describe how much load-bearing section
+ * exists, which the continuum mesh cannot see.
+ *
+ * effectiveStrengthMultiplier (above) KEEPS orientation and remains the
+ * quick scalar ESTIMATOR for recommendations / what-if ranking only — it
+ * approximates the direction effect without solving.
+ */
+export function materialStrengthMultiplier(
+  infillPct: number,
+  wallCount: number,
+  pattern:   string,
+): number {
   const infillMul  = infillStrengthCurve(infillPct);
   const wallBonus  = (wallCount - 1) * 0.10;
   const combined   = Math.min(1.0, infillMul + wallBonus);
   const patternMul = PATTERN_MULTIPLIERS[pattern] ?? 1.0;
-  return combined * patternMul * orientationMultiplier(orientation);
+  return combined * patternMul;
 }
 
 /**
@@ -910,15 +969,16 @@ export function effectiveStrengthMultiplier(
  * density (solver/lattice.ts: s(ρ) = min(1, patternMul·ρ^m), m per pattern
  * family). Clamped at solid; anchored s(1) = min(1, patternMul), identical
  * to the legacy linear curve's ρ=1 value.
+ *
+ * Orientation-free (audit A4): direction is the criterion's job. The core is
+ * still layered material — its through-layer weakness enters via yieldZ.
  */
 export function coreStrengthMultiplier(
   infillPct:   number,
   pattern:     string,
-  orientation: string,
   strengthExpOverride?: number | null,
 ): number {
-  return latticeStrengthFraction(pattern, infillPct / 100, strengthExpOverride)
-       * orientationMultiplier(orientation);
+  return latticeStrengthFraction(pattern, infillPct / 100, strengthExpOverride);
 }
 
 /**
@@ -966,16 +1026,20 @@ export function buildCoreMaterial(
 ): OrthotropicMaterial {
   const baseMat = MATERIALS[materialId] ?? MATERIALS["pla"]!;
   const rho = infillPct / 100;
-  const orientMul = orientationMultiplier(orientation);
   const sStr = latticeStrengthFraction(pattern, rho, calibration?.latticeStrengthExp);
 
   const uprightNoBed = !weakAxis && orientation === "upright";
   const solidAxis: readonly [number, number, number] | null =
     uprightNoBed ? [0, 0, 1] : weakAxis;
+  // strengthMul = 1.0: the solid lattice base is the full-strength printed
+  // material — orientation is the criterion's job (audit A4; the builder
+  // itself applies the angled-no-bed fallback when applicable). Note the
+  // uprightNoBed identity axis suppresses BOTH the swap and the fallback
+  // here; the swap is applied manually below, after scaling.
   const solid = useCLT
     ? buildOrthotropicMaterialCLT(materialId, 100, pattern, orientation, layerHeightMm,
-        orientMul, calibration, beadProps, solidAxis)
-    : buildOrthotropicMaterial(materialId, orientMul, orientation, layerHeightMm,
+        1.0, calibration, beadProps, solidAxis)
+    : buildOrthotropicMaterial(materialId, 1.0, orientation, layerHeightMm,
         calibration, solidAxis);
 
   let scaled: OrthotropicMaterial;
@@ -2448,17 +2512,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
 
   // ── Material + print settings ───────────────────────────────────────────────
   const baseMat = MATERIALS[req.print.materialId] ?? MATERIALS["pla"]!;
-  const strengthMul = effectiveStrengthMultiplier(
-    req.print.infillPct,
-    req.print.wallCount,
-    req.print.pattern ?? "grid",
-    req.print.orientation,
-  );
-  const effectiveYield = baseMat.yieldMPa * strengthMul;
 
-  // Use orthotropic material model — accurately captures the anisotropy of FDM parts.
-  // For flat prints: E_z ≈ 0.45 × E_xy, G_xz ≈ 0.40 × G_xy (Ahn et al. 2002)
-  // For upright prints: axes are swapped — the strong direction faces the load
   // Through-layer (weak) axis from the picked bed normal, when available — the
   // solver then applies an exact tensor rotation instead of the scalar-swap
   // upright approximation (issue #101). Only its direction matters (sign/azimuth
@@ -2466,6 +2520,21 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   const weakAxis: readonly [number, number, number] | null =
     (req.layerNormal && Math.hypot(req.layerNormal[0], req.layerNormal[1], req.layerNormal[2]) > 1e-9)
       ? req.layerNormal : null;
+
+  // Orientation-free material multiplier (audit A4): the criterion resolves
+  // load-vs-layer direction; only the angled-no-bed case keeps a scalar
+  // fallback (no directional model exists there).
+  const strengthMul = materialStrengthMultiplier(
+    req.print.infillPct,
+    req.print.wallCount,
+    req.print.pattern ?? "grid",
+  );
+  const orientFallbackMul = angledNoBedFallbackMul(req.print.orientation, weakAxis);
+  const effectiveYield = baseMat.yieldMPa * strengthMul * orientFallbackMul;
+
+  // Use orthotropic material model — accurately captures the anisotropy of FDM parts.
+  // For flat prints: E_z ≈ 0.65 × E_xy, yieldZ ≈ 0.58 × yieldXY.
+  // For upright prints: axes are swapped — the strong direction faces the load.
 
   const builtMaterial: AnyMaterial = req.analysis.useCLT
     ? buildOrthotropicMaterialCLT(
@@ -2607,7 +2676,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     shellYieldXYMPa: null,
     coreYieldXYMPa: null,
     impliedAvgStrengthMul: null,
-    globalModelStrengthMul: strengthMul,
+    globalModelStrengthMul: strengthMul * orientFallbackMul,
   };
   if (req.analysis.twoRegion) {
     const degrade = (why: string): void => {
@@ -2627,15 +2696,14 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       const lineWidth = Math.min(2.0, Math.max(0.1, req.print.extrusionWidthMm ?? 0.45));
       const tWall = req.print.wallCount * lineWidth;
 
-      // Shell: solid perimeter material. strengthMul = orientMul makes the
-      // builder's E_xy = E_base × min(1, mul/0.55) evaluate to solid E for
-      // every orientation, and yieldXY = base × orientMul — the same
-      // convention the coupon calibration back-calculates, so calibrated
-      // solid props flow to the shell unchanged. No pattern multiplier, no
-      // infill knockdown, solid density.
-      const orientMul = orientationMultiplier(req.print.orientation);
+      // Shell: solid perimeter material at full strength (strengthMul = 1.0)
+      // — exactly the convention the coupon calibration back-calculates
+      // (coupons are printed flat and pulled in-plane), so calibrated solid
+      // props flow to the shell unchanged. Orientation is the criterion's
+      // job (audit A4); the builder applies the angled-no-bed fallback
+      // itself. No pattern multiplier, no infill knockdown, solid density.
       const shellBuilt = buildOrthotropicMaterial(
-        req.print.materialId, orientMul, req.print.orientation,
+        req.print.materialId, 1.0, req.print.orientation,
         req.print.layerHeightMm ?? 0.2, req.calibration ?? null, weakAxis,
       );
       const shellMat: OrthotropicMaterial = { ...shellBuilt, massRho: baseMat.densityKgM3 };
@@ -2670,7 +2738,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       // exact sStr that built the core, so the diagnostic can never
       // desynchronize from the material.
       const Vf = tr.shellVolumeFraction;
-      const impliedAvgStrengthMul = (Vf * 1.0 + (1 - Vf) * sStr) * orientMul;
+      const impliedAvgStrengthMul = (Vf * 1.0 + (1 - Vf) * sStr) * orientFallbackMul;
       const family = patternFamilyOf(pattern);
       materialModel = {
         ...materialModel,
