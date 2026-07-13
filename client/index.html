@@ -1101,7 +1101,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <button class="btn vmode-btn"        id="btn-s3"  onclick="setStressMode('s3')"  style="display:flex" title="Minimum principal stress σ₃ — most compressive direction (red=tensile, blue=compressive)"><span class="vmode-abbr">σ₃</span><span class="vmode-cap">Max compression</span></button>
         <button class="btn vmode-btn"        id="btn-dmg"    onclick="setStressMode('dmg')"    style="display:flex" title="Damage ratio — stress as a fraction of material yield strength (1.0 = at yield)"><span class="vmode-abbr">DMG</span><span class="vmode-cap">Damage</span></button>
         <button class="btn vmode-btn"        id="btn-xyutil" onclick="setStressMode('xyutil')" style="display:none" title="XY in-plane utilization — sqrt(σxx²+σyy²-σxx·σyy+3·σxy²) / yieldXY. Red at 1.0 = at in-plane yield. High → add infill."><span class="vmode-abbr">U<sub>XY</sub></span><span class="vmode-cap">In-plane use</span></button>
-        <button class="btn vmode-btn"        id="btn-zutil"  onclick="setStressMode('zutil')"  style="display:none" title="Z out-of-plane utilization — max(|σzz|, √3·√(σyz²+σxz²)) / yieldZ. Red at 1.0 = at inter-layer yield. High → reorient or add walls."><span class="vmode-abbr">U<sub>Z</sub></span><span class="vmode-cap">Z-layer use</span></button>
+        <button class="btn vmode-btn"        id="btn-zutil"  onclick="setStressMode('zutil')"  style="display:none" title="Interlayer interface utilization — tension-only ⟨σzz⟩₊/S_zt interacting with interlayer shear τ/S_zs (compression gets a friction credit instead). Red at 1.0 = delamination/shear onset. High → reorient or add walls."><span class="vmode-abbr">U<sub>Z</sub></span><span class="vmode-cap">Z-layer use</span></button>
         <button class="btn vmode-btn"        id="btn-error"  onclick="setStressMode('error')"  style="display:none" title="Error estimate η — Zienkiewicz-Zhu mesh quality metric (0–1), identifies under-resolved elements"><span class="vmode-abbr">η</span><span class="vmode-cap">Mesh quality</span></button>
       </div>
       <!-- Deformation (deflected-shape) controls (shown after solve) -->
@@ -1668,6 +1668,35 @@ body:not(.has-results) #btn-stress { display: none !important; }
         </div>
       </div>
 
+      <!-- Process settings (optional) — activates the bead-penetration bond model -->
+      <div style="margin-bottom:16px;padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
+        <div style="font-size:10px;letter-spacing:.06em;color:var(--text-lo);margin-bottom:6px">PROCESS (OPTIONAL) — BOND MODEL</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div>
+            <label for="s-proc-nozzle" style="font-size:10px;color:var(--text-mid)">Nozzle temp (°C)</label>
+            <input type="number" id="s-proc-nozzle" min="150" max="450" step="5" placeholder="e.g. 210" oninput="updateSettingsPreview()">
+          </div>
+          <div>
+            <label for="s-proc-speed" style="font-size:10px;color:var(--text-mid)">Print speed (mm/s)</label>
+            <input type="number" id="s-proc-speed" min="5" max="600" step="5" placeholder="e.g. 60" oninput="updateSettingsPreview()">
+          </div>
+          <div>
+            <label for="s-proc-fan" style="font-size:10px;color:var(--text-mid)">Cooling fan (%)</label>
+            <input type="number" id="s-proc-fan" min="0" max="100" step="5" placeholder="e.g. 100" oninput="updateSettingsPreview()">
+          </div>
+          <div>
+            <label for="s-proc-bed" style="font-size:10px;color:var(--text-mid)">Bed temp (°C)</label>
+            <input type="number" id="s-proc-bed" min="0" max="150" step="5" placeholder="e.g. 60" oninput="updateSettingsPreview()">
+          </div>
+        </div>
+        <div style="font-size:10px;color:var(--text-lo);line-height:1.5;margin-top:6px">
+          Leave blank to use the standard layer-height model. Any value entered activates the
+          bead-penetration bond model: interlayer strength/stiffness predicted from the interface
+          temperature history (cooling → neck growth → healing), relative to typical settings.
+          <b style="color:var(--warn)">LOW confidence</b> until fitted from a process sweep (CALIBRATE tab).
+        </div>
+      </div>
+
       <!-- GCode import — button to load a .gcode file for print-settings extraction -->
       <div style="margin-bottom:16px;padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
@@ -2161,6 +2190,28 @@ body:not(.has-results) #btn-stress { display: none !important; }
             Compute Kt via FEA
           </button>
         </div>
+      </div>
+
+      <!-- Bond-model process sweep (optional) -->
+      <div style="margin-top:16px;padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
+        <div style="font-size:11px;font-weight:600;color:var(--text-hi);margin-bottom:6px">Bond model — process sweep fit</div>
+        <div style="font-size:10px;color:var(--text-lo);line-height:1.6;margin-bottom:8px">
+          Print the <b>Z-tension coupon</b> at ≥3 different process settings (vary nozzle temp,
+          speed, fan, or layer height — a Taguchi-style spread works best) and enter each
+          failure load. Fitting tunes the bead-penetration bond model
+          (convection h, activation energy, prefactor) to YOUR printer/filament, raising its
+          confidence from <b style="color:var(--danger)">LOW</b> to <b style="color:var(--warn)">MEDIUM</b>.
+          The fitted coefficients are saved into the active calibration profile.
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr) 24px;gap:4px;font-size:9px;color:var(--text-lo);margin-bottom:2px">
+          <span>Layer (mm)</span><span>Nozzle (°C)</span><span>Speed (mm/s)</span><span>Fan (%)</span><span>Fail load (N)</span><span></span>
+        </div>
+        <div id="bond-sweep-rows"></div>
+        <div style="display:flex;gap:8px;margin-top:6px">
+          <button class="btn" style="font-size:10px;padding:4px 10px" onclick="addBondSweepRow()">+ Row</button>
+          <button class="btn" style="font-size:10px;padding:4px 12px;color:var(--gold);border-color:var(--gold)44" onclick="runBondSweepFit()">Fit bond model</button>
+        </div>
+        <div id="bond-sweep-status" style="font-size:10px;color:var(--text-lo);line-height:1.6;margin-top:6px;min-height:14px"></div>
       </div>
 
         <button class="btn primary" style="width:100%" onclick="saveCalibProfile()">SAVE CALIBRATION PROFILE</button>
@@ -5199,10 +5250,26 @@ function parseGcodeParams(lines) {
 
   let layerCount = null, layerHeightMm = null, firstLayerHeightMm = null, extrusionWidthMm = null;
   const psHeights = [], psWidths = [];
+  // Process settings for the bead-penetration bond model: nozzle/bed temps
+  // (M104/M109 / M140/M190), max part-cooling fan (M106 S0-255), and print
+  // speed (median F on extruding G1 moves, mm/min → mm/s).
+  let nozzleTempC = null, bedTempC = null, fanMax = null;
+  const extruderFeeds = [];
 
   for (const l of lines) {
     let m = l.match(/^;LAYER_COUNT:(\d+)$/);
     if (m) { layerCount = parseInt(m[1], 10); continue; }
+
+    m = l.match(/^M10[49]\s+.*?S(\d+(?:\.\d+)?)/);
+    if (m) { const t = parseFloat(m[1]); if (t > 140 && t < 500) nozzleTempC = Math.max(nozzleTempC ?? 0, t); continue; }
+    m = l.match(/^M1[49]0\s+.*?S(\d+(?:\.\d+)?)/);
+    if (m) { const t = parseFloat(m[1]); if (t > 0 && t < 200) bedTempC = Math.max(bedTempC ?? 0, t); continue; }
+    m = l.match(/^M106(?:\s+P\d+)?\s+S(\d+(?:\.\d+)?)/);
+    if (m) { const s = parseFloat(m[1]); fanMax = Math.max(fanMax ?? 0, s); continue; }
+    if (extruderFeeds.length < 20000) {
+      m = l.match(/^G1\s+(?=[^;]*E[\d.])[^;]*F(\d+(?:\.\d+)?)/);
+      if (m) { extruderFeeds.push(parseFloat(m[1])); continue; }
+    }
 
     if (slicerDetected === 'prusaslicer') {
       m = l.match(/^;HEIGHT:([\d.]+)$/);
@@ -5254,7 +5321,20 @@ function parseGcodeParams(lines) {
   if (layerHeightMm !== null && (layerHeightMm < 0.02 || layerHeightMm > 1.0)) layerHeightMm = null;
   if (extrusionWidthMm !== null && (extrusionWidthMm < 0.1 || extrusionWidthMm > 2.0)) extrusionWidthMm = null;
 
-  return { layerCount, layerHeightMm, firstLayerHeightMm, extrusionWidthMm, slicerDetected };
+  // Process settings: fan 0-255 → %, median extruding feed mm/min → mm/s
+  const coolingFanPct = fanMax !== null ? Math.round(Math.min(100, (fanMax / 255) * 100)) : null;
+  let printSpeedMmS = null;
+  if (extruderFeeds.length > 0) {
+    const sorted = extruderFeeds.slice().sort((a, b) => a - b);
+    const medianFeed = sorted[Math.floor(sorted.length / 2)];
+    const mmS = medianFeed / 60;
+    if (mmS >= 5 && mmS <= 600) printSpeedMmS = Math.round(mmS);
+  }
+
+  return {
+    layerCount, layerHeightMm, firstLayerHeightMm, extrusionWidthMm, slicerDetected,
+    nozzleTempC, bedTempC, coolingFanPct, printSpeedMmS,
+  };
 }
 
 // ─── Settings preview ─────────────────────────────────────────────────────────
@@ -6041,6 +6121,8 @@ function showResults(s) {
     <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;margin-bottom:12px;font-size:11px;color:var(--text-label);line-height:1.8">
       Effective yield: ${s.effectiveYieldMPa.toFixed(1)} MPa (print settings applied)<br>
       ${s.materialModel && s.materialModel.twoRegion ? `Material model: <b style="color:var(--text-hi)">two-region</b> — shell ${((s.materialModel.shellVolumeFraction ?? 0) * 100).toFixed(0)}% of volume (walls ${(s.materialModel.wallThicknessMm ?? 0).toFixed(2)} mm, yield ${(s.materialModel.shellYieldXYMPa ?? 0).toFixed(1)} MPa) · core yield ${(s.materialModel.coreYieldXYMPa ?? 0).toFixed(1)} MPa${strengthDivergenceHtml}${s.materialModel.degraded ? ` · <span style="color:var(--warn)">degraded: ${s.materialModel.degraded}</span>` : ''}<br>` : (s.materialModel && s.materialModel.degraded ? `Material model: <span style="color:var(--warn)">two-region requested but ran uniform — ${s.materialModel.degraded}</span><br>` : '')}
+      ${s.materialModel && s.materialModel.bond ? `Bond model: interlayer strength <b style="color:${s.materialModel.bond.relStrength < 1 ? 'var(--warn)' : 'var(--text-hi)'}">×${s.materialModel.bond.relStrength.toFixed(2)}</b> · stiffness ×${s.materialModel.bond.relStiffness.toFixed(2)} vs typical settings (interface ${s.materialModel.bond.interfaceTempC.toFixed(0)}°C, substrate ${s.materialModel.bond.substrateTempC.toFixed(0)}°C, τ<sub>cool</sub> ${s.materialModel.bond.coolTimeConstS.toFixed(1)}s)${s.materialModel.bond.clamped ? ' <span style="color:var(--warn)">clamped</span>' : ''} · <span style="color:${s.materialModel.bond.confidence === 'medium' ? 'var(--warn)' : 'var(--danger)'};font-size:10px">${s.materialModel.bond.confidence.toUpperCase()} confidence</span><br>` : ''}
+      ${s.sfCriterion ? `Criterion: <b style="color:var(--text-hi)">${s.sfCriterion === 'fdm-interface' ? 'FDM dual (bulk + interlayer interface)' : s.sfCriterion === 'hill' ? 'Hill 1948 (legacy path)' : 'von Mises'}</b><br>` : ''}
       Mesh: <b style="color:var(--text-hi)">${s.nodeCount.toLocaleString()} nodes</b> · <b style="color:var(--text-hi)">${s.elementCount.toLocaleString()} elements</b> · C3D10 quadratic tet<br>
       Solver: ${s.cgIterations} CG iterations · ${s.solverMs}ms · converged=${s.converged ? 'yes' : '<span style="color:var(--warn)">no</span>'}
       ${s.governingDirection != null ? `<br>Governing direction: <b style="color:var(--text-hi)">${s.governingDirection === 'xy' ? 'XY in-plane' : 'Z inter-layer'}</b> · U<sub>XY</sub>=${(s.peakUtilXY??0).toFixed(3)} · U<sub>Z</sub>=${(s.peakUtilZ??0).toFixed(3)} ${s.governingDirection === 'xy' ? '<span style="color:var(--text-lo);font-size:10px">→ increase infill to resist</span>' : '<span style="color:var(--text-lo);font-size:10px">→ reorient or add perimeters</span>'}` : ''}
@@ -7849,6 +7931,21 @@ function buildAnalyseBody(quality, opts) {
       ...(document.getElementById('two-region-toggle')?.checked ? {
         extrusionWidthMm: Math.min(2.0, Math.max(0.1, +(document.getElementById('two-region-linewidth')?.value ?? 0.45) || 0.45)),
       } : {}),
+      // Optional process block — any field present activates the
+      // bead-penetration bond model server-side.
+      ...(function() {
+        const proc = {};
+        const nz = parseFloat(document.getElementById('s-proc-nozzle')?.value);
+        const sp = parseFloat(document.getElementById('s-proc-speed')?.value);
+        const fanEl = document.getElementById('s-proc-fan');
+        const fn = parseFloat(fanEl?.value);
+        const bd = parseFloat(document.getElementById('s-proc-bed')?.value);
+        if (isFinite(nz) && nz > 0)  proc.nozzleTempC = nz;
+        if (isFinite(sp) && sp > 0)  proc.printSpeedMmS = sp;
+        if (isFinite(fn) && fanEl?.value !== '') proc.coolingFanPct = Math.min(100, Math.max(0, fn));
+        if (isFinite(bd) && bd > 0)  proc.bedTempC = bd;
+        return Object.keys(proc).length ? { process: proc } : {};
+      })(),
     },
     // Analysis settings — the numerical method (mesh, solver models, extra solves).
     // Modal and buckling are opt-in (each adds solve cost) and only requested on
@@ -8277,9 +8374,9 @@ const SOURCES_DB = [
         id: "pla_ortho_2024",
         citation: "Orthotropic mechanical properties of PLA materials fabricated by fused deposition modeling. ScienceDirect. 2024.",
         url: "https://www.sciencedirect.com/science/article/pii/S026382312400243X",
-        usedFor: "Validation that Hill48 yield criterion (not von Mises) is correct for FDM PLA",
+        usedFor: "Validation that an anisotropic yield criterion (not plain von Mises) is required for FDM PLA",
         confidence: "high",
-        note: '"Strength of FDM printed PLA was accurately predicted by Hill48 yield criterion." Confirms our Hill approximation is the right approach.',
+        note: '"Strength of FDM printed PLA was accurately predicted by Hill48 yield criterion." STORMFEA used Hill (1948) until the layer-model audit found its calibrated transversely-isotropic form is azimuth-dependent in the layer plane; the default is now the dual criterion (see INTERLAYER FAILURE & BOND MODEL), which preserves Hill\'s validated uniaxial anchors (in-plane yield Y, through-layer yield Z, transverse shear Z/√3) while fixing the invariance defect. Hill remains available as the hill-legacy comparison path.',
       },
       {
         id: "upright_swap",
@@ -8287,7 +8384,69 @@ const SOURCES_DB = [
         url: "",
         usedFor: "Material model for parts whose layer normal is not vertical (upright/angled)",
         confidence: "high",
-        note: "An upright print is weak across layers along ONE horizontal axis and strong along the other horizontal axis and Z; the exact model is transverse isotropy about that horizontal (layer-normal) axis. When you pick a BED face, STORMFEA now sends the layer-normal direction and the solver applies the EXACT tensor rotation: the constitutive matrix is rotated to align the weak axis with the bed normal, and the Hill criterion is evaluated in that rotated frame (handles flat, upright, and angled uniformly). If no bed face is picked (azimuth unknown), it falls back to the conservative scalar swap — E_z takes the strong in-layer modulus and BOTH horizontal directions take the weak through-layer modulus (pessimistic along the strong horizontal axis by up to E_z/E_xy ≈ 35%). Rotation core validated in server/tests/unit/bond-rotation.test.ts; swap fallback in upright-swap.test.ts.",
+        note: "An upright print is weak across layers along ONE horizontal axis and strong along the other horizontal axis and Z; the exact model is transverse isotropy about that horizontal (layer-normal) axis. When you pick a BED face, STORMFEA now sends the layer-normal direction and the solver applies the EXACT tensor rotation: the constitutive matrix is rotated to align the weak axis with the bed normal, and the failure criterion is evaluated in that rotated frame (handles flat, upright, and angled uniformly). If no bed face is picked (azimuth unknown), it falls back to the conservative scalar swap — E_z takes the strong in-layer modulus and BOTH horizontal directions take the weak through-layer modulus (pessimistic along the strong horizontal axis by up to E_z/E_xy ≈ 35%). Rotation core validated in server/tests/unit/bond-rotation.test.ts; swap fallback in upright-swap.test.ts.",
+      },
+    ]
+  },
+  {
+    category: "INTERLAYER FAILURE & BOND MODEL",
+    color: "#b5651d",
+    entries: [
+      {
+        id: "hashin1980",
+        citation: "Hashin Z. Failure criteria for unidirectional fiber composites. Journal of Applied Mechanics. 1980;47(2):329–334.",
+        url: "https://doi.org/10.1115/1.3153664",
+        usedFor: "Form of the interlayer interface criterion: quadratic interaction of tension-only normal traction with interface shear",
+        confidence: "high",
+        note: "The default criterion splits failure into BULK (bead) von Mises and an INTERFACE check on the layer-plane traction: (⟨σzz⟩₊/S_zt)² + (τ_z/S_zs)² ≤ 1. This replaced the calibrated Hill (1948) form after the layer-model audit found it was not rotationally symmetric in the layer plane (the same in-plane shear state yielded at 0.58·Y or ~0.99·Y depending on the part's azimuth on the build plate) and treated through-layer compression as bond failure. See docs/layer-model-audit.md.",
+      },
+      {
+        id: "brewer_lagace1988",
+        citation: "Brewer JC, Lagace PA. Quadratic stress criterion for initiation of delamination. Journal of Composite Materials. 1988;22(12):1141–1155.",
+        url: "https://doi.org/10.1177/002199838802201205",
+        usedFor: "Delamination-onset interpretation of the interface criterion (the 'Interlayer tension' failure-mode row)",
+        confidence: "high",
+        note: "Compression does not open the interface (Macaulay bracket on σzz); under compression the interlayer shear capacity is credited with Mohr–Coulomb friction (μ = 0.3, engineering estimate, confidence LOW).",
+      },
+      {
+        id: "ilss_decoupling",
+        citation: "STORMFEA layer-model audit (A5): interlaminar shear allowable S_zs decoupled from the Z-tension allowable S_zt.",
+        url: "",
+        usedFor: "Independent S_zs (lap-shear coupon) and S_zt (Z-tension coupon) allowables; default S_zs = S_zt/√3",
+        confidence: "medium",
+        note: "The default 1/√3 ratio is exactly the transverse-shear yield the legacy Hill coefficients L = M = 3/(2Z²) hard-wired, so uncalibrated through-layer results match the legacy model. Running BOTH interlayer coupons replaces the assumption with two measurements — the lap-shear result is no longer converted into yieldZ.",
+      },
+      {
+        id: "bellehumeur2004",
+        citation: "Bellehumeur C, Li L, Sun Q, Gu P. Modeling of bond formation between polymer filaments in the fused deposition modeling process. Journal of Manufacturing Processes. 2004;6(2):170–178.",
+        url: "https://doi.org/10.1016/S1526-6125(04)70071-7",
+        usedFor: "Bead-penetration bond model: lumped-capacitance road cooling + sintering neck growth",
+        confidence: "medium",
+        note: "Validated the lumped-capacitance cooling assumption for FDM roads experimentally. STORMFEA's bond model (server/solver/bond.ts) integrates an Arrhenius bond potential along that cooling curve.",
+      },
+      {
+        id: "yang_pitchumani2002",
+        citation: "Yang F, Pitchumani R. Healing of thermoplastic polymers at an interface under nonisothermal conditions. Macromolecules. 2002;35(8):3213–3224.",
+        url: "https://doi.org/10.1021/ma010858o",
+        usedFor: "Healing (interdiffusion) contribution: strength ∝ Φ^(1/4) reptation factor in the Φ^(3/4) combined exponent",
+        confidence: "medium",
+        note: "Combined with Frenkel neck growth (∝ Φ^(1/2)) into bond strength ∝ Φ^(3/4). The exponent is a modeling choice within the cited physics; confidence LOW until sweep-fitted.",
+      },
+      {
+        id: "coogan_kazmer2017",
+        citation: "Coogan TJ, Kazmer DO. Bond and part strength in fused deposition modeling. Rapid Prototyping Journal. 2017;23(2):414–422; and Healing simulation for bond strength prediction of FDM. Rapid Prototyping Journal. 2019;25(2).",
+        url: "https://doi.org/10.1108/RPJ-03-2016-0050",
+        usedFor: "Direction locks: hotter nozzle → stronger, faster printing → hotter substrate → stronger, more cooling → weaker; h_eff ≈ 20–90 W/m²K band",
+        confidence: "medium",
+        note: "The bond model's still-air h0 = 30 W/m²K and fan gain (2× at full fan) sit inside Coogan & Kazmer's measured band. All bond-model constants are confidence LOW until fitted from YOUR printer's process sweep (CALIBRATE tab), which lifts the model to MEDIUM.",
+      },
+      {
+        id: "seppala2017",
+        citation: "Seppala JE, Han SH, Hillgartner KE, Davis CS, Migler KB. Weld formation during material extrusion additive manufacturing. Soft Matter. 2017;13:6761–6769.",
+        url: "https://doi.org/10.1039/C7SM00950J",
+        usedFor: "Weld/interface temperature history timescales (sub-second to seconds above Tg) — sanity anchor for τc",
+        confidence: "high",
+        note: "Infrared measurement of actual FDM weld temperature histories; the model's τc ≈ 1–4 s at 0.2 mm layers is consistent.",
       },
     ]
   },
@@ -8730,6 +8889,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('input', updateCouponResults);
   });
+  // Seed the bond-sweep table with three empty rows (minimum for a fit)
+  for (let i = 0; i < 3; i++) addBondSweepRow();
 });
 
 
@@ -8772,6 +8933,85 @@ async function runFEAKtExtraction() {
     status.style.color = 'var(--danger)';
   }
 }
+// ── Bond-model process-sweep fit ───────────────────────────────────────────────
+function addBondSweepRow() {
+  const rows = document.getElementById('bond-sweep-rows');
+  if (!rows) return;
+  const row = document.createElement('div');
+  row.className = 'bond-sweep-row';
+  row.style.cssText = 'display:grid;grid-template-columns:repeat(5,1fr) 24px;gap:4px;margin-bottom:4px';
+  row.innerHTML =
+    '<input type="number" class="bs-lh" step="0.05" min="0.05" max="0.35" placeholder="0.2" style="font-size:10px;padding:4px 6px">' +
+    '<input type="number" class="bs-nozzle" step="5" min="150" max="450" placeholder="210" style="font-size:10px;padding:4px 6px">' +
+    '<input type="number" class="bs-speed" step="5" min="5" max="600" placeholder="60" style="font-size:10px;padding:4px 6px">' +
+    '<input type="number" class="bs-fan" step="5" min="0" max="100" placeholder="100" style="font-size:10px;padding:4px 6px">' +
+    '<input type="number" class="bs-fail" step="10" min="1" placeholder="e.g. 900" style="font-size:10px;padding:4px 6px">' +
+    '<button class="btn" style="font-size:10px;padding:0" onclick="this.parentElement.remove()" title="remove row">×</button>';
+  rows.appendChild(row);
+}
+
+async function runBondSweepFit() {
+  const status = document.getElementById('bond-sweep-status');
+  if (!status) return;
+  const rows = Array.from(document.querySelectorAll('#bond-sweep-rows .bond-sweep-row'));
+  const points = [];
+  for (const r of rows) {
+    const lh   = parseFloat(r.querySelector('.bs-lh')?.value);
+    const fail = parseFloat(r.querySelector('.bs-fail')?.value);
+    if (!(lh > 0) || !(fail > 0)) continue;
+    const p = { layerHeightMm: lh, zTensileFailN: fail };
+    const nz = parseFloat(r.querySelector('.bs-nozzle')?.value);
+    const sp = parseFloat(r.querySelector('.bs-speed')?.value);
+    const fnEl = r.querySelector('.bs-fan');
+    const fn = parseFloat(fnEl?.value);
+    if (isFinite(nz) && nz > 0) p.nozzleTempC = nz;
+    if (isFinite(sp) && sp > 0) p.printSpeedMmS = sp;
+    if (isFinite(fn) && fnEl?.value !== '') p.coolingFanPct = fn;
+    points.push(p);
+  }
+  if (points.length < 3) {
+    status.textContent = 'Need at least 3 complete rows (layer height + failure load).';
+    status.style.color = 'var(--warn)';
+    return;
+  }
+  const matId = document.getElementById('c-profile-mat')?.value || 'pla';
+  const active = (typeof getActiveProfile === 'function') ? getActiveProfile() : null;
+  status.textContent = 'Fitting bond model…';
+  status.style.color = 'var(--text-mid)';
+  try {
+    const resp = await fetch('/api/calibration/bond-sweep', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        materialId: matId,
+        ...(active?.yieldXY_MPa ? { yieldXY_MPa: active.yieldXY_MPa } : {}),
+        ...(active?.yieldZ_over_yieldXY ? { yieldZ_over_yieldXY: active.yieldZ_over_yieldXY } : {}),
+        points,
+      }),
+    });
+    if (!resp.ok) throw new Error((await resp.json().catch(() => null))?.error || await resp.text());
+    const { fit } = await resp.json();
+    let saved = '';
+    if (active) {
+      // Merge the fitted coefficients into the active profile and persist.
+      active.bondCoeffs = fit.coeffs;
+      await fetch('/api/calibration/save', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(active),
+      });
+      saved = ' Saved into profile "' + (active.label || active.id) + '".';
+    } else {
+      saved = ' No active profile — save one first, then re-fit to store the coefficients.';
+    }
+    status.innerHTML = 'Fit: h=' + fit.coeffs.hConv.toFixed(0) + ' W/m²K, Ea=' +
+      fit.coeffs.activationEnergyKJmol.toFixed(0) + ' kJ/mol, prefactor ×' +
+      fit.coeffs.strengthPrefactor.toFixed(2) + ' — RMSE ' + fit.rmsePct.toFixed(1) + '%.' + saved;
+    status.style.color = fit.rmsePct < 15 ? 'var(--success)' : 'var(--warn)';
+  } catch (e) {
+    status.textContent = 'Fit failed: ' + (e.message || e);
+    status.style.color = 'var(--danger)';
+  }
+}
+
 // ── Save profile ───────────────────────────────────────────────────────────────
 async function saveCalibProfile() {
   const label   = document.getElementById('c-profile-label').value.trim();
@@ -9952,6 +10192,12 @@ async function saveSession() {
       orientation:   document.getElementById('s-orient')?.value,
       layerHeightMm: +(document.getElementById('s-lh')?.value ?? 20) / 100,
       meshOrder:     +(document.getElementById('s-mesh-order')?.value ?? 2),
+      // Optional process settings (bond model) — persisted as raw strings so
+      // blank (= model off) round-trips.
+      procNozzle: document.getElementById('s-proc-nozzle')?.value ?? '',
+      procSpeed:  document.getElementById('s-proc-speed')?.value ?? '',
+      procFan:    document.getElementById('s-proc-fan')?.value ?? '',
+      procBed:    document.getElementById('s-proc-bed')?.value ?? '',
     },
     // Solver options + body/pressure loads so a resumed session keeps them
     // (gravity/pressure return null when their control is off).
@@ -10081,6 +10327,10 @@ async function loadSession() {
           lhSlider.value = String(Math.round(parseFloat(p.layerHeightMm)*100));
           updateLayerHeightDisplay(lhSlider.value);
         }
+      }
+      // Restore optional process settings (bond model); blank = model off
+      for (const [key, id] of [['procNozzle','s-proc-nozzle'],['procSpeed','s-proc-speed'],['procFan','s-proc-fan'],['procBed','s-proc-bed']]) {
+        if (p[key] != null && document.getElementById(id)) document.getElementById(id).value = p[key];
       }
       updateSettingsPreview();
     }
@@ -11333,7 +11583,7 @@ function applyStressColorsFromArrays(arrays) {
     s3:   'Min Principal σ₃ (' + U.stressLabel() + ')',
     dmg:    'Damage Ratio (XY/Z)',
     xyutil: 'XY In-Plane Utilization (0–2)',
-    zutil:  'Z Inter-Layer Utilization (0–2)',
+    zutil:  'Interlayer Interface Utilization (0–2)',
     error:  'Error Estimate η (0–1)',
   };
   document.getElementById('legend-title') && (document.getElementById('legend-title').textContent = modeLabels[S.stressMode] || '');
@@ -12208,6 +12458,20 @@ function applyGcodeParamsToUI(params) {
     const lwInput = document.getElementById('two-region-linewidth');
     if (lwInput) lwInput.value = params.extrusionWidthMm.toFixed(2);
     updateWallBandReadout();
+  }
+
+  // Prefill the process settings (bead-penetration bond model) when present.
+  const procFills = [
+    ['s-proc-nozzle', params.nozzleTempC,   'nozzle', '°C'],
+    ['s-proc-speed',  params.printSpeedMmS, 'speed',  ' mm/s'],
+    ['s-proc-fan',    params.coolingFanPct, 'fan',    '%'],
+    ['s-proc-bed',    params.bedTempC,      'bed',    '°C'],
+  ];
+  for (const [id, val, name, unit] of procFills) {
+    if (val != null && isFinite(val)) {
+      const el = document.getElementById(id);
+      if (el) { el.value = String(Math.round(val)); imported.push(name + ' ' + Math.round(val) + unit); }
+    }
   }
 
   const badge      = document.getElementById('gcode-import-badge');

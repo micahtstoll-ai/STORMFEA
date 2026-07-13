@@ -30,6 +30,14 @@ import {
   PATTERN_PLY_ANGLES,
   type BeadProperties,
 } from "./solver/laminate.js";
+import {
+  predictBondMultipliers,
+  hasProcessSettings,
+  type ProcessSettings,
+  type BondModelCoeffs,
+  type BondPrediction,
+} from "./solver/bond.js";
+export { fitBondCoeffs, type BondSweepPoint } from "./solver/bond.js";
 
 // ─── Memory profiling snap helper ────────────────────────────────────────────
 // Activated by STORMFEA_PROFILE_MEMORY=1. Mirrors the helper in pipeline.ts.
@@ -481,6 +489,12 @@ export interface CalibrationProfile {
    */
   yieldZFromShear?: boolean;
   /**
+   * Printer/filament-fitted bead-penetration bond-model coefficients from a
+   * process sweep (POST /api/calibration/bond-sweep → fitBondCoeffs). Absent
+   * = literature defaults (confidence LOW).
+   */
+  bondCoeffs?: BondModelCoeffs | null;
+  /**
    * Optional overrides for the two-region core's Gibson-Ashby exponents
    * (solver/lattice.ts). Escape hatch for printer-specific lattice data —
    * there is no coupon-fitting workflow for these yet. Absent/null = family
@@ -730,6 +744,16 @@ const MATERIALS: Record<string, { E: number; nu: number; yieldMPa: number; densi
   asa:   { E: 2100,  nu: 0.35, yieldMPa: 40,  densityKgM3: 1070, label: "ASA"   },
 };
 
+/** Literature in-plane yield for a material id (bond-sweep fit fallback). */
+export function literatureYieldMPa(materialId: string): number {
+  return (MATERIALS[materialId] ?? MATERIALS["pla"]!).yieldMPa;
+}
+
+/** Literature yieldZ/yieldXY ratio (bond-sweep fit fallback). */
+export function literatureYieldZRatio(): number {
+  return FDM_ORTHO_RATIOS.yieldZ_over_yieldXY;
+}
+
 /**
  * FDM orthotropic property ratios — updated from literature review June 2026.
  *
@@ -811,6 +835,8 @@ function buildOrthotropicMaterialCLT(
   beadPropsOverride?: BeadProperties,
   /** Through-layer (weak) axis in the global frame; see buildOrthotropicMaterial. */
   weakAxis?:       readonly [number, number, number] | null,
+  /** Bead-penetration bond multipliers (process settings present); see bond.ts. */
+  bondRel?:        BondPrediction | null,
 ): OrthotropicMaterial {
   const base = MATERIALS[baseMatId] ?? MATERIALS["pla"]!;
   const lhf  = layerHeightFactor(layerHeightMm);
@@ -830,8 +856,14 @@ function buildOrthotropicMaterialCLT(
   // scalar is kept as a conservative fallback until a bed face is chosen.
   const angledNoBedMul = angledNoBedFallbackMul(orientation, weakAxis);
 
+  // Bead-penetration bond model (audit A6): process-settings multipliers on
+  // the interlayer properties, relative to the reference condition, applied
+  // ON TOP of the layer-height factor. 1.0 when no process block is present.
+  const bondS = bondRel?.relStrength  ?? 1.0;
+  const bondE = bondRel?.relStiffness ?? 1.0;
+
   const yieldXY = yieldXY_base * strengthMul * angledNoBedMul;
-  const yieldZ  = yieldXY * yZ_ratio * lhf;
+  const yieldZ  = yieldXY * yZ_ratio * lhf * bondS;
   const yieldZShear = yieldZ * (calibration?.interShear_over_yieldZ ?? INTERSHEAR_OVER_YIELDZ_DEFAULT);
 
   // Derive Z-direction properties from the empirical bond model
@@ -839,9 +871,9 @@ function buildOrthotropicMaterialCLT(
   // min(1, strengthMul): stiffness saturates at solid — identical to the
   // legacy min(1, mul/0.55) once the 0.55 orientation factor left the mul.
   const E_xy_empirical = (calibration?.E_xy_MPa ?? base.E) * Math.min(1.0, strengthMul);
-  const E_z    = E_xy_empirical * E_z_ratio * lhf;
+  const E_z    = E_xy_empirical * E_z_ratio * lhf * bondE;
   const G_xy   = E_xy_empirical / (2 * (1 + base.nu));
-  const G_xz   = G_xy * Gxz_ratio * lhf;
+  const G_xz   = G_xy * Gxz_ratio * lhf * bondE;
   const nu_xz  = FDM_ORTHO_RATIOS.nu_xz;
 
   const src = calibration ? `CLT:calibrated:${calibration.id}` : "CLT:literature";
@@ -890,6 +922,8 @@ export function buildOrthotropicMaterial(
    * (no bed picked), the conservative scalar swap is used for upright prints.
    */
   weakAxis?:       readonly [number, number, number] | null,
+  /** Bead-penetration bond multipliers (process settings present); see bond.ts. */
+  bondRel?:        BondPrediction | null,
 ): OrthotropicMaterial {
   const base = MATERIALS[baseMatId] ?? MATERIALS["pla"]!;
   const lhf  = layerHeightFactor(layerHeightMm);
@@ -905,15 +939,19 @@ export function buildOrthotropicMaterial(
   // A4); min(1, strengthMul) keeps stiffness saturated at solid; the angled
   // no-bed case keeps the legacy 0.75 scalar as a conservative fallback.
   const angledNoBedMul = angledNoBedFallbackMul(orientation, weakAxis);
+  // Bead-penetration bond model multipliers (audit A6); 1.0 without process
+  // settings — see buildOrthotropicMaterialCLT.
+  const bondS = bondRel?.relStrength  ?? 1.0;
+  const bondE = bondRel?.relStiffness ?? 1.0;
 
   const E_xy    = E_xy_base    * Math.min(1.0, strengthMul);
-  const E_z     = E_xy         * E_z_ratio * lhf;
+  const E_z     = E_xy         * E_z_ratio * lhf * bondE;
   const G_xy    = E_xy         / (2 * (1 + base.nu));
-  const G_xz    = G_xy         * Gxz_ratio * lhf;
+  const G_xz    = G_xy         * Gxz_ratio * lhf * bondE;
   const nu_xy   = base.nu;
   const nu_xz   = FDM_ORTHO_RATIOS.nu_xz;
   const yieldXY = yieldXY_base * strengthMul * angledNoBedMul;
-  const yieldZ  = yieldXY      * yZ_ratio  * lhf;
+  const yieldZ  = yieldXY      * yZ_ratio  * lhf * bondS;
   const yieldZShear = yieldZ * (calibration?.interShear_over_yieldZ ?? INTERSHEAR_OVER_YIELDZ_DEFAULT);
 
   const src = calibration ? `calibrated:${calibration.id}` : "literature";
@@ -1128,6 +1166,8 @@ export function buildCoreMaterial(
   useCLT:        boolean,
   beadProps:     BeadProperties | undefined,
   weakAxis:      readonly [number, number, number] | null,
+  /** Bond-model multipliers — the core is layered material too; see bond.ts. */
+  bondRel?:      BondPrediction | null,
 ): OrthotropicMaterial {
   const baseMat = MATERIALS[materialId] ?? MATERIALS["pla"]!;
   const rho = infillPct / 100;
@@ -1143,9 +1183,9 @@ export function buildCoreMaterial(
   // here; the swap is applied manually below, after scaling.
   const solid = useCLT
     ? buildOrthotropicMaterialCLT(materialId, 100, pattern, orientation, layerHeightMm,
-        1.0, calibration, beadProps, solidAxis)
+        1.0, calibration, beadProps, solidAxis, bondRel)
     : buildOrthotropicMaterial(materialId, 1.0, orientation, layerHeightMm,
-        calibration, solidAxis);
+        calibration, solidAxis, bondRel);
 
   let scaled: OrthotropicMaterial;
   if (calibration?.latticeStiffExp != null) {
@@ -1279,6 +1319,14 @@ export interface PrintSettings {
    * is a genuine slicer/print parameter, so it stays with the print settings.
    */
   extrusionWidthMm?: number;
+  /**
+   * Optional process settings (nozzle/bed temperature, print speed, cooling
+   * fan, ambient). When ANY field is present the bead-penetration bond model
+   * (server/solver/bond.ts, audit A6) predicts interlayer strength/stiffness
+   * multipliers RELATIVE to the reference condition and applies them on top
+   * of layerHeightFactor. Absent → legacy layer-height-only path, unchanged.
+   */
+  process?: ProcessSettings;
 }
 
 /**
@@ -1879,6 +1927,20 @@ export interface MaterialModelInfo {
   };
   /** Set when the two-region request degraded to uniform (why). */
   degraded?:            string;
+  /**
+   * Bead-penetration bond model diagnostics — present when process settings
+   * activated it (server/solver/bond.ts, audit A6).
+   */
+  bond?: {
+    relStrength:    number;
+    relStiffness:   number;
+    interfaceTempC: number;
+    substrateTempC: number;
+    coolTimeConstS: number;
+    clamped:        boolean;
+    confidence:     "low" | "medium";
+    note:           string;
+  };
 }
 
 export interface AnalysisResult {
@@ -2718,6 +2780,21 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   const criterion: CriterionKind = req.analysis.criterion
     ?? ((req.print.orientation === "upright" && !weakAxis) ? "hill-legacy" : "fdm-interface");
 
+  // Bead-penetration bond model (audit A6): only active when the request
+  // carries process settings; otherwise the legacy layer-height-only path
+  // runs bit-identically (bondRel = null → all multipliers 1.0).
+  const bondRel: BondPrediction | null = hasProcessSettings(req.print.process)
+    ? predictBondMultipliers(
+        req.print.materialId,
+        req.print.layerHeightMm ?? 0.2,
+        req.print.process,
+        req.calibration?.bondCoeffs ?? null,
+      )
+    : null;
+  if (bondRel) {
+    console.log(`[analysis] bond model active: ${bondRel.note}`);
+  }
+
   // Use orthotropic material model — accurately captures the anisotropy of FDM parts.
   // For flat prints: E_z ≈ 0.65 × E_xy, yieldZ ≈ 0.58 × yieldXY.
   // For upright prints: axes are swapped — the strong direction faces the load.
@@ -2733,6 +2810,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         req.calibration ?? null,
         req.analysis.beadProps,
         weakAxis,
+        bondRel,
       )
     : buildOrthotropicMaterial(
         req.print.materialId,
@@ -2741,6 +2819,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         req.print.layerHeightMm ?? 0.2,
         req.calibration ?? null,
         weakAxis,
+        bondRel,
       );
 
   // Effective mass density (issue #99): solid density × first-order solid
@@ -2863,6 +2942,16 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     coreYieldXYMPa: null,
     impliedAvgStrengthMul: null,
     globalModelStrengthMul: strengthMul * orientFallbackMul,
+    ...(bondRel ? { bond: {
+      relStrength:    +bondRel.relStrength.toFixed(4),
+      relStiffness:   +bondRel.relStiffness.toFixed(4),
+      interfaceTempC: +bondRel.interfaceTempC.toFixed(1),
+      substrateTempC: +bondRel.substrateTempC.toFixed(1),
+      coolTimeConstS: +bondRel.coolTimeConstS.toFixed(2),
+      clamped:        bondRel.clamped,
+      confidence:     bondRel.confidence,
+      note:           bondRel.note,
+    } } : {}),
   };
   if (req.analysis.twoRegion) {
     const degrade = (why: string): void => {
@@ -2891,6 +2980,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       const shellBuilt = buildOrthotropicMaterial(
         req.print.materialId, 1.0, req.print.orientation,
         req.print.layerHeightMm ?? 0.2, req.calibration ?? null, weakAxis,
+        bondRel,
       );
       const shellMat: OrthotropicMaterial = { ...shellBuilt, massRho: baseMat.densityKgM3 };
 
@@ -2912,6 +3002,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         req.print.materialId, req.print.infillPct, pattern, req.print.orientation,
         req.print.layerHeightMm ?? 0.2, req.calibration ?? null,
         req.analysis.useCLT ?? false, req.analysis.beadProps, weakAxis,
+        bondRel,
       );
 
       const tr = buildTwoRegionField(mesh, surfaceFaces, shellMat, coreMat, tWall);
