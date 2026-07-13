@@ -51,6 +51,14 @@ jobs:
       run: npm ci --verbose
 
     - name: Compile TypeScript and run solver validation suite
+      # This step is also the issue-#108 wall-time regression gate: with the
+      # meshers installed above, server/tests/unit/mesher-integration.test.ts
+      # runs real STL→TetGen and STEP→Gmsh analyses end-to-end and FAILS the
+      # build if any exceeds WALLTIME_BUDGET_MS (60 s — deliberately generous;
+      # it catches gross regressions like a reintroduced O(n²) mapping loop,
+      # not runner noise). Actual-vs-budget numbers appear in this step's log
+      # under the grep-able prefix "[#108 walltime]". The budget can be
+      # overridden locally via STORMFEA_WALLTIME_BUDGET_MS; CI never sets it.
       run: npm run test -- --verbose
 
     - name: Verify TetGen -o2 → C3D10 midnode permutation (issue #66 regression gate)
