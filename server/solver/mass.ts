@@ -11,6 +11,7 @@
 
 import type { TetMesh, CSRMatrix, AnyMaterial, ElementMaterialField } from "./types.js";
 import { buildSparsityPattern, type SparsityPattern } from "./assembly.js";
+import { findEntry } from "./csr.js";
 
 // Default mass density for PLA in kg/m³
 const DEFAULT_MASS_RHO_KG_M3 = 1240;
@@ -34,21 +35,6 @@ function tetVolume(
   const a3 = x3-x0, b3 = y3-y0, c3 = z3-z0;
   const sixV = a1*(b2*c3 - b3*c2) - b1*(a2*c3 - a3*c2) + c1*(a2*b3 - a3*b2);
   return Math.abs(sixV) / 6;
-}
-
-// ─── Binary search helper ─────────────────────────────────────────────────────
-
-function findEntry(colIdx: Int32Array, rowPtr: Int32Array, row: number, col: number): number {
-  const start = rowPtr[row] ?? 0;
-  const end   = rowPtr[row + 1] ?? colIdx.length;
-  let lo = start, hi = end - 1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    const c   = colIdx[mid] ?? -1;
-    if (c === col) return mid;
-    if (c < col) lo = mid + 1; else hi = mid - 1;
-  }
-  throw new Error(`CSR entry not found for mass matrix: row=${row} col=${col}`);
 }
 
 // ─── Main export ──────────────────────────────────────────────────────────────

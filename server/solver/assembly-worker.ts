@@ -3,14 +3,21 @@
  * ------------------
  * Worker thread for parallel element stiffness computation.
  *
- * Receives a chunk of elements and computes element stiffness k_e for each,
- * extracting COO (row, col, value) triplets that are sent back to the main thread.
+ * Receives a chunk of elements plus the CSR sparsity pattern, computes each
+ * element stiffness k_e, and scatters the contributions straight into a
+ * full-nnz Float64Array slab keyed by CSR slot (the same scatter kernel the
+ * serial path uses — csr.ts). The slab is posted back with a transfer list,
+ * so the return trip is zero-copy; the main thread merges slabs by simple
+ * addition in fixed chunk order.
  *
- * No worker pool management here — the main thread orchestrates the pool.
+ * The worker stays alive listening for further jobs — pool management lives
+ * in assembly-pool.ts. Imports are kept minimal (element kernels + csr
+ * helpers only); never import assembly.js from here.
  */
 
-import { parentPort, workerData } from "worker_threads";
+import { parentPort } from "worker_threads";
 import { elementStiffness, c3d10ElementStiffness } from "./element.js";
+import { scatterElemMatrixIntoCSR } from "./csr.js";
 
 export interface WorkerInput {
   readonly elementStart: number;
@@ -26,12 +33,10 @@ export interface WorkerInput {
    * material (single 36-entry C).
    */
   readonly binOfElement?: Int32Array | null;
-}
-
-export interface CoOTriplet {
-  readonly row: number;
-  readonly col: number;
-  readonly val: number;
+  /** CSR sparsity pattern (structured-clone copies of the main thread's
+   *  arrays). The worker scatters into a Float64Array(colIdx.length) slab. */
+  readonly rowPtr: Int32Array;
+  readonly colIdx: Int32Array;
 }
 
 // ─── Helper: safe typed-array access ──────────────────────────────────────
@@ -51,38 +56,11 @@ function f64(arr: Float64Array, i: number): number {
 // ─── Worker entry point ──────────────────────────────────────────────────────
 
 /**
- * Extract COO triplets from element k_e matrices.
- * Each element k_e[i,j] becomes a triplet (globalRow, globalCol, k_e[i,j]).
- *
- * globalRow = elemNodes[i/3] * 3 + (i % 3)
- * globalCol = elemNodes[j/3] * 3 + (j % 3)
+ * Main worker function: process an element chunk into a full-nnz CSR data
+ * slab. Slots not touched by this chunk stay exactly 0.0, so slabs from all
+ * chunks merge by plain addition.
  */
-function extractCoOFromKe(
-  elemIdx: number,
-  elemNodes: Int32Array,
-  ke: Float64Array,
-  dpe: number,  // DOF per element: 12 for C3D4, 30 for C3D10
-): CoOTriplet[] {
-  const triplets: CoOTriplet[] = [];
-
-  for (let lr = 0; lr < dpe; lr++) {
-    const globalR = (elemNodes[Math.floor(lr / 3)] ?? 0) * 3 + (lr % 3);
-    for (let lc = 0; lc < dpe; lc++) {
-      const globalC = (elemNodes[Math.floor(lc / 3)] ?? 0) * 3 + (lc % 3);
-      const val = f64(ke, lr * dpe + lc);
-      if (Math.abs(val) > 1e-16) {  // Skip near-zero entries
-        triplets.push({ row: globalR, col: globalC, val });
-      }
-    }
-  }
-
-  return triplets;
-}
-
-/**
- * Main worker function: process element chunk and return COO triplets.
- */
-function processElementChunk(input: WorkerInput): CoOTriplet[] {
+function processElementChunk(input: WorkerInput): Float64Array {
   const {
     elementStart,
     elementEnd,
@@ -91,10 +69,12 @@ function processElementChunk(input: WorkerInput): CoOTriplet[] {
     elements,
     C,
     binOfElement,
+    rowPtr,
+    colIdx,
   } = input;
 
   const dpe = nodesPerElem * 3;  // DOF per element
-  const allTriplets: CoOTriplet[] = [];
+  const data = new Float64Array(colIdx.length);  // full-nnz slab, zeroed
 
   // Pre-allocate scratch arrays
   const elemNodes = new Int32Array(nodesPerElem);
@@ -135,12 +115,11 @@ function processElementChunk(input: WorkerInput): CoOTriplet[] {
       ke = elementStiffness(nodes, na, nb, nc, nd, Ce);
     }
 
-    // Extract COO triplets
-    const triplets = extractCoOFromKe(e, elemNodes, ke, dpe);
-    allTriplets.push(...triplets);
+    // Scatter into the CSR slab — same kernel as the serial path (csr.ts).
+    scatterElemMatrixIntoCSR(elemNodes, dpe, ke, rowPtr, colIdx, data);
   }
 
-  return allTriplets;
+  return data;
 }
 
 // ─── Worker message handler ───────────────────────────────────────────────────
@@ -148,8 +127,11 @@ function processElementChunk(input: WorkerInput): CoOTriplet[] {
 if (parentPort) {
   parentPort.on("message", (input: WorkerInput) => {
     try {
-      const triplets = processElementChunk(input);
-      parentPort!.postMessage({ success: true, triplets });
+      const data = processElementChunk(input);
+      // Transfer the slab's buffer — zero-copy back to the main thread.
+      // (`new Float64Array(n)` is always backed by a plain ArrayBuffer;
+      // the cast narrows away the SharedArrayBuffer half of ArrayBufferLike.)
+      parentPort!.postMessage({ success: true, data }, [data.buffer as ArrayBuffer]);
     } catch (err) {
       parentPort!.postMessage({
         success: false,
