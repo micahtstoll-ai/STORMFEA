@@ -99,3 +99,35 @@ export function computeWallFractions(
   }
   return frac;
 }
+
+/**
+ * Wall-band volume fraction per element from a precomputed nodal band
+ * penetration φ (see `computeNodeBandPenetration` in distance.ts), where
+ * φ < 0 already means "inside some wall/skin band". Identical marching-tet
+ * volume as `computeWallFractions`, but the per-face band thickness is baked
+ * into φ upstream, so nothing is subtracted here. Used by the multi-thickness
+ * (perimeter wall vs top/bottom skin) two-region path.
+ *
+ * @returns Float64Array of length elementCount, values in [0, 1].
+ */
+export function computeWallFractionsFromPhi(
+  mesh: TetMesh,
+  nodePhi: Float64Array,
+): Float64Array {
+  const frac = new Float64Array(mesh.elementCount);
+  const npe = mesh.nodesPerElem;
+  for (let e = 0; e < mesh.elementCount; e++) {
+    const base = e * npe;
+    const n0 = mesh.elements[base] ?? 0;
+    const n1 = mesh.elements[base + 1] ?? 0;
+    const n2 = mesh.elements[base + 2] ?? 0;
+    const n3 = mesh.elements[base + 3] ?? 0;
+    frac[e] = tetFractionBelowIso(
+      nodePhi[n0] ?? 0,
+      nodePhi[n1] ?? 0,
+      nodePhi[n2] ?? 0,
+      nodePhi[n3] ?? 0,
+    );
+  }
+  return frac;
+}

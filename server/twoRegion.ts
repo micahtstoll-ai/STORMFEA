@@ -34,8 +34,8 @@ import type {
   TetMesh,
 } from "./solver/types.js";
 import { buildAnyConstitutiveMatrix, computeGeometry } from "./solver/element.js";
-import { computeNodeSurfaceDistances } from "./solver/distance.js";
-import { computeWallFractions } from "./solver/wallfrac.js";
+import { computeNodeSurfaceDistances, computeNodeBandPenetration } from "./solver/distance.js";
+import { computeWallFractions, computeWallFractionsFromPhi } from "./solver/wallfrac.js";
 import { interlaminarShearOf } from "./solver/stress.js";
 
 /** Quantization level count for the wall-fraction bins (f_b = b/(N−1)). */
@@ -59,8 +59,88 @@ export interface TwoRegionResult {
   averageMaterial: OrthotropicMaterial;
   /** Shell (wall-band) share of total part volume, ∈ [0, 1]. */
   shellVolumeFraction: number;
-  /** Wall-band thickness used for classification, mm. */
+  /** Wall-band (vertical perimeter) thickness used for classification, mm. */
   wallThicknessMm: number;
+  /** Top solid-skin (ceiling) band thickness, mm — only when skins were modeled. */
+  skinTopThicknessMm?: number;
+  /** Bottom solid-skin (floor) band thickness, mm — only when skins were modeled. */
+  skinBotThicknessMm?: number;
+}
+
+/**
+ * Independent top/bottom solid-skin (floor/ceiling) band specification for the
+ * two-region model. Skins are the SAME solid material as the perimeter shell
+ * (they are just solid regions printed layer-by-layer with the same weak axis),
+ * so only their GEOMETRY differs — a horizontal-surface band whose thickness is
+ * `layers × layerHeight`, generally different from the vertical perimeter band
+ * `wallCount × lineWidth`.
+ */
+export interface SkinBands {
+  /**
+   * Build axis in the global mesh frame (bed normal, or a Z-up default when no
+   * bed is picked). Used ONLY to classify which boundary triangles are
+   * horizontal skins vs vertical perimeters and to split top from bottom.
+   * Sign/azimuth are immaterial to the classification.
+   */
+  buildAxis: readonly [number, number, number];
+  /** Top (ceiling) skin band thickness, mm. */
+  tSkinTop: number;
+  /** Bottom (floor) skin band thickness, mm. */
+  tSkinBot: number;
+}
+
+/**
+ * Per-boundary-triangle band thickness for the multi-thickness classifier.
+ * A triangle whose normal is within 45° of the build axis is a solid SKIN
+ * (top or bottom, split by its centroid's position along the axis relative to
+ * the part mid-plane — winding-independent); everything else (side walls,
+ * steep overhangs) uses the perimeter band `tWall`.
+ */
+function classifyFaceBands(
+  mesh: TetMesh,
+  surfaceFaces: Int32Array,
+  skin: SkinBands,
+  tWall: number,
+): Float64Array {
+  const nodes = mesh.nodes;
+  const triCount = Math.floor(surfaceFaces.length / 3);
+  const band = new Float64Array(triCount);
+
+  const wlen = Math.hypot(skin.buildAxis[0], skin.buildAxis[1], skin.buildAxis[2]) || 1;
+  const wx = skin.buildAxis[0] / wlen, wy = skin.buildAxis[1] / wlen, wz = skin.buildAxis[2] / wlen;
+
+  // Part extent along the build axis → mid-plane for the top/bottom split.
+  let pMin = Infinity, pMax = -Infinity;
+  for (let n = 0; n < mesh.nodeCount; n++) {
+    const proj = (nodes[n * 3] ?? 0) * wx + (nodes[n * 3 + 1] ?? 0) * wy + (nodes[n * 3 + 2] ?? 0) * wz;
+    if (proj < pMin) pMin = proj;
+    if (proj > pMax) pMax = proj;
+  }
+  const mid = (pMin + pMax) / 2;
+  const COS45 = Math.SQRT1_2; // cos(45°) ≈ 0.70710678
+
+  for (let t = 0; t < triCount; t++) {
+    const na = surfaceFaces[t * 3] ?? 0, nb = surfaceFaces[t * 3 + 1] ?? 0, nc = surfaceFaces[t * 3 + 2] ?? 0;
+    const ax = nodes[na * 3] ?? 0, ay = nodes[na * 3 + 1] ?? 0, az = nodes[na * 3 + 2] ?? 0;
+    const bx = nodes[nb * 3] ?? 0, by = nodes[nb * 3 + 1] ?? 0, bz = nodes[nb * 3 + 2] ?? 0;
+    const cx = nodes[nc * 3] ?? 0, cy = nodes[nc * 3 + 1] ?? 0, cz = nodes[nc * 3 + 2] ?? 0;
+    // Triangle normal (b−a)×(c−a).
+    const ux = bx - ax, uy = by - ay, uz = bz - az;
+    const vx = cx - ax, vy = cy - ay, vz = cz - az;
+    const nx = uy * vz - uz * vy;
+    const ny = uz * vx - ux * vz;
+    const nz = ux * vy - uy * vx;
+    const nlen = Math.hypot(nx, ny, nz);
+    if (nlen < 1e-12) { band[t] = tWall; continue; } // degenerate → perimeter
+    const nDotW = (nx * wx + ny * wy + nz * wz) / nlen;
+    if (Math.abs(nDotW) >= COS45) {
+      const cProj = ((ax + bx + cx) / 3) * wx + ((ay + by + cy) / 3) * wy + ((az + bz + cz) / 3) * wz;
+      band[t] = cProj >= mid ? skin.tSkinTop : skin.tSkinBot;
+    } else {
+      band[t] = tWall;
+    }
+  }
+  return band;
 }
 
 /**
@@ -143,7 +223,12 @@ function maxCornerEdge(mesh: TetMesh): number {
  *                      density; calibrated solid props flow here).
  * @param coreMat       Wall-free homogenized lattice material (massRho =
  *                      solid density × infill fraction).
- * @param tWall         Wall-band thickness, mm (wallCount × line width).
+ * @param tWall         Perimeter wall-band thickness, mm (wallCount × line width).
+ * @param skin          Optional independent top/bottom solid-skin bands
+ *                      (floor/ceiling). When present, horizontal-facing
+ *                      boundary triangles get their own band thickness; when
+ *                      absent the classifier reduces bit-identically to the
+ *                      single-thickness `tWall` path.
  */
 export function buildTwoRegionField(
   mesh: TetMesh,
@@ -151,9 +236,13 @@ export function buildTwoRegionField(
   shellMat: OrthotropicMaterial,
   coreMat: OrthotropicMaterial,
   tWall: number,
+  skin?: SkinBands,
 ): TwoRegionResult {
-  // ── Degenerate: no wall band → pure core ─────────────────────────────────
-  if (tWall <= 0) {
+  // Largest band drives the search/clamp radius and the "any band?" check.
+  const maxBand = skin ? Math.max(tWall, skin.tSkinTop, skin.tSkinBot) : tWall;
+
+  // ── Degenerate: no band anywhere → pure core ─────────────────────────────
+  if (maxBand <= 0) {
     return {
       field: null,
       averageMaterial: blendMaterial(shellMat, coreMat, 0, coreMat.label),
@@ -170,9 +259,19 @@ export function buildTwoRegionField(
     relDiff(shellMat.yieldZ, coreMat.yieldZ) < 1e-9;
 
   // ── Wall fractions ────────────────────────────────────────────────────────
-  const dMax = tWall + maxCornerEdge(mesh);
-  const nodeDist = computeNodeSurfaceDistances(mesh, surfaceFaces, dMax);
-  const wallFrac = computeWallFractions(mesh, nodeDist, tWall);
+  // Single perimeter band → the legacy distance path (bit-identical). With
+  // independent floor/ceiling skins → the union-of-bands penetration field,
+  // which collapses to the legacy result when every band equals tWall.
+  const dMax = maxBand + maxCornerEdge(mesh);
+  let wallFrac: Float64Array;
+  if (skin) {
+    const faceBand = classifyFaceBands(mesh, surfaceFaces, skin, tWall);
+    const nodePhi = computeNodeBandPenetration(mesh, surfaceFaces, faceBand, dMax);
+    wallFrac = computeWallFractionsFromPhi(mesh, nodePhi);
+  } else {
+    const nodeDist = computeNodeSurfaceDistances(mesh, surfaceFaces, dMax);
+    wallFrac = computeWallFractions(mesh, nodeDist, tWall);
+  }
 
   // Volume-weighted shell fraction (corner-tet volumes; exact for straight-
   // sided C3D10 too, which is all the meshers produce).
@@ -267,5 +366,6 @@ export function buildTwoRegionField(
     averageMaterial,
     shellVolumeFraction: Vf,
     wallThicknessMm: tWall,
+    ...(skin ? { skinTopThicknessMm: skin.tSkinTop, skinBotThicknessMm: skin.tSkinBot } : {}),
   };
 }
