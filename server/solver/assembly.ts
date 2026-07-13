@@ -25,7 +25,8 @@
 
 import type { TetMesh, AnyMaterial, CSRMatrix, ElementMaterialField } from "./types.js";
 import { elementStiffness, buildAnyConstitutiveMatrix, c3d10ElementStiffness, elementGeometricStiffness, c3d10ElementGeometricStiffness } from "./element.js";
-import { Worker } from "worker_threads";
+import { scatterElemMatrixIntoCSR } from "./csr.js";
+import { runAssemblyJobs } from "./assembly-pool.js";
 import { fileURLToPath } from "url";
 import path from "path";
 import os from "os";
@@ -110,26 +111,6 @@ export function buildSparsityPattern(mesh: TetMesh): {
   return { rowPtr, colIdx, diagIdx };
 }
 
-// ─── Binary search in CSR row ─────────────────────────────────────────────────
-
-/**
- * Find the position of column `col` in row `row` of the CSR matrix.
- * colIdx within each row is sorted ascending — use binary search.
- * Throws if the entry is not found (indicates a sparsity pattern bug).
- */
-function findEntry(colIdx: Int32Array, rowPtr: Int32Array, row: number, col: number): number {
-  const start = rowPtr[row] ?? 0;
-  const end   = rowPtr[row + 1] ?? colIdx.length;
-  let lo = start, hi = end - 1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    const c   = colIdx[mid] ?? -1;
-    if (c === col) return mid;
-    if (c < col) lo = mid + 1; else hi = mid - 1;
-  }
-  throw new Error(`CSR entry not found: row=${row} col=${col} — sparsity pattern incomplete`);
-}
-
 // ─── Serial assembly (extracted from original) ────────────────────────────────
 
 /**
@@ -179,82 +160,38 @@ function assembleK_serial(
       ke = elementStiffness(mesh.nodes, na, nb, nc, nd, C);
     }
 
-    for (let lr = 0; lr < dpe; lr++) {
-      const globalR = (elemNodes[Math.floor(lr / 3)] ?? 0) * 3 + (lr % 3);
-      for (let lc = 0; lc < dpe; lc++) {
-        const globalC = (elemNodes[Math.floor(lc / 3)] ?? 0) * 3 + (lc % 3);
-        const pos = findEntry(colIdx, rowPtr, globalR, globalC);
-        data[pos] = (data[pos] ?? 0) + (ke[lr * dpe + lc] ?? 0);
-      }
-    }
-  }
-}
-
-// ─── COO triplet interface and merging ────────────────────────────────────────
-
-interface CoOTriplet {
-  readonly row: number;
-  readonly col: number;
-  readonly val: number;
-}
-
-/**
- * Merge COO triplets into CSR data array.
- * COO triplets are sorted by (row, col), accumulated for duplicates,
- * then scattered into the CSR data array via findEntry.
- */
-function mergeCoOIntoCSR(
-  triplets: CoOTriplet[],
-  rowPtr: Int32Array,
-  colIdx: Int32Array,
-  data: Float64Array,
-): void {
-  if (triplets.length === 0) return;
-
-  // Sort COO by (row, col)
-  triplets.sort((a, b) => {
-    if (a.row !== b.row) return a.row - b.row;
-    return a.col - b.col;
-  });
-
-  // Accumulate duplicates
-  const merged: CoOTriplet[] = [];
-  let current = triplets[0]!;
-  for (let i = 1; i < triplets.length; i++) {
-    const t = triplets[i]!;
-    if (t.row === current.row && t.col === current.col) {
-      current = { row: current.row, col: current.col, val: current.val + t.val };
-    } else {
-      merged.push(current);
-      current = t;
-    }
-  }
-  merged.push(current);
-
-  // Scatter into CSR data array
-  for (const { row, col, val } of merged) {
-    const pos = findEntry(colIdx, rowPtr, row, col);
-    data[pos] = (data[pos] ?? 0) + val;
+    scatterElemMatrixIntoCSR(elemNodes, dpe, ke, rowPtr, colIdx, data);
   }
 }
 
 // ─── Parallel assembly via worker_threads ─────────────────────────────────────
 
 /**
- * Minimum element count for the parallel path. Below this, worker spawn +
- * message overhead exceeds the assembly cost and serial is faster.
+ * Minimum element count for the parallel path. Below this, worker message
+ * overhead exceeds the assembly cost and serial is faster.
  */
 const PARALLEL_MIN_ELEMENTS = 1000;
 
+/** Per-job timeout. A job is one chunk of a mesh whose entire analysis is
+ *  budgeted at 60 s (issue #108), so a healthy job finishes far sooner. */
+const WORKER_JOB_TIMEOUT_MS = 60_000;
+
 /**
- * Assemble stiffness matrix using worker_threads for element chunk parallelization.
- * Falls back to serial if the worker script is missing or on any worker error.
+ * Assemble stiffness matrix using the persistent worker pool
+ * (assembly-pool.ts), one element chunk per worker. Each worker scatters its
+ * chunk into a full-nnz Float64Array slab keyed by CSR slot (same scatter
+ * kernel as serial — csr.ts) and posts the slab back with a transfer list;
+ * the main thread merges slabs by plain addition in fixed chunk order, so
+ * the result is deterministic run-to-run. Falls back to serial (returns
+ * false) if the worker script is missing, the memory guard trips, or any
+ * worker errors/times out — `data` is only written after every job succeeds,
+ * so the fallback always starts from clean zeros.
  *
- * NOTE: worker_threads itself is guaranteed available — `Worker` is statically
- * imported at the top of this module, so the module would fail to load at all
- * if the platform lacked it. (A previous `require.resolve("worker_threads")`
- * probe always threw in this ESM project — `require` is undefined — which
- * silently disabled the parallel path entirely; issue #98.)
+ * NOTE: worker_threads itself is guaranteed available — the pool module
+ * imports `Worker` statically, so it could not even load if the platform
+ * lacked it. (A previous `require.resolve("worker_threads")` probe always
+ * threw in this ESM project — `require` is undefined — which silently
+ * disabled the parallel path entirely; issue #98.)
  */
 async function assembleK_parallel(
   mesh: TetMesh,
@@ -276,65 +213,56 @@ async function assembleK_parallel(
       return false;
     }
 
-    const cpuCount = os.cpus().length;
-    const chunkSize = Math.ceil(mesh.elementCount / cpuCount);
-    const chunks: { start: number; end: number }[] = [];
-
-    for (let i = 0; i < cpuCount; i++) {
-      const start = i * chunkSize;
-      const end = Math.min(start + chunkSize, mesh.elementCount);
-      if (start < mesh.elementCount) {
-        chunks.push({ start, end });
-      }
+    // Memory guard: each worker holds a full-nnz slab (8 B/nnz) plus
+    // structured-clone copies of colIdx (4 B/nnz) — ~12 B per non-zero per
+    // worker. Cap the worker count so the pool stays within a fixed budget;
+    // below 2 workers parallelism is pointless, so take the serial path.
+    const nnz = colIdx.length;
+    const perWorkerBytes = 12 * nnz;
+    const budgetBytes = Math.min(1.5 * 2 ** 30, os.totalmem() / 4);
+    const maxWorkers = Math.min(os.cpus().length, Math.floor(budgetBytes / perWorkerBytes));
+    if (maxWorkers < 2) {
+      console.warn(
+        `[assembleK] parallel skipped: nnz=${nnz} needs ~${Math.round(perWorkerBytes / 2 ** 20)} MB/worker ` +
+        `(budget ${Math.round(budgetBytes / 2 ** 20)} MB) — using serial assembly`
+      );
+      return false;
     }
 
-    // Spawn workers and collect results
-    const workerPromises = chunks.map((chunk) => {
-      return new Promise<CoOTriplet[]>((resolve, reject) => {
-        const worker = new Worker(workerScript);
-        const timeout = setTimeout(() => {
-          worker.terminate();
-          reject(new Error(`Worker timeout for elements ${chunk.start}–${chunk.end}`));
-        }, 60_000);  // 60 second timeout
-
-        worker.on("message", (msg: any) => {
-          clearTimeout(timeout);
-          worker.terminate();
-          if (msg.success) {
-            resolve(msg.triplets);
-          } else {
-            reject(new Error(`Worker error: ${msg.error}`));
-          }
-        });
-
-        worker.on("error", reject);
-        worker.on("exit", (code) => {
-          clearTimeout(timeout);
-          if (code !== 0) {
-            reject(new Error(`Worker exited with code ${code}`));
-          }
-        });
-
-        // Send work to worker. binOfElement is globally indexed (chunks use
-        // global element indices), so the whole array ships to each worker —
-        // 4 bytes/element, smaller than the elements array already posted.
-        worker.postMessage({
-          elementStart: chunk.start,
-          elementEnd: chunk.end,
-          nodesPerElem: mesh.nodesPerElem,
-          nodes: mesh.nodes,
-          elements: mesh.elements,
-          C: Cs,
-          binOfElement,
-        });
+    const chunkSize = Math.ceil(mesh.elementCount / maxWorkers);
+    // binOfElement is globally indexed (chunks use global element indices),
+    // so the whole array ships to each worker — 4 bytes/element, smaller
+    // than the elements array already posted.
+    const payloads: object[] = [];
+    for (let i = 0; i < maxWorkers; i++) {
+      const start = i * chunkSize;
+      const end = Math.min(start + chunkSize, mesh.elementCount);
+      if (start >= mesh.elementCount) break;
+      payloads.push({
+        elementStart: start,
+        elementEnd: end,
+        nodesPerElem: mesh.nodesPerElem,
+        nodes: mesh.nodes,
+        elements: mesh.elements,
+        C: Cs,
+        binOfElement,
+        rowPtr,
+        colIdx,
       });
-    });
+    }
 
-    const results = await Promise.all(workerPromises);
-    const allTriplets: CoOTriplet[] = results.flat();
+    const results = await runAssemblyJobs(workerScript, payloads, WORKER_JOB_TIMEOUT_MS) as
+      { data: Float64Array }[];
 
-    // Merge all triplets into CSR
-    mergeCoOIntoCSR(allTriplets, rowPtr, colIdx, data);
+    // Merge slabs in fixed chunk order — untouched slots are exact 0.0, so
+    // plain addition reconstructs the full matrix deterministically.
+    for (const result of results) {
+      const slab = result.data;
+      if (!(slab instanceof Float64Array) || slab.length !== nnz) {
+        throw new Error(`worker returned a bad slab (length ${slab?.length ?? "?"}, expected ${nnz})`);
+      }
+      for (let i = 0; i < nnz; i++) data[i] = (data[i] ?? 0) + (slab[i] ?? 0);
+    }
     return true;  // Parallel succeeded
   } catch (err) {
     console.warn(`Parallel assembly failed, falling back to serial: ${(err as Error).message}`);
@@ -364,10 +292,11 @@ export type SparsityPattern = {
  *   1. Build sparsity pattern (determines non-zero structure).
  *   2. Allocate data array (zeros).
  *   3. For meshes with >= PARALLEL_MIN_ELEMENTS elements, attempt parallel
- *      assembly via worker_threads:
- *      - Partition elements into N_cpu chunks
- *      - Each worker computes element stiffness, collects COO triplets
- *      - Main thread merges COO into CSR
+ *      assembly on the persistent worker pool:
+ *      - Partition elements into one chunk per worker (memory-guarded)
+ *      - Each worker scatters its chunk into a full-nnz CSR slab and
+ *        transfers the slab back zero-copy
+ *      - Main thread adds the slabs in fixed chunk order
  *   4. Fall back to serial on any worker error or for small meshes.
  *
  * @param mode 'auto' (default): parallel for large meshes, serial otherwise.
@@ -497,14 +426,7 @@ export function assembleKsigma(
       );
     }
 
-    for (let lr = 0; lr < dpe; lr++) {
-      const globalR = (elemNodes[Math.floor(lr/3)] ?? 0)*3 + (lr%3);
-      for (let lc = 0; lc < dpe; lc++) {
-        const globalC = (elemNodes[Math.floor(lc/3)] ?? 0)*3 + (lc%3);
-        const pos = findEntry(colIdx, rowPtr, globalR, globalC);
-        data[pos] = (data[pos] ?? 0) + (ksg[lr*dpe+lc] ?? 0);
-      }
-    }
+    scatterElemMatrixIntoCSR(elemNodes, dpe, ksg, rowPtr, colIdx, data);
   }
 
   return { n, data, colIdx, rowPtr };

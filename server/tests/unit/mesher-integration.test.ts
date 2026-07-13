@@ -38,7 +38,22 @@ import { probeTetGen } from '../../tetgen.js';
 // regression (e.g. an accidental O(n²) reintroduced, or a solver that no longer
 // converges and spins), NOT to police normal run-to-run variance on slow shared
 // CI runners. Tighten only if it proves too loose to catch real regressions.
-const WALLTIME_BUDGET_MS = 60_000;
+//
+// Override for local experiments via STORMFEA_WALLTIME_BUDGET_MS (must be a
+// positive number; anything else falls back to the 60 s default). CI does not
+// set it, so the gate's budget there is always 60 s.
+const WALLTIME_BUDGET_MS =
+  Number(process.env['STORMFEA_WALLTIME_BUDGET_MS']) > 0
+    ? Number(process.env['STORMFEA_WALLTIME_BUDGET_MS'])
+    : 60_000;
+
+// Grep-able actual-vs-budget line for the CI log (see test.yml). Written via
+// process.stdout.write, not console.log: vitest's default reporter suppresses
+// console output from PASSING tests, which would hide the numbers exactly
+// when the gate is healthy.
+function logWalltime(gate: string, elapsedMs: number): void {
+  process.stdout.write(`[#108 walltime] ${gate}: ${elapsedMs} ms (budget ${WALLTIME_BUDGET_MS} ms)\n`);
+}
 
 const tetgen = await probeTetGen();
 const gmsh = await probeGmsh();
@@ -131,6 +146,7 @@ describe.skipIf(!tetgen.found)('STL upload → TetGen → analyse (issue #108, r
     const t0 = Date.now();
     result = await runAnalysis(req);
     elapsedMs = Date.now() - t0;
+    logWalltime('STL→TetGen→C3D10 runAnalysis', elapsedMs);
   }, 120_000);
 
   it('meshes with the real tetgen binary — C3D10, no fallback to the box mesh', () => {
@@ -172,6 +188,7 @@ describe.skipIf(!gmsh.found)('STEP upload → Gmsh → analyse (issue #108, requ
       clMin: 0.2, clMax: 2.0, clCurv: 30, elementOrder: 2, // = meshQuality "fine"
     });
     const elapsedMs = Date.now() - t0;
+    logWalltime('STEP→Gmsh mesh (fine)', elapsedMs);
 
     expect(mesh.mesh.nodeCount).toBeGreaterThan(0);
     expect(mesh.mesh.elementCount).toBeGreaterThan(0);
@@ -204,6 +221,7 @@ describe.skipIf(!gmsh.found)('STEP upload → Gmsh → analyse (issue #108, requ
     const t0 = Date.now();
     const result = await runAnalysis(req);
     const elapsedMs = Date.now() - t0;
+    logWalltime('STEP→Gmsh runAnalysis (fine)', elapsedMs);
 
     expect(result.meshFallback).toBe(false); // Gmsh path never uses the box mesh
     expect(result.nodesPerElem).toBe(10);
