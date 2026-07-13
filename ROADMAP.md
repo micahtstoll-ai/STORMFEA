@@ -217,6 +217,34 @@
       (default 0). Surface pressure: normal-to-surface option + region selector
       (face/facing/all). Suction (negative) pressure allowed in the UI.
 
+### Layer-model overhaul (audit + decoupled interlayer failure + bond model)
+- [x] Layer-model audit (docs/layer-model-audit.md) — six findings: azimuth-
+      dependent Hill form (A1), silent SF=999 clamp for Z<Y/2 (A2), tension/
+      compression-symmetric bond failure (A3), orientation-multiplier double
+      count (A4), lap-shear→yieldZ coupling (A5), no bead-penetration physics (A6)
+- [x] A4 fix — orientation removed from the solved material's strength
+      multiplier (the criterion resolves direction via weakAxis); sole
+      remaining scalar is the angled-no-bed 0.75 conservative fallback
+- [x] FDM dual criterion (default) — bulk (bead) von Mises + interlayer
+      interface (⟨σzz⟩₊/S_zt)²+(τ_z/S_zs)²≤1 with Mohr–Coulomb friction under
+      compression; azimuth-invariant; preserves the Hill uniaxial anchors
+      (flat-print false-safety SF≈0.58 unchanged); hill-legacy kept as a
+      comparison flag and for the upright-no-bed swap fallback
+- [x] Independent interlaminar shear allowable S_zs (yieldZShear) through the
+      material types, two-region bins, utilization heatmap, and analytic
+      shear-out/thread checks; lap-shear coupon now calibrates S_zs directly
+- [x] Z-tension coupon (dog-bone printed standing) — measures yieldZ/S_zt
+      directly; delamination row LOW→MEDIUM when run
+- [x] Interlayer failure-mode rows — "Interlayer tension (delamination
+      onset)" and "Interlayer shear" decomposed from the FEM field
+- [x] Bead-penetration bond model (server/solver/bond.ts) — interface
+      temperature history (lumped capacitance) → Arrhenius bond potential →
+      neck growth × healing (Φ^¾); relative to reference settings, anchored
+      so legacy results are unchanged at typical settings; process inputs
+      (nozzle/speed/fan/bed) in the MATERIAL tab + G-code auto-fill; fitted
+      per printer via POST /api/calibration/bond-sweep (CALIBRATE tab panel);
+      constants confidence-LOW, regression-locked (bond.test.ts)
+
 ---
 
 ## IN PROGRESS / NEXT
@@ -237,16 +265,32 @@
 ## DEFERRED (explicit decisions)
 - Heat-set inserts — deferred until core tool stable
 - 45° orientation recommendation — removed (warping/twist faults)
-- Temperature/cooling speed effect — insufficient consistent data
 - Multi-part assembly analysis — high complexity, low FTC value
+- Delamination PROPAGATION (cohesive zones / VCCT, G_IC/G_IIC fracture
+  energies) — initiation is covered by the interface criterion; propagation
+  needs an incremental/nonlinear solve and fracture-toughness coupons (DCB/
+  ENF), a major solver lift with limited decision value for FTC-scale parts.
+  Hook left open: the interface criterion's tension/shear split is exactly
+  the mixed-mode ratio a future energy criterion would consume.
+
+_Resolved: "Temperature/cooling speed effect — insufficient consistent data"
+— now modeled physics-first by the bead-penetration bond model (anchored to
+reference settings, LOW confidence until process-sweep fitted) instead of
+waiting for a consistent empirical table._
 
 ## KNOWN LIMITATIONS (disclosed in app)
 - Bearing failure: LOW confidence — no FDM-specific bearing data
 - Pattern multipliers: approximate — inconsistent literature
-- Layer height model: −15% to +10%, linear — interaction effects not captured
+- Layer height model: −15% to +10%, linear — process interaction now enters
+  only via the bond model's τc (thinner roads more fan/speed sensitive)
 - Fatigue estimate: LOW confidence — sparse FDM S-N data
 - Filament color: known to affect strength (η²=97.3%) — not modeled
-- All tensile data is in-plane; pull-through failure mode is extrapolated
+- Interlayer allowables default to literature ratios (S_zt = 0.58·Y,
+  S_zs = S_zt/√3) until the Z-tension and lap-shear coupons are run
+- Bond-model constants (h0, Ea, Φ-exponent, friction μ=0.3): LOW confidence
+  engineering estimates until fitted from a printer process sweep
+- Delamination is INITIATION-only (strength-based); crack propagation
+  between layers is not simulated (see DEFERRED)
 
 _Resolved: the TetGen box-mesh fallback previously always produced C3D4 (≈55%
 bending underprediction) regardless of the element-order selector; it now honours

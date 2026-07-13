@@ -179,5 +179,51 @@ perimeter walls vs homogenized infill core (`server/twoRegion.ts`,
    rotation/scalar-swap and the strength multiplier do. Exponents are LOW
    confidence, locked by `server/tests/unit/core-lattice.test.ts`.
 
+## Interlayer Failure & Bond Model — Invariants
+
+The FDM dual criterion (`fdmDualCriterionSF`, `server/solver/stress.ts`) and
+the bead-penetration bond model (`server/solver/bond.ts`) replaced the Hill
+(1948) criterion and extended the process model after the layer-model audit
+(`docs/layer-model-audit.md`). When modifying them:
+
+1. **Azimuth invariance is the point** — the criterion must be exactly
+   invariant under rotation about the weak axis (locked by
+   `fdm-criterion.test.ts` and solver_validation [7f]). Never reintroduce an
+   independent in-plane shear coefficient into a quadratic form (that was the
+   A1 defect: a quadratic Hill form cannot satisfy in-plane isotropy +
+   uniaxial yield Y + in-plane shear Y/√3 + through-thickness Z ≠ Y at once).
+2. **Anchors are preserved, not re-derived** — in-plane uniaxial yields at Y,
+   through-layer uniaxial at Z, interlayer shear at S_zs, and the flat-print
+   false-safety SF = Z/Y ≈ 0.58 (the tool's core claim). Default
+   S_zs = yieldZ/√3 is EXACTLY Hill's L = M = 3/(2Z²) transverse shear, so
+   uncalibrated through-layer results match the legacy criterion.
+3. **Tension-only interface** — ⟨σzz⟩₊ Macaulay bracket; compression routes
+   to bulk von Mises and credits interlayer shear via Mohr–Coulomb (μ = 0.3,
+   LOW confidence). Do not re-symmetrize.
+4. **hill-legacy stays callable** — `AnalysisSettings.criterion` and the
+   upright-no-bed scalar-swap fallback depend on it (the interface criterion
+   needs a known weak axis; the swap deliberately has none).
+5. **yieldZShear plumbing** — an optional material scalar, a REQUIRED per-bin
+   array in `ElementMaterialField` (types → twoRegion blend loop → stress
+   consumer; it does NOT cross the assembly-worker boundary), derived as
+   yieldZ/√3 wherever absent via `interlaminarShearOf`. Calibration keeps
+   S_zs (lap-shear) and S_zt (Z-tension coupon) independent — never
+   reintroduce the yieldZ = τ/0.58 conversion except as the flagged
+   no-Z-coupon fallback (audit A5).
+6. **Bond model is RELATIVE and anchored** — multipliers are exactly 1.0 at
+   the reference process condition (per-material nozzle ref, 60 mm/s, fan
+   100%, bed 60 °C) evaluated at the SAME layer height, so: no process block
+   → bit-identical legacy path; the layer-height slope stays owned by
+   `layerHeightFactor`; calibration ratios stay multiplicative. Constants are
+   confidence-LOW, regression-locked (`bond.test.ts`), overridable via
+   `CalibrationProfile.bondCoeffs` (fit: POST /api/calibration/bond-sweep).
+7. **Trend locks over value locks** — hotter nozzle ↑, more fan ↓, faster
+   printing ↑ (hotter substrate on arrival). Any change flipping these needs
+   new physical evidence, not refactoring.
+8. **Orientation stays out of the material's scalars** (audit A4) — direction
+   is the criterion's job via weakAxis; the ONLY orientation scalar allowed
+   in the material path is `angledNoBedFallbackMul` (0.75, angled with no bed
+   picked — no directional model exists there).
+
 ## Questions?
 If you need clarification on these guidelines, ask in the GitHub issue or PR description.
