@@ -86,6 +86,15 @@ export interface OrthotropicMaterial {
   readonly yieldXY:       number;   // MPa
   /** Yield strength in Z (inter-layer). ~50-60% of yieldXY for FDM. */
   readonly yieldZ:        number;   // MPa
+  /**
+   * Interlaminar shear allowable S_zs (MPa) — the shear strength of the layer
+   * interface itself, measured directly by the lap-shear coupon. Independent
+   * of yieldZ so a bond that is strong in shear but weak in tension (or vice
+   * versa) is representable. Absent → yieldZ/√3, the Hill (1948) transverse-
+   * shear equivalence the legacy criterion hard-wired (L = M = 3/(2Z²) ⇒
+   * τ_z,yield = Z/√3), so old materials reproduce legacy behavior.
+   */
+  readonly yieldZShear?:  number;   // MPa
   readonly label:         string;
   /**
    * Unit vector (global frame) giving the material's weak / through-layer axis —
@@ -139,6 +148,8 @@ export interface GyroidOrthotropic {
   readonly G_xz:          number;           // MPa — out-of-plane shear modulus (computed from density)
   readonly yieldXY:       number;           // MPa — yield strength in XY
   readonly yieldZ:        number;           // MPa — yield strength in Z
+  /** Interlaminar shear allowable S_zs; absent → yieldZ/√3 (see OrthotropicMaterial). */
+  readonly yieldZShear?:  number;           // MPa
   readonly label:         string;
   /** Mass density in kg/m³ (SI); see IsotropicMaterial.massRho. */
   readonly massRho?:      number;
@@ -180,6 +191,8 @@ export interface ElementMaterialField {
   readonly yieldXY:      Float64Array;
   /** Through-layer yield per bin, MPa */
   readonly yieldZ:       Float64Array;
+  /** Interlaminar shear allowable per bin, MPa (endpoint absent → yieldZ/√3) */
+  readonly yieldZShear:  Float64Array;
   /** Mass density per bin, kg/m³ (SI, converted at assembly time) */
   readonly massRho:      Float64Array;
   /** Representative shell (wall) volume fraction per bin, for reporting */

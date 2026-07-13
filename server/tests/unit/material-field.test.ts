@@ -50,6 +50,7 @@ function uniformField(mesh: TetMesh, mat: IsotropicMaterial | OrthotropicMateria
     C,
     yieldXY: Float64Array.of(yXY),
     yieldZ: Float64Array.of(yZ),
+    yieldZShear: Float64Array.of(yZ / Math.sqrt(3)),
     massRho: Float64Array.of(mat.massRho ?? 1240),
     shellFrac: Float64Array.of(0),
   };
@@ -87,6 +88,7 @@ describe("ElementMaterialField — Phase A infrastructure", () => {
       C: Cs,
       yieldXY: Float64Array.of(50, 50),
       yieldZ: Float64Array.of(50, 50),
+      yieldZShear: Float64Array.of(50 / Math.sqrt(3), 50 / Math.sqrt(3)),
       massRho: Float64Array.of(1240, 1240),
       shellFrac: Float64Array.of(0, 1),
     };
@@ -135,6 +137,7 @@ describe("ElementMaterialField — Phase A infrastructure", () => {
       C: Cs,
       yieldXY: Float64Array.of(50, 25),
       yieldZ: Float64Array.of(30, 15),
+      yieldZShear: Float64Array.of(30 / Math.sqrt(3), 15 / Math.sqrt(3)),
       massRho: Float64Array.of(1240, 1240),
       shellFrac: Float64Array.of(1, 0),
     };
@@ -167,6 +170,7 @@ describe("ElementMaterialField — Phase A infrastructure", () => {
       C: buildAnyConstitutiveMatrix(ISO),
       yieldXY: Float64Array.of(50, 50),
       yieldZ: Float64Array.of(50, 50),
+      yieldZShear: Float64Array.of(50 / Math.sqrt(3), 50 / Math.sqrt(3)),
       massRho: Float64Array.of(RHO0, RHO1),
       shellFrac: Float64Array.of(0, 1),
     };

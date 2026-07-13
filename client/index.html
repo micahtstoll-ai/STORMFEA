@@ -1968,6 +1968,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <!-- Coupon tabs -->
       <div style="display:flex;gap:4px;margin-bottom:16px">
         <button class="btn active" id="ctab-tensile"  onclick="switchCoupon('tensile')">TENSILE</button>
+        <button class="btn"        id="ctab-ztensile" onclick="switchCoupon('ztensile')">Z TENSION</button>
         <button class="btn"        id="ctab-lapshear" onclick="switchCoupon('lapshear')">LAP SHEAR</button>
         <button class="btn"        id="ctab-bearing"  onclick="switchCoupon('bearing')">BEARING</button>
       </div>
@@ -2006,6 +2007,43 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <input type="number" id="c-tensile-defl" placeholder="e.g. 1.2" min="0.01" step="0.01" style="margin-bottom:4px">
         <div style="font-size:10px;color:var(--text-lo);margin-bottom:12px">If you don't have a deflection measurement, leave blank — only yield strength will be calibrated.</div>
         <div id="c-tensile-result" style="font-size:11px;color:var(--text-lo);min-height:18px"></div>
+      </div>
+
+      <!-- Z-tension coupon -->
+      <div id="cpanel-ztensile" style="display:none">
+        <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;margin-bottom:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <b style="color:var(--text-hi);font-size:11px">Z-tension coupon (inter-layer)</b>
+            <a href="/api/calibration/coupon/ztensile" download="stressform_ztensile_coupon.stl"
+               style="font-size:10px;color:var(--gold);border:1px solid var(--gold-glow);border-radius:2px;padding:2px 8px;text-decoration:none;letter-spacing:.06em"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="1.5" x2="5" y2="7"/><polyline points="2.5,5 5,7.5 7.5,5"/><line x1="1.5" y1="9" x2="8.5" y2="9"/></svg> STL</a>
+          </div>
+          <div style="font-size:11px;color:var(--text-mid);line-height:1.8;margin-bottom:8px">
+            <b style="color:var(--text-hi)">Z-tension dog-bone</b> — measures inter-layer bond TENSILE strength directly (delamination allowable S_zt).<br>
+            Same geometry as the tensile coupon (10mm × 4mm × 50mm gauge) — but printed <b>STANDING ON END</b> so every layer interface in the gauge is pulled apart in pure tension.<br>
+            Print: <b>standing (gauge axis vertical)</b>, 100% infill, brim recommended, same layer height and temperatures as your target settings<br>
+            Test: clamp both tabs, pull slowly until fracture (it will snap along a layer line). Record peak load.
+          </div>
+          <div style="text-align:center;margin:10px 0">
+            <svg width="120" height="150" viewBox="0 0 120 150" fill="none">
+              <rect x="35" y="5" width="50" height="25" rx="3" fill="var(--bg-input)" stroke="var(--border-mid)" stroke-width="1.5"/>
+              <rect x="35" y="120" width="50" height="25" rx="3" fill="var(--bg-input)" stroke="var(--border-mid)" stroke-width="1.5"/>
+              <path d="M42 30 Q47 40 50 42 L50 108 Q47 110 42 120 L78 120 Q73 110 70 108 L70 42 Q73 40 78 30 Z" fill="var(--gold-faint)" stroke="var(--gold)" stroke-width="1.5"/>
+              <line x1="45" y1="55" x2="75" y2="55" stroke="var(--gold)" stroke-width="0.6" opacity="0.55"/>
+              <line x1="45" y1="65" x2="75" y2="65" stroke="var(--gold)" stroke-width="0.6" opacity="0.55"/>
+              <line x1="45" y1="75" x2="75" y2="75" stroke="var(--gold)" stroke-width="0.6" opacity="0.55"/>
+              <line x1="45" y1="85" x2="75" y2="85" stroke="var(--gold)" stroke-width="0.6" opacity="0.55"/>
+              <line x1="45" y1="95" x2="75" y2="95" stroke="var(--gold)" stroke-width="0.6" opacity="0.55"/>
+              <text x="92" y="78" font-size="7" fill="var(--text-lo)" font-family="monospace">layers</text>
+              <line x1="60" y1="0" x2="60" y2="4" stroke="var(--success)" stroke-width="2"/>
+              <line x1="60" y1="146" x2="60" y2="150" stroke="var(--success)" stroke-width="2"/>
+              <text x="66" y="6" font-size="7" fill="var(--success)" font-family="monospace">F</text>
+            </svg>
+          </div>
+        </div>
+        <label>Failure load (N)</label>
+        <input type="number" id="c-ztensile-fail" placeholder="e.g. 1200" min="1" style="margin-bottom:4px">
+        <div style="font-size:10px;color:var(--text-lo);margin-bottom:12px">Measures the delamination allowable directly — with this AND the lap-shear coupon, bond tension and bond shear are calibrated independently (no assumed ratio). Raises the delamination mode from <b style="color:var(--danger)">LOW</b> to <b style="color:var(--warn)">MEDIUM</b> confidence.</div>
+        <div id="c-ztensile-result" style="font-size:11px;color:var(--text-lo);min-height:18px"></div>
       </div>
 
       <!-- Lap shear coupon -->
@@ -8615,7 +8653,7 @@ function getActiveProfile() {
 
 // ── Coupon tab switching ───────────────────────────────────────────────────────
 function switchCoupon(tab) {
-  ['tensile','lapshear','bearing'].forEach(t => {
+  ['tensile','ztensile','lapshear','bearing'].forEach(t => {
     document.getElementById('cpanel-' + t).style.display = t === tab ? 'block' : 'none';
     document.getElementById('ctab-'   + t).className = 'btn' + (t === tab ? ' active' : '');
   });
@@ -8642,14 +8680,32 @@ function updateCouponResults() {
     }
   }
 
-  // Lap shear
+  // Z-tension (inter-layer tensile — same gauge dims as the flat tensile coupon)
+  const zFail = parseFloat(document.getElementById('c-ztensile-fail')?.value);
+  const zRes  = document.getElementById('c-ztensile-result');
+  if (zRes) {
+    if (zFail > 0) {
+      const yieldZ = zFail / (COUPON.tensile.w * COUPON.tensile.t);
+      zRes.innerHTML = `-> Inter-layer tensile (S_zt / Z yield): <b style="color:var(--success)">${yieldZ.toFixed(1)} MPa</b> — measured directly`;
+    } else {
+      zRes.innerHTML = '';
+    }
+  }
+
+  // Lap shear — an independent interlaminar shear allowable (S_zs). Only when
+  // no Z-tension coupon is entered does it also set Z yield via the legacy
+  // τ/0.58 relation (server flags that profile as derived).
   const lFail = parseFloat(document.getElementById('c-lapshear-fail')?.value);
   const lRes  = document.getElementById('c-lapshear-result');
   if (lRes) {
     if (lFail > 0) {
       const shear  = lFail / (COUPON.lapShear.w * COUPON.lapShear.l);
-      const yieldZ = shear / 0.58;
-      lRes.innerHTML = `-> Inter-layer shear: <b style="color:var(--success)">${shear.toFixed(1)} MPa</b>  |  Z yield: <b style="color:var(--success)">${yieldZ.toFixed(1)} MPa</b>`;
+      let s = `-> Inter-layer shear (S_zs): <b style="color:var(--success)">${shear.toFixed(1)} MPa</b> — measured directly`;
+      if (!(zFail > 0)) {
+        const yieldZ = shear / 0.58;
+        s += `  |  Z yield <i>derived</i> ≈ <b style="color:var(--warn)">${yieldZ.toFixed(1)} MPa</b> (run the Z-tension coupon to measure it)`;
+      }
+      lRes.innerHTML = s;
     } else {
       lRes.innerHTML = '';
     }
@@ -8670,7 +8726,7 @@ function updateCouponResults() {
 
 // Wire live update to all coupon inputs
 document.addEventListener('DOMContentLoaded', () => {
-  ['c-tensile-fail','c-tensile-defl','c-lapshear-fail','c-bearing-fail'].forEach(id => {
+  ['c-tensile-fail','c-tensile-defl','c-ztensile-fail','c-lapshear-fail','c-bearing-fail'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('input', updateCouponResults);
   });
@@ -8727,10 +8783,11 @@ async function saveCalibProfile() {
 
   const tFail = parseFloat(document.getElementById('c-tensile-fail')?.value) || null;
   const tDefl = parseFloat(document.getElementById('c-tensile-defl')?.value) || null;
+  const zFail = parseFloat(document.getElementById('c-ztensile-fail')?.value) || null;
   const lFail = parseFloat(document.getElementById('c-lapshear-fail')?.value) || null;
   const bFail = parseFloat(document.getElementById('c-bearing-fail')?.value) || null;
 
-  if (!tFail && !lFail && !bFail) {
+  if (!tFail && !zFail && !lFail && !bFail) {
     status.innerHTML = '<svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Enter at least one coupon result'; status.style.color='var(--warn)'; return;
   }
 
@@ -8744,6 +8801,7 @@ async function saveCalibProfile() {
         id:             `${matId}_${lh}_${Date.now()}`,
         label, materialId: matId, layerHeightMm: lh,
         tensileFailN:   tFail,
+        zTensileFailN:  zFail,
         lapShearFailN:  lFail,
         bearingFailN:   bFail,
         tensileDeflMm:  tDefl,
@@ -8771,7 +8829,8 @@ async function saveCalibProfile() {
 
     const lines = [];
     if (profile.yieldXY_MPa)  lines.push(`yield XY: ${profile.yieldXY_MPa.toFixed(1)} MPa`);
-    if (profile.yieldZ_MPa)   lines.push(`yield Z: ${profile.yieldZ_MPa.toFixed(1)} MPa`);
+    if (profile.yieldZ_MPa)   lines.push(`yield Z: ${profile.yieldZ_MPa.toFixed(1)} MPa${profile.yieldZFromShear ? ' (derived from lap-shear)' : ''}`);
+    if (profile.interShear_MPa) lines.push(`interlayer shear: ${profile.interShear_MPa.toFixed(1)} MPa`);
     if (profile.bearingStr_MPa) lines.push(`bearing: ${profile.bearingStr_MPa.toFixed(1)} MPa`);
 
     status.innerHTML = `<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> Saved — ${lines.join('  |  ')}`;

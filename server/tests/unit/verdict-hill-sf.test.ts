@@ -70,17 +70,28 @@ describe("verdict SF uses the Hill criterion, not von Mises (issue #97)", () => 
     expect(rec.minSF).toBeCloseTo(Z / SIGMA_ZZ, 3);
   });
 
-  it("computeBulkSF returns the Hill SF as headline and von Mises for comparison", () => {
+  it("computeBulkSF returns the anisotropic SF as headline and von Mises for comparison", () => {
+    // Pure σzz tension: the dual criterion's interface term gives the SAME
+    // SF = Z/σzz the Hill criterion gave — the anchor is preserved.
     const bulk = computeBulkSF({
       minSafetyFactor:   rec.minSF,
       maxVonMisesMPa:    rec.maxVonMises,
       effectiveYieldMPa: Y,   // literature yield × multipliers happens to equal yieldXY here
       material:          MAT,
     });
-    expect(bulk.criterion).toBe("hill");
+    expect(bulk.criterion).toBe("fdm-interface");
     expect(bulk.sf).toBeCloseTo(1.45, 3);          // NOT the von Mises 2.50
     expect(bulk.vonMisesSF).toBeCloseTo(2.50, 3);  // retained for display
     expect(bulk.sf).not.toBeCloseTo(bulk.vonMisesSF, 1);
+    // Explicit hill-legacy run labels the criterion "hill"
+    const legacy = computeBulkSF({
+      minSafetyFactor:   rec.minSF,
+      maxVonMisesMPa:    rec.maxVonMises,
+      effectiveYieldMPa: Y,
+      material:          MAT,
+      criterionUsed:     "hill-legacy",
+    });
+    expect(legacy.criterion).toBe("hill");
   });
 
   it("falls back to von Mises for isotropic materials", () => {

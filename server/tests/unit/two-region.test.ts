@@ -62,10 +62,28 @@ describe("buildTwoRegionField", () => {
     expect(f.yieldXY[N - 1]).toBeCloseTo(SHELL.yieldXY, 12);  // last bin = pure shell
     const mid = (N - 1) / 2;
     expect(f.yieldXY[mid]).toBeCloseTo((SHELL.yieldXY + CORE.yieldXY) / 2, 12);
+    // Interlaminar shear allowable follows the same blend; endpoints without
+    // an explicit yieldZShear derive it as yieldZ/√3 (legacy Hill equivalence)
+    const zsShell = SHELL.yieldZ / Math.sqrt(3);
+    const zsCore  = CORE.yieldZ / Math.sqrt(3);
+    expect(f.yieldZShear[0]).toBeCloseTo(zsCore, 12);
+    expect(f.yieldZShear[N - 1]).toBeCloseTo(zsShell, 12);
+    expect(f.yieldZShear[mid]).toBeCloseTo((zsShell + zsCore) / 2, 12);
     expect(f.massRho[0]).toBeCloseTo(CORE.massRho!, 12);
     expect(f.massRho[N - 1]).toBeCloseTo(SHELL.massRho!, 12);
     expect(f.shellFrac[0]).toBe(0);
     expect(f.shellFrac[N - 1]).toBe(1);
+  });
+
+  it("explicit endpoint yieldZShear values blend instead of the derived default", () => {
+    const shellZS: OrthotropicMaterial = { ...SHELL, yieldZShear: 20 };
+    const coreZS:  OrthotropicMaterial = { ...CORE,  yieldZShear: 4 };
+    const tr = buildTwoRegionField(mesh, faces, shellZS, coreZS, 1.35);
+    const f = tr.field!;
+    expect(f.yieldZShear[0]).toBe(4);
+    expect(f.yieldZShear[f.binCount - 1]).toBe(20);
+    expect(tr.averageMaterial.yieldZShear).toBeCloseTo(
+      tr.shellVolumeFraction * 20 + (1 - tr.shellVolumeFraction) * 4, 10);
   });
 
   it("average material is the Vf-weighted blend", () => {

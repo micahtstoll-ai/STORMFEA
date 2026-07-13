@@ -41,6 +41,13 @@ export interface SolverInput {
    * field overrides per-element stiffness and yields in assembly and recovery.
    */
   readonly materialField?: ElementMaterialField;
+  /**
+   * Failure criterion for orthotropic materials (default "fdm-interface" —
+   * the decoupled bulk + interlayer-interface criterion). "hill-legacy"
+   * keeps the Hill (1948) quadratic: used for comparison and for the
+   * upright-no-bed scalar-swap fallback (see docs/layer-model-audit.md A1).
+   */
+  readonly criterion?:  import("./stress.js").CriterionKind;
   readonly constraints: readonly FixedNodeSet[];
   readonly forces:      readonly PointForce[];
   readonly cgTolerance?:   number;
@@ -191,7 +198,7 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
 
   const solverMs = Date.now() - t0;
   _snap("before buildSolverResult");
-  const result = buildSolverResult(mesh, cg.u, material, cg.iterations, cg.converged, solverMs, cg.residualCheckpoints, true, input.materialField);
+  const result = buildSolverResult(mesh, cg.u, material, cg.iterations, cg.converged, solverMs, cg.residualCheckpoints, true, input.materialField, input.criterion);
   _snap("after buildSolverResult");
   validateResult(result, mesh);
 

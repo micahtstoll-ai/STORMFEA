@@ -36,6 +36,7 @@ import type {
 import { buildAnyConstitutiveMatrix, computeGeometry } from "./solver/element.js";
 import { computeNodeSurfaceDistances } from "./solver/distance.js";
 import { computeWallFractions } from "./solver/wallfrac.js";
+import { interlaminarShearOf } from "./solver/stress.js";
 
 /** Quantization level count for the wall-fraction bins (f_b = b/(N−1)). */
 export const TWO_REGION_BIN_COUNT = 9;
@@ -85,6 +86,7 @@ function blendMaterial(
     G_xz:    mix(shell.G_xz, core.G_xz),
     yieldXY: mix(shell.yieldXY, core.yieldXY),
     yieldZ:  mix(shell.yieldZ, core.yieldZ),
+    yieldZShear: mix(interlaminarShearOf(shell), interlaminarShearOf(core)),
     label,
   };
   const gxy = shell.G_xy !== undefined || core.G_xy !== undefined
@@ -236,10 +238,13 @@ export function buildTwoRegionField(
   const C = new Float64Array(N * 36);
   const yieldXY = new Float64Array(N);
   const yieldZ = new Float64Array(N);
+  const yieldZShear = new Float64Array(N);
   const massRho = new Float64Array(N);
   const shellFrac = new Float64Array(N);
   const Cshell = buildAnyConstitutiveMatrix(shellMat as AnyMaterial);
   const Ccore  = buildAnyConstitutiveMatrix(coreMat as AnyMaterial);
+  const zsShell = interlaminarShearOf(shellMat);
+  const zsCore  = interlaminarShearOf(coreMat);
   for (let b = 0; b < N; b++) {
     const f = b / (N - 1);
     for (let i = 0; i < 36; i++) {
@@ -247,6 +252,7 @@ export function buildTwoRegionField(
     }
     yieldXY[b]   = f * shellMat.yieldXY + (1 - f) * coreMat.yieldXY;
     yieldZ[b]    = f * shellMat.yieldZ  + (1 - f) * coreMat.yieldZ;
+    yieldZShear[b] = f * zsShell + (1 - f) * zsCore;
     massRho[b]   = f * (shellMat.massRho ?? 0) + (1 - f) * (coreMat.massRho ?? 0);
     shellFrac[b] = f;
   }
@@ -257,7 +263,7 @@ export function buildTwoRegionField(
   }
 
   return {
-    field: { binCount: N, binOfElement, C, yieldXY, yieldZ, massRho, shellFrac },
+    field: { binCount: N, binOfElement, C, yieldXY, yieldZ, yieldZShear, massRho, shellFrac },
     averageMaterial,
     shellVolumeFraction: Vf,
     wallThicknessMm: tWall,

@@ -44,6 +44,7 @@ function makeMixedField(mesh: TetMesh): ElementMaterialField {
     C: Cs,
     yieldXY: Float64Array.of(25, 50, 50),
     yieldZ:  Float64Array.of(15, 30, 30),
+    yieldZShear: Float64Array.of(15 / Math.sqrt(3), 30 / Math.sqrt(3), 30 / Math.sqrt(3)),
     massRho: Float64Array.of(620, 1240, 1240),
     shellFrac: Float64Array.of(0, 0.5, 1),
   };

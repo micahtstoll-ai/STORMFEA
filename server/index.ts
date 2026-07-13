@@ -519,6 +519,7 @@ app.post("/api/analyse", async (req, res) => {
 // ── Coupon STL download ───────────────────────────────────────────────────────
 import {
   generateTensileCoupon,
+  generateZTensileCoupon,
   generateLapShearCoupon,
   generateBearingCoupon,
 } from "./coupon_stl.js";
@@ -554,6 +555,10 @@ app.get("/api/calibration/coupon/:type", (req, res) => {
       case "tensile":
         buf = generateTensileCoupon();
         filename = "stressform_tensile_coupon.stl";
+        break;
+      case "ztensile":
+        buf = generateZTensileCoupon();
+        filename = "stressform_ztensile_coupon.stl";
         break;
       case "lapshear":
         buf = generateLapShearCoupon();
@@ -636,6 +641,7 @@ app.post("/api/calibration/calculate", (req, res) => {
       // the checker treats as absent — so they are declared optional here.
       "tensileFailN?": "number", "lapShearFailN?": "number",
       "bearingFailN?": "number", "tensileDeflMm?": "number",
+      "zTensileFailN?": "number",
       "ktLapShear?": "number", "ktBearing?": "number",
     })) return;
     const profile = backCalculateProfile(req.body);

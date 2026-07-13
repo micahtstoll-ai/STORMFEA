@@ -275,6 +275,38 @@ console.log("\n[7] Hill criterion — directional yield + von Mises collapse");
   //     must report SF ≈ yieldZ/yieldXY (0.58), i.e. UNSAFE — the core claim.
   const eqFalse = hillEquivalentStress(0,0,Y,0,0,0, Y, Z);
   test("Hill: flat-print false-safety detected (SF ≈ 0.58)", near(Y/eqFalse, Z/Y, 1e-3), `SF=${(Y/eqFalse).toFixed(3)}`);
+
+  // ── 7e–7h: FDM dual criterion (default since the layer-model audit) ─────────
+  const { fdmDualCriterionSF } = await import("../solver/stress.js");
+  const ZS = Z / Math.sqrt(3);   // default interlaminar shear allowable
+
+  // 7e. The legacy anchors carry over exactly: in-plane uniaxial at Y,
+  //     through-layer uniaxial at Z, and the flat-print false-safety SF ≈ 0.58.
+  test("Dual: in-plane uniaxial yields at yieldXY", near(fdmDualCriterionSF(Y,0,0,0,0,0, Y, Z, ZS), 1.0, 1e-9));
+  test("Dual: through-layer uniaxial yields at yieldZ", near(fdmDualCriterionSF(0,0,Z,0,0,0, Y, Z, ZS), 1.0, 1e-9));
+  test("Dual: flat-print false-safety detected (SF ≈ 0.58)",
+    near(fdmDualCriterionSF(0,0,Y,0,0,0, Y, Z, ZS), Z/Y, 1e-9));
+
+  // 7f. Azimuth invariance (audit A1): the same physical in-plane shear state
+  //     gives the same SF as τxy and as 45°-rotated principal (σ, −σ).
+  const tA1 = 20;
+  const sfTxy = fdmDualCriterionSF(0,0,0,tA1,0,0, Y, Z, ZS);
+  const sf45  = fdmDualCriterionSF(tA1,-tA1,0,0,0,0, Y, Z, ZS);
+  test("Dual: azimuth-invariant in the layer plane (A1 fixed)",
+    Math.abs(sfTxy - sf45) / sfTxy < 1e-12, `τxy=${sfTxy.toFixed(4)} vs 45°=${sf45.toFixed(4)}`);
+
+  // 7g. No silent SF=999 at the conservative band bound (audit A2).
+  const Zlow = 0.48 * Y;
+  const sfA2 = fdmDualCriterionSF(30,-30,0,0,0,0, Y, Zlow, Zlow/Math.sqrt(3));
+  test("Dual: finite SF for in-plane tension–compression at Z=0.48Y (A2 fixed)",
+    isFinite(sfA2) && sfA2 < 2, `SF=${sfA2.toFixed(3)}`);
+
+  // 7h. Tension/compression asymmetry (audit A3): compression does not open
+  //     the interface, and friction credits interlayer shear capacity.
+  const sfTen = fdmDualCriterionSF(0,0,Z,0,0,0, Y, Z, ZS);
+  const sfCom = fdmDualCriterionSF(0,0,-Z,0,0,0, Y, Z, ZS);
+  test("Dual: compression checked by bulk only (A3 fixed)",
+    near(sfTen, 1.0, 1e-9) && near(sfCom, Y/Z, 1e-9), `ten=${sfTen.toFixed(3)} com=${sfCom.toFixed(3)}`);
 }
 
 // ── Test group 8: FEA-in-the-loop coupon calibration ──────────────────────────
@@ -1468,6 +1500,7 @@ console.log("\n[25] Two-region material field — solve equivalence + sandwich b
       binOfElement: new Int32Array(mesh.elementCount),
       C: buildAnyConstitutiveMatrix(mat),
       yieldXY: Float64Array.of(50), yieldZ: Float64Array.of(50),
+      yieldZShear: Float64Array.of(50 / Math.sqrt(3)),
       massRho: Float64Array.of(1240), shellFrac: Float64Array.of(0),
     };
     const plain = await runLinearStatic({ mesh, material: mat, constraints: [{ nodeIndices: fixed }], forces });
