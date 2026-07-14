@@ -3681,7 +3681,7 @@ function applyStressColors(stressB64, maxStress, principalStressB64, errorEstima
 function markPeakStressLocation(vertexStress, maxStress) {
   // Remove old marker
   const old = scene.getObjectByName('peak-stress-marker');
-  if (old) { scene.remove(old); old.geometry?.dispose(); }
+  if (old) { if (old.parent) old.parent.remove(old); old.geometry?.dispose(); old.material?.dispose(); }
 
   if (!mesh3d || vertexStress.length === 0) return;
 
@@ -3692,18 +3692,23 @@ function markPeakStressLocation(vertexStress, maxStress) {
   }
   if (maxVal < 0.001) return;
 
-  // Get world position of that vertex
+  // The vertex position is already in mesh-local (geometry) coordinates. Parent
+  // the marker to mesh3d so it inherits the part's orientation, scale, and any
+  // deformed-shape warp — it then stays glued to the peak after re-orienting to
+  // the bed instead of floating in the old world frame.
   const pos = mesh3d.geometry.attributes.position;
   const vx = pos.getX(maxIdx), vy = pos.getY(maxIdx), vz = pos.getZ(maxIdx);
-  const worldPos = new THREE.Vector3(vx, vy, vz).applyMatrix4(mesh3d.matrixWorld);
+  const scale = mesh3d.userData.scale || 1;
 
-  // Pulsing sphere marker
-  const geo = new THREE.SphereGeometry(0.025, 8, 8);
+  // Pulsing sphere marker — radius in mesh-local (mm) units so the on-screen
+  // size (0.025 world units) is unchanged after the mesh3d scale is applied.
+  const geo = new THREE.SphereGeometry(0.025 / scale, 8, 8);
   const mat = new THREE.MeshBasicMaterial({ color: 0xC9A227, transparent: true, opacity: 0.9 });
+  mat.clippingPlanes = (S.clipActive && S._clipPlane) ? [S._clipPlane] : [];
   const marker = new THREE.Mesh(geo, mat);
-  marker.position.copy(worldPos);
+  marker.position.set(vx, vy, vz);
   marker.name = 'peak-stress-marker';
-  scene.add(marker);
+  mesh3d.add(marker);
 
   // Animate pulse
   let t = 0;
@@ -10862,40 +10867,41 @@ function clearABComparison() {
 let _topoMarkers = [];
 
 function showTopologyMarkers(suggestions) {
-  // Clear old markers
+  // Clear old markers (dispose geometry AND material to avoid a per-solve leak)
   for (const m of _topoMarkers) {
-    scene.remove(m);
+    if (m.parent) m.parent.remove(m);
     m.geometry?.dispose();
+    m.material?.dispose();
   }
   _topoMarkers = [];
 
   if (!mesh3d || !suggestions?.length) return;
 
   const offset = mesh3d.userData.offset || new THREE.Vector3();
-  // The mesh is centered (geometry translated by -offset), then scaled AND
-  // rotated by mesh3d.matrixWorld. A raw STL point maps to geometry-local
-  // (p - offset), and matrixWorld then applies scale + orientation rotation.
-  // Transforming through matrixWorld (rather than a manual (p-offset)*scale)
-  // keeps the diamonds glued to the surface after the part is oriented to the
-  // bed — same path the peak-stress sphere uses.
-  mesh3d.updateMatrixWorld();
+  const scale  = mesh3d.userData.scale || 1;
+  // A raw STL point maps to mesh-local (geometry) coords by subtracting the
+  // centering offset. Parenting each diamond to mesh3d then lets it inherit the
+  // part's orientation, scale, and warp — so the diamonds stay glued to the
+  // surface after the part is re-oriented to the bed, not just at first paint.
 
   suggestions.forEach((s, i) => {
-    const worldPos = new THREE.Vector3(
+    const localPos = new THREE.Vector3(
       s.position[0] - offset.x,
       s.position[1] - offset.y,
       s.position[2] - offset.z,
-    ).applyMatrix4(mesh3d.matrixWorld);
+    );
 
-    // Diamond marker (octahedron)
-    const geo = new THREE.OctahedronGeometry(0.04, 0);
+    // Diamond marker (octahedron) — radius in mesh-local (mm) units so its
+    // on-screen size (0.04 world units) survives the mesh3d scale.
+    const geo = new THREE.OctahedronGeometry(0.04 / scale, 0);
     const mat = new THREE.MeshBasicMaterial({
       color: 0xC9A227,
       transparent: true,
       opacity: 0.85,
     });
+    mat.clippingPlanes = (S.clipActive && S._clipPlane) ? [S._clipPlane] : [];
     const marker = new THREE.Mesh(geo, mat);
-    marker.position.copy(worldPos);
+    marker.position.copy(localPos);
 
     // Pulse animation
     let t = i * 0.5;
@@ -10907,7 +10913,7 @@ function showTopologyMarkers(suggestions) {
     };
     pulse();
 
-    scene.add(marker);
+    mesh3d.add(marker);
     _topoMarkers.push(marker);
   });
 }
@@ -11337,6 +11343,19 @@ function updateModeButtons() {
 // voids. The material also switches to double-sided while cut so interior shell
 // faces (visible through those openings) still render.
 
+// Keep the topology diamonds and peak-stress sphere clipped in sync with the
+// section plane. They are mesh3d children whose MeshBasicMaterials need the same
+// S._clipPlane reference; because _updateClipPlane mutates that one Plane object
+// in place each frame, holding [S._clipPlane] tracks the moving cut automatically.
+function _syncMarkerClipPlanes() {
+  const planes = (S.clipActive && S._clipPlane) ? [S._clipPlane] : [];
+  for (const m of _topoMarkers) {
+    if (m.material) { m.material.clippingPlanes = planes; m.material.needsUpdate = true; }
+  }
+  const peak = scene.getObjectByName('peak-stress-marker');
+  if (peak && peak.material) { peak.material.clippingPlanes = planes; peak.material.needsUpdate = true; }
+}
+
 function resetClip() {
   S.clipActive = false;
   S.clipAxis   = 'x';
@@ -11347,6 +11366,7 @@ function resetClip() {
     mesh3d.material.side = THREE.FrontSide;
     mesh3d.material.needsUpdate = true;
   }
+  _syncMarkerClipPlanes();
   _disposeCapObjects();
   _syncClipUI();
 }
@@ -11368,6 +11388,7 @@ function toggleClip() {
     _setCapVisible(false);
   }
   mat.needsUpdate = true;
+  _syncMarkerClipPlanes();
   _syncClipUI();
 }
 
