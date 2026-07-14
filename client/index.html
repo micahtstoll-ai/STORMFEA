@@ -605,7 +605,7 @@ h1, h2, h3 { font-weight: inherit; font-size: inherit; margin: 0; }
 @media print {
   body { background: #fff !important; color: #000 !important; font-size: 10px; }
   #viewer, #toolbar, #topright, #badges, #legend, #hint, #bed-indicator,
-  #force-popup, header .btn, #tabs, #theme-toggle, #analyse-btn, #analyse-status,
+  #force-editor, header .btn, #tabs, #theme-toggle, #analyse-btn, #analyse-status,
   #convergence-btn, #tab-setup, #tab-orient, #tab-loads, #tab-material,
   #tab-results, #tab-prefs, #tab-calibrate, #tab-sources, #tab-debug { display: none !important; }
   #tab-results { display: block !important; padding: 0 !important; }
@@ -1294,81 +1294,8 @@ body:not(.has-results) #btn-stress { display: none !important; }
     </div>
   </div>
 
-  <!-- Force popup -->
-    <div id="force-popup" style="display:none;position:absolute;background:var(--bg-card);border:1px solid var(--border-mid);border-radius:4px;padding:14px;width:224px;z-index:100">
-      <!-- Title + quick presets -->
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <div style="font-size:11px;color:var(--text-label);letter-spacing:.1em">APPLY FORCE</div>
-        <div style="position:relative">
-          <select id="fp-preset-select"
-            onchange="applyForcePreset(this.value); this.value=''"
-            style="font-size:10px;padding:2px 6px;max-width:160px"
-            aria-label="Force magnitude preset">
-            <option value="">Presets...</option>
-            <optgroup label="FTC Scenarios">
-              <option value="150|right">Claw grip (150N)</option>
-              <option value="200|front">Intake roller (200N)</option>
-              <option value="300|top">Arm pivot load (300N)</option>
-              <option value="400|top">Linear slide mount (400N)</option>
-              <option value="500|right">Wall impact (500N)</option>
-              <option value="800|top">Climber peak load (800N)</option>
-            </optgroup>
-            <optgroup label="Motor stall (into gearbox)">
-              <option value="45|top">40:1 gearbox stall (~45N)</option>
-              <option value="125|top">100:1 gearbox stall (~125N)</option>
-              <option value="280|top">256:1 gearbox stall (~280N)</option>
-            </optgroup>
-            <optgroup label="Robot weight">
-              <option value="75|top">Half robot on one mount (75N)</option>
-              <option value="150|top">Full robot on one mount (150N)</option>
-            </optgroup>
-          </select>
-        </div>
-      </div>
-      <!-- Magnitude with live lbf -->
-      <label for="fp-mag" style="font-size:11px">Magnitude (<span id="fp-unit-label">N</span>)</label>
-      <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
-        <input id="fp-mag" type="number" value="500" min="1" style="flex:1"
-          oninput="const _v=+this.value; document.getElementById('fp-mag-lbf').textContent=S.units==='imperial'?(_v*0.22481).toFixed(1)+' lbf':_v.toFixed(0)+' N'; updateForcePreview()">
-        <span id="fp-mag-lbf" style="font-size:10px;color:var(--text-label);white-space:nowrap"></span>
-      </div>
-      <!-- Face dropdown -->
-      <label for="fp-face" style="font-size:11px">Apply to face</label>
-      <select id="fp-face" style="margin-bottom:8px;font-size:11px" onchange="setDirFromFace(this.value)">
-        <option value="top">Top (+Z) — pull-through</option>
-        <option value="bottom">Bottom (-Z)</option>
-        <option value="front">Front (+Y)</option>
-        <option value="back">Back (-Y)</option>
-        <option value="right">Right (+X)</option>
-        <option value="left">Left (-X)</option>
-        <option value="custom">Custom direction...</option>
-      </select>
-      <!-- Custom direction grid (hidden by default) -->
-      <div id="fp-custom-dir" style="display:none;margin-bottom:8px">
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:6px">
-          <button class="btn dir-btn" data-dir="1,0,0" onclick="setDir(1,0,0)">+X</button>
-          <button class="btn dir-btn" data-dir="0,1,0" onclick="setDir(0,1,0)">+Y</button>
-          <button class="btn dir-btn" data-dir="0,0,1" onclick="setDir(0,0,1)">+Z</button>
-          <button class="btn dir-btn" data-dir="-1,0,0" onclick="setDir(-1,0,0)">-X</button>
-          <button class="btn dir-btn" data-dir="0,-1,0" onclick="setDir(0,-1,0)">-Y</button>
-          <button class="btn dir-btn" data-dir="0,0,-1" onclick="setDir(0,0,-1)">-Z</button>
-        </div>
-      </div>
-      <div id="fp-dir-display" style="font-size:11px;color:var(--text-label);margin-bottom:10px">Direction: +Z (top face)</div>
-      <!-- Bearing distribution toggle -->
-      <div style="margin-bottom:10px">
-        <label for="fp-bearing-dist" style="font-size:11px">Load distribution</label>
-        <select id="fp-bearing-dist" style="width:100%;font-size:11px;margin-top:4px">
-          <option value="uniform">Uniform across face</option>
-          <option value="cosine_bearing">Cosine (bearing point)</option>
-        </select>
-        <div style="font-size:9px;color:var(--text-lo);margin-top:4px">Cosine: concentrated at bolt bearing point, realistic for bolt pull-through.</div>
-      </div>
-      <div style="display:flex;gap:6px">
-        <button class="btn primary" style="flex:1" onclick="confirmForce()">Add Force</button>
-        <button class="btn" onclick="cancelForce()" aria-label="Cancel force placement"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg></button>
-      </div>
-    </div>
+  <!-- Force editor is docked in the LOADS panel (#force-editor); it used to
+       float over the viewer as #force-popup. -->
   </div>
 
   <!-- RIGHT PANEL -->
@@ -1556,6 +1483,78 @@ body:not(.has-results) #btn-stress { display: none !important; }
           <button class="btn" id="place-force-btn" onclick="openForcePopupDirect()" style="color:var(--gold)88;border-color:var(--gold)33">+ Place Force</button>
         </div>
         <div style="font-size:11px;color:var(--text-lo);margin-bottom:8px">Click <svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> FORCE in the toolbar, then click anywhere on the 3D model.</div>
+
+        <!-- Docked force editor (was the floating #force-popup). Shown while
+             placing/editing a force; the viewer stays fully visible. Same input
+             ids as before so confirmForce/applyForcePreset/refreshUnits work. -->
+        <div id="force-editor" style="display:none;background:var(--bg-card);border:1px solid var(--gold-glow);border-radius:4px;padding:12px;margin-bottom:10px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <div id="force-editor-title" style="font-size:11px;color:var(--gold);letter-spacing:.1em">APPLY FORCE</div>
+            <select id="fp-preset-select"
+              onchange="applyForcePreset(this.value); this.value=''"
+              style="font-size:10px;padding:2px 6px;max-width:150px"
+              aria-label="Force magnitude preset">
+              <option value="">Presets...</option>
+              <optgroup label="FTC Scenarios">
+                <option value="150|right">Claw grip (150N)</option>
+                <option value="200|front">Intake roller (200N)</option>
+                <option value="300|top">Arm pivot load (300N)</option>
+                <option value="400|top">Linear slide mount (400N)</option>
+                <option value="500|right">Wall impact (500N)</option>
+                <option value="800|top">Climber peak load (800N)</option>
+              </optgroup>
+              <optgroup label="Motor stall (into gearbox)">
+                <option value="45|top">40:1 gearbox stall (~45N)</option>
+                <option value="125|top">100:1 gearbox stall (~125N)</option>
+                <option value="280|top">256:1 gearbox stall (~280N)</option>
+              </optgroup>
+              <optgroup label="Robot weight">
+                <option value="75|top">Half robot on one mount (75N)</option>
+                <option value="150|top">Full robot on one mount (150N)</option>
+              </optgroup>
+            </select>
+          </div>
+          <label for="fp-mag" style="font-size:11px">Magnitude (<span id="fp-unit-label">N</span>)</label>
+          <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
+            <input id="fp-mag" type="number" value="500" min="1" style="flex:1"
+              oninput="const _v=+this.value; document.getElementById('fp-mag-lbf').textContent=S.units==='imperial'?(_v*0.22481).toFixed(1)+' lbf':_v.toFixed(0)+' N'; updateForcePreview()">
+            <span id="fp-mag-lbf" style="font-size:10px;color:var(--text-label);white-space:nowrap"></span>
+          </div>
+          <label for="fp-face" style="font-size:11px">Direction (bed frame, Z↑)</label>
+          <select id="fp-face" style="margin-bottom:8px;font-size:11px" onchange="setDirFromFace(this.value)">
+            <option value="top">Up (+Z) — away from bed</option>
+            <option value="bottom">Down (-Z) — into bed</option>
+            <option value="front">Front (+Y)</option>
+            <option value="back">Back (-Y)</option>
+            <option value="right">Right (+X)</option>
+            <option value="left">Left (-X)</option>
+            <option value="custom">Custom direction...</option>
+          </select>
+          <div id="fp-custom-dir" style="display:none;margin-bottom:8px">
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:6px">
+              <button class="btn dir-btn" data-dir="1,0,0" onclick="setDir(1,0,0)">+X</button>
+              <button class="btn dir-btn" data-dir="0,1,0" onclick="setDir(0,1,0)">+Y</button>
+              <button class="btn dir-btn" data-dir="0,0,1" onclick="setDir(0,0,1)">+Z</button>
+              <button class="btn dir-btn" data-dir="-1,0,0" onclick="setDir(-1,0,0)">-X</button>
+              <button class="btn dir-btn" data-dir="0,-1,0" onclick="setDir(0,-1,0)">-Y</button>
+              <button class="btn dir-btn" data-dir="0,0,-1" onclick="setDir(0,0,-1)">-Z</button>
+            </div>
+          </div>
+          <div id="fp-dir-display" style="font-size:11px;color:var(--text-label);margin-bottom:10px">Direction: +Z · bed frame (Z↑)</div>
+          <div style="margin-bottom:10px">
+            <label for="fp-bearing-dist" style="font-size:11px">Load distribution</label>
+            <select id="fp-bearing-dist" style="width:100%;font-size:11px;margin-top:4px">
+              <option value="uniform">Uniform across face</option>
+              <option value="cosine_bearing">Cosine (bearing point)</option>
+            </select>
+            <div style="font-size:9px;color:var(--text-lo);margin-top:4px">Cosine: concentrated at bolt bearing point, realistic for bolt pull-through.</div>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button class="btn primary" style="flex:1" onclick="confirmForce()">Add Force</button>
+            <button class="btn" onclick="cancelForce()" aria-label="Cancel force placement"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg></button>
+          </div>
+        </div>
+
         <div id="force-list"><div style="font-size:11px;color:var(--text-mid);padding:8px;text-align:center">None yet.</div></div>
       </div>
 
@@ -3397,6 +3396,7 @@ function loadMeshFromPositions(posB64) {
     S.faceGroups = buildFaceGroups(positions);
     // Clear validity cache — new mesh, new groups
     S.faceGroups.forEach(g => { delete g._bedValid; });
+    S._triToGroup = null; S._groupCentroids = null;   // rebuilt lazily on force hover
     console.log(`[orient] ${S.faceGroups.length} face groups built`);
     updateOrientPresetLabels();
     S.faceGroups.forEach((g,i) => console.log(`  group ${i}: "${g.label}" — ${g.triIndices.length} tris, normal=[${g.normal.map(v=>v.toFixed(2))}]`));
@@ -4166,6 +4166,7 @@ function setMode(m) {
     if (S._holePts && S._holePts.length > 0 && S._holePts.length < 3) bumpManualStat('abandoned');
     clearHolePoints();
   }
+  if (m !== 'force') clearForceSnapMarker();
   clearHover();
 }
 function toggleMode(m) { setMode(S.mode === m ? 'view' : m); }
@@ -4360,9 +4361,95 @@ function clearHover() {
   hoverHole = null;
 }
 
+// ─── Magnet snapping for force placement ──────────────────────────────────────
+// While placing a force, the hovered point snaps to the nearest meaningful
+// feature — a triangle vertex, an edge midpoint, the triangle centroid, or the
+// hovered logical face's centroid — within a small screen-space radius. A gold
+// marker shows what was grabbed; the click places there.
+let _forceSnapMarker = null;
+
+// Build (once per mesh) a triangle→face-group map and per-group centroids in
+// mesh-local coords. Also lets findFaceGroupUnderMouse skip its O(groups×tris) scan.
+function _ensureTriToGroup() {
+  if (S._triToGroup || !S.faceGroups || !S.faceGroups.length || !mesh3d) return;
+  const triCount = mesh3d.geometry.attributes.position.count / 3;
+  const map = new Int32Array(triCount).fill(-1);
+  S.faceGroups.forEach((g, gi) => { for (const t of g.triIndices) if (t >= 0 && t < triCount) map[t] = gi; });
+  S._triToGroup = map;
+  const pos = mesh3d.geometry.attributes.position;
+  S._groupCentroids = S.faceGroups.map(g => {
+    let x = 0, y = 0, z = 0, n = 0;
+    for (const t of g.triIndices) for (let k = 0; k < 3; k++) {
+      const vi = t * 3 + k; x += pos.getX(vi); y += pos.getY(vi); z += pos.getZ(vi); n++;
+    }
+    return n ? new THREE.Vector3(x/n, y/n, z/n) : null;
+  });
+}
+
+function clearForceSnapMarker() {
+  if (_forceSnapMarker) {
+    if (_forceSnapMarker.parent) _forceSnapMarker.parent.remove(_forceSnapMarker);
+    _forceSnapMarker.geometry.dispose();
+    _forceSnapMarker.material.dispose();
+    _forceSnapMarker = null;
+  }
+  S._forceSnap = null;
+}
+
+function handleForceSnapHover(e) {
+  if (!mesh3d) { clearForceSnapMarker(); return; }
+  const hit = raycast(e.clientX, e.clientY);
+  if (!hit || hit.faceIndex == null) { clearForceSnapMarker(); return; }
+  _ensureTriToGroup();
+
+  const pos = mesh3d.geometry.attributes.position;
+  const t = hit.faceIndex;
+  const V = k => new THREE.Vector3(pos.getX(t*3+k), pos.getY(t*3+k), pos.getZ(t*3+k));
+  const a = V(0), b = V(1), c = V(2);
+  const cand = [
+    { p: a, kind: 'vertex' }, { p: b, kind: 'vertex' }, { p: c, kind: 'vertex' },
+    { p: a.clone().add(b).multiplyScalar(0.5), kind: 'edge' },
+    { p: b.clone().add(c).multiplyScalar(0.5), kind: 'edge' },
+    { p: c.clone().add(a).multiplyScalar(0.5), kind: 'edge' },
+    { p: a.clone().add(b).add(c).multiplyScalar(1/3), kind: 'triangle center' },
+  ];
+  const gi = S._triToGroup ? S._triToGroup[t] : -1;
+  if (gi >= 0 && S._groupCentroids && S._groupCentroids[gi]) {
+    cand.push({ p: S._groupCentroids[gi].clone(), kind: 'face center' });
+  }
+
+  const rect = document.getElementById('viewer').getBoundingClientRect();
+  const cursorX = e.clientX - rect.left, cursorY = e.clientY - rect.top;
+  mesh3d.updateMatrixWorld();
+  let best = null, bestD = 12;   // screen-space snap radius (px)
+  for (const cd of cand) {
+    const w = cd.p.clone().applyMatrix4(mesh3d.matrixWorld).project(camera);
+    const sx = (w.x * 0.5 + 0.5) * rect.width;
+    const sy = (-w.y * 0.5 + 0.5) * rect.height;
+    const d = Math.hypot(sx - cursorX, sy - cursorY);
+    if (d < bestD) { bestD = d; best = cd; }
+  }
+
+  if (!best) { clearForceSnapMarker(); return; }   // no feature nearby → place at raw hit
+  S._forceSnap = { stlPos: meshLocalToStl(best.p.x, best.p.y, best.p.z), kind: best.kind };
+  if (!_forceSnapMarker) {
+    const scl = mesh3d.userData.scale || 1;
+    _forceSnapMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.011 / scl, 10, 10),
+      new THREE.MeshBasicMaterial({ color: 0xC9A227, depthTest: false })
+    );
+    _forceSnapMarker.renderOrder = 1001;
+    mesh3d.add(_forceSnapMarker);
+  }
+  _forceSnapMarker.position.copy(best.p);
+  const hintEl = document.getElementById('hint');
+  if (hintEl) hintEl.textContent = 'Snap: ' + best.kind + ' — click to place the force';
+}
+
 function handleHover(e) {
   if (S.mode === 'bed') { handleBedHover(e); return; }
   if (S.mode === 'view') { handleStressHover(e); return; }
+  if (S.mode === 'force') { handleForceSnapHover(e); return; }
   if (S.mode !== 'bolt' || !mesh3d) { clearHover(); clearStressHover(); return; }
   const hit = raycast(e.clientX, e.clientY);
   if (!hit) { clearHover(); return; }
@@ -4518,23 +4605,14 @@ function handleClick(e) {
   } else if (S.mode === 'force') {
     // Store the application point in STL/model-frame mm — the same frame the
     // preset path (openForcePopupDirect), session save, and buildAnalyseBody
-    // all use. hit.localPos is mesh-local (geometry) mm, so add the offset.
-    const stl = meshLocalToStl(hit.localPos.x, hit.localPos.y, hit.localPos.z);
+    // all use. Prefer the magnet-snapped feature under the cursor; otherwise the
+    // raw surface hit (hit.localPos is mesh-local mm, so add the offset).
+    const stl = S._forceSnap ? S._forceSnap.stlPos
+                             : meshLocalToStl(hit.localPos.x, hit.localPos.y, hit.localPos.z);
     S.pendingForce = { position: stl, localPos: hit.localPos };
+    clearForceSnapMarker();
     showForcePreview();
-    const popup = document.getElementById('force-popup');
-    const vRect = document.getElementById('viewer').getBoundingClientRect();
-    // Clamp horizontally so the 224px-wide popup doesn't extend past the
-    // viewer's right edge — without this, clicking in roughly the right
-    // third of the viewer would push most of the popup outside the viewer
-    // bounds, likely overlapping the results panel beyond it.
-    const popupWidth = 224;
-    const maxLeft = vRect.width - popupWidth - 8;
-    popup.style.left = Math.min(maxLeft, e.clientX - vRect.left + 10) + 'px';
-    // Clamp vertically to avoid a negative top offset when clicking near
-    // the viewer's own top edge.
-    popup.style.top  = Math.max(8, e.clientY - vRect.top - 40) + 'px';
-    popup.style.display = 'block';
+    openForceEditor();   // docked in the LOADS panel — viewer stays unobstructed
   }
 }
 
@@ -4795,26 +4873,35 @@ function addBoltMarker(bolt) {
 
 // ─── Force popup ──────────────────────────────────────────────────────────────
 function openForcePopupDirect() {
-  // Open the force popup without requiring a 3D click
-  // Use the centroid of the current mesh as the application point
+  // Place a force without a 3D click — apply at the top-centre of the part.
   let pos = [0, 0, 0];
   if (S.fileData && S.fileData.bounds) {
     const b = S.fileData.bounds;
     pos = [(b.minX+b.maxX)/2, (b.minY+b.maxY)/2, b.maxZ];
   }
   S.pendingForce = { position: pos };
-  S.pendingDir = [0, 0, 1]; // default +Z
   document.getElementById('fp-face').value = 'top';
   document.getElementById('fp-custom-dir').style.display = 'none';
-  document.getElementById('fp-dir-display').textContent = 'Direction: +Z (top face)';
+  setDir(0, 0, 1);   // default bed +Z (up from the bed)
+  showForcePreview();
+  openForceEditor();
+}
 
-  const viewer = document.getElementById('viewer');
-  const rect = viewer.getBoundingClientRect();
-  const popup = document.getElementById('force-popup');
-  popup.style.left = (rect.left + rect.width/2 - 110) + 'px';
-  popup.style.top  = (rect.top  + rect.height/2 - 100) + 'px';
-  popup.style.position = 'fixed';
-  popup.style.display = 'block';
+// Show the docked force editor in the LOADS panel (viewer stays visible).
+function openForceEditor(opts = {}) {
+  const ed = document.getElementById('force-editor');
+  if (!ed) return;
+  const title = document.getElementById('force-editor-title');
+  if (title) title.textContent = (opts.editIndex != null)
+    ? ('EDIT ' + (S.forces[opts.editIndex]?.label || 'FORCE'))
+    : 'APPLY FORCE';
+  if (typeof switchTab === 'function') switchTab('loads');
+  ed.style.display = 'block';
+  ed.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+function closeForceEditor() {
+  const ed = document.getElementById('force-editor');
+  if (ed) ed.style.display = 'none';
 }
 
 function applyForcePreset(val) {
@@ -4937,7 +5024,7 @@ function updateForcePreview() {
   const dir = new THREE.Vector3(...S.pendingDir).normalize();
   _forcePreviewArrow.setDirection(dir);
 }
-function cancelForce() { S.pendingForce = null; clearForcePreview(); document.getElementById('force-popup').style.display = 'none'; }
+function cancelForce() { S.pendingForce = null; clearForcePreview(); closeForceEditor(); }
 function confirmForce() {
   clearForcePreview();
   dispatchStateChange();
@@ -5230,17 +5317,8 @@ function editForce(i) {
   document.querySelectorAll('.dir-btn').forEach(b => b.classList.remove('active'));
   const activeBtn = document.querySelector(`.dir-btn[data-dir="${bedRounded.join(',')}"]`);
   if (activeBtn) activeBtn.classList.add('active');
-  // Position and show popup — centered via translateX(-50%), since left:50%
-  // alone positions the popup's LEFT EDGE at the midpoint, not its center
-  // (shifting a 224px-wide popup 112px right of true center). position is
-  // set explicitly every time rather than relying on whatever a previous
-  // call to a different popup-showing function happened to leave behind.
-  const popup = document.getElementById('force-popup');
-  popup.style.position  = 'fixed';
-  popup.style.left      = '50%';
-  popup.style.top       = '200px';
-  popup.style.transform = 'translateX(-50%)';
-  popup.style.display   = 'block';
+  showForcePreview();
+  openForceEditor({ editIndex: i });
 }
 
 function removeBolt(i) {
@@ -12069,8 +12147,8 @@ document.addEventListener('keydown', (e) => {
     case 'f': case 'F': if (mesh3d) setMode('force'); break;
     case 'Escape':
       if (S.mode !== 'view') setMode('view');
-      // Close any open popups
-      document.getElementById('force-popup').style.display = 'none';
+      // Close any open editors/previews
+      cancelForce();
       closeShortcuts();
       break;
     case '?':
