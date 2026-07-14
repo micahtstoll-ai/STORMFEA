@@ -538,6 +538,25 @@ h1, h2, h3 { font-weight: inherit; font-size: inherit; margin: 0; }
    Damage button the same two-line text layout as its siblings. Visibility is
    still controlled with inline display (flex/none) so setStressMode() can
    rebuild className freely without disturbing which buttons are shown. */
+/* Left-edge vertical column of heatmap view buttons (moved out of the top
+   toolbar). Absolutely positioned relative to #viewer; the solve-time reveal
+   flips inline display:none -> flex. */
+#stress-mode-wrap {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 20;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  max-height: calc(100% - 150px);
+  overflow-y: auto;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 6px;
+}
 #stress-mode-wrap .btn.vmode-btn {
   flex-direction: column;
   align-items: center;
@@ -1097,20 +1116,6 @@ body:not(.has-results) #btn-stress { display: none !important; }
           style="padding:5px 8px;opacity:0.35;flex-shrink:0">
           <svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2.5 3A3.5 3.5 0 1 1 1.5 6"/><polyline points="3,1.5 1.5,3 3,4.5" fill="none"/></svg>
         </button>
-      <!-- Stress visualization mode (shown after solve) -->
-      <div id="stress-mode-wrap" style="display:none;border-left:1px solid var(--border);margin-left:2px;padding-left:6px;gap:3px;align-items:center">
-        <span style="font-size:9px;color:var(--text-lo);letter-spacing:.04em;margin-right:2px" title="Choose what the heatmap colors represent">VIEW:</span>
-        <button class="btn active vmode-btn" id="btn-tc"  onclick="setStressMode('tc')"  style="display:flex" title="Tension / Compression — the dominant principal stress at each point (whichever of σ₁ or σ₃ has the larger magnitude). Red = pulling apart (max tension), blue = crushing (max compression), white ≈ low stress."><span class="vmode-abbr">σ±</span><span class="vmode-cap">Tension/Comp</span></button>
-        <button class="btn vmode-btn"        id="btn-vm"  onclick="setStressMode('vm')"  style="display:flex" title="von Mises stress — overall combined stress magnitude"><span class="vmode-abbr">VM</span><span class="vmode-cap">Overall</span></button>
-        <button class="btn vmode-btn"        id="btn-svm" onclick="setStressMode('svm')" style="display:none" title="Signed von Mises — blue=compression, white=zero, red=tension. Sign = sign of hydrostatic stress (trace of σ). Useful for distinguishing delamination risk (tension) from compressive crush."><span class="vmode-abbr">±VM</span><span class="vmode-cap">Signed</span></button>
-        <button class="btn vmode-btn"        id="btn-s1"  onclick="setStressMode('s1')"  style="display:flex" title="Maximum principal stress σ₁ — most tensile direction (red=tensile, blue=compressive)"><span class="vmode-abbr">σ₁</span><span class="vmode-cap">Max tension</span></button>
-        <button class="btn vmode-btn"        id="btn-s2"  onclick="setStressMode('s2')"  style="display:flex" title="Intermediate principal stress σ₂ (red=tensile, blue=compressive)"><span class="vmode-abbr">σ₂</span><span class="vmode-cap">Mid stress</span></button>
-        <button class="btn vmode-btn"        id="btn-s3"  onclick="setStressMode('s3')"  style="display:flex" title="Minimum principal stress σ₃ — most compressive direction (red=tensile, blue=compressive)"><span class="vmode-abbr">σ₃</span><span class="vmode-cap">Max compression</span></button>
-        <button class="btn vmode-btn"        id="btn-dmg"    onclick="setStressMode('dmg')"    style="display:flex" title="Damage ratio — stress as a fraction of material yield strength (1.0 = at yield)"><span class="vmode-abbr">DMG</span><span class="vmode-cap">Damage</span></button>
-        <button class="btn vmode-btn"        id="btn-xyutil" onclick="setStressMode('xyutil')" style="display:none" title="XY in-plane utilization — sqrt(σxx²+σyy²-σxx·σyy+3·σxy²) / yieldXY. Red at 1.0 = at in-plane yield. High → add infill."><span class="vmode-abbr">U<sub>XY</sub></span><span class="vmode-cap">In-plane use</span></button>
-        <button class="btn vmode-btn"        id="btn-zutil"  onclick="setStressMode('zutil')"  style="display:none" title="Interlayer interface utilization — tension-only ⟨σzz⟩₊/S_zt interacting with interlayer shear τ/S_zs (compression gets a friction credit instead). Red at 1.0 = delamination/shear onset. High → reorient or add walls."><span class="vmode-abbr">U<sub>Z</sub></span><span class="vmode-cap">Z-layer use</span></button>
-        <button class="btn vmode-btn"        id="btn-error"  onclick="setStressMode('error')"  style="display:none" title="Error estimate η — Zienkiewicz-Zhu mesh quality metric (0–1), identifies under-resolved elements"><span class="vmode-abbr">η</span><span class="vmode-cap">Mesh quality</span></button>
-      </div>
       <!-- Deformation (deflected-shape) controls (shown after solve) -->
       <div id="deform-wrap" style="display:none;border-left:1px solid var(--border);margin-left:2px;padding-left:6px;gap:5px;align-items:center">
         <button class="btn" id="btn-deform" onclick="toggleDeform()" style="font-size:10px;padding:4px 8px;display:flex;flex-direction:column;align-items:center;gap:1px" title="Warp the mesh by the computed nodal displacement to show the deflected shape (exaggerated). Stress colors follow the deformed surface."><span style="font-weight:700">DEFORM</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Deflected</span></button>
@@ -1127,6 +1132,27 @@ body:not(.has-results) #btn-stress { display: none !important; }
           <input type="range" id="clip-pos" min="0" max="100" value="50" step="1" oninput="onClipPosInput(this.value)" style="width:70px;vertical-align:middle" title="Position of the cutting plane along the chosen axis">
           <button class="btn" id="clip-flip" onclick="toggleClipFlip()" style="font-size:11px;padding:4px 7px" title="Flip which half of the part is kept">⇄</button>
         </span>
+      </div>
+    </div>
+
+    <!-- Stress visualization mode — left-edge vertical column (shown after solve).
+         A direct child of #viewer (not #toolbar) so its absolute positioning is
+         relative to the viewer, not the top-left toolbar. Always-visible modes
+         first; the rest live behind the MORE toggle. -->
+    <div id="stress-mode-wrap" style="display:none">
+      <span style="font-size:9px;color:var(--text-lo);letter-spacing:.06em;text-align:center" title="Choose what the heatmap colors represent">VIEW</span>
+      <button class="btn active vmode-btn" id="btn-tc"  onclick="setStressMode('tc')"  style="display:flex" title="Tension / Compression — the dominant principal stress at each point (whichever of σ₁ or σ₃ has the larger magnitude). Red = pulling apart (max tension), blue = crushing (max compression), white ≈ low stress."><span class="vmode-abbr">σ±</span><span class="vmode-cap">Tension/Comp</span></button>
+      <button class="btn vmode-btn"        id="btn-vm"  onclick="setStressMode('vm')"  style="display:flex" title="von Mises stress — overall combined stress magnitude"><span class="vmode-abbr">VM</span><span class="vmode-cap">Overall</span></button>
+      <button class="btn vmode-btn"        id="btn-svm" onclick="setStressMode('svm')" style="display:flex" title="Signed von Mises — blue=compression, white=zero, red=tension. Sign = sign of hydrostatic stress (trace of σ). Useful for distinguishing delamination risk (tension) from compressive crush."><span class="vmode-abbr">±VM</span><span class="vmode-cap">Signed</span></button>
+      <button class="btn vmode-btn"        id="btn-s1"  onclick="setStressMode('s1')"  style="display:flex" title="Maximum principal stress σ₁ — most tensile direction (red=tensile, blue=compressive)"><span class="vmode-abbr">σ₁</span><span class="vmode-cap">Max tension</span></button>
+      <button class="btn vmode-btn"        id="btn-s2"  onclick="setStressMode('s2')"  style="display:flex" title="Intermediate principal stress σ₂ (red=tensile, blue=compressive)"><span class="vmode-abbr">σ₂</span><span class="vmode-cap">Mid stress</span></button>
+      <button class="btn vmode-btn"        id="btn-s3"  onclick="setStressMode('s3')"  style="display:flex" title="Minimum principal stress σ₃ — most compressive direction (red=tensile, blue=compressive)"><span class="vmode-abbr">σ₃</span><span class="vmode-cap">Max compression</span></button>
+      <button class="btn vmode-btn" id="btn-vmore" onclick="toggleVmodeMore()" style="display:none" title="More heatmap views">MORE ▾</button>
+      <div id="vmode-more" style="display:none;flex-direction:column;gap:4px">
+        <button class="btn vmode-btn"        id="btn-dmg"    onclick="setStressMode('dmg')"    style="display:flex" title="Damage ratio — stress as a fraction of material yield strength (1.0 = at yield)"><span class="vmode-abbr">DMG</span><span class="vmode-cap">Damage</span></button>
+        <button class="btn vmode-btn"        id="btn-xyutil" onclick="setStressMode('xyutil')" style="display:flex" title="XY in-plane utilization — sqrt(σxx²+σyy²-σxx·σyy+3·σxy²) / yieldXY. Red at 1.0 = at in-plane yield. High → add infill."><span class="vmode-abbr">U<sub>XY</sub></span><span class="vmode-cap">In-plane use</span></button>
+        <button class="btn vmode-btn"        id="btn-zutil"  onclick="setStressMode('zutil')"  style="display:flex" title="Interlayer interface utilization — tension-only ⟨σzz⟩₊/S_zt interacting with interlayer shear τ/S_zs (compression gets a friction credit instead). Red at 1.0 = delamination/shear onset. High → reorient or add walls."><span class="vmode-abbr">U<sub>Z</sub></span><span class="vmode-cap">Z-layer use</span></button>
+        <button class="btn vmode-btn"        id="btn-error"  onclick="setStressMode('error')"  style="display:flex" title="Error estimate η — Zienkiewicz-Zhu mesh quality metric (0–1), identifies under-resolved elements"><span class="vmode-abbr">η</span><span class="vmode-cap">Mesh quality</span></button>
       </div>
     </div>
 
@@ -11578,9 +11604,11 @@ const MODE_META = {
   zutil:  { kind:'sequential', legend:()=>'Interlayer Interface Utilization (0–2)',          hover:'Interlayer utilization', unit:()=>'',  dec:2, data:a=>a.zutil,  max:2.0, min:0 },
   error:  { kind:'sequential', legend:()=>'Error Estimate η (0–1)',                          hover:'Error η',                unit:()=>'',  dec:3, data:a=>a.error,  max:1.0, min:0 },
 };
-// Order the buttons appear in; the first entries are always-visible, the rest
-// live in the MORE overflow group (wired in a later commit).
-const STRESS_MODE_ORDER = ['tc','vm','svm','s1','s2','s3','dmg','xyutil','zutil','error'];
+// Always-visible modes lead the left column; the rest live behind the MORE
+// toggle. STRESS_MODE_ORDER is their concatenation.
+const ALWAYS_MODES = ['tc','vm','svm','s1','s2','s3'];
+const OVERFLOW_MODES = ['dmg','xyutil','zutil','error'];
+const STRESS_MODE_ORDER = [...ALWAYS_MODES, ...OVERFLOW_MODES];
 const DEFAULT_STRESS_MODE = 'tc';
 
 function stressModeAvailable(mode) {
@@ -11590,16 +11618,47 @@ function stressModeAvailable(mode) {
   return !!(arr && arr.length > 0);
 }
 
+function toggleVmodeMore() {
+  const more = document.getElementById('vmode-more');
+  const btn  = document.getElementById('btn-vmore');
+  if (!more || !btn) return;
+  const open = more.style.display === 'none' || !more.style.display;
+  more.style.display = open ? 'flex' : 'none';
+  btn.textContent = open ? 'LESS ▴' : 'MORE ▾';
+}
+
 // Reveal/grey the mode buttons by data availability and reflect the active mode.
+// Always-visible modes stay shown (greyed when data is absent); overflow modes
+// appear only when their data exists, behind the MORE toggle.
 function refreshStressModeButtons() {
-  STRESS_MODE_ORDER.forEach(m => {
+  ALWAYS_MODES.forEach(m => {
     const btn = document.getElementById('btn-'+m);
     if (!btn) return;
+    btn.style.display = 'flex';
     const avail = stressModeAvailable(m);
     btn.disabled = !avail;
     btn.title = avail ? '' : (MODE_META[m].hover + ' — not available for this solve');
     btn.className = 'btn vmode-btn' + (m===S.stressMode ? ' active' : '') + (avail ? '' : ' disabled');
   });
+  let anyOverflow = false;
+  OVERFLOW_MODES.forEach(m => {
+    const btn = document.getElementById('btn-'+m);
+    if (!btn) return;
+    const avail = stressModeAvailable(m);
+    btn.style.display = avail ? 'flex' : 'none';
+    btn.disabled = !avail;
+    btn.className = 'btn vmode-btn' + (m===S.stressMode ? ' active' : '') + (avail ? '' : ' disabled');
+    if (avail) anyOverflow = true;
+  });
+  // Show the MORE toggle only when the overflow group has content; auto-expand
+  // it when the active mode lives inside so the highlight is visible.
+  const moreBtn = document.getElementById('btn-vmore');
+  const moreGrp = document.getElementById('vmode-more');
+  if (moreBtn) moreBtn.style.display = anyOverflow ? 'flex' : 'none';
+  if (moreGrp && OVERFLOW_MODES.includes(S.stressMode)) {
+    moreGrp.style.display = 'flex';
+    if (moreBtn) moreBtn.textContent = 'LESS ▴';
+  }
 }
 
 function setStressMode(mode) {
