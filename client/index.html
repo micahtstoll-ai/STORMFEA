@@ -1500,17 +1500,17 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <!-- Orientation presets -->
       <div style="font-size:11px;color:var(--text-label);letter-spacing:.04em;margin-bottom:8px">QUICK PRESETS</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:16px">
-        <button class="btn" onclick="applyOrientPreset('top')" style="padding:8px;font-size:11px;text-align:left">
-          <svg width="11" height="8" viewBox="0 0 11 8" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" rx="1"><rect x="0.7" y="0.7" width="9.6" height="6.6" rx="1"/></svg> Top face down<br><span style="color:var(--text-lo);font-size:10px">flat · weakest</span>
+        <button class="btn" onclick="applyOrientPreset('top')" onmouseenter="showOrientPresetPreview('top')" onmouseleave="clearOrientPresetPreview()" style="padding:8px;font-size:11px;text-align:left">
+          <svg width="11" height="8" viewBox="0 0 11 8" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" rx="1"><rect x="0.7" y="0.7" width="9.6" height="6.6" rx="1"/></svg> Top face down<br><span style="color:var(--text-lo);font-size:10px">flat · weakest</span><br><span id="preset-face-top" style="color:var(--gold-dim);font-size:9px;font-family:'DM Mono',monospace"></span>
         </button>
-        <button class="btn" onclick="applyOrientPreset('bottom')" style="padding:8px;font-size:11px;text-align:left">
-          <svg width="11" height="8" viewBox="0 0 11 8" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" rx="1"><rect x="0.7" y="0.7" width="9.6" height="6.6" rx="1"/></svg> Bottom face down<br><span style="color:var(--text-lo);font-size:10px">flat · mirrored</span>
+        <button class="btn" onclick="applyOrientPreset('bottom')" onmouseenter="showOrientPresetPreview('bottom')" onmouseleave="clearOrientPresetPreview()" style="padding:8px;font-size:11px;text-align:left">
+          <svg width="11" height="8" viewBox="0 0 11 8" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" rx="1"><rect x="0.7" y="0.7" width="9.6" height="6.6" rx="1"/></svg> Bottom face down<br><span style="color:var(--text-lo);font-size:10px">flat · mirrored</span><br><span id="preset-face-bottom" style="color:var(--gold-dim);font-size:9px;font-family:'DM Mono',monospace"></span>
         </button>
-        <button class="btn" onclick="applyOrientPreset('side-x')" style="padding:8px;font-size:11px;text-align:left">
-          <svg width="8" height="11" viewBox="0 0 8 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="0.7" y="0.7" width="6.6" height="9.6" rx="1"/></svg> Standing on <svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg><br><span style="color:var(--text-lo);font-size:10px">upright · stronger</span>
+        <button class="btn" onclick="applyOrientPreset('side-x')" onmouseenter="showOrientPresetPreview('side-x')" onmouseleave="clearOrientPresetPreview()" style="padding:8px;font-size:11px;text-align:left">
+          <svg width="8" height="11" viewBox="0 0 8 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="0.7" y="0.7" width="6.6" height="9.6" rx="1"/></svg> Stand on X face<br><span style="color:var(--text-lo);font-size:10px">upright · stronger</span><br><span id="preset-face-side-x" style="color:var(--gold-dim);font-size:9px;font-family:'DM Mono',monospace"></span>
         </button>
-        <button class="btn" onclick="applyOrientPreset('side-y')" style="padding:8px;font-size:11px;text-align:left">
-          <svg width="8" height="11" viewBox="0 0 8 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="0.7" y="0.7" width="6.6" height="9.6" rx="1"/></svg> Standing on Y<br><span style="color:var(--text-lo);font-size:10px">upright · stronger</span>
+        <button class="btn" onclick="applyOrientPreset('side-y')" onmouseenter="showOrientPresetPreview('side-y')" onmouseleave="clearOrientPresetPreview()" style="padding:8px;font-size:11px;text-align:left">
+          <svg width="8" height="11" viewBox="0 0 8 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="0.7" y="0.7" width="6.6" height="9.6" rx="1"/></svg> Stand on Y face<br><span style="color:var(--text-lo);font-size:10px">upright · stronger</span><br><span id="preset-face-side-y" style="color:var(--gold-dim);font-size:9px;font-family:'DM Mono',monospace"></span>
         </button>
       </div>
 
@@ -3398,6 +3398,7 @@ function loadMeshFromPositions(posB64) {
     // Clear validity cache — new mesh, new groups
     S.faceGroups.forEach(g => { delete g._bedValid; });
     console.log(`[orient] ${S.faceGroups.length} face groups built`);
+    updateOrientPresetLabels();
     S.faceGroups.forEach((g,i) => console.log(`  group ${i}: "${g.label}" — ${g.triIndices.length} tris, normal=[${g.normal.map(v=>v.toFixed(2))}]`));
   }
 
@@ -7792,24 +7793,101 @@ function updateOrientPanel() {
 }
 
 // ─── Orient presets ────────────────────────────────────────────────────────────
+// Each preset snaps a specific model-space face to the bed. Absolute (not
+// relative to the current pose) so a given preset always lands the part the
+// same way — predictable, and the ghost preview shows exactly where.
+const ORIENT_PRESETS = {
+  'top':    { normal: [0, 0,  1], name: 'Top face on bed'    },
+  'bottom': { normal: [0, 0, -1], name: 'Bottom face on bed' },
+  'side-x': { normal: [1, 0,  0], name: 'X face on bed'      },
+  'side-y': { normal: [0, 1,  0], name: 'Y face on bed'      },
+};
+function presetTargetNormal(preset) {
+  const p = ORIENT_PRESETS[preset];
+  return p ? p.normal.slice() : null;
+}
+
+// Label of the detected face group whose normal best matches a model-space
+// direction — so the ORIENT card can name the actual face that touches the bed.
+function nearestFaceGroupLabel(modelNormal) {
+  if (!S.faceGroups || !S.faceGroups.length) return null;
+  const n = new THREE.Vector3(...modelNormal).normalize();
+  let best = null, bestDot = -Infinity;
+  for (const g of S.faceGroups) {
+    if (!g.normal) continue;
+    const d = new THREE.Vector3(...g.normal).normalize().dot(n);
+    if (d > bestDot) { bestDot = d; best = g; }
+  }
+  return best ? (best.label || null) : null;
+}
+
+// Fill each preset button's subtitle with the actual detected face group that
+// will touch the bed, so the label names a real face rather than a bare axis.
+function updateOrientPresetLabels() {
+  for (const preset of Object.keys(ORIENT_PRESETS)) {
+    const span = document.getElementById('preset-face-' + preset);
+    if (!span) continue;
+    const label = nearestFaceGroupLabel(ORIENT_PRESETS[preset].normal);
+    span.textContent = label ? ('→ ' + label) : '';
+  }
+}
+
 function applyOrientPreset(preset) {
   if (!mesh3d) return;
-  // Presets define the model-space face normal that should touch the bed.
-  // snapToBed rotates so that normal points -Y (into plate), then showBedPlane
-  // translates so the part sits on Y=0.
-  const presetMap = {
-    'top':    { normal: [0, 0,  1], name: 'Top face (flat on bed)'     },
-    'bottom': { normal: [0, 0, -1], name: 'Bottom face (flat on bed)'  },
-    'side-x': { normal: [1, 0,  0], name: 'Right edge (standing on <svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg>)' },
-    'side-y': { normal: [0, 1,  0], name: 'Front edge (standing on Y)' },
-  };
-  const p = presetMap[preset];
-  if (!p) return;
+  const n = presetTargetNormal(preset);
+  if (!n) return;
+  clearOrientPresetPreview();
 
-  S.bedFaceName = p.name;
-  snapToBed(p.normal);   // handles rotation, Y-reset, showBedPlane, updateOrientMul, updateOrientPanel
+  const faceLabel = nearestFaceGroupLabel(n);
+  S.bedFaceName = faceLabel || ORIENT_PRESETS[preset].name;
+  snapToBed(n);   // rotation, Y-reset, showBedPlane, updateOrientMul, updateOrientPanel
 
   switchTab('orient');
+}
+
+// Ghost preview of a preset's landing pose while hovering its button. Shares
+// mesh3d's geometry (no copy), transparent gold, rested on Y=0; disposed on
+// mouseleave. Also flags the face group that will touch the bed.
+let _orientGhost = null;
+function showOrientPresetPreview(preset) {
+  if (!mesh3d) return;
+  clearOrientPresetPreview();
+  const n = presetTargetNormal(preset);
+  if (!n) return;
+  const ghost = new THREE.Mesh(
+    mesh3d.geometry,
+    new THREE.MeshBasicMaterial({ color: 0xC9A227, transparent: true, opacity: 0.15, depthWrite: false })
+  );
+  ghost.scale.copy(mesh3d.scale);
+  ghost.quaternion.copy(bedSnapQuaternion(n));
+  ghost.updateMatrixWorld();
+  const box = new THREE.Box3().setFromObject(ghost);
+  ghost.position.y = -box.min.y;   // rest the lowest point on the plate
+  ghost.renderOrder = 400;
+  scene.add(ghost);
+  _orientGhost = ghost;
+
+  const idx = (S.faceGroups || []).findIndex(g => g === _nearestFaceGroup(n));
+  if (idx >= 0 && typeof highlightFaceGroup === 'function') highlightFaceGroup(idx, true);
+}
+function _nearestFaceGroup(modelNormal) {
+  if (!S.faceGroups || !S.faceGroups.length) return null;
+  const n = new THREE.Vector3(...modelNormal).normalize();
+  let best = null, bestDot = -Infinity;
+  for (const g of S.faceGroups) {
+    if (!g.normal) continue;
+    const d = new THREE.Vector3(...g.normal).normalize().dot(n);
+    if (d > bestDot) { bestDot = d; best = g; }
+  }
+  return best;
+}
+function clearOrientPresetPreview() {
+  if (_orientGhost) {
+    if (_orientGhost.parent) _orientGhost.parent.remove(_orientGhost);
+    _orientGhost.material.dispose();   // geometry is shared with mesh3d — don't dispose
+    _orientGhost = null;
+  }
+  if (typeof clearFaceHighlight === 'function') clearFaceHighlight();
 }
 
 // ─── Find face group under mouse ──────────────────────────────────────────────
