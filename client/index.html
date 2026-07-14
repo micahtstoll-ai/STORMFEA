@@ -2691,6 +2691,30 @@ function _pushLiveResidual(iter, relRes) {
 
 // ─── Three.js setup ───────────────────────────────────────────────────────────
 let scene, camera, renderer, mesh3d, animId;
+
+// Build-plate grid colors per theme — referenced by initThree() and toggleTheme()
+const GRID_SIZE = 6, GRID_DIVS = 12;
+const GRID_COLORS = {
+  dark: { primary: 0xC9A227, secondary: 0x5a4510 },
+  light: { primary: 0x5d5229, secondary: 0x8b8b8b }
+};
+
+// (Re)build the permanent build-plate grid for the given theme. GridHelper is a
+// single LineSegments with the two colors baked into a vertex-color attribute,
+// so a theme change means rebuilding it — its materials can't be retinted.
+function rebuildBedGrid(theme) {
+  if (!scene) return;
+  if (scene._bedGrid) {
+    scene.remove(scene._bedGrid);
+    scene._bedGrid.dispose();
+  }
+  const colors = theme === 'dark' ? GRID_COLORS.dark : GRID_COLORS.light;
+  const gridMesh = new THREE.GridHelper(GRID_SIZE, GRID_DIVS, colors.primary, colors.secondary);
+  gridMesh.position.y = -0.001; // fractionally below Y=0 to avoid z-fighting
+  gridMesh.renderOrder = 1;
+  scene.add(gridMesh);
+  scene._bedGrid = gridMesh;
+}
 const overlays = []; // overlay 3D objects on the mesh
 
 // ─── Camera orbit state ──────────────────────────────────────────────────────
@@ -2741,16 +2765,7 @@ function initThree() {
 
   // ── Permanent gold build-plate grid at Y=0 (XZ plane) ─────────────────────
   // GridHelper lies in the XZ plane by default with Y-up — exactly what we want.
-  const GRID_SIZE = 6, GRID_DIVS = 12;
-  const GRID_COLORS = {
-    dark: { primary: 0xC9A227, secondary: 0x5a4510 },
-    light: { primary: 0x5d5229, secondary: 0x8b8b8b }
-  };
-  const gridMesh = new THREE.GridHelper(GRID_SIZE, GRID_DIVS, GRID_COLORS.dark.primary, GRID_COLORS.dark.secondary);
-  gridMesh.position.y = -0.001; // fractionally below Y=0 to avoid z-fighting
-  gridMesh.renderOrder = 1;
-  scene.add(gridMesh);
-  scene._bedGrid = gridMesh;
+  rebuildBedGrid(document.documentElement.getAttribute('data-theme') || 'dark');
 
   // Set clear color to match current theme
   const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
@@ -7584,7 +7599,10 @@ function showBedPlane() {
   camCenterY = (box2b.min.y + box2b.max.y) * 0.5;
   updateCamera();
 
-  // Subtle dark fill at Y=0 (the gold grid provides the main visual)
+  // Subtle dark fill at Y=0 (the gold grid provides the main visual).
+  // Dark mode only: against the light background the same semi-transparent
+  // black plane reads as a big gray square shadow, so hide it there —
+  // toggleTheme() flips visibility when the theme changes.
   const box2 = new THREE.Box3().setFromObject(mesh3d);
   const size  = new THREE.Vector3();
   box2.getSize(size);
@@ -7598,6 +7616,7 @@ function showBedPlane() {
   S.bedMesh.rotation.x = -Math.PI / 2; // PlaneGeometry faces +Z, rotate to face +Y
   S.bedMesh.position.y = -0.002;
   S.bedMesh.renderOrder = 0;
+  S.bedMesh.visible = document.documentElement.getAttribute('data-theme') === 'dark';
   scene.add(S.bedMesh);
 
   showLayerLines();
@@ -8096,11 +8115,10 @@ function toggleTheme() {
   document.getElementById('theme-icon').innerHTML = buildThemeIcon(next);
   if (renderer) renderer.setClearColor(next === 'dark' ? 0x070604 : 0xeeeae3, 0);
   // Update build-plate grid colors for theme
-  if (scene._bedGrid) {
-    const colors = next === 'dark' ? GRID_COLORS.dark : GRID_COLORS.light;
-    scene._bedGrid.children[0].material.color.setHex(colors.primary);
-    scene._bedGrid.children[1].material.color.setHex(colors.secondary);
-  }
+  if (scene) rebuildBedGrid(next);
+  // The dark bed-fill plane reads as a gray square shadow on the light
+  // background — show it in dark mode only.
+  if (S.bedMesh) S.bedMesh.visible = next === 'dark';
   localStorage.setItem('sf-theme', next);
   syncAppearanceBtns();
 }
