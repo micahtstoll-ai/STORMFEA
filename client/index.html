@@ -1162,6 +1162,12 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <button class="btn" id="btn-debug"  onclick="toggleDebug()"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4"><polygon points="5,1 9,5 5,9 1,5"/></svg> DEBUG</button>
     </div>
 
+    <!-- Orientation axes triad — a camera-tracking indicator of the print frame
+         (Z = up from the bed). Screen-space SVG so it never touches the WebGL
+         renderer's scissor/viewport state (split view uses those). -->
+    <svg id="axes-triad" width="84" height="84" viewBox="0 0 84 84"
+         style="display:none;position:absolute;top:48px;right:12px;pointer-events:none;overflow:visible"></svg>
+
     <!-- Bottom badges -->
     <div id="badges" style="display:none;position:absolute;bottom:54px;left:12px;display:flex;gap:8px">
       <div id="mesh-stats-badge" style="display:none;padding:3px 8px;background:var(--bg-panel);border:1px solid var(--border);border-radius:3px;font-size:10px;color:var(--text-mid);letter-spacing:.06em"></div>
@@ -2786,6 +2792,37 @@ function updateCamera() {
     camera.far  = Math.max(1000, r * 100);
     camera.updateProjectionMatrix();
   }
+  updateAxesTriad();
+}
+
+// Redraw the corner axes triad in the print frame (Z = up from the bed) as it
+// appears from the current camera. Screen-space projection: each bed-frame axis
+// is dotted against the camera's right/up basis; the away-facing axes dim.
+function updateAxesTriad() {
+  const svg = document.getElementById('axes-triad');
+  if (!svg || svg.style.display === 'none' || !camera) return;
+  camera.updateMatrixWorld();
+  const e = camera.matrixWorld.elements;
+  const right = new THREE.Vector3(e[0], e[1], e[2]).normalize();
+  const up    = new THREE.Vector3(e[4], e[5], e[6]).normalize();
+  const fwd   = new THREE.Vector3(-e[8], -e[9], -e[10]).normalize();
+  const cx = 42, cy = 42, L = 26;
+  const axes = [
+    { dir: bedDirToWorld(new THREE.Vector3(1,0,0)), color:'#C2452F', label:'X' },
+    { dir: bedDirToWorld(new THREE.Vector3(0,1,0)), color:'#3E8E5A', label:'Y' },
+    { dir: bedDirToWorld(new THREE.Vector3(0,0,1)), color:'#C9A227', label:'Z' },
+  ];
+  axes.forEach(a => { a.sx = a.dir.dot(right); a.sy = a.dir.dot(up); a.depth = a.dir.dot(fwd); });
+  axes.sort((a, b) => a.depth - b.depth);   // far axes first (drawn under)
+  let html = '';
+  for (const a of axes) {
+    const x2 = cx + a.sx * L, y2 = cy - a.sy * L;
+    const op = a.depth < -0.35 ? 0.4 : 1;   // pointing away from camera → dim
+    html += `<line x1="${cx}" y1="${cy}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${a.color}" stroke-width="2" stroke-linecap="round" opacity="${op}"/>`;
+    const lx = cx + a.sx * (L + 7), ly = cy - a.sy * (L + 7) + 3.2;
+    html += `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" fill="${a.color}" font-size="9" font-family="'DM Mono',monospace" text-anchor="middle" opacity="${op}">${a.label}</text>`;
+  }
+  svg.innerHTML = html;
 }
 
 function initThree() {
@@ -3897,6 +3934,8 @@ async function handleFile(file) {
     document.getElementById('toolbar').style.display = 'flex';
     document.getElementById('topright').style.display = 'flex';
     document.getElementById('badges').style.display = 'flex';
+    const triad = document.getElementById('axes-triad');
+    if (triad) { triad.style.display = 'block'; updateAxesTriad(); }
 
     // File info
     const di = document.getElementById('file-info');
@@ -7392,6 +7431,11 @@ function openSplitView() {
 
   const ov = document.getElementById('split-overlay');
   if (ov) ov.style.display = 'block';
+  // The triad shares the top-right corner with the split labels — hide it while
+  // split view is active (its single-frame print convention doesn't apply to
+  // the two half-viewports anyway).
+  const triad = document.getElementById('axes-triad');
+  if (triad) triad.style.display = 'none';
 
   // Switch viewer to stress mode so the geometry is coloured
   if (!S.showStress && S.results) {
@@ -7423,6 +7467,9 @@ function closeSplitView() {
   }
   // Reapply current result stress
   if (S.results) applyStressColorsFromResults(S.results, { fresh: false });
+  // Restore the axes triad (hidden while split view was active)
+  const triad = document.getElementById('axes-triad');
+  if (triad && S.fileData) { triad.style.display = 'block'; updateAxesTriad(); }
 }
 
 function renderSplitFrame() {
@@ -7531,6 +7578,35 @@ function animateCameraToFaceNormal(normal) {
   requestAnimationFrame(step);
 }
 
+// ─── Bed / print frame ────────────────────────────────────────────────────────
+// Print convention: the build plate is the world XZ plane and "up from the bed"
+// (bed +Z) is world +Y. BED_Q rotates a bed-frame direction into world space.
+// Bed axes in world coords: Xb=(1,0,0), Yb=(0,0,-1), Zb=(0,1,0) — right-handed.
+// Anchor: with the default snap (bedNormal [0,0,-1]) bedDirToModel([0,0,1]) is
+// model +Z, i.e. "up from the bed" is the STL up direction in the flat pose.
+const BED_Q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI/2, 0, 0));
+function bedDirToWorld(v3)   { return v3.clone().applyQuaternion(BED_Q); }
+function worldDirToBed(v3)   { return v3.clone().applyQuaternion(BED_Q.clone().invert()); }
+function modelDirToWorld(v3) { return mesh3d ? v3.clone().applyQuaternion(mesh3d.quaternion) : v3.clone(); }
+function worldDirToModel(v3) { return mesh3d ? v3.clone().applyQuaternion(mesh3d.quaternion.clone().invert()) : v3.clone(); }
+function bedDirToModel(v3)   { return worldDirToModel(bedDirToWorld(v3)); }
+function modelDirToBed(v3)   { return worldDirToBed(modelDirToWorld(v3)); }
+
+// The rotation that sends a MODEL-space face normal to point into the build
+// plate (-Y world). Shared by snapToBed and the preset ghost-preview so both
+// use identical math.
+function bedSnapQuaternion(faceNormal) {
+  const fn     = new THREE.Vector3(...faceNormal).normalize();
+  const target = new THREE.Vector3(0, -1, 0);  // -Y = into the build plate
+  if (Math.abs(fn.dot(target)) > 0.9999) {
+    // Parallel/anti-parallel — a 180° flip about X when the normal is already +Y.
+    return (fn.y > 0)
+      ? new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0), Math.PI)
+      : new THREE.Quaternion();  // identity, already pointing -Y
+  }
+  return new THREE.Quaternion().setFromUnitVectors(fn, target);
+}
+
 function snapToBed(faceNormal) {
   if (!mesh3d) return;
 
@@ -7538,27 +7614,12 @@ function snapToBed(faceNormal) {
   animateCameraToFaceNormal(faceNormal);
 
   // faceNormal is in MODEL space (the STL coordinate frame, no rotation applied).
-  // We want to rotate the mesh so that faceNormal points straight down (-Y world).
-  // Start from identity — don't compose on top of whatever rotation was already set.
+  // Rotate the mesh so that faceNormal points straight down (-Y world). Start
+  // from identity — don't compose on top of whatever rotation was already set.
   rotX = 0; rotY = 0;
   mesh3d.position.y = 0;
 
-  const fn     = new THREE.Vector3(...faceNormal).normalize();
-  const target = new THREE.Vector3(0, -1, 0);  // -Y = into the build plate
-
-  // Handle the degenerate case where fn is already exactly ±Y
-  let q;
-  if (Math.abs(fn.dot(target)) > 0.9999) {
-    // Parallel or anti-parallel — use 180° rotation around <svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg> or Z
-    if (fn.y > 0) {
-      q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0), Math.PI);
-    } else {
-      q = new THREE.Quaternion(); // identity, already pointing -Y
-    }
-  } else {
-    q = new THREE.Quaternion().setFromUnitVectors(fn, target);
-  }
-
+  const q = bedSnapQuaternion(faceNormal);
   const euler = new THREE.Euler().setFromQuaternion(q, 'XYZ');
   rotX = euler.x; rotY = euler.y;
   mesh3d.rotation.set(euler.x, euler.y, euler.z);
@@ -7568,6 +7629,7 @@ function snapToBed(faceNormal) {
   showBedPlane();   // translates mesh so min-Y sits on Y=0
   updateOrientMul();
   updateOrientPanel();
+  updateAxesTriad();
 }
 
 // ─── Layer line overlay ───────────────────────────────────────────────────────
