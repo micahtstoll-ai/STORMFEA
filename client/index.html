@@ -4833,6 +4833,9 @@ function applyPresetForce(magnitudeN, face) {
   setDirFromFace(face);
 }
 
+// Direction picks are in the BED frame — Z+ is always "up from the bed",
+// regardless of how the part is oriented. setDir converts the bed-frame pick to
+// the model frame (which the solver consumes and the arrow renders in).
 function setDirFromFace(face) {
   const map = {
     top:[0,0,1], bottom:[0,0,-1], front:[0,1,0],
@@ -4848,13 +4851,33 @@ function setDirFromFace(face) {
   if (dir) setDir(dir[0], dir[1], dir[2]);
 }
 
-function setDir(x, y, z) {
-  S.pendingDir = [x, y, z];
-  const labels = {
-    '1,0,0':'+X', '-1,0,0':'-X', '0,1,0':'+Y', '0,-1,0':'-Y', '0,0,1':'+Z', '0,0,-1':'-Z'
-  };
-  document.getElementById('fp-dir-display').textContent = 'Direction: ' + (labels[[x,y,z].join(',')] || `(${x},${y},${z})`);
+const _BED_DIR_LABELS = { '1,0,0':'+X','-1,0,0':'-X','0,1,0':'+Y','0,-1,0':'-Y','0,0,1':'+Z','0,0,-1':'-Z' };
+function setDir(bx, by, bz) {
+  // (bx,by,bz) is a bed-frame direction; store it and its model-frame image.
+  S.pendingDirBed = [bx, by, bz];
+  S.pendingDir = mesh3d
+    ? bedDirToModel(new THREE.Vector3(bx, by, bz)).toArray()
+    : [bx, by, bz];
+  const key = [bx, by, bz].join(',');
+  document.getElementById('fp-dir-display').textContent =
+    'Direction: ' + (_BED_DIR_LABELS[key] || `(${bx},${by},${bz})`) + ' · bed frame (Z↑)';
   updateForcePreview();
+}
+
+// Best-matching bed-frame axis label for a stored MODEL-frame direction, so the
+// force list / editor show the direction as the user currently sees it.
+function bedDirLabel(modelDir) {
+  if (!modelDir) return '—';
+  const bed = mesh3d ? modelDirToBed(new THREE.Vector3(...modelDir)).normalize() : new THREE.Vector3(...modelDir).normalize();
+  const axes = [
+    [[1,0,0],'+X'],[[-1,0,0],'-X'],[[0,1,0],'+Y'],[[0,-1,0],'-Y'],[[0,0,1],'+Z'],[[0,0,-1],'-Z'],
+  ];
+  let best = null, bestDot = 0.966;   // within ~15° to call it an axis
+  for (const [v, lbl] of axes) {
+    const d = bed.dot(new THREE.Vector3(...v));
+    if (d > bestDot) { bestDot = d; best = lbl; }
+  }
+  return best || `(${bed.x.toFixed(2)},${bed.y.toFixed(2)},${bed.z.toFixed(2)})`;
 }
 
 // ── Force preview arrow ───────────────────────────────────────────────────────
@@ -5066,10 +5089,10 @@ function updateForceList() {
     el.innerHTML = '<div style="font-size:11px;color:var(--text-mid);padding:12px;border:1px dashed var(--border);border-radius:3px;text-align:center">No forces placed yet. Click + Place Force (or press F), then click the model.</div>';
     return;
   }
-  const dirLabel = d => {
-    const labels = {'1,0,0':'+X','-1,0,0':'-X','0,1,0':'+Y','0,-1,0':'-Y','0,0,1':'+Z','0,0,-1':'-Z'};
-    return labels[d.join(',')] || `(${d})`;
-  };
+  // Show each force's direction in the BED frame (Z↑) — the frame the user
+  // picked it in — recomputed from the stored model-frame vector against the
+  // part's current orientation.
+  const dirLabel = d => bedDirLabel(d) + ' (bed)';
 
   // Compute resultant for multiple forces
   let rx=0, ry=0, rz=0;
@@ -5193,16 +5216,19 @@ function editForce(i) {
   const f = S.forces[i];
   if (!f) return;
   S.pendingForce = { position: f.position, editIndex: i };
-  S.pendingDir   = f.direction.slice();  // restore saved direction
+  S.pendingDir   = f.direction.slice();  // stored model-frame direction
+  // Recover the bed-frame pick from the stored model-frame direction so the
+  // editor shows and highlights the direction the way the user set it.
+  const bedVec = mesh3d ? modelDirToBed(new THREE.Vector3(...f.direction)) : new THREE.Vector3(...f.direction);
+  const bedRounded = [bedVec.x, bedVec.y, bedVec.z].map(v => Math.abs(v) > 0.966 ? Math.sign(v) : 0);
+  S.pendingDirBed = bedRounded;
   document.getElementById('fp-mag').value = f.magnitude;
   document.getElementById('fp-bearing-dist').value = f.loadDistribution || 'uniform';
-  // Update direction display
-  const labels = {'1,0,0':'+X','-1,0,0':'-X','0,1,0':'+Y','0,-1,0':'-Y','0,0,1':'+Z','0,0,-1':'-Z'};
-  const dirStr = labels[f.direction.join(',')] || `(${f.direction})`;
-  document.getElementById('fp-dir-display').textContent = 'Direction: ' + dirStr;
-  // Highlight the active direction button
+  document.getElementById('fp-dir-display').textContent =
+    'Direction: ' + bedDirLabel(f.direction) + ' · bed frame (Z↑)';
+  // Highlight the active direction button (buttons are labelled in bed frame)
   document.querySelectorAll('.dir-btn').forEach(b => b.classList.remove('active'));
-  const activeBtn = document.querySelector(`.dir-btn[data-dir="${f.direction.join(',')}"]`);
+  const activeBtn = document.querySelector(`.dir-btn[data-dir="${bedRounded.join(',')}"]`);
   if (activeBtn) activeBtn.classList.add('active');
   // Position and show popup — centered via translateX(-50%), since left:50%
   // alone positions the popup's LEFT EDGE at the midpoint, not its center

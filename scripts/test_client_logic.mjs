@@ -532,6 +532,38 @@ console.log('\n[I] computeDivergingColors — threshold filter greys the other s
   test('returns absMax for the slider scale', c.absMax === 10, `absMax=${c.absMax}`);
 }
 
+// ── Test group J: bed frame — Z is up from the bed (world +Y) ────────────────
+console.log('\n[J] bed frame — bedDirToWorld maps bed Z to world +Y');
+{
+  // Load the vendored three.js (UMD) into a sandbox so BED_Q's real quaternion
+  // math runs, then eval the helper block against it.
+  const threeSrc = fs.readFileSync(path.join(__dirname, '..', 'client', 'vendor', 'three.min.js'), 'utf8');
+  const g = {};
+  const threeMod = { exports: {} };
+  new Function('module','exports','self','window', threeSrc)(threeMod, threeMod.exports, g, g);
+  const THREE = g.THREE || threeMod.exports.THREE || threeMod.exports;
+
+  const m = html.match(/const BED_Q = new THREE\.Quaternion[\s\S]*?function worldDirToBed\(v3\)\s*\{[^}]*\}/);
+  if (!m) throw new Error('Could not extract bed-frame helpers');
+  const mod = { exports: {} };
+  new Function('module','exports','THREE','mesh3d',
+    m[0] + '\nmodule.exports = { bedDirToWorld, worldDirToBed };')(mod, mod.exports, THREE, null);
+  const { bedDirToWorld, worldDirToBed } = mod.exports;
+
+  const zUp = bedDirToWorld(new THREE.Vector3(0,0,1));
+  test('bed +Z -> world +Y (up from the bed)',
+    Math.abs(zUp.x) < 1e-6 && Math.abs(zUp.y - 1) < 1e-6 && Math.abs(zUp.z) < 1e-6,
+    `got (${zUp.x.toFixed(3)},${zUp.y.toFixed(3)},${zUp.z.toFixed(3)})`);
+  const xBed = bedDirToWorld(new THREE.Vector3(1,0,0));
+  test('bed +X stays world +X (in the plate plane)',
+    Math.abs(xBed.x - 1) < 1e-6 && Math.abs(xBed.y) < 1e-6,
+    `got (${xBed.x.toFixed(3)},${xBed.y.toFixed(3)},${xBed.z.toFixed(3)})`);
+  const rt = worldDirToBed(bedDirToWorld(new THREE.Vector3(0.3,-0.7,0.5)));
+  test('worldDirToBed inverts bedDirToWorld',
+    Math.abs(rt.x-0.3) < 1e-6 && Math.abs(rt.y+0.7) < 1e-6 && Math.abs(rt.z-0.5) < 1e-6,
+    `got (${rt.x.toFixed(3)},${rt.y.toFixed(3)},${rt.z.toFixed(3)})`);
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 if (failed > 0) {
