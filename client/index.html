@@ -4129,23 +4129,35 @@ function raycastMesh(mesh, clientX, clientY) {
 // ─── Hole proximity in local space ───────────────────────────────────────────
 let hoverHole = null, hoverMesh3d = null;
 
-function worldToLocal(wx, wy, wz) {
-  // STL coords -> mesh local coords (after centering and scaling)
+function stlToMeshLocal(wx, wy, wz) {
+  // STL/model-frame mm -> mesh3d-local (geometry) coords. The geometry is only
+  // TRANSLATED by -offset (buildGeometryFromPositions); the 1.6/maxExtent scale
+  // lives on the object (mesh3d.scale), so mesh-child coordinates are plain mm
+  // minus the centering offset. Never multiply by scale here — doing so double-
+  // applies it once mesh3d.matrixWorld runs and collapses overlays toward the
+  // part centre.
   if (!mesh3d || !S.fileData) return [wx, wy, wz];
-  const { offset, scale } = mesh3d.userData;
-  return [(wx - offset.x) * scale, (wy - offset.y) * scale, (wz - offset.z) * scale];
+  const { offset } = mesh3d.userData;
+  return [wx - offset.x, wy - offset.y, wz - offset.z];
+}
+
+function meshLocalToStl(lx, ly, lz) {
+  // Inverse of stlToMeshLocal: mesh-local (mm) -> STL/model-frame mm.
+  if (!mesh3d || !S.fileData) return [lx, ly, lz];
+  const { offset } = mesh3d.userData;
+  return [lx + offset.x, ly + offset.y, lz + offset.z];
 }
 
 function findNearestHole(localPos) {
   if (!S.fileData || !S.fileData.holes.length) return null;
   let best = null, bestD = Infinity;
   for (const h of S.fileData.holes) {
-    const [lx, ly, lz] = worldToLocal(...h.centre);
+    const [lx, ly, lz] = stlToMeshLocal(...h.centre);
     const d = localPos.distanceTo(new THREE.Vector3(lx, ly, lz));
     if (d < bestD) { bestD = d; best = h; }
   }
-  // Generous snap: 8x hole radius in display space
-  const snapThreshold = (best ? best.radius : 3) * (mesh3d.userData.scale || 1) * 8;
+  // Generous snap: 8x hole radius (mesh-local mm — same frame as localPos)
+  const snapThreshold = (best ? best.radius : 3) * 8;
   return bestD < snapThreshold ? best : null;
 }
 
@@ -4243,10 +4255,9 @@ function confirmFastener() {
 }
 function showHoverRing(hole) {
   clearHover();
-  const [cx, cy, cz] = worldToLocal(...hole.centre);
+  const [cx, cy, cz] = stlToMeshLocal(...hole.centre);
   const cen = new THREE.Vector3(cx, cy, cz);
-  const scale = mesh3d.userData.scale;
-  const r = hole.radius * scale;
+  const r = hole.radius;
 
   // Approximate normal in local space
   const [nx, ny, nz] = hole.normal;
@@ -4285,7 +4296,7 @@ function handleHover(e) {
   if (!S.fileData || !S.fileData.holes.length) { clearHover(); return; }
   let best = null, bestD = Infinity;
   for (const h of S.fileData.holes) {
-    const [lx, ly, lz] = worldToLocal(...h.centre);
+    const [lx, ly, lz] = stlToMeshLocal(...h.centre);
     const d = hit.localPos.distanceTo(new THREE.Vector3(lx, ly, lz));
     if (d < bestD) { bestD = d; best = h; }
   }
@@ -4455,10 +4466,9 @@ function handleClick(e) {
 // centre, radius, and the plane normal = the hole axis. Never guesses.
 function addHolePoint(hit) {
   if (!S._holePts) S._holePts = [];
-  const { offset, scale } = mesh3d.userData;
   const lp = hit.localPos;
-  // mesh-local display coords -> part coords (mm): inverse of worldToLocal
-  const part = [lp.x / scale + offset.x, lp.y / scale + offset.y, lp.z / scale + offset.z];
+  // mesh-local (mm) coords -> part coords (mm): inverse of stlToMeshLocal
+  const part = meshLocalToStl(lp.x, lp.y, lp.z);
 
   const m = new THREE.Mesh(
     new THREE.SphereGeometry(0.012, 12, 12),
@@ -4646,9 +4656,8 @@ function addBoltMarker(bolt) {
     showErrorToast('Skipped a malformed bolt (missing centre/normal/radius)', { severity: 'warn', source: '[addBoltMarker]' });
     return;
   }
-  const [cx, cy, cz] = worldToLocal(...bolt.holeCentre);
-  const scale = mesh3d.userData.scale;
-  const r = bolt.holeRadius * scale;
+  const [cx, cy, cz] = stlToMeshLocal(...bolt.holeCentre);
+  const r = bolt.holeRadius;
   const cen = new THREE.Vector3(cx, cy, cz);
   const [nx, ny, nz] = bolt.holeNormal;
   const norm = new THREE.Vector3(nx, ny, nz).normalize();
@@ -4866,10 +4875,10 @@ function addForceArrow(force) {
     return;
   }
   const [wx, wy, wz] = force.position;
-  const [lx, ly, lz] = worldToLocal(wx, wy, wz);
+  const [lx, ly, lz] = stlToMeshLocal(wx, wy, wz);
   const pos = new THREE.Vector3(lx, ly, lz);
   const dir = new THREE.Vector3(...force.direction).normalize();
-  const arrowLen = 0.2;
+  const arrowLen = 0.2 / (mesh3d.userData.scale || 1);   // 0.2 world units, in mesh-local mm
   const arrow = new THREE.ArrowHelper(dir, pos, arrowLen, 0xe06030, arrowLen*0.3, arrowLen*0.2);
   arrow.line.material.depthTest = false;
   arrow.cone.material.depthTest = false;
@@ -4890,10 +4899,9 @@ function toggleDebug() {
 
   if (S.debugMode && S.fileData && mesh3d) {
     for (const hole of S.fileData.holes) {
-      const [cx, cy, cz] = worldToLocal(...hole.centre);
+      const [cx, cy, cz] = stlToMeshLocal(...hole.centre);
       const cen = new THREE.Vector3(cx, cy, cz);
-      const scale = mesh3d.userData.scale;
-      const r = hole.radius * scale;
+      const r = hole.radius;
       const [nx, ny, nz] = hole.normal;
       const norm = new THREE.Vector3(nx, ny, nz).normalize();
       const tang = norm.clone().cross(new THREE.Vector3(1,0,0)).length() > 0.1

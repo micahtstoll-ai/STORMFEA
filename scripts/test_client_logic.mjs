@@ -440,6 +440,44 @@ console.log('\n[F] Section view — clip plane math and cut-face (cap) placement
   }
 }
 
+// ── Test group G: stlToMeshLocal / meshLocalToStl coordinate frame ───────────
+// Regression guard for the frame bug where overlays multiplied by mesh3d.scale
+// a second time (mesh3d.matrixWorld already applies it), collapsing bolt rings
+// and force arrows toward the part centre. Mesh-local coords must be plain mm
+// minus the centering offset — NO scale factor.
+console.log('\n[G] stlToMeshLocal / meshLocalToStl — overlay coordinate frame');
+{
+  const toLocal = extractFunction(html, 'stlToMeshLocal\\(wx, wy, wz\\)', 'meshLocalToStl');
+  const toStl   = extractFunction(html, 'meshLocalToStl\\(lx, ly, lz\\)', 'findNearestHole');
+  const mod = { exports: {} };
+  new Function('module', 'exports', 'mesh3d', 'S',
+    toLocal + '\n' + toStl + '\nmodule.exports = { stlToMeshLocal, meshLocalToStl };')(
+    mod, mod.exports,
+    { userData: { offset: { x: 50, y: 40, z: 30 }, scale: 0.016 } },
+    { fileData: {} });
+  const { stlToMeshLocal, meshLocalToStl } = mod.exports;
+
+  const local = stlToMeshLocal(80, 40, 30);
+  test('stlToMeshLocal subtracts offset only (no scale factor)',
+    local[0] === 30 && local[1] === 0 && local[2] === 0,
+    `got=[${local}]`);
+
+  test('stlToMeshLocal does NOT apply mesh3d.scale (would give 0.48, not 30)',
+    Math.abs(local[0] - 30) < 1e-9,
+    `x=${local[0]}`);
+
+  const back = meshLocalToStl(...local);
+  test('meshLocalToStl is the exact inverse (round-trips)',
+    back[0] === 80 && back[1] === 40 && back[2] === 30,
+    `got=[${back}]`);
+
+  const p = [12.3, -4.5, 99.9];
+  const rt = meshLocalToStl(...stlToMeshLocal(...p));
+  test('round-trip preserves an arbitrary point',
+    Math.abs(rt[0]-p[0]) < 1e-9 && Math.abs(rt[1]-p[1]) < 1e-9 && Math.abs(rt[2]-p[2]) < 1e-9,
+    `got=[${rt}]`);
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 if (failed > 0) {
