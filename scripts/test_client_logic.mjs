@@ -501,6 +501,37 @@ console.log('\n[H] computeDominantPrincipal — dominant signed principal');
   test('output length matches input', out.length === 5, `len ${out.length}`);
 }
 
+// ── Test group I: computeDivergingColors threshold filter ────────────────────
+console.log('\n[I] computeDivergingColors — threshold filter greys the other side');
+{
+  const fnCode = extractFunction(html, 'computeDivergingColors\\(stressArr, absMaxOverride, filter\\)', 'setColormap');
+  const mod = { exports: {} };
+  // divergingColor is a separate helper; a stub that never returns grey lets us
+  // detect filter-greyed vertices unambiguously ([0.5,0.5,0.5]).
+  new Function('module','exports','divergingColor',
+    fnCode + '\nmodule.exports = { computeDivergingColors };')(
+    mod, mod.exports, () => [1, 0, 0]);
+  const { computeDivergingColors } = mod.exports;
+
+  const arr = new Float32Array([ 10, -10, 2, -2, 0 ]);   // absMax override = 10
+  const isGrey = (c, i) => Math.abs(c[i*3]-0.5)<1e-6 && Math.abs(c[i*3+1]-0.5)<1e-6 && Math.abs(c[i*3+2]-0.5)<1e-6;
+
+  // above, frac 0.5 -> threshold |σ| >= 5: keep 10 and -10, grey 2,-2,0
+  const a = computeDivergingColors(arr, 10, { enabled:true, side:'above', frac:0.5 });
+  test('above-threshold keeps hot extremes (|σ|≥5)', !isGrey(a.colors,0) && !isGrey(a.colors,1), 'hot verts kept');
+  test('above-threshold greys the calm core', isGrey(a.colors,2) && isGrey(a.colors,3) && isGrey(a.colors,4), 'calm greyed');
+
+  // below, frac 0.5 -> threshold |σ| <= 5: keep 2,-2,0, grey 10,-10
+  const b = computeDivergingColors(arr, 10, { enabled:true, side:'below', frac:0.5 });
+  test('below-threshold greys the hot extremes', isGrey(b.colors,0) && isGrey(b.colors,1), 'hot greyed');
+  test('below-threshold keeps the calm core', !isGrey(b.colors,2) && !isGrey(b.colors,4), 'calm kept');
+
+  // disabled -> nothing greyed
+  const c = computeDivergingColors(arr, 10, { enabled:false, side:'above', frac:0.9 });
+  test('disabled filter greys nothing', !isGrey(c.colors,2) && !isGrey(c.colors,4), 'none greyed');
+  test('returns absMax for the slider scale', c.absMax === 10, `absMax=${c.absMax}`);
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 if (failed > 0) {

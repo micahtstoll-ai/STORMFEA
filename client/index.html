@@ -1164,6 +1164,16 @@ body:not(.has-results) #btn-stress { display: none !important; }
              to the actual heatmap coloring, not an approximation. -->
         <div id="legend-gradient" style="width:14px;border-radius:2px;min-height:84px"></div>
       </div>
+      <!-- Threshold filter: greys out one side of a stress cutoff so only the
+           hot spots (or only the calm regions) stay colored. -->
+      <div id="legend-filter" style="display:flex;flex-direction:column;gap:3px;align-items:stretch;width:100%;margin-top:3px;border-top:1px solid var(--border);padding-top:5px">
+        <div style="display:flex;align-items:center;gap:4px;justify-content:flex-end">
+          <button class="btn" id="legend-filter-toggle" onclick="toggleStressFilter()" style="font-size:9px;padding:2px 6px" title="Grey out part of the stress range so only the values you care about stay colored">FILTER</button>
+          <button class="btn" id="legend-filter-side" onclick="flipStressFilterSide()" style="font-size:10px;padding:2px 6px;display:none" title="Switch between showing values above vs below the threshold">▲ above</button>
+        </div>
+        <input type="range" id="legend-filter-range" min="0" max="100" value="50" step="1" oninput="onStressFilterInput(this.value)" style="width:100%;display:none" title="Threshold — drag to move the cutoff">
+        <div id="legend-filter-val" style="display:none;font-family:'DM Mono',monospace;font-size:9px;color:var(--gold);text-align:right"></div>
+      </div>
     </div>
 
     <!-- Stress hover readout — fixed panel, shown while hovering the heatmap in view mode -->
@@ -2336,6 +2346,7 @@ const S = {
   results:       null,
   stressColors:  null,
   displacements: null,
+  stressFilter:  { enabled: false, side: 'above', frac: 0.5, forMode: null }, // legend threshold filter
   // Orientation state
   bedNormal:     [0, 0, -1],  // which direction is currently facing down (into bed)
   bedFaceName:   null,        // human-readable face name
@@ -2951,7 +2962,7 @@ function computeDominantPrincipal(s1, s3) {
 
 // Compute diverging colors for a signed stress array.
 // The scale is symmetric around 0: absMax = max(|min|, |max|) at p98, or absMaxOverride if provided.
-function computeDivergingColors(stressArr, absMaxOverride) {
+function computeDivergingColors(stressArr, absMaxOverride, filter) {
   const n = stressArr.length;
   let absMax;
   if (absMaxOverride != null && absMaxOverride > 0) {
@@ -2963,14 +2974,24 @@ function computeDivergingColors(stressArr, absMaxOverride) {
     absMax = Math.max(Math.abs(p02), Math.abs(p98), 1e-6);
   }
 
+  // Threshold filter: on diverging fields it acts on magnitude |σ|, so 'above'
+  // keeps the hot extremes (either sign) and 'below' keeps the calm core.
+  const filterOn = filter && filter.enabled;
+  const thr = filterOn ? filter.frac * absMax : 0;
+
   const colors = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
+    if (filterOn) {
+      const mag = Math.abs(stressArr[i] ?? 0);
+      const show = filter.side === 'above' ? mag >= thr : mag <= thr;
+      if (!show) { colors[i*3] = 0.5; colors[i*3+1] = 0.5; colors[i*3+2] = 0.5; continue; }
+    }
     // Map [-absMax, +absMax] → [0, 1]
     const t = 0.5 + 0.5 * Math.max(-1, Math.min(1, (stressArr[i] ?? 0) / absMax));
     const [r, g, b] = divergingColor(t);
     colors[i*3] = r; colors[i*3+1] = g; colors[i*3+2] = b;
   }
-  return { colors, effectiveMin: -absMax, effectiveMax: absMax, range: 2 * absMax };
+  return { colors, effectiveMin: -absMax, effectiveMax: absMax, range: 2 * absMax, absMax };
 }
 
 function setColormap(name) {
@@ -3336,7 +3357,7 @@ function loadMeshFromPositions(posB64) {
  *                       Damage mode's normalized 2.0x ceiling) instead of
  *                       deriving it from the data's own 98th percentile.
  */
-function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverride) {
+function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverride, filter) {
   const nVerts = vertexStress.length;
   const geo = mesh3d.geometry;
   const posAttr = geo.attributes.position;
@@ -3532,8 +3553,18 @@ function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverrid
   // colors but don't flood the whole model.
   const disableGamma = new URLSearchParams(window.location.search).has('disableGamma');
   const GAMMA = disableGamma ? 1.0 : 0.55;
+  // Threshold filter: keep only the side of the threshold the user asked for;
+  // the rest paints neutral grey. The decision is a pure function of the welded
+  // per-vertex value, so coincident (welded) vertices share it — the smoothing
+  // invariant is preserved.
+  const filterOn = filter && filter.enabled;
+  const thr = filterOn ? effectiveMin + filter.frac * range : 0;
   const colors = new Float32Array(nVerts * 3);
   for (let i = 0; i < nVerts; i++) {
+    if (filterOn) {
+      const show = filter.side === 'above' ? smoothed[i] >= thr : smoothed[i] <= thr;
+      if (!show) { colors[i*3] = 0.5; colors[i*3+1] = 0.5; colors[i*3+2] = 0.5; continue; }
+    }
     const linear = range > 0 ? Math.max(0, Math.min(1, (smoothed[i] - effectiveMin) / range)) : 0;
     const t = Math.pow(linear, GAMMA);
     const [r, g, b] = stressColor(t);
@@ -11574,7 +11605,15 @@ function refreshStressModeButtons() {
 function setStressMode(mode) {
   // Never switch to a mode whose data is missing — leave the current view.
   if (!stressModeAvailable(mode)) { refreshStressModeButtons(); return; }
+  const changed = S.stressMode !== mode;
   S.stressMode = mode;
+  // The threshold filter is defined against a specific mode's scale — a mode
+  // change resets it so it can't silently apply a stale cutoff.
+  if (changed && S.stressFilter && S.stressFilter.enabled) {
+    S.stressFilter.enabled = false;
+    S.stressFilter.forMode = null;
+    _syncStressFilterUI();
+  }
   refreshStressModeButtons();
   if (S._stressArrays && mesh3d) applyStressColorsFromArrays(S._stressArrays);
 }
@@ -11585,16 +11624,24 @@ function applyStressColorsFromArrays(arrays) {
   const arr  = meta.data(arrays);
   if (!arr) return;   // gated by button availability; defensive
 
-  let colors, effectiveMin, effectiveMax, range;
+  const filter = (S.stressFilter && S.stressFilter.enabled && S.stressFilter.forMode === S.stressMode)
+    ? S.stressFilter : null;
+  let colors, effectiveMin, effectiveMax, range, absMax;
   if (meta.kind === 'diverging') {
-    ({ colors, effectiveMin, effectiveMax, range } =
-      computeDivergingColors(arr, meta.divAbs ? meta.divAbs() : undefined));
+    ({ colors, effectiveMin, effectiveMax, range, absMax } =
+      computeDivergingColors(arr, meta.divAbs ? meta.divAbs() : undefined, filter));
   } else {
     ({ colors, effectiveMin, effectiveMax, range } =
-      computeSmoothedStressColors(arr, meta.max, meta.min));
+      computeSmoothedStressColors(arr, meta.max, meta.min, filter));
   }
   S.stressMax = effectiveMax;
   S.stressMin = effectiveMin;
+  // Publish the current scale so the threshold slider can render its value in
+  // the mode's own units.
+  S._filterScale = (meta.kind === 'diverging')
+    ? { mode: S.stressMode, kind: 'diverging', absMax, dec: meta.dec, unit: meta.unit() }
+    : { mode: S.stressMode, kind: 'sequential', min: effectiveMin, range, dec: meta.dec, unit: meta.unit() };
+  updateFilterReadout();
 
   const geo = mesh3d.geometry;
   const expectedVerts = geo.attributes.position.count;
@@ -11647,6 +11694,63 @@ function applyStressColorsFromArrays(arrays) {
   // Update legend title from the single source of truth
   const lt = document.getElementById('legend-title');
   if (lt) lt.textContent = meta.legend();
+}
+
+// ── Threshold filter (legend) ─────────────────────────────────────────────────
+// Greys out one side of a stress cutoff so only the values the user cares about
+// stay colored. frac is a fraction of the current mode's scale, so it survives
+// re-solves and mode-specific rescaling; forMode ties it to the mode it was set
+// on (switching modes resets it).
+let _filterRaf = null;
+function _syncStressFilterUI() {
+  const f = S.stressFilter || {};
+  const on = !!f.enabled;
+  const tog  = document.getElementById('legend-filter-toggle');
+  const side = document.getElementById('legend-filter-side');
+  const rng  = document.getElementById('legend-filter-range');
+  const val  = document.getElementById('legend-filter-val');
+  if (tog)  tog.className = 'btn' + (on ? ' active' : '');
+  if (side) { side.style.display = on ? 'inline-flex' : 'none'; side.textContent = (f.side === 'below') ? '▼ below' : '▲ above'; }
+  if (rng)  { rng.style.display = on ? 'block' : 'none'; rng.value = Math.round((f.frac ?? 0.5) * 100); }
+  if (val)  val.style.display = on ? 'block' : 'none';
+  updateFilterReadout();
+}
+function updateFilterReadout() {
+  const val = document.getElementById('legend-filter-val');
+  const f = S.stressFilter, sc = S._filterScale;
+  if (!val || !f || !f.enabled || !sc) { if (val) val.textContent = ''; return; }
+  let thr;
+  if (sc.kind === 'diverging') thr = f.frac * sc.absMax;                 // on |σ|
+  else thr = sc.min + f.frac * sc.range;
+  const unit = sc.unit ? (' ' + sc.unit) : '';
+  const arrow = f.side === 'below' ? '≤' : '≥';
+  val.textContent = `${arrow} ${thr.toFixed(sc.dec)}${unit}` + (sc.kind === 'diverging' ? ' |σ|' : '');
+}
+function toggleStressFilter() {
+  if (!S.stressFilter) S.stressFilter = { enabled:false, side:'above', frac:0.5, forMode:null };
+  S.stressFilter.enabled = !S.stressFilter.enabled;
+  S.stressFilter.forMode = S.stressMode;
+  _syncStressFilterUI();
+  if (S._stressArrays && mesh3d) applyStressColorsFromArrays(S._stressArrays);
+}
+function flipStressFilterSide() {
+  if (!S.stressFilter) return;
+  S.stressFilter.side = (S.stressFilter.side === 'above') ? 'below' : 'above';
+  _syncStressFilterUI();
+  if (S._stressArrays && mesh3d) applyStressColorsFromArrays(S._stressArrays);
+}
+function onStressFilterInput(v) {
+  if (!S.stressFilter) S.stressFilter = { enabled:true, side:'above', frac:0.5, forMode:S.stressMode };
+  S.stressFilter.frac = Math.max(0, Math.min(1, (+v || 0) / 100));
+  S.stressFilter.forMode = S.stressMode;
+  updateFilterReadout();
+  // rAF-throttle the repaint so dragging stays smooth on large meshes.
+  if (_filterRaf === null) {
+    _filterRaf = requestAnimationFrame(() => {
+      _filterRaf = null;
+      if (S._stressArrays && mesh3d) applyStressColorsFromArrays(S._stressArrays);
+    });
+  }
 }
 
 
