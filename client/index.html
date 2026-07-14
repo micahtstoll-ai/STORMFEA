@@ -4442,7 +4442,11 @@ function handleClick(e) {
     addHolePoint(hit);
 
   } else if (S.mode === 'force') {
-    S.pendingForce = { position: hit.worldPos.toArray(), localPos: hit.localPos };
+    // Store the application point in STL/model-frame mm — the same frame the
+    // preset path (openForcePopupDirect), session save, and buildAnalyseBody
+    // all use. hit.localPos is mesh-local (geometry) mm, so add the offset.
+    const stl = meshLocalToStl(hit.localPos.x, hit.localPos.y, hit.localPos.z);
+    S.pendingForce = { position: stl, localPos: hit.localPos };
     showForcePreview();
     const popup = document.getElementById('force-popup');
     const vRect = document.getElementById('viewer').getBoundingClientRect();
@@ -4789,12 +4793,18 @@ function showForcePreview() {
   clearForcePreview();
   if (!S.pendingForce || !mesh3d) return;
 
-  const pos = new THREE.Vector3(...S.pendingForce.position);
+  // pendingForce.position is STL/model-frame mm. Attach the preview to mesh3d
+  // in mesh-local coords so it coincides exactly with the confirmed arrow
+  // (addForceArrow) and tracks the part's orientation.
+  const [lx, ly, lz] = stlToMeshLocal(...S.pendingForce.position);
+  const pos = new THREE.Vector3(lx, ly, lz);
   const dir = new THREE.Vector3(...S.pendingDir).normalize();
-  // Scale arrow length with force magnitude (capped for display)
+  const scale = mesh3d.userData.scale || 1;
+  // Scale arrow length with force magnitude (capped for display), in mesh-local
+  // mm so on-screen size (world units) is stable across part sizes.
   const mag = document.getElementById('fp-mag') ? (+document.getElementById('fp-mag').value || 300) : 300;
   const lenBase = 0.28, lenMax = 0.65;
-  const len = lenBase + (lenMax - lenBase) * Math.min(1, mag / 600);
+  const len = (lenBase + (lenMax - lenBase) * Math.min(1, mag / 600)) / scale;
 
   _forcePreviewArrow = new THREE.ArrowHelper(
     dir, pos, len,
@@ -4807,13 +4817,15 @@ function showForcePreview() {
   _forcePreviewArrow.line.material.transparent= true;
   _forcePreviewArrow.cone.material.opacity    = 0.65;
   _forcePreviewArrow.cone.material.transparent= true;
+  _forcePreviewArrow.line.material.depthTest  = false;
+  _forcePreviewArrow.cone.material.depthTest  = false;
   _forcePreviewArrow.renderOrder = 500;
-  scene.add(_forcePreviewArrow);
+  mesh3d.add(_forcePreviewArrow);
 }
 
 function clearForcePreview() {
   if (_forcePreviewArrow) {
-    scene.remove(_forcePreviewArrow);
+    if (_forcePreviewArrow.parent) _forcePreviewArrow.parent.remove(_forcePreviewArrow);
     _forcePreviewArrow.line.geometry.dispose();
     _forcePreviewArrow.cone.geometry.dispose();
     _forcePreviewArrow = null;
@@ -4874,6 +4886,9 @@ function addForceArrow(force) {
     showErrorToast('Skipped a malformed force (missing position/direction) — it is still in the force list; delete and re-place it', { severity: 'warn', source: '[addForceArrow]' });
     return;
   }
+  // A legacy world-frame position (flagged on session restore) would render far
+  // off the part — don't draw a misleading arrow; the force list prompts a re-place.
+  if (force._replaceRecommended) return;
   const [wx, wy, wz] = force.position;
   const [lx, ly, lz] = stlToMeshLocal(wx, wy, wz);
   const pos = new THREE.Vector3(lx, ly, lz);
@@ -4999,7 +5014,7 @@ function updateForceList() {
   el.innerHTML = resultantHtml + S.forces.map((f,i) => `
     <div class="card" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--gold-faint);border:1px solid var(--gold)18;border-radius:3px;margin-bottom:6px">
       <div style="width:8px;height:8px;border-radius:50%;background:var(--gold);flex-shrink:0"></div>
-      <div style="flex:1;font-size:10px;color:var(--gold)aa">${f.label} · ${U.forceStr(f.magnitude)} · ${dirLabel(f.direction)}</div>
+      <div style="flex:1;font-size:10px;color:var(--gold)aa">${f.label} · ${U.forceStr(f.magnitude)} · ${dirLabel(f.direction)}${f._replaceRecommended ? ' <span style="color:var(--warn,#e0a030)">⚠ re-place recommended</span>' : ''}</div>
       <button class="btn" style="padding:2px 8px;font-size:11px" onclick="editForce(${i})" aria-label="Edit force"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 2 L8 3.5 L3.5 8 L1.5 8.5 L2 6.5 Z"/><line x1="5.5" y1="3" x2="7" y2="4.5"/></svg></button>
       <button class="btn" style="padding:2px 8px;font-size:11px" onclick="removeForce(${i})" aria-label="Remove force"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg></button>
     </div>
@@ -10445,47 +10460,39 @@ async function loadSession() {
           b.holeCentre = h.centre;
           b.holeRadius = h.radius;
         }
-        // Re-create 3D marker sphere at hole centre
-        let marker3d = null;
-        if (b.holeCentre && mesh3d) {
-          const scale = mesh3d.userData.scale || 1;
-          const offset = mesh3d.userData.offset || new THREE.Vector3();
-          const wx = (b.holeCentre[0] - offset.x) * scale;
-          const wy = (b.holeCentre[1] - offset.y) * scale;
-          const wz = (b.holeCentre[2] - offset.z) * scale;
-          const geo = new THREE.SphereGeometry(0.035, 8, 8);
-          const mat = new THREE.MeshBasicMaterial({ color: 0x00e5ff });
-          marker3d = new THREE.Mesh(geo, mat);
-          marker3d.position.set(wx, wy, wz);
-          scene.add(marker3d);
-        }
-        S.bolts.push({ ...b, marker3d });
+        S.bolts.push({ ...b });
       }
       updateBoltList();
       updateHolesList();
     }
 
-    // Restore forces + rebuild 3D arrows
+    // Restore forces. Guard against legacy sessions saved with the old bug
+    // where click-placed forces stored Three.js WORLD coords (~O(1)) instead of
+    // STL mm: such a position falls far outside the part bounds, so flag it for
+    // re-placement rather than drawing a misplaced arrow.
     if (session.forces?.length) {
       S.forces = [];
+      const b = S.fileData?.bounds;
+      const outOfBounds = (p) => {
+        if (!b || !Array.isArray(p)) return false;
+        const mx = (b.maxX - b.minX), my = (b.maxY - b.minY), mz = (b.maxZ - b.minZ);
+        const pad = 0.5;   // 50% margin
+        return p[0] < b.minX - pad*mx || p[0] > b.maxX + pad*mx
+            || p[1] < b.minY - pad*my || p[1] > b.maxY + pad*my
+            || p[2] < b.minZ - pad*mz || p[2] > b.maxZ + pad*mz;
+      };
       for (const f of session.forces) {
-        let arrow3d = null;
-        if (f.position && f.direction && mesh3d) {
-          const scale = mesh3d.userData.scale || 1;
-          const offset = mesh3d.userData.offset || new THREE.Vector3();
-          const wp = new THREE.Vector3(
-            (f.position[0] - offset.x) * scale,
-            (f.position[1] - offset.y) * scale,
-            (f.position[2] - offset.z) * scale,
-          );
-          const dir = new THREE.Vector3(...f.direction).normalize();
-          arrow3d = new THREE.ArrowHelper(dir, wp, 0.35, 0xe06030, 0.12, 0.08);
-          scene.add(arrow3d);
-        }
-        S.forces.push({ ...f, arrow3d });
+        const force = { ...f };
+        delete force.arrow3d;   // drop any stale reference from older saves
+        if (outOfBounds(force.position)) force._replaceRecommended = true;
+        S.forces.push(force);
       }
       updateForceList();
     }
+
+    // Single canonical overlay rebuild — mesh3d-attached gold bolt rings + force
+    // arrows in the correct (mm) frame, following the part's orientation.
+    rebuildOverlays();
 
     // Restore calibration
     if (session.calibrationId) {
