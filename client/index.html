@@ -588,7 +588,17 @@ h1, h2, h3 { font-weight: inherit; font-size: inherit; margin: 0; }
 .btn, select, input[type=number] { transition: border-color var(--t-fast), color var(--t-fast); }
 /* Slow: structural / panel changes */
 #prefs-panel { transition: opacity var(--t-slow); }
-/* Theme switch on html/body is instant — no transition on background-color */
+/* Theme switch: crossfade only during the switch. toggleTheme adds
+   .theme-fading to <html> for ~400ms so themed colours ease between light and
+   dark, then removes it — the class scope keeps this off hover/interactive
+   transitions the rest of the time. Wrapped in prefers-reduced-motion:
+   no-preference so the reduced-motion rule below still wins for that audience. */
+@media (prefers-reduced-motion: no-preference) {
+  html.theme-fading, html.theme-fading * , html.theme-fading *::before, html.theme-fading *::after {
+    transition: background-color 280ms ease, color 280ms ease, border-color 280ms ease,
+                fill 280ms ease, stroke 280ms ease, box-shadow 280ms ease !important;
+  }
+}
 
 /* ── Light mode structural overrides ────────────────────────────────────────── */
 [data-theme="light"] .btn { background: var(--bg-panel); }
@@ -2751,18 +2761,36 @@ const GRID_COLORS = {
 // (Re)build the permanent build-plate grid for the given theme. GridHelper is a
 // single LineSegments with the two colors baked into a vertex-color attribute,
 // so a theme change means rebuilding it — its materials can't be retinted.
-function rebuildBedGrid(theme) {
+// With { fade:true } the new grid opacity-lerps in while the old lerps out over
+// 280ms, matching the CSS theme crossfade (an instant swap of the highest-
+// contrast viewport element reads as a flicker mid-fade). Reduced-motion skips it.
+function rebuildBedGrid(theme, opts = {}) {
   if (!scene) return;
-  if (scene._bedGrid) {
-    scene.remove(scene._bedGrid);
-    scene._bedGrid.dispose();
-  }
   const colors = theme === 'dark' ? GRID_COLORS.dark : GRID_COLORS.light;
   const gridMesh = new THREE.GridHelper(GRID_SIZE, GRID_DIVS, colors.primary, colors.secondary);
   gridMesh.position.y = -0.001; // fractionally below Y=0 to avoid z-fighting
   gridMesh.renderOrder = 1;
-  scene.add(gridMesh);
-  scene._bedGrid = gridMesh;
+  const old = scene._bedGrid;
+
+  if (opts.fade && old && !_prefersReducedMotion()) {
+    gridMesh.material.transparent = true; gridMesh.material.opacity = 0;
+    old.material.transparent = true;
+    scene.add(gridMesh);
+    scene._bedGrid = gridMesh;
+    const t0 = performance.now(), DUR = 280;
+    const step = () => {
+      const k = Math.min(1, (performance.now() - t0) / DUR);
+      gridMesh.material.opacity = k;
+      old.material.opacity = 1 - k;
+      if (k < 1) requestAnimationFrame(step);
+      else { scene.remove(old); old.dispose(); gridMesh.material.opacity = 1; gridMesh.material.transparent = false; }
+    };
+    requestAnimationFrame(step);
+  } else {
+    if (old) { scene.remove(old); old.dispose(); }
+    scene.add(gridMesh);
+    scene._bedGrid = gridMesh;
+  }
 }
 const overlays = []; // overlay 3D objects on the mesh
 
@@ -8413,15 +8441,25 @@ function buildThemeIcon(theme) {
     `<circle cx="6" cy="6" r="2.2"/>${rays}${shadow}</svg>`;
 }
 
+let _themeFadeTimer = null;
 function toggleTheme() {
   const html = document.documentElement;
   const isDark = html.getAttribute('data-theme') === 'dark';
   const next = isDark ? 'light' : 'dark';
+  // Crossfade the DOM colours: add the scoped class before the attribute swap,
+  // remove it once the 280ms transition has finished. Guard re-entry so rapid
+  // toggles don't strand the class.
+  const fade = !_prefersReducedMotion();
+  if (fade) {
+    html.classList.add('theme-fading');
+    if (_themeFadeTimer) clearTimeout(_themeFadeTimer);
+    _themeFadeTimer = setTimeout(() => { html.classList.remove('theme-fading'); _themeFadeTimer = null; }, 400);
+  }
   html.setAttribute('data-theme', next);
   document.getElementById('theme-icon').innerHTML = buildThemeIcon(next);
   if (renderer) renderer.setClearColor(next === 'dark' ? 0x070604 : 0xeeeae3, 0);
-  // Update build-plate grid colors for theme
-  if (scene) rebuildBedGrid(next);
+  // Crossfade the build-plate grid to match the DOM fade.
+  if (scene) rebuildBedGrid(next, { fade });
   // The dark bed-fill plane reads as a gray square shadow on the light
   // background — show it in dark mode only.
   if (S.bedMesh) S.bedMesh.visible = next === 'dark';
