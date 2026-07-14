@@ -557,6 +557,12 @@ h1, h2, h3 { font-weight: inherit; font-size: inherit; margin: 0; }
   color: var(--text-lo);
 }
 #stress-mode-wrap .btn.vmode-btn.active .vmode-cap { color: var(--gold); }
+#stress-mode-wrap .btn.vmode-btn:disabled,
+#stress-mode-wrap .btn.vmode-btn.disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: none;   /* a greyed mode is not clickable */
+}
 
 /* ── Intentional transitions — not a catch-all ──────────────────────────────── */
 /* Fast: interactive states only */
@@ -3115,13 +3121,7 @@ function refreshUnitsDisplay() {
   // Legend title
   const lt = document.getElementById('legend-title');
   if (lt && lt.style.display !== 'none') {
-    const modeLabels = {
-      vm:  'von Mises (' + U.stressLabel() + ')',
-      svm: 'Signed von Mises (' + U.stressLabel() + ')',
-      s1:  'Max Principal σ₁ (' + U.stressLabel() + ')',
-      dmg: 'Damage Ratio (XY/Z)'
-    };
-    lt.textContent = modeLabels[S.stressMode || 'vm'] || '';
+    lt.textContent = (MODE_META[S.stressMode] || MODE_META.vm).legend();
   }
   // Legend value labels — top (HIGH) and bottom (LOW) rows show the unit
   // inline so the scale is self-explanatory without requiring the title
@@ -3307,7 +3307,7 @@ function loadMeshFromPositions(posB64) {
 /**
  * Computes smoothed, percentile-clipped, gamma-curved per-vertex colors for
  * a stress array against the current mesh geometry. Shared by
- * applyStressColors (initial display, from server-computed nodal stress)
+ * applyStressColorsFromResults (initial display, from server-computed nodal stress)
  * and applyStressColorsFromArrays (VM/σ1/Damage mode switching, from
  * client-cached arrays) so both paths get identical visual quality —
  * previously only the former had this smoothing, which is why switching
@@ -3561,50 +3561,60 @@ function decodeDisplacementB64(b64String) {
   return new Float32Array(buf.buffer);
 }
 
-function applyStressColors(stressB64, maxStress, principalStressB64, errorEstimateB64, principalStress2B64, principalStress3B64, xyUtilB64, zUtilB64, signedVonMisesB64) {
-  if (!mesh3d) return;
-  const buf = Uint8Array.from(atob(stressB64), c => c.charCodeAt(0));
-  const vertexStress = new Float32Array(buf.buffer);
-  const expectedLength = mesh3d.geometry.attributes.position.count;
+// Decode a base64 Float32 payload, or null when absent/corrupt.
+function _decodeStressF32(b64) {
+  if (!b64) return null;
+  try {
+    return new Float32Array(Uint8Array.from(atob(b64), c => c.charCodeAt(0)).buffer);
+  } catch (e) { return null; }
+}
 
-  // Validate array integrity
+// Single entry point for painting a solve's heatmap. Takes the whole results
+// object (not 9 positional args, which let call sites clobber cached fields
+// with null), MERGES the decoded arrays into S._stressArrays, reveals/greys the
+// mode buttons by data availability, then delegates the actual paint to
+// setStressMode so there is exactly one paint path and no mode/legend desync.
+//   fresh:true  — a new solve: reset the cache and pick the default mode.
+//   fresh:false — a repaint (toggle re-enable, split close): keep cached arrays
+//                 the results object omits, and keep the current mode.
+function applyStressColorsFromResults(results, { fresh = false } = {}) {
+  if (!mesh3d || !results) return;
+
+  const vertexStress = _decodeStressF32(results.vertexStressB64);
+  if (!vertexStress) { console.error('[heatmap] missing/undecodable vertexStress'); return; }
+  const expectedLength = mesh3d.geometry.attributes.position.count;
   try {
     validateStressArray(vertexStress, expectedLength, "vertexStress");
-  } catch (e) {
-    console.error(e.message);
-    return;
-  }
+  } catch (e) { console.error(e.message); return; }
 
-  const { colors, effectiveMin, effectiveMax, range, rawMin, rawMax } =
-    computeSmoothedStressColors(vertexStress);
+  // ── Merge decoded arrays into the cache ──────────────────────────────────
+  const cache = fresh ? {} : (S._stressArrays || {});
+  cache.vm = vertexStress;
+  const put = (key, b64) => { const v = _decodeStressF32(b64); if (v) cache[key] = v; };
+  put('s1',     results.vertexPrincipalStressB64);
+  put('s2',     results.vertexPrincipalStress2B64);
+  put('s3',     results.vertexPrincipalStress3B64);
+  put('svm',    results.vertexSignedVonMisesB64);
+  put('error',  results.vertexErrorEstimateB64);
+  put('xyutil', results.vertexXyUtilB64);
+  put('zutil',  results.vertexZUtilB64);
 
-  console.log(`Stress range: ${rawMin.toFixed(2)}–${rawMax.toFixed(2)} MPa, display: ${effectiveMin.toFixed(2)}–${effectiveMax.toFixed(2)}`);
+  // Damage ratio is always derivable from vm + the solved yield.
+  const effYield = S.results?.summary?.effectiveYieldMPa ?? results.summary?.effectiveYieldMPa ?? 1;
+  const dmg = new Float32Array(vertexStress.length);
+  for (let i = 0; i < vertexStress.length; i++) dmg[i] = (vertexStress[i] ?? 0) / effYield;
+  cache.dmg = dmg;
 
-  const cols = mesh3d.geometry.attributes.color.array;
-  if (colors.length !== cols.length) {
-    console.error(
-      `[applyStressColors] vertex count mismatch: analysis result has ${colors.length/3} ` +
-      `vertices but the displayed mesh has ${cols.length/3}. Skipping heatmap color update ` +
-      `to avoid a crash — the model will stay uncolored. This usually means the upload-preview ` +
-      `mesh and analysis mesh resolutions diverged; re-uploading the file may help.`
-    );
-    showErrorToast(
-      'Stress heatmap could not be displayed (mesh size mismatch). Results are still valid — try re-uploading the file.',
-      { severity: 'warn', source: '[heatmap]' }
-    );
-  } else {
-    cols.set(colors);
-    mesh3d.geometry.attributes.color.needsUpdate = true;
-  }
+  S._stressArrays = cache;
   S.showStress = true;
   S.stressColors = vertexStress;
-  S.stressMax = effectiveMax;
-  S.stressMin = effectiveMin;
+  if (S.stressMode === undefined) S.stressMode = DEFAULT_STRESS_MODE;
+
+  // Reveal the persistent heatmap chrome.
   document.getElementById('btn-stress').style.display = 'block';
   document.getElementById('legend').style.display = 'flex';
   const legendTitle = document.getElementById('legend-title');
   if (legendTitle) legendTitle.style.display = 'block';
-  // Show stress mode buttons
   const smWrap = document.getElementById('stress-mode-wrap');
   if (smWrap) smWrap.style.display = 'flex';
   const dfWrap = document.getElementById('deform-wrap');
@@ -3612,70 +3622,18 @@ function applyStressColors(stressB64, maxStress, principalStressB64, errorEstima
   const clWrap = document.getElementById('clip-wrap');
   if (clWrap) clWrap.style.display = 'flex';
 
-  // Update legend labels
-  const labels = document.getElementById('legend-val-stack');
-  if (labels) {
-    const steps = labels.children.length;
-    Array.from(labels.children).forEach((el, i) => {
-      const v = effectiveMax - (i / (steps-1)) * range;
-      el.textContent = v.toFixed(1);
-    });
-  }
+  // Peak marker from the raw vm field.
+  markPeakStressLocation(vertexStress);
 
-  // Mark the peak stress location — use raw max, not smoothed range
-  markPeakStressLocation(vertexStress, rawMax);
-
-  // Cache stress arrays for mode switching
-  const dmgArray = new Float32Array(vertexStress.length);
-  const effYield = S.results?.summary?.effectiveYieldMPa ?? 1;
-
-  function decodeF32(b64) {
-    if (!b64) return null;
-    try {
-      return new Float32Array(Uint8Array.from(atob(b64), c => c.charCodeAt(0)).buffer);
-    } catch(e) { return null; }
-  }
-
-  const principalVerts  = decodeF32(principalStressB64);
-  const principalVerts2 = decodeF32(principalStress2B64);
-  const principalVerts3 = decodeF32(principalStress3B64);
-  const errorEstimate   = decodeF32(errorEstimateB64);
-
-  const s1Array = new Float32Array(vertexStress.length);
-  const s2Array = new Float32Array(vertexStress.length);
-  const s3Array = new Float32Array(vertexStress.length);
-  for (let i=0; i<vertexStress.length; i++) {
-    const vm = vertexStress[i] ?? 0;
-    s1Array[i]  = (principalVerts  && principalVerts.length  > i) ? (principalVerts[i]  ?? vm * 1.15) : vm * 1.15;
-    s2Array[i]  = (principalVerts2 && principalVerts2.length > i) ? (principalVerts2[i] ?? 0) : 0;
-    s3Array[i]  = (principalVerts3 && principalVerts3.length > i) ? (principalVerts3[i] ?? 0) : 0;
-    dmgArray[i] = vm / effYield;
-  }
-  const xyUtilArray     = decodeF32(xyUtilB64);
-  const zUtilArray      = decodeF32(zUtilB64);
-  const svmArray        = decodeF32(signedVonMisesB64);
-  S._stressArrays = { vm: vertexStress, svm: svmArray, s1: s1Array, s2: s2Array, s3: s3Array, dmg: dmgArray, error: errorEstimate, xyutil: xyUtilArray, zutil: zUtilArray };
-
-  // Show signed VM button if array is available. Reveal as 'flex' (not
-  // 'block') so the shared .vmode-btn column layout stays centered and
-  // matches the always-visible buttons.
-  if (svmArray && svmArray.length > 0) {
-    const btnSvm = document.getElementById('btn-svm');
-    if (btnSvm) btnSvm.style.display = 'flex';
-  }
-
-  // Show error estimate button if error estimate is available
-  if (errorEstimate && errorEstimate.length > 0) {
-    const btnError = document.getElementById('btn-error');
-    if (btnError) btnError.style.display = 'flex';
-  }
-  // Show utilization buttons if arrays are available
-  if (xyUtilArray && xyUtilArray.length > 0) {
-    const btnXy = document.getElementById('btn-xyutil');
-    const btnZ  = document.getElementById('btn-zutil');
-    if (btnXy) btnXy.style.display = 'flex';
-    if (btnZ)  btnZ.style.display  = 'flex';
-  }
+  // Pick the target mode, then paint once through setStressMode. Keep the
+  // user's current mode when its data survived the merge; otherwise fall back
+  // to the default (the combined tension/compression view), then to the first
+  // available mode.
+  let target = S.stressMode || DEFAULT_STRESS_MODE;
+  if (!stressModeAvailable(target)) target = DEFAULT_STRESS_MODE;
+  if (!stressModeAvailable(target)) target = STRESS_MODE_ORDER.find(stressModeAvailable) || 'vm';
+  refreshStressModeButtons();
+  setStressMode(target);
 }
 
 function markPeakStressLocation(vertexStress, maxStress) {
@@ -4309,8 +4267,8 @@ function handleHover(e) {
 // In view mode, with a stress field loaded, show the stress value at the
 // point under the cursor — both as a fixed top-left panel and a tooltip that
 // follows the cursor. Uses nearest-vertex lookup rather than full barycentric
-// interpolation: applyStressColors already welds and averages coincident
-// vertices across triangle boundaries (WELD_EPS = 0.01mm), so all three
+// interpolation: computeSmoothedStressColors already welds and averages
+// coincident vertices across triangle boundaries (WELD_EPS = 0.01mm), so all three
 // vertices of a given triangle already carry the same smoothed value in
 // practice except right at sharp feature edges, where nearest-vertex is the
 // more honest answer anyway (interpolating across a real discontinuity would
@@ -4362,12 +4320,11 @@ function handleStressHover(e) {
     if (d < bestD) { bestD = d; bestVi = vi; }
   }
 
-  const arr  = targetStressArrays[mode];
+  const meta = MODE_META[mode] || MODE_META.vm;
+  const arr  = meta.data(targetStressArrays);
   const val  = arr ? (arr[bestVi] ?? 0) : 0;
 
-  const labels = { vm: 'von Mises', svm: 'Signed VM', s1: 'Principal σ₁', dmg: 'Damage ratio' };
-  const units  = { vm: 'MPa', svm: 'MPa', s1: 'MPa', dmg: '×' };
-  const text = `${labels[mode] ?? mode}: ${val.toFixed(mode==='dmg' ? 2 : 1)} ${units[mode] ?? ''}`;
+  const text = `${meta.hover}: ${val.toFixed(meta.dec)} ${meta.unit()}`.trim();
 
   const panel = document.getElementById('stress-readout');
   const panelText = document.getElementById('stress-readout-text');
@@ -4953,7 +4910,7 @@ function toggleStress() {
   btn.innerHTML = S.showStress ? '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="currentColor"><rect x="1" y="1" width="8" height="8" rx="1"/><rect x="3" y="3" width="4" height="4" fill="var(--bg-base)"/></svg> STRESS' : '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="3.5"/></svg> DEFAULT';
   btn.className = 'btn' + (S.showStress ? ' active' : '');
   if (S.showStress && S.results) {
-    applyStressColors(S.results.vertexStressB64, S.results.summary.maxVonMisesMPa, S.results.vertexPrincipalStressB64, S.results.vertexErrorEstimateB64, S.results.vertexPrincipalStress2B64, S.results.vertexPrincipalStress3B64, null, null, S.results.vertexSignedVonMisesB64);
+    applyStressColorsFromResults(S.results, { fresh: false });
   } else {
     resetColors();
     document.getElementById('legend').style.display = 'none';
@@ -5684,7 +5641,7 @@ async function runAnalysis() {
     // was requested and a physical positive BLF was found).
     storeBucklingResult(dataStd.bucklingResult, dataStd.vertexBucklingModeB64);
 
-    applyStressColors(dataStd.vertexStressB64, dataStd.summary.maxVonMisesMPa, dataStd.vertexPrincipalStressB64, null, dataStd.vertexPrincipalStress2B64, dataStd.vertexPrincipalStress3B64, dataStd.vertexXyUtilB64, dataStd.vertexZUtilB64, dataStd.vertexSignedVonMisesB64);
+    applyStressColorsFromResults(dataStd, { fresh: true });
     showResults(dataStd.summary);
     showOrientComparison(dataStd.summary);
     storeAsBaseline(dataStd.summary, S.fileData?.fileName);
@@ -5853,7 +5810,7 @@ async function runAnalysis() {
         S.displacements = decodeDisplacementB64(dataFine.vertexDisplacementB64);
       }
 
-      applyStressColors(dataFine.vertexStressB64, dataFine.summary.maxVonMisesMPa, dataFine.vertexPrincipalStressB64, null, dataFine.vertexPrincipalStress2B64, dataFine.vertexPrincipalStress3B64, null, null, dataFine.vertexSignedVonMisesB64);
+      applyStressColorsFromResults(dataFine, { fresh: true });
       showResults(dataFine.summary);
       showOrientComparison(dataFine.summary);
       storeAsBaseline(dataFine.summary, S.fileData?.fileName);
@@ -7388,7 +7345,7 @@ function closeSplitView() {
     if (camera) { camera.aspect = w / h; camera.updateProjectionMatrix(); }
   }
   // Reapply current result stress
-  if (S.results) applyStressColors(S.results.vertexStressB64, S.results.summary.maxVonMisesMPa, S.results.vertexPrincipalStressB64, null, S.results.vertexPrincipalStress2B64, S.results.vertexPrincipalStress3B64, null, null, S.results.vertexSignedVonMisesB64);
+  if (S.results) applyStressColorsFromResults(S.results, { fresh: false });
 }
 
 function renderSplitFrame() {
@@ -11553,61 +11510,70 @@ function _syncClipUI() {
 }
 
 // ── Stress visualization modes ────────────────────────────────────────────────
-function setStressMode(mode) {
-  S.stressMode = mode;
-  ['vm','svm','s1','s2','s3','dmg','xyutil','zutil','error'].forEach(m => {
+// MODE_META is the single source of truth for every heatmap view mode: which
+// cached array it paints, whether it uses the sequential or diverging color
+// pipeline, its legend title, hover label, unit, and decimals. setStressMode,
+// applyStressColorsFromArrays, the hover readout, and the units-refresh all
+// read from it, so a label or a new mode is defined in exactly one place.
+const MODE_META = {
+  vm:     { kind:'sequential', legend:()=>'von Mises ('+U.stressLabel()+')',                 hover:'von Mises',              unit:()=>U.stressLabel(), dec:1, data:a=>a.vm },
+  svm:    { kind:'diverging',  legend:()=>'Signed von Mises ('+U.stressLabel()+')',          hover:'Signed VM',              unit:()=>U.stressLabel(), dec:1, data:a=>a.svm, divAbs:()=>S.results?.summary?.effectiveYieldMPa ?? 1 },
+  s1:     { kind:'diverging',  legend:()=>'Max Principal σ₁ ('+U.stressLabel()+')',          hover:'Principal σ₁',           unit:()=>U.stressLabel(), dec:1, data:a=>a.s1 },
+  s2:     { kind:'diverging',  legend:()=>'Mid Principal σ₂ ('+U.stressLabel()+')',          hover:'Principal σ₂',           unit:()=>U.stressLabel(), dec:1, data:a=>a.s2 },
+  s3:     { kind:'diverging',  legend:()=>'Min Principal σ₃ ('+U.stressLabel()+')',          hover:'Principal σ₃',           unit:()=>U.stressLabel(), dec:1, data:a=>a.s3 },
+  dmg:    { kind:'sequential', legend:()=>'Damage Ratio (XY/Z)',                             hover:'Damage ratio',           unit:()=>'×', dec:2, data:a=>a.dmg,    max:2.0, min:0, perValueUnit:true },
+  xyutil: { kind:'sequential', legend:()=>'XY In-Plane Utilization (0–2)',                   hover:'XY utilization',         unit:()=>'',  dec:2, data:a=>a.xyutil, max:2.0, min:0 },
+  zutil:  { kind:'sequential', legend:()=>'Interlayer Interface Utilization (0–2)',          hover:'Interlayer utilization', unit:()=>'',  dec:2, data:a=>a.zutil,  max:2.0, min:0 },
+  error:  { kind:'sequential', legend:()=>'Error Estimate η (0–1)',                          hover:'Error η',                unit:()=>'',  dec:3, data:a=>a.error,  max:1.0, min:0 },
+};
+// Order the buttons appear in; the first entries are always-visible, the rest
+// live in the MORE overflow group (wired in a later commit).
+const STRESS_MODE_ORDER = ['vm','svm','s1','s2','s3','dmg','xyutil','zutil','error'];
+const DEFAULT_STRESS_MODE = 'vm';
+
+function stressModeAvailable(mode) {
+  const meta = MODE_META[mode];
+  if (!meta || !S._stressArrays) return false;
+  const arr = meta.data(S._stressArrays);
+  return !!(arr && arr.length > 0);
+}
+
+// Reveal/grey the mode buttons by data availability and reflect the active mode.
+function refreshStressModeButtons() {
+  STRESS_MODE_ORDER.forEach(m => {
     const btn = document.getElementById('btn-'+m);
-    if (btn) btn.className = 'btn vmode-btn' + (m===mode?' active':'');
+    if (!btn) return;
+    const avail = stressModeAvailable(m);
+    btn.disabled = !avail;
+    btn.title = avail ? '' : (MODE_META[m].hover + ' — not available for this solve');
+    btn.className = 'btn vmode-btn' + (m===S.stressMode ? ' active' : '') + (avail ? '' : ' disabled');
   });
-  // Re-apply colors with current mode
-  if (S._stressArrays && mesh3d) {
-    applyStressColorsFromArrays(S._stressArrays);
-  }
+}
+
+function setStressMode(mode) {
+  // Never switch to a mode whose data is missing — leave the current view.
+  if (!stressModeAvailable(mode)) { refreshStressModeButtons(); return; }
+  S.stressMode = mode;
+  refreshStressModeButtons();
+  if (S._stressArrays && mesh3d) applyStressColorsFromArrays(S._stressArrays);
 }
 
 function applyStressColorsFromArrays(arrays) {
   if (!mesh3d || !arrays) return;
+  const meta = MODE_META[S.stressMode] || MODE_META[DEFAULT_STRESS_MODE];
+  const arr  = meta.data(arrays);
+  if (!arr) return;   // gated by button availability; defensive
 
-  const isPrincipal = S.stressMode === 's1' || S.stressMode === 's2' || S.stressMode === 's3';
-  const isSignedVM  = S.stressMode === 'svm';
   let colors, effectiveMin, effectiveMax, range;
-
-  if (isPrincipal) {
-    const arr = S.stressMode === 's1' ? arrays.s1 : S.stressMode === 's2' ? arrays.s2 : arrays.s3;
-    ({ colors, effectiveMin, effectiveMax, range } = computeDivergingColors(arr));
-  } else if (isSignedVM) {
-    const svmArr = arrays.svm ?? arrays.vm;
-    const yieldMPa = S.results?.summary?.effectiveYieldMPa ?? 1;
-    ({ colors, effectiveMin, effectiveMax, range } = computeDivergingColors(svmArr, yieldMPa));
-  } else {
-    let stressArr, maxValOverride, minValOverride;
-    switch (S.stressMode) {
-      case 'dmg':
-        stressArr = arrays.dmg;
-        maxValOverride = 2.0;
-        minValOverride = 0;
-        break;
-      case 'error':
-        stressArr = arrays.error ?? arrays.vm;
-        maxValOverride = 1.0;
-        minValOverride = 0;
-        break;
-      case 'xyutil':
-        stressArr = arrays.xyutil ?? arrays.vm;
-        maxValOverride = 2.0;
-        minValOverride = 0;
-        break;
-      case 'zutil':
-        stressArr = arrays.zutil ?? arrays.vm;
-        maxValOverride = 2.0;
-        minValOverride = 0;
-        break;
-      default:
-        stressArr = arrays.vm;
-    }
+  if (meta.kind === 'diverging') {
     ({ colors, effectiveMin, effectiveMax, range } =
-      computeSmoothedStressColors(stressArr, maxValOverride, minValOverride));
+      computeDivergingColors(arr, meta.divAbs ? meta.divAbs() : undefined));
+  } else {
+    ({ colors, effectiveMin, effectiveMax, range } =
+      computeSmoothedStressColors(arr, meta.max, meta.min));
   }
+  S.stressMax = effectiveMax;
+  S.stressMin = effectiveMin;
 
   const geo = mesh3d.geometry;
   const expectedVerts = geo.attributes.position.count;
@@ -11629,28 +11595,20 @@ function applyStressColorsFromArrays(arrays) {
   const labels = document.getElementById('legend-val-stack');
   if (labels) {
     const steps = labels.children.length;
-    const unit = (S.stressMode === 'dmg' || S.stressMode === 'error' || S.stressMode === 'xyutil' || S.stressMode === 'zutil') ? '' : (' ' + U.stressLabel());
+    const unit = meta.unit();
     Array.from(labels.children).forEach((el,i) => {
       const v = effectiveMax - (i/(steps-1)) * range;
-      let valText;
-      if (S.stressMode === 'dmg') {
-        valText = v.toFixed(2) + '×';
-      } else if (S.stressMode === 'error') {
-        valText = v.toFixed(3);
-      } else if (S.stressMode === 'xyutil' || S.stressMode === 'zutil') {
-        valText = v.toFixed(2);
-      } else {
-        valText = v.toFixed(1);
-      }
-      const isEdge = (i === 0 || i === steps - 1);
-      el.textContent = valText + (isEdge ? unit : '');
+      let valText = v.toFixed(meta.dec);
+      if (meta.perValueUnit) valText += unit;                 // e.g. dmg "1.25×"
+      else if ((i === 0 || i === steps - 1) && unit) valText += ' ' + unit;
+      el.textContent = valText;
     });
   }
 
   // Update legend gradient bar
   const bar = document.getElementById('legend-gradient');
   if (bar) {
-    if (isPrincipal || isSignedVM) {
+    if (meta.kind === 'diverging') {
       const STOPS = 12;
       const stops = [];
       for (let i = 0; i <= STOPS; i++) {
@@ -11665,19 +11623,9 @@ function applyStressColorsFromArrays(arrays) {
     }
   }
 
-  // Update legend title
-  const modeLabels = {
-    vm:   'von Mises (' + U.stressLabel() + ')',
-    svm:  'Signed von Mises (' + U.stressLabel() + ')',
-    s1:   'Max Principal σ₁ (' + U.stressLabel() + ')',
-    s2:   'Mid Principal σ₂ (' + U.stressLabel() + ')',
-    s3:   'Min Principal σ₃ (' + U.stressLabel() + ')',
-    dmg:    'Damage Ratio (XY/Z)',
-    xyutil: 'XY In-Plane Utilization (0–2)',
-    zutil:  'Interlayer Interface Utilization (0–2)',
-    error:  'Error Estimate η (0–1)',
-  };
-  document.getElementById('legend-title') && (document.getElementById('legend-title').textContent = modeLabels[S.stressMode] || '');
+  // Update legend title from the single source of truth
+  const lt = document.getElementById('legend-title');
+  if (lt) lt.textContent = meta.legend();
 }
 
 
