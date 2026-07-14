@@ -478,6 +478,29 @@ console.log('\n[G] stlToMeshLocal / meshLocalToStl — overlay coordinate frame'
     `got=[${rt}]`);
 }
 
+// ── Test group H: computeDominantPrincipal (tension/compression view) ────────
+console.log('\n[H] computeDominantPrincipal — dominant signed principal');
+{
+  // The function is followed by a comment (not another function), so match it
+  // directly up to its first column-0 closing brace (its body has no such brace).
+  const m = html.match(/function computeDominantPrincipal\(s1, s3\)\s*\{[\s\S]*?\n\}/);
+  if (!m) throw new Error('Could not extract computeDominantPrincipal');
+  const fnCode = m[0];
+  const mod = { exports: {} };
+  new Function('module', 'exports', fnCode + '\nmodule.exports = { computeDominantPrincipal };')(mod, mod.exports);
+  const { computeDominantPrincipal } = mod.exports;
+
+  const s1 = new Float32Array([ 10,   2,  -1,  5,  0 ]);   // most-tensile principal
+  const s3 = new Float32Array([ -3,  -8,  -1, -5, -2 ]);   // most-compressive principal
+  const out = computeDominantPrincipal(s1, s3);
+
+  test('picks σ₁ when tension dominates in magnitude', out[0] === 10, `got ${out[0]}`);
+  test('picks σ₃ when compression dominates in magnitude', out[1] === -8, `got ${out[1]}`);
+  test('ties (|σ₁|=|σ₃|) resolve to σ₁', out[2] === -1 && out[3] === 5, `got ${out[2]}, ${out[3]}`);
+  test('preserves sign (compression stays negative)', out[4] === -2, `got ${out[4]}`);
+  test('output length matches input', out.length === 5, `len ${out.length}`);
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 if (failed > 0) {

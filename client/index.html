@@ -1100,7 +1100,8 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <!-- Stress visualization mode (shown after solve) -->
       <div id="stress-mode-wrap" style="display:none;border-left:1px solid var(--border);margin-left:2px;padding-left:6px;gap:3px;align-items:center">
         <span style="font-size:9px;color:var(--text-lo);letter-spacing:.04em;margin-right:2px" title="Choose what the heatmap colors represent">VIEW:</span>
-        <button class="btn active vmode-btn" id="btn-vm"  onclick="setStressMode('vm')"  style="display:flex" title="von Mises stress — overall combined stress magnitude"><span class="vmode-abbr">VM</span><span class="vmode-cap">Overall</span></button>
+        <button class="btn active vmode-btn" id="btn-tc"  onclick="setStressMode('tc')"  style="display:flex" title="Tension / Compression — the dominant principal stress at each point (whichever of σ₁ or σ₃ has the larger magnitude). Red = pulling apart (max tension), blue = crushing (max compression), white ≈ low stress."><span class="vmode-abbr">σ±</span><span class="vmode-cap">Tension/Comp</span></button>
+        <button class="btn vmode-btn"        id="btn-vm"  onclick="setStressMode('vm')"  style="display:flex" title="von Mises stress — overall combined stress magnitude"><span class="vmode-abbr">VM</span><span class="vmode-cap">Overall</span></button>
         <button class="btn vmode-btn"        id="btn-svm" onclick="setStressMode('svm')" style="display:none" title="Signed von Mises — blue=compression, white=zero, red=tension. Sign = sign of hydrostatic stress (trace of σ). Useful for distinguishing delamination risk (tension) from compressive crush."><span class="vmode-abbr">±VM</span><span class="vmode-cap">Signed</span></button>
         <button class="btn vmode-btn"        id="btn-s1"  onclick="setStressMode('s1')"  style="display:flex" title="Maximum principal stress σ₁ — most tensile direction (red=tensile, blue=compressive)"><span class="vmode-abbr">σ₁</span><span class="vmode-cap">Max tension</span></button>
         <button class="btn vmode-btn"        id="btn-s2"  onclick="setStressMode('s2')"  style="display:flex" title="Intermediate principal stress σ₂ (red=tensile, blue=compressive)"><span class="vmode-abbr">σ₂</span><span class="vmode-cap">Mid stress</span></button>
@@ -2933,6 +2934,21 @@ function divergingColor(t) {
   return c[i].map((v, j) => v + f * (c[i+1][j] - v));
 }
 
+// Combined tension/compression field: the dominant principal stress at each
+// vertex — σ₁ (most tensile) when it outweighs σ₃ in magnitude, else σ₃ (most
+// compressive). Signed, so it feeds the diverging color scale directly:
+// red = pulling apart, blue = crushing, white ≈ low stress. Ties (|σ₁|=|σ₃|)
+// resolve to σ₁ so a pure hydrostatic point reads as its tensile value.
+function computeDominantPrincipal(s1, s3) {
+  const n = Math.min(s1 ? s1.length : 0, s3 ? s3.length : 0);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = s1[i] ?? 0, b = s3[i] ?? 0;
+    out[i] = Math.abs(a) >= Math.abs(b) ? a : b;
+  }
+  return out;
+}
+
 // Compute diverging colors for a signed stress array.
 // The scale is symmetric around 0: absMax = max(|min|, |max|) at p98, or absMaxOverride if provided.
 function computeDivergingColors(stressArr, absMaxOverride) {
@@ -3604,6 +3620,10 @@ function applyStressColorsFromResults(results, { fresh = false } = {}) {
   const dmg = new Float32Array(vertexStress.length);
   for (let i = 0; i < vertexStress.length; i++) dmg[i] = (vertexStress[i] ?? 0) / effYield;
   cache.dmg = dmg;
+
+  // Combined tension/compression view — derived from σ₁ and σ₃ (server always
+  // sends both), so it is available whenever the principals are.
+  cache.tc = (cache.s1 && cache.s3) ? computeDominantPrincipal(cache.s1, cache.s3) : null;
 
   S._stressArrays = cache;
   S.showStress = true;
@@ -11516,6 +11536,7 @@ function _syncClipUI() {
 // applyStressColorsFromArrays, the hover readout, and the units-refresh all
 // read from it, so a label or a new mode is defined in exactly one place.
 const MODE_META = {
+  tc:     { kind:'diverging',  legend:()=>'Tension / Compression ('+U.stressLabel()+')',     hover:'Dominant principal',     unit:()=>U.stressLabel(), dec:1, data:a=>a.tc },
   vm:     { kind:'sequential', legend:()=>'von Mises ('+U.stressLabel()+')',                 hover:'von Mises',              unit:()=>U.stressLabel(), dec:1, data:a=>a.vm },
   svm:    { kind:'diverging',  legend:()=>'Signed von Mises ('+U.stressLabel()+')',          hover:'Signed VM',              unit:()=>U.stressLabel(), dec:1, data:a=>a.svm, divAbs:()=>S.results?.summary?.effectiveYieldMPa ?? 1 },
   s1:     { kind:'diverging',  legend:()=>'Max Principal σ₁ ('+U.stressLabel()+')',          hover:'Principal σ₁',           unit:()=>U.stressLabel(), dec:1, data:a=>a.s1 },
@@ -11528,8 +11549,8 @@ const MODE_META = {
 };
 // Order the buttons appear in; the first entries are always-visible, the rest
 // live in the MORE overflow group (wired in a later commit).
-const STRESS_MODE_ORDER = ['vm','svm','s1','s2','s3','dmg','xyutil','zutil','error'];
-const DEFAULT_STRESS_MODE = 'vm';
+const STRESS_MODE_ORDER = ['tc','vm','svm','s1','s2','s3','dmg','xyutil','zutil','error'];
+const DEFAULT_STRESS_MODE = 'tc';
 
 function stressModeAvailable(mode) {
   const meta = MODE_META[mode];
