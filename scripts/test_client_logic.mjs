@@ -440,6 +440,130 @@ console.log('\n[F] Section view — clip plane math and cut-face (cap) placement
   }
 }
 
+// ── Test group G: stlToMeshLocal / meshLocalToStl coordinate frame ───────────
+// Regression guard for the frame bug where overlays multiplied by mesh3d.scale
+// a second time (mesh3d.matrixWorld already applies it), collapsing bolt rings
+// and force arrows toward the part centre. Mesh-local coords must be plain mm
+// minus the centering offset — NO scale factor.
+console.log('\n[G] stlToMeshLocal / meshLocalToStl — overlay coordinate frame');
+{
+  const toLocal = extractFunction(html, 'stlToMeshLocal\\(wx, wy, wz\\)', 'meshLocalToStl');
+  const toStl   = extractFunction(html, 'meshLocalToStl\\(lx, ly, lz\\)', 'findNearestHole');
+  const mod = { exports: {} };
+  new Function('module', 'exports', 'mesh3d', 'S',
+    toLocal + '\n' + toStl + '\nmodule.exports = { stlToMeshLocal, meshLocalToStl };')(
+    mod, mod.exports,
+    { userData: { offset: { x: 50, y: 40, z: 30 }, scale: 0.016 } },
+    { fileData: {} });
+  const { stlToMeshLocal, meshLocalToStl } = mod.exports;
+
+  const local = stlToMeshLocal(80, 40, 30);
+  test('stlToMeshLocal subtracts offset only (no scale factor)',
+    local[0] === 30 && local[1] === 0 && local[2] === 0,
+    `got=[${local}]`);
+
+  test('stlToMeshLocal does NOT apply mesh3d.scale (would give 0.48, not 30)',
+    Math.abs(local[0] - 30) < 1e-9,
+    `x=${local[0]}`);
+
+  const back = meshLocalToStl(...local);
+  test('meshLocalToStl is the exact inverse (round-trips)',
+    back[0] === 80 && back[1] === 40 && back[2] === 30,
+    `got=[${back}]`);
+
+  const p = [12.3, -4.5, 99.9];
+  const rt = meshLocalToStl(...stlToMeshLocal(...p));
+  test('round-trip preserves an arbitrary point',
+    Math.abs(rt[0]-p[0]) < 1e-9 && Math.abs(rt[1]-p[1]) < 1e-9 && Math.abs(rt[2]-p[2]) < 1e-9,
+    `got=[${rt}]`);
+}
+
+// ── Test group H: computeDominantPrincipal (tension/compression view) ────────
+console.log('\n[H] computeDominantPrincipal — dominant signed principal');
+{
+  // The function is followed by a comment (not another function), so match it
+  // directly up to its first column-0 closing brace (its body has no such brace).
+  const m = html.match(/function computeDominantPrincipal\(s1, s3\)\s*\{[\s\S]*?\n\}/);
+  if (!m) throw new Error('Could not extract computeDominantPrincipal');
+  const fnCode = m[0];
+  const mod = { exports: {} };
+  new Function('module', 'exports', fnCode + '\nmodule.exports = { computeDominantPrincipal };')(mod, mod.exports);
+  const { computeDominantPrincipal } = mod.exports;
+
+  const s1 = new Float32Array([ 10,   2,  -1,  5,  0 ]);   // most-tensile principal
+  const s3 = new Float32Array([ -3,  -8,  -1, -5, -2 ]);   // most-compressive principal
+  const out = computeDominantPrincipal(s1, s3);
+
+  test('picks σ₁ when tension dominates in magnitude', out[0] === 10, `got ${out[0]}`);
+  test('picks σ₃ when compression dominates in magnitude', out[1] === -8, `got ${out[1]}`);
+  test('ties (|σ₁|=|σ₃|) resolve to σ₁', out[2] === -1 && out[3] === 5, `got ${out[2]}, ${out[3]}`);
+  test('preserves sign (compression stays negative)', out[4] === -2, `got ${out[4]}`);
+  test('output length matches input', out.length === 5, `len ${out.length}`);
+}
+
+// ── Test group I: computeDivergingColors threshold filter ────────────────────
+console.log('\n[I] computeDivergingColors — threshold filter greys the other side');
+{
+  const fnCode = extractFunction(html, 'computeDivergingColors\\(stressArr, absMaxOverride, filter\\)', 'setColormap');
+  const mod = { exports: {} };
+  // divergingColor is a separate helper; a stub that never returns grey lets us
+  // detect filter-greyed vertices unambiguously ([0.5,0.5,0.5]).
+  new Function('module','exports','divergingColor',
+    fnCode + '\nmodule.exports = { computeDivergingColors };')(
+    mod, mod.exports, () => [1, 0, 0]);
+  const { computeDivergingColors } = mod.exports;
+
+  const arr = new Float32Array([ 10, -10, 2, -2, 0 ]);   // absMax override = 10
+  const isGrey = (c, i) => Math.abs(c[i*3]-0.5)<1e-6 && Math.abs(c[i*3+1]-0.5)<1e-6 && Math.abs(c[i*3+2]-0.5)<1e-6;
+
+  // above, frac 0.5 -> threshold |σ| >= 5: keep 10 and -10, grey 2,-2,0
+  const a = computeDivergingColors(arr, 10, { enabled:true, side:'above', frac:0.5 });
+  test('above-threshold keeps hot extremes (|σ|≥5)', !isGrey(a.colors,0) && !isGrey(a.colors,1), 'hot verts kept');
+  test('above-threshold greys the calm core', isGrey(a.colors,2) && isGrey(a.colors,3) && isGrey(a.colors,4), 'calm greyed');
+
+  // below, frac 0.5 -> threshold |σ| <= 5: keep 2,-2,0, grey 10,-10
+  const b = computeDivergingColors(arr, 10, { enabled:true, side:'below', frac:0.5 });
+  test('below-threshold greys the hot extremes', isGrey(b.colors,0) && isGrey(b.colors,1), 'hot greyed');
+  test('below-threshold keeps the calm core', !isGrey(b.colors,2) && !isGrey(b.colors,4), 'calm kept');
+
+  // disabled -> nothing greyed
+  const c = computeDivergingColors(arr, 10, { enabled:false, side:'above', frac:0.9 });
+  test('disabled filter greys nothing', !isGrey(c.colors,2) && !isGrey(c.colors,4), 'none greyed');
+  test('returns absMax for the slider scale', c.absMax === 10, `absMax=${c.absMax}`);
+}
+
+// ── Test group J: bed frame — Z is up from the bed (world +Y) ────────────────
+console.log('\n[J] bed frame — bedDirToWorld maps bed Z to world +Y');
+{
+  // Load the vendored three.js (UMD) into a sandbox so BED_Q's real quaternion
+  // math runs, then eval the helper block against it.
+  const threeSrc = fs.readFileSync(path.join(__dirname, '..', 'client', 'vendor', 'three.min.js'), 'utf8');
+  const g = {};
+  const threeMod = { exports: {} };
+  new Function('module','exports','self','window', threeSrc)(threeMod, threeMod.exports, g, g);
+  const THREE = g.THREE || threeMod.exports.THREE || threeMod.exports;
+
+  const m = html.match(/const BED_Q = new THREE\.Quaternion[\s\S]*?function worldDirToBed\(v3\)\s*\{[^}]*\}/);
+  if (!m) throw new Error('Could not extract bed-frame helpers');
+  const mod = { exports: {} };
+  new Function('module','exports','THREE','mesh3d',
+    m[0] + '\nmodule.exports = { bedDirToWorld, worldDirToBed };')(mod, mod.exports, THREE, null);
+  const { bedDirToWorld, worldDirToBed } = mod.exports;
+
+  const zUp = bedDirToWorld(new THREE.Vector3(0,0,1));
+  test('bed +Z -> world +Y (up from the bed)',
+    Math.abs(zUp.x) < 1e-6 && Math.abs(zUp.y - 1) < 1e-6 && Math.abs(zUp.z) < 1e-6,
+    `got (${zUp.x.toFixed(3)},${zUp.y.toFixed(3)},${zUp.z.toFixed(3)})`);
+  const xBed = bedDirToWorld(new THREE.Vector3(1,0,0));
+  test('bed +X stays world +X (in the plate plane)',
+    Math.abs(xBed.x - 1) < 1e-6 && Math.abs(xBed.y) < 1e-6,
+    `got (${xBed.x.toFixed(3)},${xBed.y.toFixed(3)},${xBed.z.toFixed(3)})`);
+  const rt = worldDirToBed(bedDirToWorld(new THREE.Vector3(0.3,-0.7,0.5)));
+  test('worldDirToBed inverts bedDirToWorld',
+    Math.abs(rt.x-0.3) < 1e-6 && Math.abs(rt.y+0.7) < 1e-6 && Math.abs(rt.z-0.5) < 1e-6,
+    `got (${rt.x.toFixed(3)},${rt.y.toFixed(3)},${rt.z.toFixed(3)})`);
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 if (failed > 0) {

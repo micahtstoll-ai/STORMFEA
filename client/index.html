@@ -538,6 +538,25 @@ h1, h2, h3 { font-weight: inherit; font-size: inherit; margin: 0; }
    Damage button the same two-line text layout as its siblings. Visibility is
    still controlled with inline display (flex/none) so setStressMode() can
    rebuild className freely without disturbing which buttons are shown. */
+/* Left-edge vertical column of heatmap view buttons (moved out of the top
+   toolbar). Absolutely positioned relative to #viewer; the solve-time reveal
+   flips inline display:none -> flex. */
+#stress-mode-wrap {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 20;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  max-height: calc(100% - 150px);
+  overflow-y: auto;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 6px;
+}
 #stress-mode-wrap .btn.vmode-btn {
   flex-direction: column;
   align-items: center;
@@ -557,13 +576,29 @@ h1, h2, h3 { font-weight: inherit; font-size: inherit; margin: 0; }
   color: var(--text-lo);
 }
 #stress-mode-wrap .btn.vmode-btn.active .vmode-cap { color: var(--gold); }
+#stress-mode-wrap .btn.vmode-btn:disabled,
+#stress-mode-wrap .btn.vmode-btn.disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: none;   /* a greyed mode is not clickable */
+}
 
 /* ── Intentional transitions — not a catch-all ──────────────────────────────── */
 /* Fast: interactive states only */
 .btn, select, input[type=number] { transition: border-color var(--t-fast), color var(--t-fast); }
 /* Slow: structural / panel changes */
 #prefs-panel { transition: opacity var(--t-slow); }
-/* Theme switch on html/body is instant — no transition on background-color */
+/* Theme switch: crossfade only during the switch. toggleTheme adds
+   .theme-fading to <html> for ~400ms so themed colours ease between light and
+   dark, then removes it — the class scope keeps this off hover/interactive
+   transitions the rest of the time. Wrapped in prefers-reduced-motion:
+   no-preference so the reduced-motion rule below still wins for that audience. */
+@media (prefers-reduced-motion: no-preference) {
+  html.theme-fading, html.theme-fading * , html.theme-fading *::before, html.theme-fading *::after {
+    transition: background-color 280ms ease, color 280ms ease, border-color 280ms ease,
+                fill 280ms ease, stroke 280ms ease, box-shadow 280ms ease !important;
+  }
+}
 
 /* ── Light mode structural overrides ────────────────────────────────────────── */
 [data-theme="light"] .btn { background: var(--bg-panel); }
@@ -580,7 +615,7 @@ h1, h2, h3 { font-weight: inherit; font-size: inherit; margin: 0; }
 @media print {
   body { background: #fff !important; color: #000 !important; font-size: 10px; }
   #viewer, #toolbar, #topright, #badges, #legend, #hint, #bed-indicator,
-  #force-popup, header .btn, #tabs, #theme-toggle, #analyse-btn, #analyse-status,
+  #force-editor, header .btn, #tabs, #theme-toggle, #analyse-btn, #analyse-status,
   #convergence-btn, #tab-setup, #tab-orient, #tab-loads, #tab-material,
   #tab-results, #tab-prefs, #tab-calibrate, #tab-sources, #tab-debug { display: none !important; }
   #tab-results { display: block !important; padding: 0 !important; }
@@ -1091,19 +1126,6 @@ body:not(.has-results) #btn-stress { display: none !important; }
           style="padding:5px 8px;opacity:0.35;flex-shrink:0">
           <svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2.5 3A3.5 3.5 0 1 1 1.5 6"/><polyline points="3,1.5 1.5,3 3,4.5" fill="none"/></svg>
         </button>
-      <!-- Stress visualization mode (shown after solve) -->
-      <div id="stress-mode-wrap" style="display:none;border-left:1px solid var(--border);margin-left:2px;padding-left:6px;gap:3px;align-items:center">
-        <span style="font-size:9px;color:var(--text-lo);letter-spacing:.04em;margin-right:2px" title="Choose what the heatmap colors represent">VIEW:</span>
-        <button class="btn active vmode-btn" id="btn-vm"  onclick="setStressMode('vm')"  style="display:flex" title="von Mises stress — overall combined stress magnitude"><span class="vmode-abbr">VM</span><span class="vmode-cap">Overall</span></button>
-        <button class="btn vmode-btn"        id="btn-svm" onclick="setStressMode('svm')" style="display:none" title="Signed von Mises — blue=compression, white=zero, red=tension. Sign = sign of hydrostatic stress (trace of σ). Useful for distinguishing delamination risk (tension) from compressive crush."><span class="vmode-abbr">±VM</span><span class="vmode-cap">Signed</span></button>
-        <button class="btn vmode-btn"        id="btn-s1"  onclick="setStressMode('s1')"  style="display:flex" title="Maximum principal stress σ₁ — most tensile direction (red=tensile, blue=compressive)"><span class="vmode-abbr">σ₁</span><span class="vmode-cap">Max tension</span></button>
-        <button class="btn vmode-btn"        id="btn-s2"  onclick="setStressMode('s2')"  style="display:flex" title="Intermediate principal stress σ₂ (red=tensile, blue=compressive)"><span class="vmode-abbr">σ₂</span><span class="vmode-cap">Mid stress</span></button>
-        <button class="btn vmode-btn"        id="btn-s3"  onclick="setStressMode('s3')"  style="display:flex" title="Minimum principal stress σ₃ — most compressive direction (red=tensile, blue=compressive)"><span class="vmode-abbr">σ₃</span><span class="vmode-cap">Max compression</span></button>
-        <button class="btn vmode-btn"        id="btn-dmg"    onclick="setStressMode('dmg')"    style="display:flex" title="Damage ratio — stress as a fraction of material yield strength (1.0 = at yield)"><span class="vmode-abbr">DMG</span><span class="vmode-cap">Damage</span></button>
-        <button class="btn vmode-btn"        id="btn-xyutil" onclick="setStressMode('xyutil')" style="display:none" title="XY in-plane utilization — sqrt(σxx²+σyy²-σxx·σyy+3·σxy²) / yieldXY. Red at 1.0 = at in-plane yield. High → add infill."><span class="vmode-abbr">U<sub>XY</sub></span><span class="vmode-cap">In-plane use</span></button>
-        <button class="btn vmode-btn"        id="btn-zutil"  onclick="setStressMode('zutil')"  style="display:none" title="Interlayer interface utilization — tension-only ⟨σzz⟩₊/S_zt interacting with interlayer shear τ/S_zs (compression gets a friction credit instead). Red at 1.0 = delamination/shear onset. High → reorient or add walls."><span class="vmode-abbr">U<sub>Z</sub></span><span class="vmode-cap">Z-layer use</span></button>
-        <button class="btn vmode-btn"        id="btn-error"  onclick="setStressMode('error')"  style="display:none" title="Error estimate η — Zienkiewicz-Zhu mesh quality metric (0–1), identifies under-resolved elements"><span class="vmode-abbr">η</span><span class="vmode-cap">Mesh quality</span></button>
-      </div>
       <!-- Deformation (deflected-shape) controls (shown after solve) -->
       <div id="deform-wrap" style="display:none;border-left:1px solid var(--border);margin-left:2px;padding-left:6px;gap:5px;align-items:center">
         <button class="btn" id="btn-deform" onclick="toggleDeform()" style="font-size:10px;padding:4px 8px;display:flex;flex-direction:column;align-items:center;gap:1px" title="Warp the mesh by the computed nodal displacement to show the deflected shape (exaggerated). Stress colors follow the deformed surface."><span style="font-weight:700">DEFORM</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Deflected</span></button>
@@ -1123,11 +1145,38 @@ body:not(.has-results) #btn-stress { display: none !important; }
       </div>
     </div>
 
+    <!-- Stress visualization mode — left-edge vertical column (shown after solve).
+         A direct child of #viewer (not #toolbar) so its absolute positioning is
+         relative to the viewer, not the top-left toolbar. Always-visible modes
+         first; the rest live behind the MORE toggle. -->
+    <div id="stress-mode-wrap" style="display:none">
+      <span style="font-size:9px;color:var(--text-lo);letter-spacing:.06em;text-align:center" title="Choose what the heatmap colors represent">VIEW</span>
+      <button class="btn active vmode-btn" id="btn-tc"  onclick="setStressMode('tc')"  style="display:flex" title="Tension / Compression — the dominant principal stress at each point (whichever of σ₁ or σ₃ has the larger magnitude). Red = pulling apart (max tension), blue = crushing (max compression), white ≈ low stress."><span class="vmode-abbr">σ±</span><span class="vmode-cap">Tension/Comp</span></button>
+      <button class="btn vmode-btn"        id="btn-vm"  onclick="setStressMode('vm')"  style="display:flex" title="von Mises stress — overall combined stress magnitude"><span class="vmode-abbr">VM</span><span class="vmode-cap">Overall</span></button>
+      <button class="btn vmode-btn"        id="btn-svm" onclick="setStressMode('svm')" style="display:flex" title="Signed von Mises — blue=compression, white=zero, red=tension. Sign = sign of hydrostatic stress (trace of σ). Useful for distinguishing delamination risk (tension) from compressive crush."><span class="vmode-abbr">±VM</span><span class="vmode-cap">Signed</span></button>
+      <button class="btn vmode-btn"        id="btn-s1"  onclick="setStressMode('s1')"  style="display:flex" title="Maximum principal stress σ₁ — most tensile direction (red=tensile, blue=compressive)"><span class="vmode-abbr">σ₁</span><span class="vmode-cap">Max tension</span></button>
+      <button class="btn vmode-btn"        id="btn-s2"  onclick="setStressMode('s2')"  style="display:flex" title="Intermediate principal stress σ₂ (red=tensile, blue=compressive)"><span class="vmode-abbr">σ₂</span><span class="vmode-cap">Mid stress</span></button>
+      <button class="btn vmode-btn"        id="btn-s3"  onclick="setStressMode('s3')"  style="display:flex" title="Minimum principal stress σ₃ — most compressive direction (red=tensile, blue=compressive)"><span class="vmode-abbr">σ₃</span><span class="vmode-cap">Max compression</span></button>
+      <button class="btn vmode-btn" id="btn-vmore" onclick="toggleVmodeMore()" style="display:none" title="More heatmap views">MORE ▾</button>
+      <div id="vmode-more" style="display:none;flex-direction:column;gap:4px">
+        <button class="btn vmode-btn"        id="btn-dmg"    onclick="setStressMode('dmg')"    style="display:flex" title="Damage ratio — stress as a fraction of material yield strength (1.0 = at yield)"><span class="vmode-abbr">DMG</span><span class="vmode-cap">Damage</span></button>
+        <button class="btn vmode-btn"        id="btn-xyutil" onclick="setStressMode('xyutil')" style="display:flex" title="XY in-plane utilization — sqrt(σxx²+σyy²-σxx·σyy+3·σxy²) / yieldXY. Red at 1.0 = at in-plane yield. High → add infill."><span class="vmode-abbr">U<sub>XY</sub></span><span class="vmode-cap">In-plane use</span></button>
+        <button class="btn vmode-btn"        id="btn-zutil"  onclick="setStressMode('zutil')"  style="display:flex" title="Interlayer interface utilization — tension-only ⟨σzz⟩₊/S_zt interacting with interlayer shear τ/S_zs (compression gets a friction credit instead). Red at 1.0 = delamination/shear onset. High → reorient or add walls."><span class="vmode-abbr">U<sub>Z</sub></span><span class="vmode-cap">Z-layer use</span></button>
+        <button class="btn vmode-btn"        id="btn-error"  onclick="setStressMode('error')"  style="display:flex" title="Error estimate η — Zienkiewicz-Zhu mesh quality metric (0–1), identifies under-resolved elements"><span class="vmode-abbr">η</span><span class="vmode-cap">Mesh quality</span></button>
+      </div>
+    </div>
+
     <!-- Top-right toggles -->
     <div id="topright" style="display:none;position:absolute;top:12px;right:12px;display:flex;gap:6px">
       <button class="btn" id="btn-stress" onclick="toggleStress()" style="display:none"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="currentColor"><rect x="1" y="1" width="8" height="8" rx="1"/><rect x="3" y="3" width="4" height="4" fill="var(--bg-base)"/></svg> STRESS</button>
       <button class="btn" id="btn-debug"  onclick="toggleDebug()"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4"><polygon points="5,1 9,5 5,9 1,5"/></svg> DEBUG</button>
     </div>
+
+    <!-- Orientation axes triad — a camera-tracking indicator of the print frame
+         (Z = up from the bed). Screen-space SVG so it never touches the WebGL
+         renderer's scissor/viewport state (split view uses those). -->
+    <svg id="axes-triad" width="84" height="84" viewBox="0 0 84 84"
+         style="display:none;position:absolute;top:48px;right:12px;pointer-events:none;overflow:visible"></svg>
 
     <!-- Bottom badges -->
     <div id="badges" style="display:none;position:absolute;bottom:54px;left:12px;display:flex;gap:8px">
@@ -1156,6 +1205,16 @@ body:not(.has-results) #btn-stress { display: none !important; }
              stressColor() interpolates between, so this is an exact match
              to the actual heatmap coloring, not an approximation. -->
         <div id="legend-gradient" style="width:14px;border-radius:2px;min-height:84px"></div>
+      </div>
+      <!-- Threshold filter: greys out one side of a stress cutoff so only the
+           hot spots (or only the calm regions) stay colored. -->
+      <div id="legend-filter" style="display:flex;flex-direction:column;gap:3px;align-items:stretch;width:100%;margin-top:3px;border-top:1px solid var(--border);padding-top:5px">
+        <div style="display:flex;align-items:center;gap:4px;justify-content:flex-end">
+          <button class="btn" id="legend-filter-toggle" onclick="toggleStressFilter()" style="font-size:9px;padding:2px 6px" title="Grey out part of the stress range so only the values you care about stay colored">FILTER</button>
+          <button class="btn" id="legend-filter-side" onclick="flipStressFilterSide()" style="font-size:10px;padding:2px 6px;display:none" title="Switch between showing values above vs below the threshold">▲ above</button>
+        </div>
+        <input type="range" id="legend-filter-range" min="0" max="100" value="50" step="1" oninput="onStressFilterInput(this.value)" style="width:100%;display:none" title="Threshold — drag to move the cutoff">
+        <div id="legend-filter-val" style="display:none;font-family:'DM Mono',monospace;font-size:9px;color:var(--gold);text-align:right"></div>
       </div>
     </div>
 
@@ -1245,81 +1304,8 @@ body:not(.has-results) #btn-stress { display: none !important; }
     </div>
   </div>
 
-  <!-- Force popup -->
-    <div id="force-popup" style="display:none;position:absolute;background:var(--bg-card);border:1px solid var(--border-mid);border-radius:4px;padding:14px;width:224px;z-index:100">
-      <!-- Title + quick presets -->
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <div style="font-size:11px;color:var(--text-label);letter-spacing:.1em">APPLY FORCE</div>
-        <div style="position:relative">
-          <select id="fp-preset-select"
-            onchange="applyForcePreset(this.value); this.value=''"
-            style="font-size:10px;padding:2px 6px;max-width:160px"
-            aria-label="Force magnitude preset">
-            <option value="">Presets...</option>
-            <optgroup label="FTC Scenarios">
-              <option value="150|right">Claw grip (150N)</option>
-              <option value="200|front">Intake roller (200N)</option>
-              <option value="300|top">Arm pivot load (300N)</option>
-              <option value="400|top">Linear slide mount (400N)</option>
-              <option value="500|right">Wall impact (500N)</option>
-              <option value="800|top">Climber peak load (800N)</option>
-            </optgroup>
-            <optgroup label="Motor stall (into gearbox)">
-              <option value="45|top">40:1 gearbox stall (~45N)</option>
-              <option value="125|top">100:1 gearbox stall (~125N)</option>
-              <option value="280|top">256:1 gearbox stall (~280N)</option>
-            </optgroup>
-            <optgroup label="Robot weight">
-              <option value="75|top">Half robot on one mount (75N)</option>
-              <option value="150|top">Full robot on one mount (150N)</option>
-            </optgroup>
-          </select>
-        </div>
-      </div>
-      <!-- Magnitude with live lbf -->
-      <label for="fp-mag" style="font-size:11px">Magnitude (<span id="fp-unit-label">N</span>)</label>
-      <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
-        <input id="fp-mag" type="number" value="500" min="1" style="flex:1"
-          oninput="const _v=+this.value; document.getElementById('fp-mag-lbf').textContent=S.units==='imperial'?(_v*0.22481).toFixed(1)+' lbf':_v.toFixed(0)+' N'; updateForcePreview()">
-        <span id="fp-mag-lbf" style="font-size:10px;color:var(--text-label);white-space:nowrap"></span>
-      </div>
-      <!-- Face dropdown -->
-      <label for="fp-face" style="font-size:11px">Apply to face</label>
-      <select id="fp-face" style="margin-bottom:8px;font-size:11px" onchange="setDirFromFace(this.value)">
-        <option value="top">Top (+Z) — pull-through</option>
-        <option value="bottom">Bottom (-Z)</option>
-        <option value="front">Front (+Y)</option>
-        <option value="back">Back (-Y)</option>
-        <option value="right">Right (+X)</option>
-        <option value="left">Left (-X)</option>
-        <option value="custom">Custom direction...</option>
-      </select>
-      <!-- Custom direction grid (hidden by default) -->
-      <div id="fp-custom-dir" style="display:none;margin-bottom:8px">
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:6px">
-          <button class="btn dir-btn" data-dir="1,0,0" onclick="setDir(1,0,0)">+X</button>
-          <button class="btn dir-btn" data-dir="0,1,0" onclick="setDir(0,1,0)">+Y</button>
-          <button class="btn dir-btn" data-dir="0,0,1" onclick="setDir(0,0,1)">+Z</button>
-          <button class="btn dir-btn" data-dir="-1,0,0" onclick="setDir(-1,0,0)">-X</button>
-          <button class="btn dir-btn" data-dir="0,-1,0" onclick="setDir(0,-1,0)">-Y</button>
-          <button class="btn dir-btn" data-dir="0,0,-1" onclick="setDir(0,0,-1)">-Z</button>
-        </div>
-      </div>
-      <div id="fp-dir-display" style="font-size:11px;color:var(--text-label);margin-bottom:10px">Direction: +Z (top face)</div>
-      <!-- Bearing distribution toggle -->
-      <div style="margin-bottom:10px">
-        <label for="fp-bearing-dist" style="font-size:11px">Load distribution</label>
-        <select id="fp-bearing-dist" style="width:100%;font-size:11px;margin-top:4px">
-          <option value="uniform">Uniform across face</option>
-          <option value="cosine_bearing">Cosine (bearing point)</option>
-        </select>
-        <div style="font-size:9px;color:var(--text-lo);margin-top:4px">Cosine: concentrated at bolt bearing point, realistic for bolt pull-through.</div>
-      </div>
-      <div style="display:flex;gap:6px">
-        <button class="btn primary" style="flex:1" onclick="confirmForce()">Add Force</button>
-        <button class="btn" onclick="cancelForce()" aria-label="Cancel force placement"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg></button>
-      </div>
-    </div>
+  <!-- Force editor is docked in the LOADS panel (#force-editor); it used to
+       float over the viewer as #force-popup. -->
   </div>
 
   <!-- RIGHT PANEL -->
@@ -1451,17 +1437,17 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <!-- Orientation presets -->
       <div style="font-size:11px;color:var(--text-label);letter-spacing:.04em;margin-bottom:8px">QUICK PRESETS</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:16px">
-        <button class="btn" onclick="applyOrientPreset('top')" style="padding:8px;font-size:11px;text-align:left">
-          <svg width="11" height="8" viewBox="0 0 11 8" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" rx="1"><rect x="0.7" y="0.7" width="9.6" height="6.6" rx="1"/></svg> Top face down<br><span style="color:var(--text-lo);font-size:10px">flat · weakest</span>
+        <button class="btn" onclick="applyOrientPreset('top')" onmouseenter="showOrientPresetPreview('top')" onmouseleave="clearOrientPresetPreview()" style="padding:8px;font-size:11px;text-align:left">
+          <svg width="11" height="8" viewBox="0 0 11 8" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" rx="1"><rect x="0.7" y="0.7" width="9.6" height="6.6" rx="1"/></svg> Top face down<br><span style="color:var(--text-lo);font-size:10px">flat · weakest</span><br><span id="preset-face-top" style="color:var(--gold-dim);font-size:9px;font-family:'DM Mono',monospace"></span>
         </button>
-        <button class="btn" onclick="applyOrientPreset('bottom')" style="padding:8px;font-size:11px;text-align:left">
-          <svg width="11" height="8" viewBox="0 0 11 8" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" rx="1"><rect x="0.7" y="0.7" width="9.6" height="6.6" rx="1"/></svg> Bottom face down<br><span style="color:var(--text-lo);font-size:10px">flat · mirrored</span>
+        <button class="btn" onclick="applyOrientPreset('bottom')" onmouseenter="showOrientPresetPreview('bottom')" onmouseleave="clearOrientPresetPreview()" style="padding:8px;font-size:11px;text-align:left">
+          <svg width="11" height="8" viewBox="0 0 11 8" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" rx="1"><rect x="0.7" y="0.7" width="9.6" height="6.6" rx="1"/></svg> Bottom face down<br><span style="color:var(--text-lo);font-size:10px">flat · mirrored</span><br><span id="preset-face-bottom" style="color:var(--gold-dim);font-size:9px;font-family:'DM Mono',monospace"></span>
         </button>
-        <button class="btn" onclick="applyOrientPreset('side-x')" style="padding:8px;font-size:11px;text-align:left">
-          <svg width="8" height="11" viewBox="0 0 8 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="0.7" y="0.7" width="6.6" height="9.6" rx="1"/></svg> Standing on <svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg><br><span style="color:var(--text-lo);font-size:10px">upright · stronger</span>
+        <button class="btn" onclick="applyOrientPreset('side-x')" onmouseenter="showOrientPresetPreview('side-x')" onmouseleave="clearOrientPresetPreview()" style="padding:8px;font-size:11px;text-align:left">
+          <svg width="8" height="11" viewBox="0 0 8 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="0.7" y="0.7" width="6.6" height="9.6" rx="1"/></svg> Stand on X face<br><span style="color:var(--text-lo);font-size:10px">upright · stronger</span><br><span id="preset-face-side-x" style="color:var(--gold-dim);font-size:9px;font-family:'DM Mono',monospace"></span>
         </button>
-        <button class="btn" onclick="applyOrientPreset('side-y')" style="padding:8px;font-size:11px;text-align:left">
-          <svg width="8" height="11" viewBox="0 0 8 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="0.7" y="0.7" width="6.6" height="9.6" rx="1"/></svg> Standing on Y<br><span style="color:var(--text-lo);font-size:10px">upright · stronger</span>
+        <button class="btn" onclick="applyOrientPreset('side-y')" onmouseenter="showOrientPresetPreview('side-y')" onmouseleave="clearOrientPresetPreview()" style="padding:8px;font-size:11px;text-align:left">
+          <svg width="8" height="11" viewBox="0 0 8 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="0.7" y="0.7" width="6.6" height="9.6" rx="1"/></svg> Stand on Y face<br><span style="color:var(--text-lo);font-size:10px">upright · stronger</span><br><span id="preset-face-side-y" style="color:var(--gold-dim);font-size:9px;font-family:'DM Mono',monospace"></span>
         </button>
       </div>
 
@@ -1507,6 +1493,78 @@ body:not(.has-results) #btn-stress { display: none !important; }
           <button class="btn" id="place-force-btn" onclick="openForcePopupDirect()" style="color:var(--gold)88;border-color:var(--gold)33">+ Place Force</button>
         </div>
         <div style="font-size:11px;color:var(--text-lo);margin-bottom:8px">Click <svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> FORCE in the toolbar, then click anywhere on the 3D model.</div>
+
+        <!-- Docked force editor (was the floating #force-popup). Shown while
+             placing/editing a force; the viewer stays fully visible. Same input
+             ids as before so confirmForce/applyForcePreset/refreshUnits work. -->
+        <div id="force-editor" style="display:none;background:var(--bg-card);border:1px solid var(--gold-glow);border-radius:4px;padding:12px;margin-bottom:10px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <div id="force-editor-title" style="font-size:11px;color:var(--gold);letter-spacing:.1em">APPLY FORCE</div>
+            <select id="fp-preset-select"
+              onchange="applyForcePreset(this.value); this.value=''"
+              style="font-size:10px;padding:2px 6px;max-width:150px"
+              aria-label="Force magnitude preset">
+              <option value="">Presets...</option>
+              <optgroup label="FTC Scenarios">
+                <option value="150|right">Claw grip (150N)</option>
+                <option value="200|front">Intake roller (200N)</option>
+                <option value="300|top">Arm pivot load (300N)</option>
+                <option value="400|top">Linear slide mount (400N)</option>
+                <option value="500|right">Wall impact (500N)</option>
+                <option value="800|top">Climber peak load (800N)</option>
+              </optgroup>
+              <optgroup label="Motor stall (into gearbox)">
+                <option value="45|top">40:1 gearbox stall (~45N)</option>
+                <option value="125|top">100:1 gearbox stall (~125N)</option>
+                <option value="280|top">256:1 gearbox stall (~280N)</option>
+              </optgroup>
+              <optgroup label="Robot weight">
+                <option value="75|top">Half robot on one mount (75N)</option>
+                <option value="150|top">Full robot on one mount (150N)</option>
+              </optgroup>
+            </select>
+          </div>
+          <label for="fp-mag" style="font-size:11px">Magnitude (<span id="fp-unit-label">N</span>)</label>
+          <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
+            <input id="fp-mag" type="number" value="500" min="1" style="flex:1"
+              oninput="const _v=+this.value; document.getElementById('fp-mag-lbf').textContent=S.units==='imperial'?(_v*0.22481).toFixed(1)+' lbf':_v.toFixed(0)+' N'; updateForcePreview()">
+            <span id="fp-mag-lbf" style="font-size:10px;color:var(--text-label);white-space:nowrap"></span>
+          </div>
+          <label for="fp-face" style="font-size:11px">Direction (bed frame, Z↑)</label>
+          <select id="fp-face" style="margin-bottom:8px;font-size:11px" onchange="setDirFromFace(this.value)">
+            <option value="top">Up (+Z) — away from bed</option>
+            <option value="bottom">Down (-Z) — into bed</option>
+            <option value="front">Front (+Y)</option>
+            <option value="back">Back (-Y)</option>
+            <option value="right">Right (+X)</option>
+            <option value="left">Left (-X)</option>
+            <option value="custom">Custom direction...</option>
+          </select>
+          <div id="fp-custom-dir" style="display:none;margin-bottom:8px">
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:6px">
+              <button class="btn dir-btn" data-dir="1,0,0" onclick="setDir(1,0,0)">+X</button>
+              <button class="btn dir-btn" data-dir="0,1,0" onclick="setDir(0,1,0)">+Y</button>
+              <button class="btn dir-btn" data-dir="0,0,1" onclick="setDir(0,0,1)">+Z</button>
+              <button class="btn dir-btn" data-dir="-1,0,0" onclick="setDir(-1,0,0)">-X</button>
+              <button class="btn dir-btn" data-dir="0,-1,0" onclick="setDir(0,-1,0)">-Y</button>
+              <button class="btn dir-btn" data-dir="0,0,-1" onclick="setDir(0,0,-1)">-Z</button>
+            </div>
+          </div>
+          <div id="fp-dir-display" style="font-size:11px;color:var(--text-label);margin-bottom:10px">Direction: +Z · bed frame (Z↑)</div>
+          <div style="margin-bottom:10px">
+            <label for="fp-bearing-dist" style="font-size:11px">Load distribution</label>
+            <select id="fp-bearing-dist" style="width:100%;font-size:11px;margin-top:4px">
+              <option value="uniform">Uniform across face</option>
+              <option value="cosine_bearing">Cosine (bearing point)</option>
+            </select>
+            <div style="font-size:9px;color:var(--text-lo);margin-top:4px">Cosine: concentrated at bolt bearing point, realistic for bolt pull-through.</div>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button class="btn primary" style="flex:1" onclick="confirmForce()">Add Force</button>
+            <button class="btn" onclick="cancelForce()" aria-label="Cancel force placement"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg></button>
+          </div>
+        </div>
+
         <div id="force-list"><div style="font-size:11px;color:var(--text-mid);padding:8px;text-align:center">None yet.</div></div>
       </div>
 
@@ -2329,6 +2387,7 @@ const S = {
   results:       null,
   stressColors:  null,
   displacements: null,
+  stressFilter:  { enabled: false, side: 'above', frac: 0.5, forMode: null }, // legend threshold filter
   // Orientation state
   bedNormal:     [0, 0, -1],  // which direction is currently facing down (into bed)
   bedFaceName:   null,        // human-readable face name
@@ -2702,18 +2761,36 @@ const GRID_COLORS = {
 // (Re)build the permanent build-plate grid for the given theme. GridHelper is a
 // single LineSegments with the two colors baked into a vertex-color attribute,
 // so a theme change means rebuilding it — its materials can't be retinted.
-function rebuildBedGrid(theme) {
+// With { fade:true } the new grid opacity-lerps in while the old lerps out over
+// 280ms, matching the CSS theme crossfade (an instant swap of the highest-
+// contrast viewport element reads as a flicker mid-fade). Reduced-motion skips it.
+function rebuildBedGrid(theme, opts = {}) {
   if (!scene) return;
-  if (scene._bedGrid) {
-    scene.remove(scene._bedGrid);
-    scene._bedGrid.dispose();
-  }
   const colors = theme === 'dark' ? GRID_COLORS.dark : GRID_COLORS.light;
   const gridMesh = new THREE.GridHelper(GRID_SIZE, GRID_DIVS, colors.primary, colors.secondary);
   gridMesh.position.y = -0.001; // fractionally below Y=0 to avoid z-fighting
   gridMesh.renderOrder = 1;
-  scene.add(gridMesh);
-  scene._bedGrid = gridMesh;
+  const old = scene._bedGrid;
+
+  if (opts.fade && old && !_prefersReducedMotion()) {
+    gridMesh.material.transparent = true; gridMesh.material.opacity = 0;
+    old.material.transparent = true;
+    scene.add(gridMesh);
+    scene._bedGrid = gridMesh;
+    const t0 = performance.now(), DUR = 280;
+    const step = () => {
+      const k = Math.min(1, (performance.now() - t0) / DUR);
+      gridMesh.material.opacity = k;
+      old.material.opacity = 1 - k;
+      if (k < 1) requestAnimationFrame(step);
+      else { scene.remove(old); old.dispose(); gridMesh.material.opacity = 1; gridMesh.material.transparent = false; }
+    };
+    requestAnimationFrame(step);
+  } else {
+    if (old) { scene.remove(old); old.dispose(); }
+    scene.add(gridMesh);
+    scene._bedGrid = gridMesh;
+  }
 }
 const overlays = []; // overlay 3D objects on the mesh
 
@@ -2742,6 +2819,37 @@ function updateCamera() {
     camera.far  = Math.max(1000, r * 100);
     camera.updateProjectionMatrix();
   }
+  updateAxesTriad();
+}
+
+// Redraw the corner axes triad in the print frame (Z = up from the bed) as it
+// appears from the current camera. Screen-space projection: each bed-frame axis
+// is dotted against the camera's right/up basis; the away-facing axes dim.
+function updateAxesTriad() {
+  const svg = document.getElementById('axes-triad');
+  if (!svg || svg.style.display === 'none' || !camera) return;
+  camera.updateMatrixWorld();
+  const e = camera.matrixWorld.elements;
+  const right = new THREE.Vector3(e[0], e[1], e[2]).normalize();
+  const up    = new THREE.Vector3(e[4], e[5], e[6]).normalize();
+  const fwd   = new THREE.Vector3(-e[8], -e[9], -e[10]).normalize();
+  const cx = 42, cy = 42, L = 26;
+  const axes = [
+    { dir: bedDirToWorld(new THREE.Vector3(1,0,0)), color:'#C2452F', label:'X' },
+    { dir: bedDirToWorld(new THREE.Vector3(0,1,0)), color:'#3E8E5A', label:'Y' },
+    { dir: bedDirToWorld(new THREE.Vector3(0,0,1)), color:'#C9A227', label:'Z' },
+  ];
+  axes.forEach(a => { a.sx = a.dir.dot(right); a.sy = a.dir.dot(up); a.depth = a.dir.dot(fwd); });
+  axes.sort((a, b) => a.depth - b.depth);   // far axes first (drawn under)
+  let html = '';
+  for (const a of axes) {
+    const x2 = cx + a.sx * L, y2 = cy - a.sy * L;
+    const op = a.depth < -0.35 ? 0.4 : 1;   // pointing away from camera → dim
+    html += `<line x1="${cx}" y1="${cy}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${a.color}" stroke-width="2" stroke-linecap="round" opacity="${op}"/>`;
+    const lx = cx + a.sx * (L + 7), ly = cy - a.sy * (L + 7) + 3.2;
+    html += `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" fill="${a.color}" font-size="9" font-family="'DM Mono',monospace" text-anchor="middle" opacity="${op}">${a.label}</text>`;
+  }
+  svg.innerHTML = html;
 }
 
 function initThree() {
@@ -2927,9 +3035,24 @@ function divergingColor(t) {
   return c[i].map((v, j) => v + f * (c[i+1][j] - v));
 }
 
+// Combined tension/compression field: the dominant principal stress at each
+// vertex — σ₁ (most tensile) when it outweighs σ₃ in magnitude, else σ₃ (most
+// compressive). Signed, so it feeds the diverging color scale directly:
+// red = pulling apart, blue = crushing, white ≈ low stress. Ties (|σ₁|=|σ₃|)
+// resolve to σ₁ so a pure hydrostatic point reads as its tensile value.
+function computeDominantPrincipal(s1, s3) {
+  const n = Math.min(s1 ? s1.length : 0, s3 ? s3.length : 0);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = s1[i] ?? 0, b = s3[i] ?? 0;
+    out[i] = Math.abs(a) >= Math.abs(b) ? a : b;
+  }
+  return out;
+}
+
 // Compute diverging colors for a signed stress array.
 // The scale is symmetric around 0: absMax = max(|min|, |max|) at p98, or absMaxOverride if provided.
-function computeDivergingColors(stressArr, absMaxOverride) {
+function computeDivergingColors(stressArr, absMaxOverride, filter) {
   const n = stressArr.length;
   let absMax;
   if (absMaxOverride != null && absMaxOverride > 0) {
@@ -2941,14 +3064,24 @@ function computeDivergingColors(stressArr, absMaxOverride) {
     absMax = Math.max(Math.abs(p02), Math.abs(p98), 1e-6);
   }
 
+  // Threshold filter: on diverging fields it acts on magnitude |σ|, so 'above'
+  // keeps the hot extremes (either sign) and 'below' keeps the calm core.
+  const filterOn = filter && filter.enabled;
+  const thr = filterOn ? filter.frac * absMax : 0;
+
   const colors = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
+    if (filterOn) {
+      const mag = Math.abs(stressArr[i] ?? 0);
+      const show = filter.side === 'above' ? mag >= thr : mag <= thr;
+      if (!show) { colors[i*3] = 0.5; colors[i*3+1] = 0.5; colors[i*3+2] = 0.5; continue; }
+    }
     // Map [-absMax, +absMax] → [0, 1]
     const t = 0.5 + 0.5 * Math.max(-1, Math.min(1, (stressArr[i] ?? 0) / absMax));
     const [r, g, b] = divergingColor(t);
     colors[i*3] = r; colors[i*3+1] = g; colors[i*3+2] = b;
   }
-  return { colors, effectiveMin: -absMax, effectiveMax: absMax, range: 2 * absMax };
+  return { colors, effectiveMin: -absMax, effectiveMax: absMax, range: 2 * absMax, absMax };
 }
 
 function setColormap(name) {
@@ -3115,13 +3248,7 @@ function refreshUnitsDisplay() {
   // Legend title
   const lt = document.getElementById('legend-title');
   if (lt && lt.style.display !== 'none') {
-    const modeLabels = {
-      vm:  'von Mises (' + U.stressLabel() + ')',
-      svm: 'Signed von Mises (' + U.stressLabel() + ')',
-      s1:  'Max Principal σ₁ (' + U.stressLabel() + ')',
-      dmg: 'Damage Ratio (XY/Z)'
-    };
-    lt.textContent = modeLabels[S.stressMode || 'vm'] || '';
+    lt.textContent = (MODE_META[S.stressMode] || MODE_META.vm).legend();
   }
   // Legend value labels — top (HIGH) and bottom (LOW) rows show the unit
   // inline so the scale is self-explanatory without requiring the title
@@ -3297,7 +3424,9 @@ function loadMeshFromPositions(posB64) {
     S.faceGroups = buildFaceGroups(positions);
     // Clear validity cache — new mesh, new groups
     S.faceGroups.forEach(g => { delete g._bedValid; });
+    S._triToGroup = null; S._groupCentroids = null;   // rebuilt lazily on force hover
     console.log(`[orient] ${S.faceGroups.length} face groups built`);
+    updateOrientPresetLabels();
     S.faceGroups.forEach((g,i) => console.log(`  group ${i}: "${g.label}" — ${g.triIndices.length} tris, normal=[${g.normal.map(v=>v.toFixed(2))}]`));
   }
 
@@ -3307,7 +3436,7 @@ function loadMeshFromPositions(posB64) {
 /**
  * Computes smoothed, percentile-clipped, gamma-curved per-vertex colors for
  * a stress array against the current mesh geometry. Shared by
- * applyStressColors (initial display, from server-computed nodal stress)
+ * applyStressColorsFromResults (initial display, from server-computed nodal stress)
  * and applyStressColorsFromArrays (VM/σ1/Damage mode switching, from
  * client-cached arrays) so both paths get identical visual quality —
  * previously only the former had this smoothing, which is why switching
@@ -3320,7 +3449,7 @@ function loadMeshFromPositions(posB64) {
  *                       Damage mode's normalized 2.0x ceiling) instead of
  *                       deriving it from the data's own 98th percentile.
  */
-function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverride) {
+function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverride, filter) {
   const nVerts = vertexStress.length;
   const geo = mesh3d.geometry;
   const posAttr = geo.attributes.position;
@@ -3516,8 +3645,18 @@ function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverrid
   // colors but don't flood the whole model.
   const disableGamma = new URLSearchParams(window.location.search).has('disableGamma');
   const GAMMA = disableGamma ? 1.0 : 0.55;
+  // Threshold filter: keep only the side of the threshold the user asked for;
+  // the rest paints neutral grey. The decision is a pure function of the welded
+  // per-vertex value, so coincident (welded) vertices share it — the smoothing
+  // invariant is preserved.
+  const filterOn = filter && filter.enabled;
+  const thr = filterOn ? effectiveMin + filter.frac * range : 0;
   const colors = new Float32Array(nVerts * 3);
   for (let i = 0; i < nVerts; i++) {
+    if (filterOn) {
+      const show = filter.side === 'above' ? smoothed[i] >= thr : smoothed[i] <= thr;
+      if (!show) { colors[i*3] = 0.5; colors[i*3+1] = 0.5; colors[i*3+2] = 0.5; continue; }
+    }
     const linear = range > 0 ? Math.max(0, Math.min(1, (smoothed[i] - effectiveMin) / range)) : 0;
     const t = Math.pow(linear, GAMMA);
     const [r, g, b] = stressColor(t);
@@ -3561,50 +3700,64 @@ function decodeDisplacementB64(b64String) {
   return new Float32Array(buf.buffer);
 }
 
-function applyStressColors(stressB64, maxStress, principalStressB64, errorEstimateB64, principalStress2B64, principalStress3B64, xyUtilB64, zUtilB64, signedVonMisesB64) {
-  if (!mesh3d) return;
-  const buf = Uint8Array.from(atob(stressB64), c => c.charCodeAt(0));
-  const vertexStress = new Float32Array(buf.buffer);
-  const expectedLength = mesh3d.geometry.attributes.position.count;
+// Decode a base64 Float32 payload, or null when absent/corrupt.
+function _decodeStressF32(b64) {
+  if (!b64) return null;
+  try {
+    return new Float32Array(Uint8Array.from(atob(b64), c => c.charCodeAt(0)).buffer);
+  } catch (e) { return null; }
+}
 
-  // Validate array integrity
+// Single entry point for painting a solve's heatmap. Takes the whole results
+// object (not 9 positional args, which let call sites clobber cached fields
+// with null), MERGES the decoded arrays into S._stressArrays, reveals/greys the
+// mode buttons by data availability, then delegates the actual paint to
+// setStressMode so there is exactly one paint path and no mode/legend desync.
+//   fresh:true  — a new solve: reset the cache and pick the default mode.
+//   fresh:false — a repaint (toggle re-enable, split close): keep cached arrays
+//                 the results object omits, and keep the current mode.
+function applyStressColorsFromResults(results, { fresh = false } = {}) {
+  if (!mesh3d || !results) return;
+
+  const vertexStress = _decodeStressF32(results.vertexStressB64);
+  if (!vertexStress) { console.error('[heatmap] missing/undecodable vertexStress'); return; }
+  const expectedLength = mesh3d.geometry.attributes.position.count;
   try {
     validateStressArray(vertexStress, expectedLength, "vertexStress");
-  } catch (e) {
-    console.error(e.message);
-    return;
-  }
+  } catch (e) { console.error(e.message); return; }
 
-  const { colors, effectiveMin, effectiveMax, range, rawMin, rawMax } =
-    computeSmoothedStressColors(vertexStress);
+  // ── Merge decoded arrays into the cache ──────────────────────────────────
+  const cache = fresh ? {} : (S._stressArrays || {});
+  cache.vm = vertexStress;
+  const put = (key, b64) => { const v = _decodeStressF32(b64); if (v) cache[key] = v; };
+  put('s1',     results.vertexPrincipalStressB64);
+  put('s2',     results.vertexPrincipalStress2B64);
+  put('s3',     results.vertexPrincipalStress3B64);
+  put('svm',    results.vertexSignedVonMisesB64);
+  put('error',  results.vertexErrorEstimateB64);
+  put('xyutil', results.vertexXyUtilB64);
+  put('zutil',  results.vertexZUtilB64);
 
-  console.log(`Stress range: ${rawMin.toFixed(2)}–${rawMax.toFixed(2)} MPa, display: ${effectiveMin.toFixed(2)}–${effectiveMax.toFixed(2)}`);
+  // Damage ratio is always derivable from vm + the solved yield.
+  const effYield = S.results?.summary?.effectiveYieldMPa ?? results.summary?.effectiveYieldMPa ?? 1;
+  const dmg = new Float32Array(vertexStress.length);
+  for (let i = 0; i < vertexStress.length; i++) dmg[i] = (vertexStress[i] ?? 0) / effYield;
+  cache.dmg = dmg;
 
-  const cols = mesh3d.geometry.attributes.color.array;
-  if (colors.length !== cols.length) {
-    console.error(
-      `[applyStressColors] vertex count mismatch: analysis result has ${colors.length/3} ` +
-      `vertices but the displayed mesh has ${cols.length/3}. Skipping heatmap color update ` +
-      `to avoid a crash — the model will stay uncolored. This usually means the upload-preview ` +
-      `mesh and analysis mesh resolutions diverged; re-uploading the file may help.`
-    );
-    showErrorToast(
-      'Stress heatmap could not be displayed (mesh size mismatch). Results are still valid — try re-uploading the file.',
-      { severity: 'warn', source: '[heatmap]' }
-    );
-  } else {
-    cols.set(colors);
-    mesh3d.geometry.attributes.color.needsUpdate = true;
-  }
+  // Combined tension/compression view — derived from σ₁ and σ₃ (server always
+  // sends both), so it is available whenever the principals are.
+  cache.tc = (cache.s1 && cache.s3) ? computeDominantPrincipal(cache.s1, cache.s3) : null;
+
+  S._stressArrays = cache;
   S.showStress = true;
   S.stressColors = vertexStress;
-  S.stressMax = effectiveMax;
-  S.stressMin = effectiveMin;
+  if (S.stressMode === undefined) S.stressMode = DEFAULT_STRESS_MODE;
+
+  // Reveal the persistent heatmap chrome.
   document.getElementById('btn-stress').style.display = 'block';
   document.getElementById('legend').style.display = 'flex';
   const legendTitle = document.getElementById('legend-title');
   if (legendTitle) legendTitle.style.display = 'block';
-  // Show stress mode buttons
   const smWrap = document.getElementById('stress-mode-wrap');
   if (smWrap) smWrap.style.display = 'flex';
   const dfWrap = document.getElementById('deform-wrap');
@@ -3612,76 +3765,24 @@ function applyStressColors(stressB64, maxStress, principalStressB64, errorEstima
   const clWrap = document.getElementById('clip-wrap');
   if (clWrap) clWrap.style.display = 'flex';
 
-  // Update legend labels
-  const labels = document.getElementById('legend-val-stack');
-  if (labels) {
-    const steps = labels.children.length;
-    Array.from(labels.children).forEach((el, i) => {
-      const v = effectiveMax - (i / (steps-1)) * range;
-      el.textContent = v.toFixed(1);
-    });
-  }
+  // Peak marker from the raw vm field.
+  markPeakStressLocation(vertexStress);
 
-  // Mark the peak stress location — use raw max, not smoothed range
-  markPeakStressLocation(vertexStress, rawMax);
-
-  // Cache stress arrays for mode switching
-  const dmgArray = new Float32Array(vertexStress.length);
-  const effYield = S.results?.summary?.effectiveYieldMPa ?? 1;
-
-  function decodeF32(b64) {
-    if (!b64) return null;
-    try {
-      return new Float32Array(Uint8Array.from(atob(b64), c => c.charCodeAt(0)).buffer);
-    } catch(e) { return null; }
-  }
-
-  const principalVerts  = decodeF32(principalStressB64);
-  const principalVerts2 = decodeF32(principalStress2B64);
-  const principalVerts3 = decodeF32(principalStress3B64);
-  const errorEstimate   = decodeF32(errorEstimateB64);
-
-  const s1Array = new Float32Array(vertexStress.length);
-  const s2Array = new Float32Array(vertexStress.length);
-  const s3Array = new Float32Array(vertexStress.length);
-  for (let i=0; i<vertexStress.length; i++) {
-    const vm = vertexStress[i] ?? 0;
-    s1Array[i]  = (principalVerts  && principalVerts.length  > i) ? (principalVerts[i]  ?? vm * 1.15) : vm * 1.15;
-    s2Array[i]  = (principalVerts2 && principalVerts2.length > i) ? (principalVerts2[i] ?? 0) : 0;
-    s3Array[i]  = (principalVerts3 && principalVerts3.length > i) ? (principalVerts3[i] ?? 0) : 0;
-    dmgArray[i] = vm / effYield;
-  }
-  const xyUtilArray     = decodeF32(xyUtilB64);
-  const zUtilArray      = decodeF32(zUtilB64);
-  const svmArray        = decodeF32(signedVonMisesB64);
-  S._stressArrays = { vm: vertexStress, svm: svmArray, s1: s1Array, s2: s2Array, s3: s3Array, dmg: dmgArray, error: errorEstimate, xyutil: xyUtilArray, zutil: zUtilArray };
-
-  // Show signed VM button if array is available. Reveal as 'flex' (not
-  // 'block') so the shared .vmode-btn column layout stays centered and
-  // matches the always-visible buttons.
-  if (svmArray && svmArray.length > 0) {
-    const btnSvm = document.getElementById('btn-svm');
-    if (btnSvm) btnSvm.style.display = 'flex';
-  }
-
-  // Show error estimate button if error estimate is available
-  if (errorEstimate && errorEstimate.length > 0) {
-    const btnError = document.getElementById('btn-error');
-    if (btnError) btnError.style.display = 'flex';
-  }
-  // Show utilization buttons if arrays are available
-  if (xyUtilArray && xyUtilArray.length > 0) {
-    const btnXy = document.getElementById('btn-xyutil');
-    const btnZ  = document.getElementById('btn-zutil');
-    if (btnXy) btnXy.style.display = 'flex';
-    if (btnZ)  btnZ.style.display  = 'flex';
-  }
+  // Pick the target mode, then paint once through setStressMode. Keep the
+  // user's current mode when its data survived the merge; otherwise fall back
+  // to the default (the combined tension/compression view), then to the first
+  // available mode.
+  let target = S.stressMode || DEFAULT_STRESS_MODE;
+  if (!stressModeAvailable(target)) target = DEFAULT_STRESS_MODE;
+  if (!stressModeAvailable(target)) target = STRESS_MODE_ORDER.find(stressModeAvailable) || 'vm';
+  refreshStressModeButtons();
+  setStressMode(target);
 }
 
 function markPeakStressLocation(vertexStress, maxStress) {
   // Remove old marker
   const old = scene.getObjectByName('peak-stress-marker');
-  if (old) { scene.remove(old); old.geometry?.dispose(); }
+  if (old) { if (old.parent) old.parent.remove(old); old.geometry?.dispose(); old.material?.dispose(); }
 
   if (!mesh3d || vertexStress.length === 0) return;
 
@@ -3692,18 +3793,23 @@ function markPeakStressLocation(vertexStress, maxStress) {
   }
   if (maxVal < 0.001) return;
 
-  // Get world position of that vertex
+  // The vertex position is already in mesh-local (geometry) coordinates. Parent
+  // the marker to mesh3d so it inherits the part's orientation, scale, and any
+  // deformed-shape warp — it then stays glued to the peak after re-orienting to
+  // the bed instead of floating in the old world frame.
   const pos = mesh3d.geometry.attributes.position;
   const vx = pos.getX(maxIdx), vy = pos.getY(maxIdx), vz = pos.getZ(maxIdx);
-  const worldPos = new THREE.Vector3(vx, vy, vz).applyMatrix4(mesh3d.matrixWorld);
+  const scale = mesh3d.userData.scale || 1;
 
-  // Pulsing sphere marker
-  const geo = new THREE.SphereGeometry(0.025, 8, 8);
+  // Pulsing sphere marker — radius in mesh-local (mm) units so the on-screen
+  // size (0.025 world units) is unchanged after the mesh3d scale is applied.
+  const geo = new THREE.SphereGeometry(0.025 / scale, 8, 8);
   const mat = new THREE.MeshBasicMaterial({ color: 0xC9A227, transparent: true, opacity: 0.9 });
+  mat.clippingPlanes = (S.clipActive && S._clipPlane) ? [S._clipPlane] : [];
   const marker = new THREE.Mesh(geo, mat);
-  marker.position.copy(worldPos);
+  marker.position.set(vx, vy, vz);
   marker.name = 'peak-stress-marker';
-  scene.add(marker);
+  mesh3d.add(marker);
 
   // Animate pulse
   let t = 0;
@@ -3857,6 +3963,8 @@ async function handleFile(file) {
     document.getElementById('toolbar').style.display = 'flex';
     document.getElementById('topright').style.display = 'flex';
     document.getElementById('badges').style.display = 'flex';
+    const triad = document.getElementById('axes-triad');
+    if (triad) { triad.style.display = 'block'; updateAxesTriad(); }
 
     // File info
     const di = document.getElementById('file-info');
@@ -4086,6 +4194,7 @@ function setMode(m) {
     if (S._holePts && S._holePts.length > 0 && S._holePts.length < 3) bumpManualStat('abandoned');
     clearHolePoints();
   }
+  if (m !== 'force') clearForceSnapMarker();
   clearHover();
 }
 function toggleMode(m) { setMode(S.mode === m ? 'view' : m); }
@@ -4124,23 +4233,35 @@ function raycastMesh(mesh, clientX, clientY) {
 // ─── Hole proximity in local space ───────────────────────────────────────────
 let hoverHole = null, hoverMesh3d = null;
 
-function worldToLocal(wx, wy, wz) {
-  // STL coords -> mesh local coords (after centering and scaling)
+function stlToMeshLocal(wx, wy, wz) {
+  // STL/model-frame mm -> mesh3d-local (geometry) coords. The geometry is only
+  // TRANSLATED by -offset (buildGeometryFromPositions); the 1.6/maxExtent scale
+  // lives on the object (mesh3d.scale), so mesh-child coordinates are plain mm
+  // minus the centering offset. Never multiply by scale here — doing so double-
+  // applies it once mesh3d.matrixWorld runs and collapses overlays toward the
+  // part centre.
   if (!mesh3d || !S.fileData) return [wx, wy, wz];
-  const { offset, scale } = mesh3d.userData;
-  return [(wx - offset.x) * scale, (wy - offset.y) * scale, (wz - offset.z) * scale];
+  const { offset } = mesh3d.userData;
+  return [wx - offset.x, wy - offset.y, wz - offset.z];
+}
+
+function meshLocalToStl(lx, ly, lz) {
+  // Inverse of stlToMeshLocal: mesh-local (mm) -> STL/model-frame mm.
+  if (!mesh3d || !S.fileData) return [lx, ly, lz];
+  const { offset } = mesh3d.userData;
+  return [lx + offset.x, ly + offset.y, lz + offset.z];
 }
 
 function findNearestHole(localPos) {
   if (!S.fileData || !S.fileData.holes.length) return null;
   let best = null, bestD = Infinity;
   for (const h of S.fileData.holes) {
-    const [lx, ly, lz] = worldToLocal(...h.centre);
+    const [lx, ly, lz] = stlToMeshLocal(...h.centre);
     const d = localPos.distanceTo(new THREE.Vector3(lx, ly, lz));
     if (d < bestD) { bestD = d; best = h; }
   }
-  // Generous snap: 8x hole radius in display space
-  const snapThreshold = (best ? best.radius : 3) * (mesh3d.userData.scale || 1) * 8;
+  // Generous snap: 8x hole radius (mesh-local mm — same frame as localPos)
+  const snapThreshold = (best ? best.radius : 3) * 8;
   return bestD < snapThreshold ? best : null;
 }
 
@@ -4238,10 +4359,9 @@ function confirmFastener() {
 }
 function showHoverRing(hole) {
   clearHover();
-  const [cx, cy, cz] = worldToLocal(...hole.centre);
+  const [cx, cy, cz] = stlToMeshLocal(...hole.centre);
   const cen = new THREE.Vector3(cx, cy, cz);
-  const scale = mesh3d.userData.scale;
-  const r = hole.radius * scale;
+  const r = hole.radius;
 
   // Approximate normal in local space
   const [nx, ny, nz] = hole.normal;
@@ -4269,9 +4389,95 @@ function clearHover() {
   hoverHole = null;
 }
 
+// ─── Magnet snapping for force placement ──────────────────────────────────────
+// While placing a force, the hovered point snaps to the nearest meaningful
+// feature — a triangle vertex, an edge midpoint, the triangle centroid, or the
+// hovered logical face's centroid — within a small screen-space radius. A gold
+// marker shows what was grabbed; the click places there.
+let _forceSnapMarker = null;
+
+// Build (once per mesh) a triangle→face-group map and per-group centroids in
+// mesh-local coords. Also lets findFaceGroupUnderMouse skip its O(groups×tris) scan.
+function _ensureTriToGroup() {
+  if (S._triToGroup || !S.faceGroups || !S.faceGroups.length || !mesh3d) return;
+  const triCount = mesh3d.geometry.attributes.position.count / 3;
+  const map = new Int32Array(triCount).fill(-1);
+  S.faceGroups.forEach((g, gi) => { for (const t of g.triIndices) if (t >= 0 && t < triCount) map[t] = gi; });
+  S._triToGroup = map;
+  const pos = mesh3d.geometry.attributes.position;
+  S._groupCentroids = S.faceGroups.map(g => {
+    let x = 0, y = 0, z = 0, n = 0;
+    for (const t of g.triIndices) for (let k = 0; k < 3; k++) {
+      const vi = t * 3 + k; x += pos.getX(vi); y += pos.getY(vi); z += pos.getZ(vi); n++;
+    }
+    return n ? new THREE.Vector3(x/n, y/n, z/n) : null;
+  });
+}
+
+function clearForceSnapMarker() {
+  if (_forceSnapMarker) {
+    if (_forceSnapMarker.parent) _forceSnapMarker.parent.remove(_forceSnapMarker);
+    _forceSnapMarker.geometry.dispose();
+    _forceSnapMarker.material.dispose();
+    _forceSnapMarker = null;
+  }
+  S._forceSnap = null;
+}
+
+function handleForceSnapHover(e) {
+  if (!mesh3d) { clearForceSnapMarker(); return; }
+  const hit = raycast(e.clientX, e.clientY);
+  if (!hit || hit.faceIndex == null) { clearForceSnapMarker(); return; }
+  _ensureTriToGroup();
+
+  const pos = mesh3d.geometry.attributes.position;
+  const t = hit.faceIndex;
+  const V = k => new THREE.Vector3(pos.getX(t*3+k), pos.getY(t*3+k), pos.getZ(t*3+k));
+  const a = V(0), b = V(1), c = V(2);
+  const cand = [
+    { p: a, kind: 'vertex' }, { p: b, kind: 'vertex' }, { p: c, kind: 'vertex' },
+    { p: a.clone().add(b).multiplyScalar(0.5), kind: 'edge' },
+    { p: b.clone().add(c).multiplyScalar(0.5), kind: 'edge' },
+    { p: c.clone().add(a).multiplyScalar(0.5), kind: 'edge' },
+    { p: a.clone().add(b).add(c).multiplyScalar(1/3), kind: 'triangle center' },
+  ];
+  const gi = S._triToGroup ? S._triToGroup[t] : -1;
+  if (gi >= 0 && S._groupCentroids && S._groupCentroids[gi]) {
+    cand.push({ p: S._groupCentroids[gi].clone(), kind: 'face center' });
+  }
+
+  const rect = document.getElementById('viewer').getBoundingClientRect();
+  const cursorX = e.clientX - rect.left, cursorY = e.clientY - rect.top;
+  mesh3d.updateMatrixWorld();
+  let best = null, bestD = 12;   // screen-space snap radius (px)
+  for (const cd of cand) {
+    const w = cd.p.clone().applyMatrix4(mesh3d.matrixWorld).project(camera);
+    const sx = (w.x * 0.5 + 0.5) * rect.width;
+    const sy = (-w.y * 0.5 + 0.5) * rect.height;
+    const d = Math.hypot(sx - cursorX, sy - cursorY);
+    if (d < bestD) { bestD = d; best = cd; }
+  }
+
+  if (!best) { clearForceSnapMarker(); return; }   // no feature nearby → place at raw hit
+  S._forceSnap = { stlPos: meshLocalToStl(best.p.x, best.p.y, best.p.z), kind: best.kind };
+  if (!_forceSnapMarker) {
+    const scl = mesh3d.userData.scale || 1;
+    _forceSnapMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.011 / scl, 10, 10),
+      new THREE.MeshBasicMaterial({ color: 0xC9A227, depthTest: false })
+    );
+    _forceSnapMarker.renderOrder = 1001;
+    mesh3d.add(_forceSnapMarker);
+  }
+  _forceSnapMarker.position.copy(best.p);
+  const hintEl = document.getElementById('hint');
+  if (hintEl) hintEl.textContent = 'Snap: ' + best.kind + ' — click to place the force';
+}
+
 function handleHover(e) {
   if (S.mode === 'bed') { handleBedHover(e); return; }
   if (S.mode === 'view') { handleStressHover(e); return; }
+  if (S.mode === 'force') { handleForceSnapHover(e); return; }
   if (S.mode !== 'bolt' || !mesh3d) { clearHover(); clearStressHover(); return; }
   const hit = raycast(e.clientX, e.clientY);
   if (!hit) { clearHover(); return; }
@@ -4280,7 +4486,7 @@ function handleHover(e) {
   if (!S.fileData || !S.fileData.holes.length) { clearHover(); return; }
   let best = null, bestD = Infinity;
   for (const h of S.fileData.holes) {
-    const [lx, ly, lz] = worldToLocal(...h.centre);
+    const [lx, ly, lz] = stlToMeshLocal(...h.centre);
     const d = hit.localPos.distanceTo(new THREE.Vector3(lx, ly, lz));
     if (d < bestD) { bestD = d; best = h; }
   }
@@ -4293,8 +4499,8 @@ function handleHover(e) {
 // In view mode, with a stress field loaded, show the stress value at the
 // point under the cursor — both as a fixed top-left panel and a tooltip that
 // follows the cursor. Uses nearest-vertex lookup rather than full barycentric
-// interpolation: applyStressColors already welds and averages coincident
-// vertices across triangle boundaries (WELD_EPS = 0.01mm), so all three
+// interpolation: computeSmoothedStressColors already welds and averages
+// coincident vertices across triangle boundaries (WELD_EPS = 0.01mm), so all three
 // vertices of a given triangle already carry the same smoothed value in
 // practice except right at sharp feature edges, where nearest-vertex is the
 // more honest answer anyway (interpolating across a real discontinuity would
@@ -4346,12 +4552,11 @@ function handleStressHover(e) {
     if (d < bestD) { bestD = d; bestVi = vi; }
   }
 
-  const arr  = targetStressArrays[mode];
+  const meta = MODE_META[mode] || MODE_META.vm;
+  const arr  = meta.data(targetStressArrays);
   const val  = arr ? (arr[bestVi] ?? 0) : 0;
 
-  const labels = { vm: 'von Mises', svm: 'Signed VM', s1: 'Principal σ₁', dmg: 'Damage ratio' };
-  const units  = { vm: 'MPa', svm: 'MPa', s1: 'MPa', dmg: '×' };
-  const text = `${labels[mode] ?? mode}: ${val.toFixed(mode==='dmg' ? 2 : 1)} ${units[mode] ?? ''}`;
+  const text = `${meta.hover}: ${val.toFixed(meta.dec)} ${meta.unit()}`.trim();
 
   const panel = document.getElementById('stress-readout');
   const panelText = document.getElementById('stress-readout-text');
@@ -4426,21 +4631,16 @@ function handleClick(e) {
     addHolePoint(hit);
 
   } else if (S.mode === 'force') {
-    S.pendingForce = { position: hit.worldPos.toArray(), localPos: hit.localPos };
+    // Store the application point in STL/model-frame mm — the same frame the
+    // preset path (openForcePopupDirect), session save, and buildAnalyseBody
+    // all use. Prefer the magnet-snapped feature under the cursor; otherwise the
+    // raw surface hit (hit.localPos is mesh-local mm, so add the offset).
+    const stl = S._forceSnap ? S._forceSnap.stlPos
+                             : meshLocalToStl(hit.localPos.x, hit.localPos.y, hit.localPos.z);
+    S.pendingForce = { position: stl, localPos: hit.localPos };
+    clearForceSnapMarker();
     showForcePreview();
-    const popup = document.getElementById('force-popup');
-    const vRect = document.getElementById('viewer').getBoundingClientRect();
-    // Clamp horizontally so the 224px-wide popup doesn't extend past the
-    // viewer's right edge — without this, clicking in roughly the right
-    // third of the viewer would push most of the popup outside the viewer
-    // bounds, likely overlapping the results panel beyond it.
-    const popupWidth = 224;
-    const maxLeft = vRect.width - popupWidth - 8;
-    popup.style.left = Math.min(maxLeft, e.clientX - vRect.left + 10) + 'px';
-    // Clamp vertically to avoid a negative top offset when clicking near
-    // the viewer's own top edge.
-    popup.style.top  = Math.max(8, e.clientY - vRect.top - 40) + 'px';
-    popup.style.display = 'block';
+    openForceEditor();   // docked in the LOADS panel — viewer stays unobstructed
   }
 }
 
@@ -4450,10 +4650,9 @@ function handleClick(e) {
 // centre, radius, and the plane normal = the hole axis. Never guesses.
 function addHolePoint(hit) {
   if (!S._holePts) S._holePts = [];
-  const { offset, scale } = mesh3d.userData;
   const lp = hit.localPos;
-  // mesh-local display coords -> part coords (mm): inverse of worldToLocal
-  const part = [lp.x / scale + offset.x, lp.y / scale + offset.y, lp.z / scale + offset.z];
+  // mesh-local (mm) coords -> part coords (mm): inverse of stlToMeshLocal
+  const part = meshLocalToStl(lp.x, lp.y, lp.z);
 
   const m = new THREE.Mesh(
     new THREE.SphereGeometry(0.012, 12, 12),
@@ -4641,9 +4840,8 @@ function addBoltMarker(bolt) {
     showErrorToast('Skipped a malformed bolt (missing centre/normal/radius)', { severity: 'warn', source: '[addBoltMarker]' });
     return;
   }
-  const [cx, cy, cz] = worldToLocal(...bolt.holeCentre);
-  const scale = mesh3d.userData.scale;
-  const r = bolt.holeRadius * scale;
+  const [cx, cy, cz] = stlToMeshLocal(...bolt.holeCentre);
+  const r = bolt.holeRadius;
   const cen = new THREE.Vector3(cx, cy, cz);
   const [nx, ny, nz] = bolt.holeNormal;
   const norm = new THREE.Vector3(nx, ny, nz).normalize();
@@ -4703,26 +4901,35 @@ function addBoltMarker(bolt) {
 
 // ─── Force popup ──────────────────────────────────────────────────────────────
 function openForcePopupDirect() {
-  // Open the force popup without requiring a 3D click
-  // Use the centroid of the current mesh as the application point
+  // Place a force without a 3D click — apply at the top-centre of the part.
   let pos = [0, 0, 0];
   if (S.fileData && S.fileData.bounds) {
     const b = S.fileData.bounds;
     pos = [(b.minX+b.maxX)/2, (b.minY+b.maxY)/2, b.maxZ];
   }
   S.pendingForce = { position: pos };
-  S.pendingDir = [0, 0, 1]; // default +Z
   document.getElementById('fp-face').value = 'top';
   document.getElementById('fp-custom-dir').style.display = 'none';
-  document.getElementById('fp-dir-display').textContent = 'Direction: +Z (top face)';
+  setDir(0, 0, 1);   // default bed +Z (up from the bed)
+  showForcePreview();
+  openForceEditor();
+}
 
-  const viewer = document.getElementById('viewer');
-  const rect = viewer.getBoundingClientRect();
-  const popup = document.getElementById('force-popup');
-  popup.style.left = (rect.left + rect.width/2 - 110) + 'px';
-  popup.style.top  = (rect.top  + rect.height/2 - 100) + 'px';
-  popup.style.position = 'fixed';
-  popup.style.display = 'block';
+// Show the docked force editor in the LOADS panel (viewer stays visible).
+function openForceEditor(opts = {}) {
+  const ed = document.getElementById('force-editor');
+  if (!ed) return;
+  const title = document.getElementById('force-editor-title');
+  if (title) title.textContent = (opts.editIndex != null)
+    ? ('EDIT ' + (S.forces[opts.editIndex]?.label || 'FORCE'))
+    : 'APPLY FORCE';
+  if (typeof switchTab === 'function') switchTab('loads');
+  ed.style.display = 'block';
+  ed.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+function closeForceEditor() {
+  const ed = document.getElementById('force-editor');
+  if (ed) ed.style.display = 'none';
 }
 
 function applyForcePreset(val) {
@@ -4741,6 +4948,9 @@ function applyPresetForce(magnitudeN, face) {
   setDirFromFace(face);
 }
 
+// Direction picks are in the BED frame — Z+ is always "up from the bed",
+// regardless of how the part is oriented. setDir converts the bed-frame pick to
+// the model frame (which the solver consumes and the arrow renders in).
 function setDirFromFace(face) {
   const map = {
     top:[0,0,1], bottom:[0,0,-1], front:[0,1,0],
@@ -4756,13 +4966,33 @@ function setDirFromFace(face) {
   if (dir) setDir(dir[0], dir[1], dir[2]);
 }
 
-function setDir(x, y, z) {
-  S.pendingDir = [x, y, z];
-  const labels = {
-    '1,0,0':'+X', '-1,0,0':'-X', '0,1,0':'+Y', '0,-1,0':'-Y', '0,0,1':'+Z', '0,0,-1':'-Z'
-  };
-  document.getElementById('fp-dir-display').textContent = 'Direction: ' + (labels[[x,y,z].join(',')] || `(${x},${y},${z})`);
+const _BED_DIR_LABELS = { '1,0,0':'+X','-1,0,0':'-X','0,1,0':'+Y','0,-1,0':'-Y','0,0,1':'+Z','0,0,-1':'-Z' };
+function setDir(bx, by, bz) {
+  // (bx,by,bz) is a bed-frame direction; store it and its model-frame image.
+  S.pendingDirBed = [bx, by, bz];
+  S.pendingDir = mesh3d
+    ? bedDirToModel(new THREE.Vector3(bx, by, bz)).toArray()
+    : [bx, by, bz];
+  const key = [bx, by, bz].join(',');
+  document.getElementById('fp-dir-display').textContent =
+    'Direction: ' + (_BED_DIR_LABELS[key] || `(${bx},${by},${bz})`) + ' · bed frame (Z↑)';
   updateForcePreview();
+}
+
+// Best-matching bed-frame axis label for a stored MODEL-frame direction, so the
+// force list / editor show the direction as the user currently sees it.
+function bedDirLabel(modelDir) {
+  if (!modelDir) return '—';
+  const bed = mesh3d ? modelDirToBed(new THREE.Vector3(...modelDir)).normalize() : new THREE.Vector3(...modelDir).normalize();
+  const axes = [
+    [[1,0,0],'+X'],[[-1,0,0],'-X'],[[0,1,0],'+Y'],[[0,-1,0],'-Y'],[[0,0,1],'+Z'],[[0,0,-1],'-Z'],
+  ];
+  let best = null, bestDot = 0.966;   // within ~15° to call it an axis
+  for (const [v, lbl] of axes) {
+    const d = bed.dot(new THREE.Vector3(...v));
+    if (d > bestDot) { bestDot = d; best = lbl; }
+  }
+  return best || `(${bed.x.toFixed(2)},${bed.y.toFixed(2)},${bed.z.toFixed(2)})`;
 }
 
 // ── Force preview arrow ───────────────────────────────────────────────────────
@@ -4775,12 +5005,18 @@ function showForcePreview() {
   clearForcePreview();
   if (!S.pendingForce || !mesh3d) return;
 
-  const pos = new THREE.Vector3(...S.pendingForce.position);
+  // pendingForce.position is STL/model-frame mm. Attach the preview to mesh3d
+  // in mesh-local coords so it coincides exactly with the confirmed arrow
+  // (addForceArrow) and tracks the part's orientation.
+  const [lx, ly, lz] = stlToMeshLocal(...S.pendingForce.position);
+  const pos = new THREE.Vector3(lx, ly, lz);
   const dir = new THREE.Vector3(...S.pendingDir).normalize();
-  // Scale arrow length with force magnitude (capped for display)
+  const scale = mesh3d.userData.scale || 1;
+  // Scale arrow length with force magnitude (capped for display), in mesh-local
+  // mm so on-screen size (world units) is stable across part sizes.
   const mag = document.getElementById('fp-mag') ? (+document.getElementById('fp-mag').value || 300) : 300;
   const lenBase = 0.28, lenMax = 0.65;
-  const len = lenBase + (lenMax - lenBase) * Math.min(1, mag / 600);
+  const len = (lenBase + (lenMax - lenBase) * Math.min(1, mag / 600)) / scale;
 
   _forcePreviewArrow = new THREE.ArrowHelper(
     dir, pos, len,
@@ -4793,13 +5029,15 @@ function showForcePreview() {
   _forcePreviewArrow.line.material.transparent= true;
   _forcePreviewArrow.cone.material.opacity    = 0.65;
   _forcePreviewArrow.cone.material.transparent= true;
+  _forcePreviewArrow.line.material.depthTest  = false;
+  _forcePreviewArrow.cone.material.depthTest  = false;
   _forcePreviewArrow.renderOrder = 500;
-  scene.add(_forcePreviewArrow);
+  mesh3d.add(_forcePreviewArrow);
 }
 
 function clearForcePreview() {
   if (_forcePreviewArrow) {
-    scene.remove(_forcePreviewArrow);
+    if (_forcePreviewArrow.parent) _forcePreviewArrow.parent.remove(_forcePreviewArrow);
     _forcePreviewArrow.line.geometry.dispose();
     _forcePreviewArrow.cone.geometry.dispose();
     _forcePreviewArrow = null;
@@ -4814,7 +5052,7 @@ function updateForcePreview() {
   const dir = new THREE.Vector3(...S.pendingDir).normalize();
   _forcePreviewArrow.setDirection(dir);
 }
-function cancelForce() { S.pendingForce = null; clearForcePreview(); document.getElementById('force-popup').style.display = 'none'; }
+function cancelForce() { S.pendingForce = null; clearForcePreview(); closeForceEditor(); }
 function confirmForce() {
   clearForcePreview();
   dispatchStateChange();
@@ -4860,11 +5098,14 @@ function addForceArrow(force) {
     showErrorToast('Skipped a malformed force (missing position/direction) — it is still in the force list; delete and re-place it', { severity: 'warn', source: '[addForceArrow]' });
     return;
   }
+  // A legacy world-frame position (flagged on session restore) would render far
+  // off the part — don't draw a misleading arrow; the force list prompts a re-place.
+  if (force._replaceRecommended) return;
   const [wx, wy, wz] = force.position;
-  const [lx, ly, lz] = worldToLocal(wx, wy, wz);
+  const [lx, ly, lz] = stlToMeshLocal(wx, wy, wz);
   const pos = new THREE.Vector3(lx, ly, lz);
   const dir = new THREE.Vector3(...force.direction).normalize();
-  const arrowLen = 0.2;
+  const arrowLen = 0.2 / (mesh3d.userData.scale || 1);   // 0.2 world units, in mesh-local mm
   const arrow = new THREE.ArrowHelper(dir, pos, arrowLen, 0xe06030, arrowLen*0.3, arrowLen*0.2);
   arrow.line.material.depthTest = false;
   arrow.cone.material.depthTest = false;
@@ -4885,10 +5126,9 @@ function toggleDebug() {
 
   if (S.debugMode && S.fileData && mesh3d) {
     for (const hole of S.fileData.holes) {
-      const [cx, cy, cz] = worldToLocal(...hole.centre);
+      const [cx, cy, cz] = stlToMeshLocal(...hole.centre);
       const cen = new THREE.Vector3(cx, cy, cz);
-      const scale = mesh3d.userData.scale;
-      const r = hole.radius * scale;
+      const r = hole.radius;
       const [nx, ny, nz] = hole.normal;
       const norm = new THREE.Vector3(nx, ny, nz).normalize();
       const tang = norm.clone().cross(new THREE.Vector3(1,0,0)).length() > 0.1
@@ -4925,7 +5165,7 @@ function toggleStress() {
   btn.innerHTML = S.showStress ? '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="currentColor"><rect x="1" y="1" width="8" height="8" rx="1"/><rect x="3" y="3" width="4" height="4" fill="var(--bg-base)"/></svg> STRESS' : '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="3.5"/></svg> DEFAULT';
   btn.className = 'btn' + (S.showStress ? ' active' : '');
   if (S.showStress && S.results) {
-    applyStressColors(S.results.vertexStressB64, S.results.summary.maxVonMisesMPa, S.results.vertexPrincipalStressB64, S.results.vertexErrorEstimateB64, S.results.vertexPrincipalStress2B64, S.results.vertexPrincipalStress3B64, null, null, S.results.vertexSignedVonMisesB64);
+    applyStressColorsFromResults(S.results, { fresh: false });
   } else {
     resetColors();
     document.getElementById('legend').style.display = 'none';
@@ -4964,10 +5204,10 @@ function updateForceList() {
     el.innerHTML = '<div style="font-size:11px;color:var(--text-mid);padding:12px;border:1px dashed var(--border);border-radius:3px;text-align:center">No forces placed yet. Click + Place Force (or press F), then click the model.</div>';
     return;
   }
-  const dirLabel = d => {
-    const labels = {'1,0,0':'+X','-1,0,0':'-X','0,1,0':'+Y','0,-1,0':'-Y','0,0,1':'+Z','0,0,-1':'-Z'};
-    return labels[d.join(',')] || `(${d})`;
-  };
+  // Show each force's direction in the BED frame (Z↑) — the frame the user
+  // picked it in — recomputed from the stored model-frame vector against the
+  // part's current orientation.
+  const dirLabel = d => bedDirLabel(d) + ' (bed)';
 
   // Compute resultant for multiple forces
   let rx=0, ry=0, rz=0;
@@ -4986,7 +5226,7 @@ function updateForceList() {
   el.innerHTML = resultantHtml + S.forces.map((f,i) => `
     <div class="card" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--gold-faint);border:1px solid var(--gold)18;border-radius:3px;margin-bottom:6px">
       <div style="width:8px;height:8px;border-radius:50%;background:var(--gold);flex-shrink:0"></div>
-      <div style="flex:1;font-size:10px;color:var(--gold)aa">${f.label} · ${U.forceStr(f.magnitude)} · ${dirLabel(f.direction)}</div>
+      <div style="flex:1;font-size:10px;color:var(--gold)aa">${f.label} · ${U.forceStr(f.magnitude)} · ${dirLabel(f.direction)}${f._replaceRecommended ? ' <span style="color:var(--warn,#e0a030)">⚠ re-place recommended</span>' : ''}</div>
       <button class="btn" style="padding:2px 8px;font-size:11px" onclick="editForce(${i})" aria-label="Edit force"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 2 L8 3.5 L3.5 8 L1.5 8.5 L2 6.5 Z"/><line x1="5.5" y1="3" x2="7" y2="4.5"/></svg></button>
       <button class="btn" style="padding:2px 8px;font-size:11px" onclick="removeForce(${i})" aria-label="Remove force"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg></button>
     </div>
@@ -5091,28 +5331,22 @@ function editForce(i) {
   const f = S.forces[i];
   if (!f) return;
   S.pendingForce = { position: f.position, editIndex: i };
-  S.pendingDir   = f.direction.slice();  // restore saved direction
+  S.pendingDir   = f.direction.slice();  // stored model-frame direction
+  // Recover the bed-frame pick from the stored model-frame direction so the
+  // editor shows and highlights the direction the way the user set it.
+  const bedVec = mesh3d ? modelDirToBed(new THREE.Vector3(...f.direction)) : new THREE.Vector3(...f.direction);
+  const bedRounded = [bedVec.x, bedVec.y, bedVec.z].map(v => Math.abs(v) > 0.966 ? Math.sign(v) : 0);
+  S.pendingDirBed = bedRounded;
   document.getElementById('fp-mag').value = f.magnitude;
   document.getElementById('fp-bearing-dist').value = f.loadDistribution || 'uniform';
-  // Update direction display
-  const labels = {'1,0,0':'+X','-1,0,0':'-X','0,1,0':'+Y','0,-1,0':'-Y','0,0,1':'+Z','0,0,-1':'-Z'};
-  const dirStr = labels[f.direction.join(',')] || `(${f.direction})`;
-  document.getElementById('fp-dir-display').textContent = 'Direction: ' + dirStr;
-  // Highlight the active direction button
+  document.getElementById('fp-dir-display').textContent =
+    'Direction: ' + bedDirLabel(f.direction) + ' · bed frame (Z↑)';
+  // Highlight the active direction button (buttons are labelled in bed frame)
   document.querySelectorAll('.dir-btn').forEach(b => b.classList.remove('active'));
-  const activeBtn = document.querySelector(`.dir-btn[data-dir="${f.direction.join(',')}"]`);
+  const activeBtn = document.querySelector(`.dir-btn[data-dir="${bedRounded.join(',')}"]`);
   if (activeBtn) activeBtn.classList.add('active');
-  // Position and show popup — centered via translateX(-50%), since left:50%
-  // alone positions the popup's LEFT EDGE at the midpoint, not its center
-  // (shifting a 224px-wide popup 112px right of true center). position is
-  // set explicitly every time rather than relying on whatever a previous
-  // call to a different popup-showing function happened to leave behind.
-  const popup = document.getElementById('force-popup');
-  popup.style.position  = 'fixed';
-  popup.style.left      = '50%';
-  popup.style.top       = '200px';
-  popup.style.transform = 'translateX(-50%)';
-  popup.style.display   = 'block';
+  showForcePreview();
+  openForceEditor({ editIndex: i });
 }
 
 function removeBolt(i) {
@@ -5656,7 +5890,7 @@ async function runAnalysis() {
     // was requested and a physical positive BLF was found).
     storeBucklingResult(dataStd.bucklingResult, dataStd.vertexBucklingModeB64);
 
-    applyStressColors(dataStd.vertexStressB64, dataStd.summary.maxVonMisesMPa, dataStd.vertexPrincipalStressB64, null, dataStd.vertexPrincipalStress2B64, dataStd.vertexPrincipalStress3B64, dataStd.vertexXyUtilB64, dataStd.vertexZUtilB64, dataStd.vertexSignedVonMisesB64);
+    applyStressColorsFromResults(dataStd, { fresh: true });
     showResults(dataStd.summary);
     showOrientComparison(dataStd.summary);
     storeAsBaseline(dataStd.summary, S.fileData?.fileName);
@@ -5825,7 +6059,7 @@ async function runAnalysis() {
         S.displacements = decodeDisplacementB64(dataFine.vertexDisplacementB64);
       }
 
-      applyStressColors(dataFine.vertexStressB64, dataFine.summary.maxVonMisesMPa, dataFine.vertexPrincipalStressB64, null, dataFine.vertexPrincipalStress2B64, dataFine.vertexPrincipalStress3B64, null, null, dataFine.vertexSignedVonMisesB64);
+      applyStressColorsFromResults(dataFine, { fresh: true });
       showResults(dataFine.summary);
       showOrientComparison(dataFine.summary);
       storeAsBaseline(dataFine.summary, S.fileData?.fileName);
@@ -7330,6 +7564,11 @@ function openSplitView() {
 
   const ov = document.getElementById('split-overlay');
   if (ov) ov.style.display = 'block';
+  // The triad shares the top-right corner with the split labels — hide it while
+  // split view is active (its single-frame print convention doesn't apply to
+  // the two half-viewports anyway).
+  const triad = document.getElementById('axes-triad');
+  if (triad) triad.style.display = 'none';
 
   // Switch viewer to stress mode so the geometry is coloured
   if (!S.showStress && S.results) {
@@ -7360,7 +7599,10 @@ function closeSplitView() {
     if (camera) { camera.aspect = w / h; camera.updateProjectionMatrix(); }
   }
   // Reapply current result stress
-  if (S.results) applyStressColors(S.results.vertexStressB64, S.results.summary.maxVonMisesMPa, S.results.vertexPrincipalStressB64, null, S.results.vertexPrincipalStress2B64, S.results.vertexPrincipalStress3B64, null, null, S.results.vertexSignedVonMisesB64);
+  if (S.results) applyStressColorsFromResults(S.results, { fresh: false });
+  // Restore the axes triad (hidden while split view was active)
+  const triad = document.getElementById('axes-triad');
+  if (triad && S.fileData) { triad.style.display = 'block'; updateAxesTriad(); }
 }
 
 function renderSplitFrame() {
@@ -7469,6 +7711,35 @@ function animateCameraToFaceNormal(normal) {
   requestAnimationFrame(step);
 }
 
+// ─── Bed / print frame ────────────────────────────────────────────────────────
+// Print convention: the build plate is the world XZ plane and "up from the bed"
+// (bed +Z) is world +Y. BED_Q rotates a bed-frame direction into world space.
+// Bed axes in world coords: Xb=(1,0,0), Yb=(0,0,-1), Zb=(0,1,0) — right-handed.
+// Anchor: with the default snap (bedNormal [0,0,-1]) bedDirToModel([0,0,1]) is
+// model +Z, i.e. "up from the bed" is the STL up direction in the flat pose.
+const BED_Q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI/2, 0, 0));
+function bedDirToWorld(v3)   { return v3.clone().applyQuaternion(BED_Q); }
+function worldDirToBed(v3)   { return v3.clone().applyQuaternion(BED_Q.clone().invert()); }
+function modelDirToWorld(v3) { return mesh3d ? v3.clone().applyQuaternion(mesh3d.quaternion) : v3.clone(); }
+function worldDirToModel(v3) { return mesh3d ? v3.clone().applyQuaternion(mesh3d.quaternion.clone().invert()) : v3.clone(); }
+function bedDirToModel(v3)   { return worldDirToModel(bedDirToWorld(v3)); }
+function modelDirToBed(v3)   { return worldDirToBed(modelDirToWorld(v3)); }
+
+// The rotation that sends a MODEL-space face normal to point into the build
+// plate (-Y world). Shared by snapToBed and the preset ghost-preview so both
+// use identical math.
+function bedSnapQuaternion(faceNormal) {
+  const fn     = new THREE.Vector3(...faceNormal).normalize();
+  const target = new THREE.Vector3(0, -1, 0);  // -Y = into the build plate
+  if (Math.abs(fn.dot(target)) > 0.9999) {
+    // Parallel/anti-parallel — a 180° flip about X when the normal is already +Y.
+    return (fn.y > 0)
+      ? new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0), Math.PI)
+      : new THREE.Quaternion();  // identity, already pointing -Y
+  }
+  return new THREE.Quaternion().setFromUnitVectors(fn, target);
+}
+
 function snapToBed(faceNormal) {
   if (!mesh3d) return;
 
@@ -7476,27 +7747,12 @@ function snapToBed(faceNormal) {
   animateCameraToFaceNormal(faceNormal);
 
   // faceNormal is in MODEL space (the STL coordinate frame, no rotation applied).
-  // We want to rotate the mesh so that faceNormal points straight down (-Y world).
-  // Start from identity — don't compose on top of whatever rotation was already set.
+  // Rotate the mesh so that faceNormal points straight down (-Y world). Start
+  // from identity — don't compose on top of whatever rotation was already set.
   rotX = 0; rotY = 0;
   mesh3d.position.y = 0;
 
-  const fn     = new THREE.Vector3(...faceNormal).normalize();
-  const target = new THREE.Vector3(0, -1, 0);  // -Y = into the build plate
-
-  // Handle the degenerate case where fn is already exactly ±Y
-  let q;
-  if (Math.abs(fn.dot(target)) > 0.9999) {
-    // Parallel or anti-parallel — use 180° rotation around <svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg> or Z
-    if (fn.y > 0) {
-      q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0), Math.PI);
-    } else {
-      q = new THREE.Quaternion(); // identity, already pointing -Y
-    }
-  } else {
-    q = new THREE.Quaternion().setFromUnitVectors(fn, target);
-  }
-
+  const q = bedSnapQuaternion(faceNormal);
   const euler = new THREE.Euler().setFromQuaternion(q, 'XYZ');
   rotX = euler.x; rotY = euler.y;
   mesh3d.rotation.set(euler.x, euler.y, euler.z);
@@ -7506,6 +7762,7 @@ function snapToBed(faceNormal) {
   showBedPlane();   // translates mesh so min-Y sits on Y=0
   updateOrientMul();
   updateOrientPanel();
+  updateAxesTriad();
 }
 
 // ─── Layer line overlay ───────────────────────────────────────────────────────
@@ -7668,24 +7925,101 @@ function updateOrientPanel() {
 }
 
 // ─── Orient presets ────────────────────────────────────────────────────────────
+// Each preset snaps a specific model-space face to the bed. Absolute (not
+// relative to the current pose) so a given preset always lands the part the
+// same way — predictable, and the ghost preview shows exactly where.
+const ORIENT_PRESETS = {
+  'top':    { normal: [0, 0,  1], name: 'Top face on bed'    },
+  'bottom': { normal: [0, 0, -1], name: 'Bottom face on bed' },
+  'side-x': { normal: [1, 0,  0], name: 'X face on bed'      },
+  'side-y': { normal: [0, 1,  0], name: 'Y face on bed'      },
+};
+function presetTargetNormal(preset) {
+  const p = ORIENT_PRESETS[preset];
+  return p ? p.normal.slice() : null;
+}
+
+// Label of the detected face group whose normal best matches a model-space
+// direction — so the ORIENT card can name the actual face that touches the bed.
+function nearestFaceGroupLabel(modelNormal) {
+  if (!S.faceGroups || !S.faceGroups.length) return null;
+  const n = new THREE.Vector3(...modelNormal).normalize();
+  let best = null, bestDot = -Infinity;
+  for (const g of S.faceGroups) {
+    if (!g.normal) continue;
+    const d = new THREE.Vector3(...g.normal).normalize().dot(n);
+    if (d > bestDot) { bestDot = d; best = g; }
+  }
+  return best ? (best.label || null) : null;
+}
+
+// Fill each preset button's subtitle with the actual detected face group that
+// will touch the bed, so the label names a real face rather than a bare axis.
+function updateOrientPresetLabels() {
+  for (const preset of Object.keys(ORIENT_PRESETS)) {
+    const span = document.getElementById('preset-face-' + preset);
+    if (!span) continue;
+    const label = nearestFaceGroupLabel(ORIENT_PRESETS[preset].normal);
+    span.textContent = label ? ('→ ' + label) : '';
+  }
+}
+
 function applyOrientPreset(preset) {
   if (!mesh3d) return;
-  // Presets define the model-space face normal that should touch the bed.
-  // snapToBed rotates so that normal points -Y (into plate), then showBedPlane
-  // translates so the part sits on Y=0.
-  const presetMap = {
-    'top':    { normal: [0, 0,  1], name: 'Top face (flat on bed)'     },
-    'bottom': { normal: [0, 0, -1], name: 'Bottom face (flat on bed)'  },
-    'side-x': { normal: [1, 0,  0], name: 'Right edge (standing on <svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg>)' },
-    'side-y': { normal: [0, 1,  0], name: 'Front edge (standing on Y)' },
-  };
-  const p = presetMap[preset];
-  if (!p) return;
+  const n = presetTargetNormal(preset);
+  if (!n) return;
+  clearOrientPresetPreview();
 
-  S.bedFaceName = p.name;
-  snapToBed(p.normal);   // handles rotation, Y-reset, showBedPlane, updateOrientMul, updateOrientPanel
+  const faceLabel = nearestFaceGroupLabel(n);
+  S.bedFaceName = faceLabel || ORIENT_PRESETS[preset].name;
+  snapToBed(n);   // rotation, Y-reset, showBedPlane, updateOrientMul, updateOrientPanel
 
   switchTab('orient');
+}
+
+// Ghost preview of a preset's landing pose while hovering its button. Shares
+// mesh3d's geometry (no copy), transparent gold, rested on Y=0; disposed on
+// mouseleave. Also flags the face group that will touch the bed.
+let _orientGhost = null;
+function showOrientPresetPreview(preset) {
+  if (!mesh3d) return;
+  clearOrientPresetPreview();
+  const n = presetTargetNormal(preset);
+  if (!n) return;
+  const ghost = new THREE.Mesh(
+    mesh3d.geometry,
+    new THREE.MeshBasicMaterial({ color: 0xC9A227, transparent: true, opacity: 0.15, depthWrite: false })
+  );
+  ghost.scale.copy(mesh3d.scale);
+  ghost.quaternion.copy(bedSnapQuaternion(n));
+  ghost.updateMatrixWorld();
+  const box = new THREE.Box3().setFromObject(ghost);
+  ghost.position.y = -box.min.y;   // rest the lowest point on the plate
+  ghost.renderOrder = 400;
+  scene.add(ghost);
+  _orientGhost = ghost;
+
+  const idx = (S.faceGroups || []).findIndex(g => g === _nearestFaceGroup(n));
+  if (idx >= 0 && typeof highlightFaceGroup === 'function') highlightFaceGroup(idx, true);
+}
+function _nearestFaceGroup(modelNormal) {
+  if (!S.faceGroups || !S.faceGroups.length) return null;
+  const n = new THREE.Vector3(...modelNormal).normalize();
+  let best = null, bestDot = -Infinity;
+  for (const g of S.faceGroups) {
+    if (!g.normal) continue;
+    const d = new THREE.Vector3(...g.normal).normalize().dot(n);
+    if (d > bestDot) { bestDot = d; best = g; }
+  }
+  return best;
+}
+function clearOrientPresetPreview() {
+  if (_orientGhost) {
+    if (_orientGhost.parent) _orientGhost.parent.remove(_orientGhost);
+    _orientGhost.material.dispose();   // geometry is shared with mesh3d — don't dispose
+    _orientGhost = null;
+  }
+  if (typeof clearFaceHighlight === 'function') clearFaceHighlight();
 }
 
 // ─── Find face group under mouse ──────────────────────────────────────────────
@@ -8107,15 +8441,25 @@ function buildThemeIcon(theme) {
     `<circle cx="6" cy="6" r="2.2"/>${rays}${shadow}</svg>`;
 }
 
+let _themeFadeTimer = null;
 function toggleTheme() {
   const html = document.documentElement;
   const isDark = html.getAttribute('data-theme') === 'dark';
   const next = isDark ? 'light' : 'dark';
+  // Crossfade the DOM colours: add the scoped class before the attribute swap,
+  // remove it once the 280ms transition has finished. Guard re-entry so rapid
+  // toggles don't strand the class.
+  const fade = !_prefersReducedMotion();
+  if (fade) {
+    html.classList.add('theme-fading');
+    if (_themeFadeTimer) clearTimeout(_themeFadeTimer);
+    _themeFadeTimer = setTimeout(() => { html.classList.remove('theme-fading'); _themeFadeTimer = null; }, 400);
+  }
   html.setAttribute('data-theme', next);
   document.getElementById('theme-icon').innerHTML = buildThemeIcon(next);
   if (renderer) renderer.setClearColor(next === 'dark' ? 0x070604 : 0xeeeae3, 0);
-  // Update build-plate grid colors for theme
-  if (scene) rebuildBedGrid(next);
+  // Crossfade the build-plate grid to match the DOM fade.
+  if (scene) rebuildBedGrid(next, { fade });
   // The dark bed-fill plane reads as a gray square shadow on the light
   // background — show it in dark mode only.
   if (S.bedMesh) S.bedMesh.visible = next === 'dark';
@@ -10432,47 +10776,39 @@ async function loadSession() {
           b.holeCentre = h.centre;
           b.holeRadius = h.radius;
         }
-        // Re-create 3D marker sphere at hole centre
-        let marker3d = null;
-        if (b.holeCentre && mesh3d) {
-          const scale = mesh3d.userData.scale || 1;
-          const offset = mesh3d.userData.offset || new THREE.Vector3();
-          const wx = (b.holeCentre[0] - offset.x) * scale;
-          const wy = (b.holeCentre[1] - offset.y) * scale;
-          const wz = (b.holeCentre[2] - offset.z) * scale;
-          const geo = new THREE.SphereGeometry(0.035, 8, 8);
-          const mat = new THREE.MeshBasicMaterial({ color: 0x00e5ff });
-          marker3d = new THREE.Mesh(geo, mat);
-          marker3d.position.set(wx, wy, wz);
-          scene.add(marker3d);
-        }
-        S.bolts.push({ ...b, marker3d });
+        S.bolts.push({ ...b });
       }
       updateBoltList();
       updateHolesList();
     }
 
-    // Restore forces + rebuild 3D arrows
+    // Restore forces. Guard against legacy sessions saved with the old bug
+    // where click-placed forces stored Three.js WORLD coords (~O(1)) instead of
+    // STL mm: such a position falls far outside the part bounds, so flag it for
+    // re-placement rather than drawing a misplaced arrow.
     if (session.forces?.length) {
       S.forces = [];
+      const b = S.fileData?.bounds;
+      const outOfBounds = (p) => {
+        if (!b || !Array.isArray(p)) return false;
+        const mx = (b.maxX - b.minX), my = (b.maxY - b.minY), mz = (b.maxZ - b.minZ);
+        const pad = 0.5;   // 50% margin
+        return p[0] < b.minX - pad*mx || p[0] > b.maxX + pad*mx
+            || p[1] < b.minY - pad*my || p[1] > b.maxY + pad*my
+            || p[2] < b.minZ - pad*mz || p[2] > b.maxZ + pad*mz;
+      };
       for (const f of session.forces) {
-        let arrow3d = null;
-        if (f.position && f.direction && mesh3d) {
-          const scale = mesh3d.userData.scale || 1;
-          const offset = mesh3d.userData.offset || new THREE.Vector3();
-          const wp = new THREE.Vector3(
-            (f.position[0] - offset.x) * scale,
-            (f.position[1] - offset.y) * scale,
-            (f.position[2] - offset.z) * scale,
-          );
-          const dir = new THREE.Vector3(...f.direction).normalize();
-          arrow3d = new THREE.ArrowHelper(dir, wp, 0.35, 0xe06030, 0.12, 0.08);
-          scene.add(arrow3d);
-        }
-        S.forces.push({ ...f, arrow3d });
+        const force = { ...f };
+        delete force.arrow3d;   // drop any stale reference from older saves
+        if (outOfBounds(force.position)) force._replaceRecommended = true;
+        S.forces.push(force);
       }
       updateForceList();
     }
+
+    // Single canonical overlay rebuild — mesh3d-attached gold bolt rings + force
+    // arrows in the correct (mm) frame, following the part's orientation.
+    rebuildOverlays();
 
     // Restore calibration
     if (session.calibrationId) {
@@ -10862,40 +11198,41 @@ function clearABComparison() {
 let _topoMarkers = [];
 
 function showTopologyMarkers(suggestions) {
-  // Clear old markers
+  // Clear old markers (dispose geometry AND material to avoid a per-solve leak)
   for (const m of _topoMarkers) {
-    scene.remove(m);
+    if (m.parent) m.parent.remove(m);
     m.geometry?.dispose();
+    m.material?.dispose();
   }
   _topoMarkers = [];
 
   if (!mesh3d || !suggestions?.length) return;
 
   const offset = mesh3d.userData.offset || new THREE.Vector3();
-  // The mesh is centered (geometry translated by -offset), then scaled AND
-  // rotated by mesh3d.matrixWorld. A raw STL point maps to geometry-local
-  // (p - offset), and matrixWorld then applies scale + orientation rotation.
-  // Transforming through matrixWorld (rather than a manual (p-offset)*scale)
-  // keeps the diamonds glued to the surface after the part is oriented to the
-  // bed — same path the peak-stress sphere uses.
-  mesh3d.updateMatrixWorld();
+  const scale  = mesh3d.userData.scale || 1;
+  // A raw STL point maps to mesh-local (geometry) coords by subtracting the
+  // centering offset. Parenting each diamond to mesh3d then lets it inherit the
+  // part's orientation, scale, and warp — so the diamonds stay glued to the
+  // surface after the part is re-oriented to the bed, not just at first paint.
 
   suggestions.forEach((s, i) => {
-    const worldPos = new THREE.Vector3(
+    const localPos = new THREE.Vector3(
       s.position[0] - offset.x,
       s.position[1] - offset.y,
       s.position[2] - offset.z,
-    ).applyMatrix4(mesh3d.matrixWorld);
+    );
 
-    // Diamond marker (octahedron)
-    const geo = new THREE.OctahedronGeometry(0.04, 0);
+    // Diamond marker (octahedron) — radius in mesh-local (mm) units so its
+    // on-screen size (0.04 world units) survives the mesh3d scale.
+    const geo = new THREE.OctahedronGeometry(0.04 / scale, 0);
     const mat = new THREE.MeshBasicMaterial({
       color: 0xC9A227,
       transparent: true,
       opacity: 0.85,
     });
+    mat.clippingPlanes = (S.clipActive && S._clipPlane) ? [S._clipPlane] : [];
     const marker = new THREE.Mesh(geo, mat);
-    marker.position.copy(worldPos);
+    marker.position.copy(localPos);
 
     // Pulse animation
     let t = i * 0.5;
@@ -10907,7 +11244,7 @@ function showTopologyMarkers(suggestions) {
     };
     pulse();
 
-    scene.add(marker);
+    mesh3d.add(marker);
     _topoMarkers.push(marker);
   });
 }
@@ -11337,6 +11674,19 @@ function updateModeButtons() {
 // voids. The material also switches to double-sided while cut so interior shell
 // faces (visible through those openings) still render.
 
+// Keep the topology diamonds and peak-stress sphere clipped in sync with the
+// section plane. They are mesh3d children whose MeshBasicMaterials need the same
+// S._clipPlane reference; because _updateClipPlane mutates that one Plane object
+// in place each frame, holding [S._clipPlane] tracks the moving cut automatically.
+function _syncMarkerClipPlanes() {
+  const planes = (S.clipActive && S._clipPlane) ? [S._clipPlane] : [];
+  for (const m of _topoMarkers) {
+    if (m.material) { m.material.clippingPlanes = planes; m.material.needsUpdate = true; }
+  }
+  const peak = scene.getObjectByName('peak-stress-marker');
+  if (peak && peak.material) { peak.material.clippingPlanes = planes; peak.material.needsUpdate = true; }
+}
+
 function resetClip() {
   S.clipActive = false;
   S.clipAxis   = 'x';
@@ -11347,6 +11697,7 @@ function resetClip() {
     mesh3d.material.side = THREE.FrontSide;
     mesh3d.material.needsUpdate = true;
   }
+  _syncMarkerClipPlanes();
   _disposeCapObjects();
   _syncClipUI();
 }
@@ -11368,6 +11719,7 @@ function toggleClip() {
     _setCapVisible(false);
   }
   mat.needsUpdate = true;
+  _syncMarkerClipPlanes();
   _syncClipUI();
 }
 
@@ -11517,61 +11869,120 @@ function _syncClipUI() {
 }
 
 // ── Stress visualization modes ────────────────────────────────────────────────
-function setStressMode(mode) {
-  S.stressMode = mode;
-  ['vm','svm','s1','s2','s3','dmg','xyutil','zutil','error'].forEach(m => {
+// MODE_META is the single source of truth for every heatmap view mode: which
+// cached array it paints, whether it uses the sequential or diverging color
+// pipeline, its legend title, hover label, unit, and decimals. setStressMode,
+// applyStressColorsFromArrays, the hover readout, and the units-refresh all
+// read from it, so a label or a new mode is defined in exactly one place.
+const MODE_META = {
+  tc:     { kind:'diverging',  legend:()=>'Tension / Compression ('+U.stressLabel()+')',     hover:'Dominant principal',     unit:()=>U.stressLabel(), dec:1, data:a=>a.tc },
+  vm:     { kind:'sequential', legend:()=>'von Mises ('+U.stressLabel()+')',                 hover:'von Mises',              unit:()=>U.stressLabel(), dec:1, data:a=>a.vm },
+  svm:    { kind:'diverging',  legend:()=>'Signed von Mises ('+U.stressLabel()+')',          hover:'Signed VM',              unit:()=>U.stressLabel(), dec:1, data:a=>a.svm, divAbs:()=>S.results?.summary?.effectiveYieldMPa ?? 1 },
+  s1:     { kind:'diverging',  legend:()=>'Max Principal σ₁ ('+U.stressLabel()+')',          hover:'Principal σ₁',           unit:()=>U.stressLabel(), dec:1, data:a=>a.s1 },
+  s2:     { kind:'diverging',  legend:()=>'Mid Principal σ₂ ('+U.stressLabel()+')',          hover:'Principal σ₂',           unit:()=>U.stressLabel(), dec:1, data:a=>a.s2 },
+  s3:     { kind:'diverging',  legend:()=>'Min Principal σ₃ ('+U.stressLabel()+')',          hover:'Principal σ₃',           unit:()=>U.stressLabel(), dec:1, data:a=>a.s3 },
+  dmg:    { kind:'sequential', legend:()=>'Damage Ratio (XY/Z)',                             hover:'Damage ratio',           unit:()=>'×', dec:2, data:a=>a.dmg,    max:2.0, min:0, perValueUnit:true },
+  xyutil: { kind:'sequential', legend:()=>'XY In-Plane Utilization (0–2)',                   hover:'XY utilization',         unit:()=>'',  dec:2, data:a=>a.xyutil, max:2.0, min:0 },
+  zutil:  { kind:'sequential', legend:()=>'Interlayer Interface Utilization (0–2)',          hover:'Interlayer utilization', unit:()=>'',  dec:2, data:a=>a.zutil,  max:2.0, min:0 },
+  error:  { kind:'sequential', legend:()=>'Error Estimate η (0–1)',                          hover:'Error η',                unit:()=>'',  dec:3, data:a=>a.error,  max:1.0, min:0 },
+};
+// Always-visible modes lead the left column; the rest live behind the MORE
+// toggle. STRESS_MODE_ORDER is their concatenation.
+const ALWAYS_MODES = ['tc','vm','svm','s1','s2','s3'];
+const OVERFLOW_MODES = ['dmg','xyutil','zutil','error'];
+const STRESS_MODE_ORDER = [...ALWAYS_MODES, ...OVERFLOW_MODES];
+const DEFAULT_STRESS_MODE = 'tc';
+
+function stressModeAvailable(mode) {
+  const meta = MODE_META[mode];
+  if (!meta || !S._stressArrays) return false;
+  const arr = meta.data(S._stressArrays);
+  return !!(arr && arr.length > 0);
+}
+
+function toggleVmodeMore() {
+  const more = document.getElementById('vmode-more');
+  const btn  = document.getElementById('btn-vmore');
+  if (!more || !btn) return;
+  const open = more.style.display === 'none' || !more.style.display;
+  more.style.display = open ? 'flex' : 'none';
+  btn.textContent = open ? 'LESS ▴' : 'MORE ▾';
+}
+
+// Reveal/grey the mode buttons by data availability and reflect the active mode.
+// Always-visible modes stay shown (greyed when data is absent); overflow modes
+// appear only when their data exists, behind the MORE toggle.
+function refreshStressModeButtons() {
+  ALWAYS_MODES.forEach(m => {
     const btn = document.getElementById('btn-'+m);
-    if (btn) btn.className = 'btn vmode-btn' + (m===mode?' active':'');
+    if (!btn) return;
+    btn.style.display = 'flex';
+    const avail = stressModeAvailable(m);
+    btn.disabled = !avail;
+    btn.title = avail ? '' : (MODE_META[m].hover + ' — not available for this solve');
+    btn.className = 'btn vmode-btn' + (m===S.stressMode ? ' active' : '') + (avail ? '' : ' disabled');
   });
-  // Re-apply colors with current mode
-  if (S._stressArrays && mesh3d) {
-    applyStressColorsFromArrays(S._stressArrays);
+  let anyOverflow = false;
+  OVERFLOW_MODES.forEach(m => {
+    const btn = document.getElementById('btn-'+m);
+    if (!btn) return;
+    const avail = stressModeAvailable(m);
+    btn.style.display = avail ? 'flex' : 'none';
+    btn.disabled = !avail;
+    btn.className = 'btn vmode-btn' + (m===S.stressMode ? ' active' : '') + (avail ? '' : ' disabled');
+    if (avail) anyOverflow = true;
+  });
+  // Show the MORE toggle only when the overflow group has content; auto-expand
+  // it when the active mode lives inside so the highlight is visible.
+  const moreBtn = document.getElementById('btn-vmore');
+  const moreGrp = document.getElementById('vmode-more');
+  if (moreBtn) moreBtn.style.display = anyOverflow ? 'flex' : 'none';
+  if (moreGrp && OVERFLOW_MODES.includes(S.stressMode)) {
+    moreGrp.style.display = 'flex';
+    if (moreBtn) moreBtn.textContent = 'LESS ▴';
   }
+}
+
+function setStressMode(mode) {
+  // Never switch to a mode whose data is missing — leave the current view.
+  if (!stressModeAvailable(mode)) { refreshStressModeButtons(); return; }
+  const changed = S.stressMode !== mode;
+  S.stressMode = mode;
+  // The threshold filter is defined against a specific mode's scale — a mode
+  // change resets it so it can't silently apply a stale cutoff.
+  if (changed && S.stressFilter && S.stressFilter.enabled) {
+    S.stressFilter.enabled = false;
+    S.stressFilter.forMode = null;
+    _syncStressFilterUI();
+  }
+  refreshStressModeButtons();
+  if (S._stressArrays && mesh3d) applyStressColorsFromArrays(S._stressArrays);
 }
 
 function applyStressColorsFromArrays(arrays) {
   if (!mesh3d || !arrays) return;
+  const meta = MODE_META[S.stressMode] || MODE_META[DEFAULT_STRESS_MODE];
+  const arr  = meta.data(arrays);
+  if (!arr) return;   // gated by button availability; defensive
 
-  const isPrincipal = S.stressMode === 's1' || S.stressMode === 's2' || S.stressMode === 's3';
-  const isSignedVM  = S.stressMode === 'svm';
-  let colors, effectiveMin, effectiveMax, range;
-
-  if (isPrincipal) {
-    const arr = S.stressMode === 's1' ? arrays.s1 : S.stressMode === 's2' ? arrays.s2 : arrays.s3;
-    ({ colors, effectiveMin, effectiveMax, range } = computeDivergingColors(arr));
-  } else if (isSignedVM) {
-    const svmArr = arrays.svm ?? arrays.vm;
-    const yieldMPa = S.results?.summary?.effectiveYieldMPa ?? 1;
-    ({ colors, effectiveMin, effectiveMax, range } = computeDivergingColors(svmArr, yieldMPa));
+  const filter = (S.stressFilter && S.stressFilter.enabled && S.stressFilter.forMode === S.stressMode)
+    ? S.stressFilter : null;
+  let colors, effectiveMin, effectiveMax, range, absMax;
+  if (meta.kind === 'diverging') {
+    ({ colors, effectiveMin, effectiveMax, range, absMax } =
+      computeDivergingColors(arr, meta.divAbs ? meta.divAbs() : undefined, filter));
   } else {
-    let stressArr, maxValOverride, minValOverride;
-    switch (S.stressMode) {
-      case 'dmg':
-        stressArr = arrays.dmg;
-        maxValOverride = 2.0;
-        minValOverride = 0;
-        break;
-      case 'error':
-        stressArr = arrays.error ?? arrays.vm;
-        maxValOverride = 1.0;
-        minValOverride = 0;
-        break;
-      case 'xyutil':
-        stressArr = arrays.xyutil ?? arrays.vm;
-        maxValOverride = 2.0;
-        minValOverride = 0;
-        break;
-      case 'zutil':
-        stressArr = arrays.zutil ?? arrays.vm;
-        maxValOverride = 2.0;
-        minValOverride = 0;
-        break;
-      default:
-        stressArr = arrays.vm;
-    }
     ({ colors, effectiveMin, effectiveMax, range } =
-      computeSmoothedStressColors(stressArr, maxValOverride, minValOverride));
+      computeSmoothedStressColors(arr, meta.max, meta.min, filter));
   }
+  S.stressMax = effectiveMax;
+  S.stressMin = effectiveMin;
+  // Publish the current scale so the threshold slider can render its value in
+  // the mode's own units.
+  S._filterScale = (meta.kind === 'diverging')
+    ? { mode: S.stressMode, kind: 'diverging', absMax, dec: meta.dec, unit: meta.unit() }
+    : { mode: S.stressMode, kind: 'sequential', min: effectiveMin, range, dec: meta.dec, unit: meta.unit() };
+  updateFilterReadout();
 
   const geo = mesh3d.geometry;
   const expectedVerts = geo.attributes.position.count;
@@ -11593,28 +12004,20 @@ function applyStressColorsFromArrays(arrays) {
   const labels = document.getElementById('legend-val-stack');
   if (labels) {
     const steps = labels.children.length;
-    const unit = (S.stressMode === 'dmg' || S.stressMode === 'error' || S.stressMode === 'xyutil' || S.stressMode === 'zutil') ? '' : (' ' + U.stressLabel());
+    const unit = meta.unit();
     Array.from(labels.children).forEach((el,i) => {
       const v = effectiveMax - (i/(steps-1)) * range;
-      let valText;
-      if (S.stressMode === 'dmg') {
-        valText = v.toFixed(2) + '×';
-      } else if (S.stressMode === 'error') {
-        valText = v.toFixed(3);
-      } else if (S.stressMode === 'xyutil' || S.stressMode === 'zutil') {
-        valText = v.toFixed(2);
-      } else {
-        valText = v.toFixed(1);
-      }
-      const isEdge = (i === 0 || i === steps - 1);
-      el.textContent = valText + (isEdge ? unit : '');
+      let valText = v.toFixed(meta.dec);
+      if (meta.perValueUnit) valText += unit;                 // e.g. dmg "1.25×"
+      else if ((i === 0 || i === steps - 1) && unit) valText += ' ' + unit;
+      el.textContent = valText;
     });
   }
 
   // Update legend gradient bar
   const bar = document.getElementById('legend-gradient');
   if (bar) {
-    if (isPrincipal || isSignedVM) {
+    if (meta.kind === 'diverging') {
       const STOPS = 12;
       const stops = [];
       for (let i = 0; i <= STOPS; i++) {
@@ -11629,19 +12032,66 @@ function applyStressColorsFromArrays(arrays) {
     }
   }
 
-  // Update legend title
-  const modeLabels = {
-    vm:   'von Mises (' + U.stressLabel() + ')',
-    svm:  'Signed von Mises (' + U.stressLabel() + ')',
-    s1:   'Max Principal σ₁ (' + U.stressLabel() + ')',
-    s2:   'Mid Principal σ₂ (' + U.stressLabel() + ')',
-    s3:   'Min Principal σ₃ (' + U.stressLabel() + ')',
-    dmg:    'Damage Ratio (XY/Z)',
-    xyutil: 'XY In-Plane Utilization (0–2)',
-    zutil:  'Interlayer Interface Utilization (0–2)',
-    error:  'Error Estimate η (0–1)',
-  };
-  document.getElementById('legend-title') && (document.getElementById('legend-title').textContent = modeLabels[S.stressMode] || '');
+  // Update legend title from the single source of truth
+  const lt = document.getElementById('legend-title');
+  if (lt) lt.textContent = meta.legend();
+}
+
+// ── Threshold filter (legend) ─────────────────────────────────────────────────
+// Greys out one side of a stress cutoff so only the values the user cares about
+// stay colored. frac is a fraction of the current mode's scale, so it survives
+// re-solves and mode-specific rescaling; forMode ties it to the mode it was set
+// on (switching modes resets it).
+let _filterRaf = null;
+function _syncStressFilterUI() {
+  const f = S.stressFilter || {};
+  const on = !!f.enabled;
+  const tog  = document.getElementById('legend-filter-toggle');
+  const side = document.getElementById('legend-filter-side');
+  const rng  = document.getElementById('legend-filter-range');
+  const val  = document.getElementById('legend-filter-val');
+  if (tog)  tog.className = 'btn' + (on ? ' active' : '');
+  if (side) { side.style.display = on ? 'inline-flex' : 'none'; side.textContent = (f.side === 'below') ? '▼ below' : '▲ above'; }
+  if (rng)  { rng.style.display = on ? 'block' : 'none'; rng.value = Math.round((f.frac ?? 0.5) * 100); }
+  if (val)  val.style.display = on ? 'block' : 'none';
+  updateFilterReadout();
+}
+function updateFilterReadout() {
+  const val = document.getElementById('legend-filter-val');
+  const f = S.stressFilter, sc = S._filterScale;
+  if (!val || !f || !f.enabled || !sc) { if (val) val.textContent = ''; return; }
+  let thr;
+  if (sc.kind === 'diverging') thr = f.frac * sc.absMax;                 // on |σ|
+  else thr = sc.min + f.frac * sc.range;
+  const unit = sc.unit ? (' ' + sc.unit) : '';
+  const arrow = f.side === 'below' ? '≤' : '≥';
+  val.textContent = `${arrow} ${thr.toFixed(sc.dec)}${unit}` + (sc.kind === 'diverging' ? ' |σ|' : '');
+}
+function toggleStressFilter() {
+  if (!S.stressFilter) S.stressFilter = { enabled:false, side:'above', frac:0.5, forMode:null };
+  S.stressFilter.enabled = !S.stressFilter.enabled;
+  S.stressFilter.forMode = S.stressMode;
+  _syncStressFilterUI();
+  if (S._stressArrays && mesh3d) applyStressColorsFromArrays(S._stressArrays);
+}
+function flipStressFilterSide() {
+  if (!S.stressFilter) return;
+  S.stressFilter.side = (S.stressFilter.side === 'above') ? 'below' : 'above';
+  _syncStressFilterUI();
+  if (S._stressArrays && mesh3d) applyStressColorsFromArrays(S._stressArrays);
+}
+function onStressFilterInput(v) {
+  if (!S.stressFilter) S.stressFilter = { enabled:true, side:'above', frac:0.5, forMode:S.stressMode };
+  S.stressFilter.frac = Math.max(0, Math.min(1, (+v || 0) / 100));
+  S.stressFilter.forMode = S.stressMode;
+  updateFilterReadout();
+  // rAF-throttle the repaint so dragging stays smooth on large meshes.
+  if (_filterRaf === null) {
+    _filterRaf = requestAnimationFrame(() => {
+      _filterRaf = null;
+      if (S._stressArrays && mesh3d) applyStressColorsFromArrays(S._stressArrays);
+    });
+  }
 }
 
 
@@ -11735,8 +12185,8 @@ document.addEventListener('keydown', (e) => {
     case 'f': case 'F': if (mesh3d) setMode('force'); break;
     case 'Escape':
       if (S.mode !== 'view') setMode('view');
-      // Close any open popups
-      document.getElementById('force-popup').style.display = 'none';
+      // Close any open editors/previews
+      cancelForce();
       closeShortcuts();
       break;
     case '?':
