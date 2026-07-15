@@ -393,6 +393,7 @@ app.post("/api/analyse", async (req, res) => {
         singularity:          result.singularity,
         rigidBodyMode:        result.rigidBodyMode,
         topologySuggestions:  result.topologySuggestions,
+        layerInterfaceProfile: result.layerInterfaceProfile ?? null,
         fatigue:              result.fatigue,
         isotropicComparison:  result.isotropicComparison,
         governingDirection:   result.governingDirection ?? null,

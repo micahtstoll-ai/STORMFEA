@@ -6591,6 +6591,8 @@ function showResults(s) {
       }).join('')}
     </div>` : ''}
 
+    ${renderLayerRiskProfile(s)}
+
     ${s.recommendations && s.recommendations.length ? `
     <div style="margin-top:16px">
       <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:8px">PRINT SETTINGS RECOMMENDATIONS</div>
@@ -6624,6 +6626,53 @@ function showResults(s) {
   if (s.residualCheckpoints && s.residualCheckpoints.length > 0) {
     setTimeout(() => renderConvergenceGraph(s.residualCheckpoints), 0);
   }
+}
+
+// ── Layer-by-layer delamination risk strip ───────────────────────────────────
+// Maps interface utilization (1/SF) to a green→amber→red ramp so the worst
+// printed layers stand out at a glance. util 0 = safe (green), util≥1 = at the
+// interface limit (red). Independent of the heatmap colormap on purpose — this
+// is a pass/fail risk read, not a stress magnitude.
+function layerRiskColor(sf) {
+  const util = Math.min(sf > 1e-6 ? 1 / sf : 2, 1.5);   // 0 (safe) … 1.5 (well past limit)
+  const t = Math.min(util, 1);                          // clamp the hue ramp at the limit
+  const hue = 130 * (1 - t);                            // 130° green → 0° red
+  const light = 42 + 8 * (1 - t);                       // slightly brighter when safe
+  return `hsl(${hue.toFixed(0)},72%,${light.toFixed(0)}%)`;
+}
+
+function renderLayerRiskProfile(s) {
+  const p = s && s.layerInterfaceProfile;
+  if (!p || !p.layers || !p.layers.length) return '';
+  const layers = p.layers;
+  const gov = layers[p.governingIndex] || layers[0];
+  const ax = p.buildAxis || [0, 0, 1];
+  const axStr = (Math.abs(ax[2]) > 0.999) ? 'Z (upright build)'
+              : `[${ax.map(v => v.toFixed(2)).join(', ')}]`;
+  // Bars ordered first-printed (left) → last-printed (right). Height encodes
+  // utilization so a tall red bar reads as "worst layer"; color reinforces it.
+  const bars = layers.map((L, i) => {
+    const util = Math.min(L.sf > 1e-6 ? 1 / L.sf : 2, 1.5);
+    const hPct = 22 + 78 * Math.min(util / 1.5, 1);
+    const isGov = i === p.governingIndex;
+    const tip = `Layer ${L.layer} (z≈${U.lenStr ? U.lenStr(L.zMidMm) : L.zMidMm.toFixed(2) + ' mm'}) — SF ${L.sf.toFixed(2)}× · tension ${(L.uTension * 100).toFixed(0)}% · shear ${(L.uShear * 100).toFixed(0)}%`;
+    return `<div title="${tip}" style="flex:1 1 0;min-width:2px;height:${hPct.toFixed(0)}%;align-self:flex-end;background:${layerRiskColor(L.sf)};${isGov ? 'outline:1.5px solid var(--text-hi);outline-offset:-1px;z-index:1;' : ''}border-radius:1px"></div>`;
+  }).join('');
+  const govSfColor = gov.sf >= 2 ? 'var(--gold)' : gov.sf >= 1 ? 'var(--warn)' : 'var(--danger)';
+  return `
+    <div style="margin-top:16px">
+      <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:8px">DELAMINATION RISK BY LAYER</div>
+      <div style="font-size:10px;color:var(--text-lo);margin-bottom:8px;line-height:1.6">
+        Peak interlayer utilization in each printed layer along the build axis (${axStr}), first-printed at left. Tall/red = closest to delamination.
+      </div>
+      <div style="display:flex;align-items:flex-end;gap:1px;height:56px;padding:4px 6px;background:var(--bg-card);border:1px solid var(--border);border-radius:3px">
+        ${bars}
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-label);margin-top:4px">
+        <span>Worst: layer ${gov.layer} · <span style="color:${govSfColor}">SF ${gov.sf.toFixed(2)}×</span> at z≈${U.lenStr ? U.lenStr(gov.zMidMm) : gov.zMidMm.toFixed(2) + ' mm'}</span>
+        <span>${layers.length} layer${layers.length === 1 ? '' : 's'}${p.coarsened ? ` · ${U.lenStr ? U.lenStr(p.binHeightMm) : p.binHeightMm.toFixed(2) + ' mm'}/bin` : ''}</span>
+      </div>
+    </div>`;
 }
 
 // ── Convergence graph rendering ──────────────────────────────────────────────

@@ -1827,6 +1827,153 @@ export function computeInterfaceModePeaks(
   };
 }
 
+/** One build-height layer's peak interface state. */
+export interface LayerInterfaceRisk {
+  /** Layer index counting from the first-printed (lowest along the build axis) layer. */
+  layer:    number;
+  /** Layer mid-height along the build axis, mm (from the part's lowest point). */
+  zMidMm:   number;
+  /** Interface safety factor for this layer (1 / peak combined utilization), clamped [0,999]. */
+  sf:       number;
+  /** Peak tension (delamination-onset) utilization ⟨σzz⟩₊/S_zt in this layer. */
+  uTension: number;
+  /** Peak interlayer-shear utilization (friction-credited under compression) in this layer. */
+  uShear:   number;
+}
+
+/** Full per-layer interface risk profile for the layer-by-layer delamination map. */
+export interface LayerInterfaceProfile {
+  /** Unit build axis (weak-axis / layer normal) the layers are stacked along, global frame. */
+  buildAxis:      readonly [number, number, number];
+  /** Effective layer thickness used for binning, mm (may be coarsened from the print layer height to cap bin count). */
+  binHeightMm:    number;
+  /** True when binHeightMm was coarsened above the print layer height to keep the profile bounded. */
+  coarsened:      boolean;
+  /** Index of the governing (lowest-SF) layer within `layers`. */
+  governingIndex: number;
+  /** Per-layer peaks, ordered from first-printed to last-printed. Only layers containing elements are emitted. */
+  layers:         LayerInterfaceRisk[];
+}
+
+/** Cap on emitted layer bins so a thin-layer / tall-part combination can't bloat the payload. */
+const MAX_LAYER_BINS = 320;
+
+/**
+ * Build-height interface risk profile: which PRINTED LAYERS are most at risk of
+ * delamination, not just the single global peak that `computeInterfaceModePeaks`
+ * reports. Elements are binned by their centroid position along the build axis
+ * (the weak axis / layer normal); each bin reports its peak tension and shear
+ * interface utilization via the same material-frame `fdmInterfaceUtilization`
+ * used by the headline criterion. Returns null for non-orthotropic materials
+ * (no interlayer interface is defined). See CLAUDE.md — this is a reporting
+ * decomposition of physics already computed, it does not change any SF.
+ */
+export function computeLayerInterfaceProfile(
+  mesh:          import("./solver/types.js").TetMesh,
+  elemStress6:   Float64Array,
+  material:      AnyMaterial,
+  layerHeightMm: number,
+  field?:        ElementMaterialField | null,
+): LayerInterfaceProfile | null {
+  if (!isOrthotropic(material)) return null;
+  const n = mesh.elementCount;
+  if (n === 0) return null;
+
+  // Build axis = normalized weak axis (layer normal); default +Z. weakR rotates
+  // global stress into the material frame, matching computeInterfaceModePeaks.
+  const axisRaw = material.weakAxis;
+  const axLen = axisRaw ? Math.hypot(axisRaw[0], axisRaw[1], axisRaw[2]) : 0;
+  const buildAxis: readonly [number, number, number] =
+    axLen > 1e-12 ? [axisRaw![0] / axLen, axisRaw![1] / axLen, axisRaw![2] / axLen] : [0, 0, 1];
+  const weakR = (axLen > 1e-12 && buildAxis[2] < 1 - 1e-12) ? rotationAligningZTo(axisRaw!) : null;
+  const matZ  = material.yieldZ;
+  const matZS = interlaminarShearOf(material);
+  const npe   = mesh.nodesPerElem;
+
+  // Pass 1: element centroid projection onto the build axis + interface split.
+  const proj = new Float64Array(n);
+  const uT   = new Float64Array(n);
+  const uS   = new Float64Array(n);
+  const comb = new Float64Array(n);
+  let minP = Infinity, maxP = -Infinity;
+  for (let e = 0; e < n; e++) {
+    // Centroid from the 4 corner nodes (indices 0–3 for both C3D4 and C3D10).
+    let cx = 0, cy = 0, cz = 0;
+    for (let k = 0; k < 4; k++) {
+      const nd = mesh.elements[e * npe + k] ?? 0;
+      cx += mesh.nodes[nd * 3] ?? 0;
+      cy += mesh.nodes[nd * 3 + 1] ?? 0;
+      cz += mesh.nodes[nd * 3 + 2] ?? 0;
+    }
+    cx *= 0.25; cy *= 0.25; cz *= 0.25;
+    const p = cx * buildAxis[0] + cy * buildAxis[1] + cz * buildAxis[2];
+    proj[e] = p;
+    if (p < minP) minP = p;
+    if (p > maxP) maxP = p;
+
+    let szz = elemStress6[e * 6 + 2] ?? 0;
+    let tyz = elemStress6[e * 6 + 4] ?? 0;
+    let txz = elemStress6[e * 6 + 5] ?? 0;
+    if (weakR) {
+      const L = rotateStress6ToLocal([
+        elemStress6[e * 6] ?? 0, elemStress6[e * 6 + 1] ?? 0, szz,
+        elemStress6[e * 6 + 3] ?? 0, tyz, txz,
+      ], weakR);
+      szz = L[2]; tyz = L[4]; txz = L[5];
+    }
+    const bin = field ? (field.binOfElement[e] ?? 0) : 0;
+    const yZ  = field ? (field.yieldZ[bin] ?? matZ) : matZ;
+    const yZS = field ? (field.yieldZShear[bin] ?? matZS) : matZS;
+    const u = fdmInterfaceUtilization(szz, tyz, txz, yZ, yZS);
+    uT[e] = u.uTension; uS[e] = u.uShear; comb[e] = u.combined;
+  }
+
+  const span = Math.max(maxP - minP, 1e-9);
+  const lh   = layerHeightMm > 1e-6 ? layerHeightMm : 0.2;
+  const rawBins = Math.max(1, Math.ceil(span / lh));
+  const coarsened = rawBins > MAX_LAYER_BINS;
+  const nBins = coarsened ? MAX_LAYER_BINS : rawBins;
+  const binHeightMm = coarsened ? span / nBins : lh;
+
+  // Pass 2: accumulate per-bin peak utilizations.
+  const binUT = new Float64Array(nBins);
+  const binUS = new Float64Array(nBins);
+  const binComb = new Float64Array(nBins);
+  const binHas = new Uint8Array(nBins);
+  for (let e = 0; e < n; e++) {
+    let b = Math.floor((proj[e]! - minP) / binHeightMm);
+    if (b < 0) b = 0; else if (b >= nBins) b = nBins - 1;
+    binHas[b] = 1;
+    if (uT[e]!   > binUT[b]!)   binUT[b]   = uT[e]!;
+    if (uS[e]!   > binUS[b]!)   binUS[b]   = uS[e]!;
+    if (comb[e]! > binComb[b]!) binComb[b] = comb[e]!;
+  }
+
+  const clampSF = (v: number) => Math.min(Math.max(v, 0), 999);
+  const layers: LayerInterfaceRisk[] = [];
+  let governingIndex = 0, minSf = Infinity;
+  for (let b = 0; b < nBins; b++) {
+    if (!binHas[b]) continue;
+    const sf = clampSF(binComb[b]! > 1e-9 ? 1 / binComb[b]! : 999);
+    if (sf < minSf) { minSf = sf; governingIndex = layers.length; }
+    layers.push({
+      layer:    b,
+      zMidMm:   +((b + 0.5) * binHeightMm).toFixed(4),
+      sf:       +sf.toFixed(3),
+      uTension: +binUT[b]!.toFixed(4),
+      uShear:   +binUS[b]!.toFixed(4),
+    });
+  }
+  if (layers.length === 0) return null;
+  return {
+    buildAxis,
+    binHeightMm: +binHeightMm.toFixed(4),
+    coarsened,
+    governingIndex,
+    layers,
+  };
+}
+
 // ─── Cosine-bearing nodal force distribution ──────────────────────────────────
 /**
  * Distribute a bolt bearing load over the loaded-face nodes using a cosine
@@ -2018,6 +2165,12 @@ export interface AnalysisResult {
   singularity:            SingularityWarning | null;
   rigidBodyMode:          RigidBodyModeWarning | null;
   topologySuggestions:    TopologySuggestion[];
+  /**
+   * Build-height interface risk profile (which printed layers are most at risk
+   * of delamination). Null when no interlayer interface is defined (isotropic
+   * material or the interface criterion is not active).
+   */
+  layerInterfaceProfile:  LayerInterfaceProfile | null;
   fatigue:                FatigueEstimate;
   isotropicComparison:    IsotropicComparison;
   /** Mode shapes projected to surface vertices, one per mode. Base64-encoded Float32Array. */
@@ -4176,7 +4329,11 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // headline SF; these rows decompose the layer interface into its two
   // mechanisms so delamination onset ("breaking upon the layers") and
   // interlayer shear are reported — and calibrated — separately.
+  let layerInterfaceProfile: LayerInterfaceProfile | null = null;
   if (result.elemStress6 && criterion === "fdm-interface" && isOrthotropic(material)) {
+    layerInterfaceProfile = computeLayerInterfaceProfile(
+      mesh, result.elemStress6, material, req.print.layerHeightMm ?? 0.2, materialField ?? null,
+    );
     const peaks = computeInterfaceModePeaks(mesh, result.elemStress6, material, materialField ?? null);
     if (peaks) {
       const zCal = req.calibration?.yieldZ_MPa != null && req.calibration?.yieldZFromShear !== true;
@@ -4556,6 +4713,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     singularity,
     rigidBodyMode,
     topologySuggestions,
+    layerInterfaceProfile,
     fatigue,
     isotropicComparison,
     governingDirection,
