@@ -755,6 +755,88 @@ app.post("/api/calibration/bond-sweep", async (req, res) => {
   }
 });
 
+// POST /api/bond-sensitivity — process-parameter sensitivity sweeps (#2) and a
+// nozzle×speed bond-quality surface (#4) for the bead-penetration bond model.
+// Pure evaluation of predictBondMultipliers — no solve, no physics duplicated
+// in the client. "strengthFactor" is the FULL multiplier the material builder
+// applies to the interlayer allowable S_zt: layerHeightFactor(lh) × bond
+// relStrength, so it reads as "interlayer strength vs the in-plane baseline".
+app.post("/api/bond-sensitivity", async (req, res) => {
+  try {
+    if (!validateBody(req, res, { materialId: "string", layerHeightMm: "number" })) return;
+    const { predictBondMultipliers, BOND_MATERIALS, BOND_REFERENCE } = await import("./solver/bond.js");
+    const { layerHeightFactor } = await import("./analysis.js");
+    const body = req.body as {
+      materialId: string; layerHeightMm: number;
+      process?: { nozzleTempC?: number; printSpeedMmS?: number; coolingFanPct?: number; bedTempC?: number; ambientTempC?: number };
+      bondCoeffs?: { hConv?: number; activationEnergyKJmol?: number; strengthPrefactor?: number } | null;
+    };
+    const matKey = body.materialId in BOND_MATERIALS ? body.materialId : "pla";
+    const matRef = BOND_MATERIALS[matKey]!;
+    const lh = body.layerHeightMm > 1e-6 ? body.layerHeightMm : 0.2;
+    const coeffs = body.bondCoeffs ?? null;
+    const proc = body.process ?? {};
+    // Baseline = the caller's actual settings; defaults filled from the material
+    // reference so an empty process block sits exactly at the reference
+    // condition (relStrength = 1.0), matching predictBondMultipliers internally.
+    const base = {
+      nozzleTempC:   proc.nozzleTempC   ?? matRef.nozzleRefC,
+      printSpeedMmS: proc.printSpeedMmS ?? BOND_REFERENCE.printSpeedMmS,
+      coolingFanPct: proc.coolingFanPct ?? BOND_REFERENCE.coolingFanPct,
+      bedTempC:      proc.bedTempC      ?? BOND_REFERENCE.bedTempC,
+      ambientTempC:  proc.ambientTempC  ?? BOND_REFERENCE.ambientTempC,
+    };
+    type Override = Partial<typeof base> & { layerHeightMm?: number };
+    const evalAt = (over: Override) => {
+      const l = over.layerHeightMm ?? lh;
+      const p = predictBondMultipliers(matKey, l, { ...base, ...over }, coeffs);
+      return { relStrength: p.relStrength, relStiffness: p.relStiffness, strengthFactor: layerHeightFactor(l) * p.relStrength };
+    };
+    const b = predictBondMultipliers(matKey, lh, base, coeffs);
+    const baseline = {
+      ...base, layerHeightMm: lh,
+      relStrength:  +b.relStrength.toFixed(4),
+      relStiffness: +b.relStiffness.toFixed(4),
+      strengthFactor: +(layerHeightFactor(lh) * b.relStrength).toFixed(4),
+      confidence: b.confidence, clamped: b.clamped, note: b.note,
+    };
+
+    const linspace = (a: number, c: number, n: number) => Array.from({ length: n }, (_, i) => a + (c - a) * i / (n - 1));
+    const sweep = (values: number[], make: (v: number) => Override) => values.map(v => {
+      const r = evalAt(make(v));
+      return { value: +v.toFixed(3), relStrength: +r.relStrength.toFixed(4), strengthFactor: +r.strengthFactor.toFixed(4) };
+    });
+
+    const nozzleVals = linspace(Math.max(matRef.TgC + 30, matRef.nozzleRefC - 50), matRef.nozzleRefC + 40, 15);
+    const speedVals  = linspace(5, 150, 15);
+    const fanVals    = linspace(0, 100, 11);
+    const lhVals     = linspace(0.05, 0.4, 15);
+
+    const sweeps = {
+      nozzleTempC:   { unit: "°C",   label: "Nozzle temperature", baseValue: base.nozzleTempC,   points: sweep(nozzleVals, v => ({ nozzleTempC: v })) },
+      printSpeedMmS: { unit: "mm/s", label: "Print speed",        baseValue: base.printSpeedMmS, points: sweep(speedVals,  v => ({ printSpeedMmS: v })) },
+      coolingFanPct: { unit: "%",    label: "Cooling fan",        baseValue: base.coolingFanPct, points: sweep(fanVals,    v => ({ coolingFanPct: v })) },
+      layerHeightMm: { unit: "mm",   label: "Layer height",       baseValue: lh,                 points: sweep(lhVals,     v => ({ layerHeightMm: v })) },
+    };
+
+    // Bond-quality surface (#4): nozzle × speed grid of bond relStrength.
+    const grid = speedVals.map(sp => nozzleVals.map(nz => +evalAt({ nozzleTempC: nz, printSpeedMmS: sp }).relStrength.toFixed(4)));
+    const surface = {
+      xKey: "nozzleTempC",   xUnit: "°C",   xLabel: "Nozzle temperature", xValues: nozzleVals.map(v => +v.toFixed(1)),
+      yKey: "printSpeedMmS", yUnit: "mm/s", yLabel: "Print speed",        yValues: speedVals.map(v => +v.toFixed(1)),
+      grid, baseX: base.nozzleTempC, baseY: base.printSpeedMmS, valueLabel: "Bond strength ×",
+    };
+
+    res.json({
+      materialId: matKey, layerHeightMm: lh,
+      reference: { nozzleTempC: matRef.nozzleRefC, ...BOND_REFERENCE },
+      baseline, sweeps, surface,
+    });
+  } catch (e) {
+    res.status(400).json({ error: String(e) });
+  }
+});
+
 // POST /api/calibration/save — save a calibrated profile
 app.post("/api/calibration/save", (req, res) => {
   try {
