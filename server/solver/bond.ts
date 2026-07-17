@@ -81,6 +81,12 @@ export interface BondModelCoeffs {
   activationEnergyKJmol?: number | null;
   /** Multiplier on the relative strength prediction (fit residual soak). */
   strengthPrefactor?:     number | null;
+  /**
+   * Void/consolidation sensitivity (default {@link VOID_TEMP_GAIN}). How hard a
+   * cold interface (below the reference deposition temperature) penalizes
+   * strength for incomplete inter-bead filling. 0 disables the void term.
+   */
+  voidSensitivity?:       number | null;
 }
 
 export interface BondPrediction {
@@ -94,6 +100,7 @@ export interface BondPrediction {
   coolTimeConstS:  number;   // τc
   bondPotentialS:  number;   // Φ (Arrhenius-weighted seconds above Tg)
   refPotentialS:   number;   // Φ_ref at the reference condition
+  consolidation:   number;   // void/consolidation factor (1.0 at/above reference temp)
   clamped:         boolean;  // true when the raw ratio hit the clamp
   confidence:      "low" | "medium";
   note:            string;
@@ -145,6 +152,15 @@ const PASS_LENGTH_MM = 30;   // characteristic toolpath return distance for the 
 const TG_STOP_MARGIN = 5;    // °C above Tg where bonding effectively stops
 const PHI_TIME_CAP_S = 120;  // integration cap (heated-chamber safety)
 const STRENGTH_EXP   = 0.75; // Φ^(1/2) neck × Φ^(1/4) healing
+// Void / consolidation term (LOW confidence, regression-locked in bond.test.ts).
+// Below the reference interface temperature the melt is too viscous to spread
+// and fully fill inter-bead valleys, leaving triangular voids that cut strength
+// beyond what interlayer diffusion (Φ) alone predicts. Anchored so the reference
+// condition is EXACTLY 1.0 (bit-identity), and driven by the SAME interface
+// temperature already computed — it reinforces the cold⇒weaker direction, so no
+// locked trend flips, and introduces no standalone layer-height slope.
+const VOID_TEMP_GAIN = 0.35; // strength lost per unit normalized temperature deficit
+const VOID_FLOOR     = 0.6;  // floor on the consolidation factor
 const REL_S_CLAMP: readonly [number, number] = [0.4, 1.5];
 const REL_E_CLAMP: readonly [number, number] = [0.6, 1.25];
 
@@ -246,12 +262,20 @@ export function predictBondMultipliers(
   const cur = thermalBondPotential(mat, layerHeightMm, filled, h0, Ea);
   const ref = thermalBondPotential(mat, layerHeightMm, refProc, h0, Ea);
 
-  const rawRatio = pre * Math.pow(cur.phi / Math.max(ref.phi, 1e-9), STRENGTH_EXP);
+  // Void/consolidation factor: 1.0 when the interface is at/above the reference
+  // deposition temperature, dropping toward VOID_FLOOR as it cools toward Tg.
+  // cur.T0 == ref.T0 at the reference condition ⇒ deficit 0 ⇒ EXACTLY 1.0.
+  const voidGain = coeffs?.voidSensitivity ?? VOID_TEMP_GAIN;
+  const refMargin = Math.max(ref.T0 - mat.TgC, 1e-6);
+  const deficit   = Math.max(0, (refMargin - (cur.T0 - mat.TgC))) / refMargin;
+  const consolidation = clamp(1 - voidGain * deficit, VOID_FLOOR, 1);
+
+  const rawRatio = pre * Math.pow(cur.phi / Math.max(ref.phi, 1e-9), STRENGTH_EXP) * consolidation;
   const relStrength  = clamp(rawRatio, REL_S_CLAMP[0], REL_S_CLAMP[1]);
   const relStiffness = clamp(Math.sqrt(Math.max(rawRatio, 1e-9)), REL_E_CLAMP[0], REL_E_CLAMP[1]);
   const clamped = relStrength !== rawRatio;
 
-  const fitted = !!(coeffs && (coeffs.hConv != null || coeffs.activationEnergyKJmol != null || coeffs.strengthPrefactor != null));
+  const fitted = !!(coeffs && (coeffs.hConv != null || coeffs.activationEnergyKJmol != null || coeffs.strengthPrefactor != null || coeffs.voidSensitivity != null));
   return {
     relStrength,
     relStiffness,
@@ -260,11 +284,14 @@ export function predictBondMultipliers(
     coolTimeConstS: cur.tauC,
     bondPotentialS: cur.phi,
     refPotentialS:  ref.phi,
+    consolidation,
     clamped,
     confidence: fitted ? "medium" : "low",
     note: `Bond model (${fitted ? "sweep-fitted" : "literature constants, LOW confidence"}): ` +
           `interface ${cur.T0.toFixed(0)}°C on a ${cur.Tsub.toFixed(0)}°C substrate, τc=${cur.tauC.toFixed(1)}s, ` +
-          `Φ/Φ_ref=${(cur.phi / Math.max(ref.phi, 1e-9)).toFixed(2)} → strength ×${relStrength.toFixed(2)}, stiffness ×${relStiffness.toFixed(2)}` +
+          `Φ/Φ_ref=${(cur.phi / Math.max(ref.phi, 1e-9)).toFixed(2)}` +
+          (consolidation < 1 ? `, consolidation ×${consolidation.toFixed(2)} (cold-deposition voids)` : "") +
+          ` → strength ×${relStrength.toFixed(2)}, stiffness ×${relStiffness.toFixed(2)}` +
           (clamped ? " (clamped)" : ""),
   };
 }
@@ -284,7 +311,7 @@ export interface BondSweepPoint {
 }
 
 export interface BondFitResult {
-  coeffs:   Required<Pick<BondModelCoeffs, "hConv" | "activationEnergyKJmol" | "strengthPrefactor">>;
+  coeffs:   Required<Pick<BondModelCoeffs, "hConv" | "activationEnergyKJmol" | "strengthPrefactor" | "voidSensitivity">>;
   rmsePct:  number;
   points:   Array<{ measuredMPa: number; predictedMPa: number }>;
 }
@@ -308,11 +335,11 @@ export function fitBondCoeffs(
   if (points.length < 3) {
     throw new Error("fitBondCoeffs needs ≥3 sweep points with measured Z-tension strengths.");
   }
-  const sse = (h: number, ea: number, pre: number): number => {
+  const sse = (h: number, ea: number, pre: number, vs: number): number => {
     let s = 0;
     for (const p of points) {
       const rel = predictBondMultipliers(materialId, p.layerHeightMm, p, {
-        hConv: h, activationEnergyKJmol: ea, strengthPrefactor: pre,
+        hConv: h, activationEnergyKJmol: ea, strengthPrefactor: pre, voidSensitivity: vs,
       }).relStrength;
       const pred = yieldXYMPa * yZRatio * layerHeightFactorFn(p.layerHeightMm) * rel;
       s += (pred - p.measuredSztMPa) ** 2;
@@ -320,32 +347,32 @@ export function fitBondCoeffs(
     return s;
   };
 
-  // Coarse grid
-  let best = { h: H0_WPM2K, ea: (BOND_MATERIALS[materialId] ?? BOND_MATERIALS["pla"]!).EaKJmol, pre: 1.0 };
-  let bestSse = sse(best.h, best.ea, best.pre);
+  // Coarse grid over the three thermal params at the default void sensitivity.
+  let best = { h: H0_WPM2K, ea: (BOND_MATERIALS[materialId] ?? BOND_MATERIALS["pla"]!).EaKJmol, pre: 1.0, vs: VOID_TEMP_GAIN };
+  let bestSse = sse(best.h, best.ea, best.pre, best.vs);
   for (const h of [20, 30, 45, 60, 80]) {
     for (const ea of [40, 55, 70, 90, 110]) {
       for (const pre of [0.8, 0.9, 1.0, 1.1, 1.2]) {
-        const v = sse(h, ea, pre);
-        if (v < bestSse) { bestSse = v; best = { h, ea, pre }; }
+        const v = sse(h, ea, pre, best.vs);
+        if (v < bestSse) { bestSse = v; best = { ...best, h, ea, pre }; }
       }
     }
   }
-  // Two coordinate-descent refinement passes
+  // Two coordinate-descent refinement passes (void sensitivity now in the mix).
   for (let pass = 0; pass < 2; pass++) {
-    for (const key of ["h", "ea", "pre"] as const) {
-      const span = key === "h" ? 8 : key === "ea" ? 10 : 0.06;
+    for (const key of ["h", "ea", "pre", "vs"] as const) {
+      const span = key === "h" ? 8 : key === "ea" ? 10 : key === "pre" ? 0.06 : 0.1;
       for (const d of [-span, -span / 2, span / 2, span]) {
         const cand = { ...best, [key]: best[key] + d };
-        if (cand.h < 5 || cand.ea < 20 || cand.pre < 0.5 || cand.pre > 1.6) continue;
-        const v = sse(cand.h, cand.ea, cand.pre);
+        if (cand.h < 5 || cand.ea < 20 || cand.pre < 0.5 || cand.pre > 1.6 || cand.vs < 0 || cand.vs > 0.8) continue;
+        const v = sse(cand.h, cand.ea, cand.pre, cand.vs);
         if (v < bestSse) { bestSse = v; best = cand; }
       }
     }
   }
 
   const fitted: BondModelCoeffs = {
-    hConv: best.h, activationEnergyKJmol: best.ea, strengthPrefactor: best.pre,
+    hConv: best.h, activationEnergyKJmol: best.ea, strengthPrefactor: best.pre, voidSensitivity: best.vs,
   };
   const outPoints = points.map(p => {
     const rel = predictBondMultipliers(materialId, p.layerHeightMm, p, fitted).relStrength;
@@ -357,7 +384,7 @@ export function fitBondCoeffs(
   const meanMeasured = points.reduce((s, p) => s + p.measuredSztMPa, 0) / points.length;
   const rmse = Math.sqrt(bestSse / points.length);
   return {
-    coeffs: { hConv: best.h, activationEnergyKJmol: best.ea, strengthPrefactor: best.pre },
+    coeffs: { hConv: best.h, activationEnergyKJmol: best.ea, strengthPrefactor: best.pre, voidSensitivity: best.vs },
     rmsePct: meanMeasured > 0 ? (rmse / meanMeasured) * 100 : 0,
     points: outPoints,
   };

@@ -129,8 +129,57 @@ describe("locked interior value (regression — change = deliberate re-estimatio
     const p = predictBondMultipliers("pla", 0.2, { ...REF_PROC, nozzleTempC: 190 });
     // Value captured at implementation time; the direction (<1) is physical,
     // the magnitude is the model's LOW-confidence statement.
-    expect(p.relStrength).toBeCloseTo(0.6498, 3);
+    // Re-estimated when the void/consolidation factor was added (a 190°C
+    // interface is below the reference deposition temp, so cold-deposition
+    // porosity cuts strength below the diffusion-only 0.6498).
+    expect(p.relStrength).toBeCloseTo(0.6191, 3);
     expect(p.relStiffness).toBeCloseTo(Math.sqrt(p.relStrength), 6);
+    // The void term is what moved it: it is < 1 here and exactly 1 at reference.
+    expect(p.consolidation).toBeLessThan(1);
+  });
+});
+
+describe("void / consolidation factor (LOW confidence, regression-locked)", () => {
+  const mats = ["pla", "petg", "abs", "tpu", "pa12", "asa"];
+
+  it("is EXACTLY 1.0 at the reference condition for every material × layer height", () => {
+    for (const m of mats) {
+      // Reference nozzle is per-material; omit it so predictBondMultipliers
+      // fills the material's own nozzleRefC (= the reference deposition temp).
+      for (const lh of [0.1, 0.2, 0.3]) {
+        const p = predictBondMultipliers(m, lh, { ...BOND_REFERENCE });
+        expect(p.consolidation).toBeCloseTo(1.0, 12);
+      }
+    }
+  });
+
+  it("a colder interface (lower nozzle) drives the void factor below 1 — monotone", () => {
+    let prev = 1.0 + 1e-9;
+    for (const nz of [210, 205, 200, 195, 190, 185]) {
+      const p = predictBondMultipliers("pla", 0.2, { ...REF_PROC, nozzleTempC: nz });
+      expect(p.consolidation).toBeLessThanOrEqual(prev + 1e-9);
+      prev = p.consolidation;
+    }
+    expect(prev).toBeLessThan(1);
+  });
+
+  it("does NOT flip the locked faster-print → stronger trend", () => {
+    // Faster print → hotter substrate → higher interface temp → higher
+    // consolidation AND higher Φ, so net relStrength must still rise.
+    const slow = predictBondMultipliers("pla", 0.2, { ...REF_PROC, printSpeedMmS: 30 });
+    const fast = predictBondMultipliers("pla", 0.2, { ...REF_PROC, printSpeedMmS: 120 });
+    expect(fast.relStrength).toBeGreaterThan(slow.relStrength);
+  });
+
+  it("respects the void floor and stays finite under extreme cold", () => {
+    const p = predictBondMultipliers("pla", 0.2, { ...REF_PROC, nozzleTempC: 165, coolingFanPct: 100 });
+    expect(p.consolidation).toBeGreaterThanOrEqual(0.6 - 1e-9);
+    expect(Number.isFinite(p.relStrength)).toBe(true);
+  });
+
+  it("voidSensitivity = 0 disables the void term (consolidation ≡ 1)", () => {
+    const p = predictBondMultipliers("pla", 0.2, { ...REF_PROC, nozzleTempC: 190 }, { voidSensitivity: 0 });
+    expect(p.consolidation).toBeCloseTo(1.0, 12);
   });
 });
 
