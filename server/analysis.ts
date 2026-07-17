@@ -2067,6 +2067,74 @@ export function computeCouponRecommendations(
   return recs.map(({ _priority, ...r }) => r);
 }
 
+/** Interface-aware design-for-manufacturing guidance for a delamination-governed result. */
+export interface DelaminationDFM {
+  /** Which interface mechanism drives failure at the hotspot. */
+  governingSubMode: "tension" | "shear";
+  /**
+   * Angle of the interface traction from the layer normal at the hotspot:
+   * ~0° = pure opening (delamination), ~90° = pure sliding (interlayer shear).
+   */
+  interfaceLoadAngleDeg: number;
+  /**
+   * Strength unlocked by moving this load into the layer plane: yieldXY / S_zt
+   * (tension) or yieldXY / S_zs (shear) — the factor by which the in-plane
+   * allowable exceeds the bond allowable now governing.
+   */
+  inPlaneGainX: number;
+  /** The current print orientation the advice is relative to. */
+  currentOrientation: string;
+  /** Concrete, ordered advice lines. */
+  suggestions: string[];
+}
+
+/**
+ * Turn a delamination-governed hotspot into concrete design advice: reorient so
+ * the load lies in the (strong) layer plane, or — for a sliding interface — add
+ * perimeter walls. Inputs are the governing element's stress in the MATERIAL
+ * frame (weak axis = local Z) and its allowables. The strength ratios are real
+ * material scalars (in-plane yield vs the bond allowable), so the "×N stronger"
+ * claim is grounded, not a heuristic. Advisory only — changes no SF.
+ */
+export function computeDelaminationDFM(
+  localSzz: number, localTyz: number, localTxz: number,
+  yieldXY: number, yieldZ: number, yieldZShear: number,
+  orientation: string,
+): DelaminationDFM {
+  const shear = Math.hypot(localTyz, localTxz);
+  const uT = Math.max(0, localSzz) / Math.max(yieldZ, 1e-9);
+  const uS = shear / Math.max(yieldZShear, 1e-9);
+  const tension = uT >= uS;
+  const angle = Math.atan2(shear, Math.max(localSzz, 0)) * 180 / Math.PI;
+  const gain = tension ? yieldXY / Math.max(yieldZ, 1e-9) : yieldXY / Math.max(yieldZShear, 1e-9);
+  const gainStr = `~${gain.toFixed(1)}×`;
+  const suggestions: string[] = [];
+  if (tension) {
+    suggestions.push(
+      `The layer bond is opening in tension (interface traction ${angle.toFixed(0)}° from the layer normal). ` +
+      `Reorient so this load lies in the layer plane — that trades the bond allowable S_zt for the in-plane strength, ${gainStr} stronger here.`,
+    );
+    if (orientation === "flat") {
+      suggestions.push(`Currently printed flat (layers ⟂ the pull). Printing upright or on-edge would carry this load along the beads instead of across the bond.`);
+    } else {
+      suggestions.push(`Aim the ${gainStr}-stronger in-plane direction at the peak tension, and keep interfaces out of the highest-tension region.`);
+    }
+  } else {
+    suggestions.push(
+      `Layers are sliding (interlayer shear, traction ${angle.toFixed(0)}° from the layer normal). ` +
+      `Add perimeter walls — the dense shell carries interlayer shear — or reorient so the shear acts in-plane (${gainStr} the interlaminar allowable).`,
+    );
+    suggestions.push(`Interlayer shear governs short overhangs and shear-loaded joints; more walls beat more infill here.`);
+  }
+  return {
+    governingSubMode: tension ? "tension" : "shear",
+    interfaceLoadAngleDeg: +angle.toFixed(1),
+    inPlaneGainX: +gain.toFixed(2),
+    currentOrientation: orientation,
+    suggestions,
+  };
+}
+
 // ─── Cosine-bearing nodal force distribution ──────────────────────────────────
 /**
  * Distribute a bolt bearing load over the loaded-face nodes using a cosine
@@ -2271,6 +2339,11 @@ export interface AnalysisResult {
    * fitted) or the interface criterion is not active.
    */
   couponRecommendations:  CouponRecommendation[];
+  /**
+   * Interface-aware design advice (reorient / add walls) — present only when the
+   * governing hotspot is delamination/interlayer-shear governed, null otherwise.
+   */
+  delaminationDFM:        DelaminationDFM | null;
   fatigue:                FatigueEstimate;
   isotropicComparison:    IsotropicComparison;
   /** Mode shapes projected to surface vertices, one per mode. Base64-encoded Float32Array. */
@@ -4741,6 +4814,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // bulk-governed (the legacy blanket multiplication overstated uncertainty
   // for in-plane-governed parts). hill-legacy keeps the blanket behavior.
   let bandScalesSF = true;
+  let delaminationDFM: DelaminationDFM | null = null;
   if (criterion === "fdm-interface" && isOrthotropic(material)
       && result.elemStress6 && result.governingElement !== undefined) {
     const g = result.governingElement;
@@ -4759,6 +4833,13 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     const uBulk = gvm / gYXY;
     const uInt  = fdmInterfaceUtilization(gszz, gtyz, gtxz, gYZ, gYZS).combined;
     bandScalesSF = uInt >= uBulk;
+    // Interface-aware DFM (#5): only when the hotspot is interface-governed —
+    // reorientation / walls advice is meaningless for a bulk-governed part.
+    if (uInt >= uBulk && uInt > 1e-9) {
+      delaminationDFM = computeDelaminationDFM(
+        gszz, gtyz, gtxz, gYXY, gYZ, gYZS, req.print.orientation,
+      );
+    }
   }
   const sfLow  = +(bandScalesSF ? sf * yieldMul_low  * lhMul_low  : sf).toFixed(2);
   const sfHigh = +(bandScalesSF ? sf * yieldMul_high * lhMul_high : sf).toFixed(2);
@@ -4820,6 +4901,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     topologySuggestions,
     layerInterfaceProfile,
     couponRecommendations,
+    delaminationDFM,
     fatigue,
     isotropicComparison,
     governingDirection,

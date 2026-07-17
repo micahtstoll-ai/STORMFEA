@@ -395,6 +395,7 @@ app.post("/api/analyse", async (req, res) => {
         topologySuggestions:  result.topologySuggestions,
         layerInterfaceProfile: result.layerInterfaceProfile ?? null,
         couponRecommendations: result.couponRecommendations ?? [],
+        delaminationDFM:      result.delaminationDFM ?? null,
         fatigue:              result.fatigue,
         isotropicComparison:  result.isotropicComparison,
         governingDirection:   result.governingDirection ?? null,
