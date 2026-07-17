@@ -1974,6 +1974,99 @@ export function computeLayerInterfaceProfile(
   };
 }
 
+/**
+ * Calibration state of the two interlayer allowables, in ONE place so the
+ * failure-mode-row confidence and the coupon recommender can never drift apart.
+ *   zCalibrated — a real Z-tension coupon set S_zt (NOT the τ/0.58 shear
+ *                 derivation, which leaves the row literature-grade).
+ *   sCalibrated — a lap-shear coupon measured S_zs directly.
+ *   bondActive/bondFitted — the process bond model is on / has fitted coeffs.
+ */
+export function interfaceCalibrationState(
+  cal: CalibrationProfile | null | undefined,
+  process: ProcessSettings | undefined,
+): { zCalibrated: boolean; sCalibrated: boolean; bondActive: boolean; bondFitted: boolean } {
+  return {
+    zCalibrated: cal?.yieldZ_MPa != null && cal?.yieldZFromShear !== true,
+    sCalibrated: cal?.interShear_MPa != null,
+    bondActive:  hasProcessSettings(process),
+    bondFitted:  cal?.bondCoeffs != null,
+  };
+}
+
+/** A prioritized suggestion to print/run a calibration coupon. */
+export interface CouponRecommendation {
+  /** Which coupon to run. */
+  coupon:  "z-tension" | "lap-shear" | "bond-sweep";
+  /** Short human label. */
+  label:   string;
+  /** Why it matters for THIS design (which mode it calibrates, whether that mode governs). */
+  reason:  string;
+  /** Confidence tier it unlocks, e.g. "LOW → MEDIUM". */
+  confidenceGain: string;
+  /** True when it calibrates the currently governing interlayer mode. */
+  governing: boolean;
+}
+
+/**
+ * Rank the calibration coupons that would most improve confidence for this
+ * specific result. Only the interlayer modes are considered (the tool's core
+ * claim); a coupon that calibrates the GOVERNING mode is prioritized over one
+ * that calibrates the non-governing mode. Returns [] when both interlayer
+ * allowables are already measured and the bond model (if active) is fitted —
+ * i.e. nothing left to recommend.
+ */
+export function computeCouponRecommendations(
+  cal:       CalibrationProfile | null | undefined,
+  process:   ProcessSettings | undefined,
+  sfTension: number,
+  sfShear:   number,
+): CouponRecommendation[] {
+  const st = interfaceCalibrationState(cal, process);
+  const tensionGoverns = sfTension <= sfShear;
+  const recs: Array<CouponRecommendation & { _priority: number }> = [];
+  // Urgency rises as the mode's margin approaches 1; governing mode gets a big
+  // base bump so it always sorts first.
+  const urgency = (sf: number, governing: boolean) =>
+    (governing ? 100 : 0) + 1 / Math.max(sf, 0.05);
+
+  if (!st.zCalibrated) {
+    recs.push({
+      coupon: "z-tension",
+      label:  "Z-tension dog-bone coupon",
+      reason: `Interlayer tension (delamination onset)${tensionGoverns ? " — the GOVERNING mode" : ""} is on the literature ratio; ` +
+              `a standing dog-bone measures the bond tensile allowable S_zt directly.`,
+      confidenceGain: "LOW → MEDIUM",
+      governing: tensionGoverns,
+      _priority: urgency(sfTension, tensionGoverns),
+    });
+  }
+  if (!st.sCalibrated) {
+    recs.push({
+      coupon: "lap-shear",
+      label:  "Lap-shear coupon",
+      reason: `Interlayer shear${!tensionGoverns ? " — the GOVERNING mode" : ""} uses the default S_zt/√3; ` +
+              `a lap-shear coupon measures the interlaminar allowable S_zs directly.`,
+      confidenceGain: "LOW → MEDIUM",
+      governing: !tensionGoverns,
+      _priority: urgency(sfShear, !tensionGoverns),
+    });
+  }
+  if (st.bondActive && !st.bondFitted) {
+    recs.push({
+      coupon: "bond-sweep",
+      label:  "Process bond-sweep fit",
+      reason: `The bead-penetration bond model is active but running on literature constants; ` +
+              `a Z-tension sweep across settings fits it to your printer.`,
+      confidenceGain: "bond model LOW → MEDIUM",
+      governing: false,
+      _priority: 5,   // useful but below an uncalibrated governing allowable
+    });
+  }
+  recs.sort((a, b) => b._priority - a._priority);
+  return recs.map(({ _priority, ...r }) => r);
+}
+
 // ─── Cosine-bearing nodal force distribution ──────────────────────────────────
 /**
  * Distribute a bolt bearing load over the loaded-face nodes using a cosine
@@ -2171,6 +2264,13 @@ export interface AnalysisResult {
    * material or the interface criterion is not active).
    */
   layerInterfaceProfile:  LayerInterfaceProfile | null;
+  /**
+   * Prioritized calibration-coupon suggestions for THIS result — which coupon
+   * would most improve confidence, governing interlayer mode first. Empty when
+   * both interlayer allowables are measured (and the bond model, if active, is
+   * fitted) or the interface criterion is not active.
+   */
+  couponRecommendations:  CouponRecommendation[];
   fatigue:                FatigueEstimate;
   isotropicComparison:    IsotropicComparison;
   /** Mode shapes projected to surface vertices, one per mode. Base64-encoded Float32Array. */
@@ -4330,14 +4430,19 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // mechanisms so delamination onset ("breaking upon the layers") and
   // interlayer shear are reported — and calibrated — separately.
   let layerInterfaceProfile: LayerInterfaceProfile | null = null;
+  let couponRecommendations: CouponRecommendation[] = [];
   if (result.elemStress6 && criterion === "fdm-interface" && isOrthotropic(material)) {
     layerInterfaceProfile = computeLayerInterfaceProfile(
       mesh, result.elemStress6, material, req.print.layerHeightMm ?? 0.2, materialField ?? null,
     );
     const peaks = computeInterfaceModePeaks(mesh, result.elemStress6, material, materialField ?? null);
     if (peaks) {
-      const zCal = req.calibration?.yieldZ_MPa != null && req.calibration?.yieldZFromShear !== true;
-      const sCal = req.calibration?.interShear_MPa != null;
+      // Single source of truth for the interlayer calibration gates — shared
+      // with the coupon recommender so the two can't disagree.
+      const { zCalibrated: zCal, sCalibrated: sCal } = interfaceCalibrationState(req.calibration, req.print.process);
+      couponRecommendations = computeCouponRecommendations(
+        req.calibration, req.print.process, peaks.sfTension, peaks.sfShear,
+      );
       allFailureModes.push({
         mode:       "Interlayer tension (delamination onset)",
         sf:          +peaks.sfTension.toFixed(3),
@@ -4714,6 +4819,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     rigidBodyMode,
     topologySuggestions,
     layerInterfaceProfile,
+    couponRecommendations,
     fatigue,
     isotropicComparison,
     governingDirection,

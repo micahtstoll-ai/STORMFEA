@@ -394,6 +394,7 @@ app.post("/api/analyse", async (req, res) => {
         rigidBodyMode:        result.rigidBodyMode,
         topologySuggestions:  result.topologySuggestions,
         layerInterfaceProfile: result.layerInterfaceProfile ?? null,
+        couponRecommendations: result.couponRecommendations ?? [],
         fatigue:              result.fatigue,
         isotropicComparison:  result.isotropicComparison,
         governingDirection:   result.governingDirection ?? null,

@@ -6617,6 +6617,8 @@ function showResults(s) {
 
     ${renderLayerRiskProfile(s)}
 
+    ${renderCouponRecommendations(s)}
+
     ${s.recommendations && s.recommendations.length ? `
     <div style="margin-top:16px">
       <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:8px">PRINT SETTINGS RECOMMENDATIONS</div>
@@ -6696,6 +6698,37 @@ function renderLayerRiskProfile(s) {
         <span>Worst: layer ${gov.layer} · <span style="color:${govSfColor}">SF ${gov.sf.toFixed(2)}×</span> at z≈${U.lenStr ? U.lenStr(gov.zMidMm) : gov.zMidMm.toFixed(2) + ' mm'}</span>
         <span>${layers.length} layer${layers.length === 1 ? '' : 's'}${p.coarsened ? ` · ${U.lenStr ? U.lenStr(p.binHeightMm) : p.binHeightMm.toFixed(2) + ' mm'}/bin` : ''}</span>
       </div>
+    </div>`;
+}
+
+// ── Calibration coupon recommendations (feature #3) ──────────────────────────
+// A prioritized list of which coupon would most improve confidence for THIS
+// result — governing interlayer mode first. Jumps straight to the CALIBRATE tab.
+function renderCouponRecommendations(s) {
+  const recs = s && s.couponRecommendations;
+  if (!recs || !recs.length) return '';
+  const rows = recs.map(r => {
+    const gov = r.governing
+      ? '<span style="font-size:9px;color:var(--gold);border:1px solid var(--gold-glow);border-radius:2px;padding:0 4px;margin-left:6px">GOVERNING</span>'
+      : '';
+    return `<div style="padding:7px 10px;background:${r.governing ? 'var(--gold-faint)' : 'var(--bg-card)'};border:1px solid ${r.governing ? 'var(--gold-glow)' : 'var(--border)'};border-radius:3px;margin-bottom:5px">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">
+        <div style="flex:1;font-size:11px;color:var(--text-hi)">${r.label}${gov}</div>
+        <div style="font-size:9px;color:var(--warn)">${r.confidenceGain}</div>
+      </div>
+      <div style="font-size:10px;color:var(--text-lo);line-height:1.5">${r.reason}</div>
+    </div>`;
+  }).join('');
+  return `
+    <div style="margin-top:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label)">TO RAISE CONFIDENCE</div>
+        <button class="btn" type="button" style="font-size:10px;padding:3px 10px" onclick="switchTab('calibrate')">Open CALIBRATE →</button>
+      </div>
+      <div style="font-size:10px;color:var(--text-lo);margin-bottom:8px;line-height:1.6">
+        These interlayer allowables are still on literature values. Printing the coupon that calibrates the governing mode tightens this result the most.
+      </div>
+      ${rows}
     </div>`;
 }
 
