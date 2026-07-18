@@ -69,7 +69,7 @@ import { rotationAligningZTo, rotateStress6ToLocal, computeGeometry } from "./so
 import {
   sprSmoothedStress, sprSmoothedStress6, recoverElementStress, nodeAveragedPrincipalStress,
   fdmInterfaceUtilization, interlaminarShearOf, INTERFACE_FRICTION_MU,
-  type CriterionKind,
+  type CriterionKind, type InPlaneAniso,
 } from "./solver/stress.js";
 import { flagMergedHoleWarnings }           from "./holes.js";
 import type { HoleFeature }                 from "./holes.js";
@@ -495,6 +495,13 @@ export interface CalibrationProfile {
    */
   bondCoeffs?: BondModelCoeffs | null;
   /**
+   * Measured in-plane cross-bead tensile strength as a fraction of the
+   * along-bead (in-plane) yield, 0 < r < 1 (feature #6). From a raster-oriented
+   * tensile coupon; overrides the literature default when in-plane anisotropy
+   * is enabled. Absent = no measurement.
+   */
+  crossBeadRatio?: number | null;
+  /**
    * Optional overrides for the two-region core's Gibson-Ashby exponents
    * (solver/lattice.ts). Escape hatch for printer-specific lattice data —
    * there is no coupon-fitting workflow for these yet. Absent/null = family
@@ -793,6 +800,15 @@ const FDM_ORTHO_RATIOS = {
  * S_zs directly (audit A5 — lap-shear is no longer converted into yieldZ).
  */
 export const INTERSHEAR_OVER_YIELDZ_DEFAULT = 1 / Math.sqrt(3);
+
+/**
+ * Literature cross-bead tensile ratio (feature #6) — in-plane strength across
+ * unidirectional beads vs along them. FDM unidirectional-raster coupons report
+ * ~0.7–0.9; 0.85 is a MILD LOW-confidence default applied ONLY when the raster
+ * is declared unidirectional and no coupon ratio was measured. Overridden by
+ * CalibrationProfile.crossBeadRatio.
+ */
+export const CROSS_BEAD_RATIO_LITERATURE = 0.85;
 
 
 /**
@@ -1340,6 +1356,19 @@ export interface PrintSettings {
    * of layerHeightFactor. Absent → legacy layer-height-only path, unchanged.
    */
   process?: ProcessSettings;
+  /**
+   * Bead (raster) direction in the layer plane, degrees from the part's +X
+   * axis. Consumed only by the in-plane raster anisotropy model (feature #6,
+   * AnalysisSettings.inPlaneAnisotropy) to orient the cross-bead check. Default 0.
+   */
+  rasterAngleDeg?: number;
+  /**
+   * Declares a UNIDIRECTIONAL / dominant raster (e.g. single-perimeter walls,
+   * unidirectional infill). Only then does opt-in in-plane anisotropy apply a
+   * literature cross-bead knockdown absent a measured ratio — alternating ±45°
+   * rasters homogenize and must stay isotropic.
+   */
+  unidirectionalRaster?: boolean;
 }
 
 /**
@@ -1396,6 +1425,16 @@ export interface AnalysisSettings {
    * compare against the pre-audit Hill (1948) criterion.
    */
   criterion?:    "fdm-interface" | "hill-legacy";
+  /**
+   * Opt-in in-plane raster (bead-to-bead) anisotropy for the bulk mechanism
+   * (feature #6). Default off ⇒ the bulk term is exactly isotropic von Mises
+   * (bit-identical). Even when ON it stays inert UNLESS there is real evidence
+   * for anisotropy — a measured `CalibrationProfile.crossBeadRatio` or a
+   * `PrintSettings.unidirectionalRaster` declaration — because typical ±45°
+   * alternating rasters homogenize toward isotropic. Applies to the FDM
+   * criterion only.
+   */
+  inPlaneAnisotropy?: boolean;
 }
 
 /**
@@ -1972,6 +2011,48 @@ export function computeLayerInterfaceProfile(
     governingIndex,
     layers,
   };
+}
+
+/**
+ * Peak in-plane cross-bead (bead-to-bead) utilization over all elements, for the
+ * feature-#6 failure-mode row. Same cross-bead tension⊕shear form the criterion
+ * uses, in the material frame. Returns null for non-orthotropic materials.
+ */
+export function computeCrossBeadPeak(
+  mesh:        import("./solver/types.js").TetMesh,
+  elemStress6: Float64Array,
+  material:    AnyMaterial,
+  aniso:       InPlaneAniso,
+  field?:      ElementMaterialField | null,
+): { sf: number; peakMPa: number; allowMPa: number } | null {
+  if (!isOrthotropic(material)) return null;
+  const axis = material.weakAxis;
+  const weakR = (axis && Math.hypot(axis[0], axis[1], axis[2]) > 0
+    && (axis[2] / (Math.hypot(axis[0], axis[1], axis[2]) || 1)) < 1 - 1e-12)
+    ? rotationAligningZTo(axis) : null;
+  const th = aniso.rasterAngleDeg * Math.PI / 180;
+  const c = Math.cos(th), s = Math.sin(th);
+  let maxU = 0, peak = 0, allow = aniso.crossBeadRatio * material.yieldXY;
+  for (let e = 0; e < mesh.elementCount; e++) {
+    let sxx = elemStress6[e * 6] ?? 0, syy = elemStress6[e * 6 + 1] ?? 0, txy = elemStress6[e * 6 + 3] ?? 0;
+    if (weakR) {
+      const L = rotateStress6ToLocal([
+        sxx, syy, elemStress6[e * 6 + 2] ?? 0, txy, elemStress6[e * 6 + 4] ?? 0, elemStress6[e * 6 + 5] ?? 0,
+      ], weakR);
+      sxx = L[0]; syy = L[1]; txy = L[3];
+    }
+    const bin  = field ? (field.binOfElement[e] ?? 0) : 0;
+    const yXY  = field ? (field.yieldXY[bin] ?? material.yieldXY) : material.yieldXY;
+    const yCr  = aniso.crossBeadRatio * yXY;
+    const sCr  = yCr / Math.sqrt(3);
+    const sPerp = s * s * sxx + c * c * syy - 2 * c * s * txy;
+    const tRp   = -c * s * sxx + c * s * syy + (c * c - s * s) * txy;
+    const u = sPerp > 0
+      ? Math.hypot(sPerp / yCr, tRp / sCr)
+      : Math.abs(tRp) / sCr;
+    if (u > maxU) { maxU = u; peak = Math.max(0, sPerp); allow = yCr; }
+  }
+  return { sf: Math.min(Math.max(maxU > 1e-9 ? 1 / maxU : 999, 0), 999), peakMPa: peak, allowMPa: allow };
 }
 
 /**
@@ -3706,11 +3787,29 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // on mesh connectivity and are shared by K, M and Kσ.
   const wantsModal = req.analysis.analysisType === 'modal';
   const mayBuckle  = req.analysis.computeBuckling === true;
+
+  // In-plane raster (bead-to-bead) anisotropy (feature #6, opt-in + evidence-
+  // gated). Stays inert — leaving the bulk term exactly isotropic von Mises —
+  // unless the user opted in AND there is real evidence: a measured cross-bead
+  // ratio, or a declared unidirectional raster (typical ±45° alternating
+  // rasters homogenize to isotropic, so the flag alone changes nothing).
+  let inPlaneAniso: InPlaneAniso | null = null;
+  if (req.analysis.inPlaneAnisotropy && criterion === "fdm-interface" && isOrthotropic(material)) {
+    const measured = req.calibration?.crossBeadRatio;
+    const ratio = (measured != null && measured > 0 && measured < 1)
+      ? measured
+      : (req.print.unidirectionalRaster ? CROSS_BEAD_RATIO_LITERATURE : null);
+    if (ratio != null && ratio > 0 && ratio < 1) {
+      inPlaneAniso = { rasterAngleDeg: req.print.rasterAngleDeg ?? 0, crossBeadRatio: ratio };
+    }
+  }
+
   const input: SolverInput = {
     mesh,
     material,
     ...(materialField ? { materialField } : {}),
     criterion,
+    ...(inPlaneAniso ? { inPlaneAniso } : {}),
     constraints,
     forces: effectiveForces,
     keepPristineK: wantsModal || mayBuckle,
@@ -4539,6 +4638,29 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
               (sCal ? `(CALIBRATED from your lap-shear coupon). `
                     : `(default S_zt/√3 — run the lap-shear coupon to measure it directly). `) +
               `Layers sliding over each other; governs shear-loaded joints and short overhangs.`,
+      });
+    }
+  }
+
+  // ── In-plane bead-to-bead bond (feature #6) ────────────────────────────────
+  // Only present when in-plane raster anisotropy is active (opt-in + evidence-
+  // gated). Reports the cross-bead margin, which is already folded into the
+  // headline SF via the bulk term's min().
+  if (inPlaneAniso && result.elemStress6 && isOrthotropic(material)) {
+    const cb = computeCrossBeadPeak(mesh, result.elemStress6, material, inPlaneAniso, materialField ?? null);
+    if (cb) {
+      const measured = req.calibration?.crossBeadRatio != null;
+      allFailureModes.push({
+        mode:       "In-plane bead bond (cross-raster)",
+        sf:          +cb.sf.toFixed(3),
+        failForceN:  +(totalForce2 * cb.sf).toFixed(0),
+        checked:     true,
+        confidence:  measured ? "medium" : "low",
+        note: `Peak cross-bead tension = ${cb.peakMPa.toFixed(2)} MPa vs cross-bead allowable ${cb.allowMPa.toFixed(1)} MPa ` +
+              `(${(inPlaneAniso.crossBeadRatio * 100).toFixed(0)}% of in-plane yield, raster ${inPlaneAniso.rasterAngleDeg.toFixed(0)}°, ` +
+              (measured ? `CALIBRATED from your cross-bead coupon). `
+                        : `literature default — you declared a unidirectional raster). `) +
+              `Beads pulling apart within the layer plane; only meaningful for unidirectional/dominant rasters (±45° alternating rasters homogenize to isotropic).`,
       });
     }
   }

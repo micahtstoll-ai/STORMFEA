@@ -244,6 +244,19 @@
       (nozzle/speed/fan/bed) in the MATERIAL tab + G-code auto-fill; fitted
       per printer via POST /api/calibration/bond-sweep (CALIBRATE tab panel);
       constants confidence-LOW, regression-locked (bond.test.ts)
+- [x] Bond void/consolidation factor (server/solver/bond.ts) — cold-deposition
+      interbead porosity: strength cut below the reference interface temperature,
+      exactly 1.0 at reference (bit-identical), reinforces cold⇒weaker so no
+      locked trend flips; fittable voidSensitivity coeff (bond.test.ts)
+- [x] Layer-by-layer delamination risk profile + interface-aware DFM +
+      coupon-recommendation engine (analysis.ts) — surface WHICH layers are at
+      risk, what to reorient/add, and which coupon most improves confidence
+- [x] Process-sensitivity dashboard + bond-quality surface (POST
+      /api/bond-sensitivity) — how nozzle/speed/fan/layer-height move the bond
+      margin, and a nozzle×speed sweet-spot map (BOND SENSITIVITY panel)
+- [x] In-plane raster (bead-to-bead) anisotropy (audit A7) — opt-in, evidence-
+      gated cross-bead check on the BULK term; interface azimuth invariance
+      preserved; bit-identical off/no-evidence (in-plane-anisotropy.test.ts)
 
 ---
 
