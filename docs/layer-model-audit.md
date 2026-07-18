@@ -146,6 +146,35 @@ settings are provided the legacy layer-height factor path is used unchanged.
 
 ---
 
+## A7 — In-plane raster (bead-to-bead) anisotropy was absent (bulk term only)
+
+**Defect.** The bulk mechanism used isotropic in-plane von Mises against a single
+`yieldXY`. Real FDM parts printed with a UNIDIRECTIONAL / dominant raster are
+weaker across the beads (bead-to-bead in-plane bond) than along them — a
+directional in-plane strength the model omitted.
+
+**Fix (opt-in, evidence-gated).** `server/solver/stress.ts`
+(`fdmDualCriterionSF`): an optional cross-bead tension⊕shear check is added as a
+SEPARATE `min` on the BULK term — a cross-bead allowable (fraction of the local
+`yieldXY`) applied to the stress resolved onto the raster axes. The interlayer
+INTERFACE (delamination) term is untouched, so the criterion's azimuth
+invariance about the weak axis is preserved exactly (A1); the new azimuth
+dependence lives only in the bulk term, which is where in-plane anisotropy
+physically belongs.
+
+Gated three ways so it never harms the common case: (1) opt-in
+`AnalysisSettings.inPlaneAnisotropy`; (2) even when on, inert unless there is
+evidence — a measured `CalibrationProfile.crossBeadRatio` or a declared
+`PrintSettings.unidirectionalRaster` — because typical ±45° alternating rasters
+homogenize toward isotropic and MUST stay isotropic; (3) the cross-bead ratio
+defaults to 1 (no penalty), so with the ratio at 1 the term is non-binding and
+the criterion collapses exactly to von Mises. Flag off / no evidence ⇒
+bit-identical legacy path. Literature default ratio 0.85 (LOW confidence) applies
+only to a declared unidirectional raster; a raster-oriented coupon overrides it.
+Locked by `in-plane-anisotropy.test.ts`.
+
+---
+
 ## Verified-unchanged items
 
 - **Bond rotation** (`rotateC6`, `rotationAligningZTo`): exact, validated in

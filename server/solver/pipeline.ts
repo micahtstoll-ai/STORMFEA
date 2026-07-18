@@ -48,6 +48,12 @@ export interface SolverInput {
    * upright-no-bed scalar-swap fallback (see docs/layer-model-audit.md A1).
    */
   readonly criterion?:  import("./stress.js").CriterionKind;
+  /**
+   * Optional in-plane raster (bead-to-bead) anisotropy for the bulk term
+   * (feature #6, opt-in + evidence-gated). Uniform across the part; absent ⇒
+   * the bulk term is exactly isotropic von Mises (bit-identical legacy path).
+   */
+  readonly inPlaneAniso?: import("./stress.js").InPlaneAniso | null;
   readonly constraints: readonly FixedNodeSet[];
   readonly forces:      readonly PointForce[];
   readonly cgTolerance?:   number;
@@ -198,7 +204,7 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
 
   const solverMs = Date.now() - t0;
   _snap("before buildSolverResult");
-  const result = buildSolverResult(mesh, cg.u, material, cg.iterations, cg.converged, solverMs, cg.residualCheckpoints, true, input.materialField, input.criterion);
+  const result = buildSolverResult(mesh, cg.u, material, cg.iterations, cg.converged, solverMs, cg.residualCheckpoints, true, input.materialField, input.criterion, input.inPlaneAniso ?? null);
   _snap("after buildSolverResult");
   validateResult(result, mesh);
 

@@ -178,6 +178,32 @@ export function hillEquivalentStress(
 export type CriterionKind = "fdm-interface" | "hill-legacy";
 
 /**
+ * Optional in-plane raster (bead-to-bead) anisotropy for the BULK mechanism
+ * (feature #6). A cross-bead tension⊕shear bond check added as a SEPARATE
+ * minimum on the bulk term — the interlayer interface (delamination) term is
+ * untouched, so azimuth invariance about the weak axis is preserved for the
+ * criterion this augments. Only supplied when there is real evidence for
+ * in-plane anisotropy (a measured cross-bead ratio or a declared unidirectional
+ * raster); absent ⇒ the bulk term is exactly isotropic von Mises. All fields
+ * are in the MATERIAL (layer) frame: the raster lies in the local XY plane.
+ *
+ * NOTE (alternating rasters): a single raster direction models a UNIDIRECTIONAL
+ * or dominant raster. Typical slicers alternate ±45° per layer, which
+ * homogenizes toward isotropic — for those the cross-bead allowable should stay
+ * at yieldXY (no anisotropy), which is why this is opt-in and evidence-gated.
+ */
+export interface InPlaneAniso {
+  /** Bead (raster) direction in the layer plane, degrees from the material +X axis. */
+  rasterAngleDeg:  number;
+  /**
+   * Cross-bead in-plane tensile allowable as a FRACTION of the in-plane yield
+   * (0 < r ≤ 1). Applied against the local (per-bin) yieldXY, so it stays
+   * consistent under the two-region field. r = 1 ⇒ isotropic (no penalty).
+   */
+  crossBeadRatio:  number;
+}
+
+/**
  * Friction coefficient for the Mohr–Coulomb enhancement of interlayer shear
  * capacity under through-layer COMPRESSION. Polymer-on-polymer sliding
  * friction ~0.2–0.4; 0.3 is a LOW-confidence engineering default (locked by
@@ -223,6 +249,7 @@ export function fdmDualCriterionSF(
   txy: number, tyz: number, txz: number,
   yieldXY: number, yieldZ: number, yieldZShear: number,
   mu: number = INTERFACE_FRICTION_MU,
+  aniso: InPlaneAniso | null = null,
 ): number {
   const vm = Math.sqrt(
     0.5 * ((sxx - syy) ** 2 + (syy - szz) ** 2 + (szz - sxx) ** 2)
@@ -239,7 +266,30 @@ export function fdmDualCriterionSF(
     const tEff = tau + mu * szz;   // szz ≤ 0 ⇒ friction reduces the driving shear
     if (tEff > 1e-12) sfInt = yieldZShear / tEff;
   }
-  return Math.min(sfBulk, sfInt);
+
+  // Optional in-plane raster (bead-to-bead) bond — a tension⊕shear check on the
+  // cross-bead plane (normal ⟂ the raster, in the layer plane). Tension-only
+  // across the beads (Macaulay), mirroring the interlayer interface but rotated
+  // into the layer plane. Only present with real anisotropy evidence; absent ⇒
+  // this branch is skipped and the bulk term is exactly isotropic von Mises.
+  let sfCross = 999;
+  if (aniso) {
+    const yCross = aniso.crossBeadRatio * yieldXY;   // cross-bead tensile allowable
+    const sCross = yCross / Math.sqrt(3);             // in-plane bead-shear allowable
+    const th = aniso.rasterAngleDeg * Math.PI / 180;
+    const c = Math.cos(th), s = Math.sin(th);
+    const sPerp = s * s * sxx + c * c * syy - 2 * c * s * txy;      // across-bead normal
+    const tRp   = -c * s * sxx + c * s * syy + (c * c - s * s) * txy; // in-plane bead-interface shear
+    if (sPerp > 0) {
+      const u = Math.sqrt((sPerp / yCross) ** 2 + (tRp / sCross) ** 2);
+      if (u > 1e-12) sfCross = 1 / u;
+    } else {
+      // Compression across beads doesn't open the in-plane bond; shear still can.
+      const t = Math.abs(tRp);
+      if (t > 1e-12) sfCross = sCross / t;
+    }
+  }
+  return Math.min(sfBulk, sfInt, sfCross);
 }
 
 /**
@@ -283,6 +333,7 @@ export function recoverElementStress(
   mat:          AnyMaterial,
   field?:       ElementMaterialField,
   criterion:    CriterionKind = "fdm-interface",
+  inPlaneAniso: InPlaneAniso | null = null,
 ): {
   vonMises:      Float64Array;
   safetyFactor:  Float64Array;
@@ -324,7 +375,7 @@ export function recoverElementStress(
       const sigHill = hillEquivalentStress(a, b, c, d, e2, f, yieldXY, yieldZ);
       return sigHill > 1e-12 ? yieldXY / sigHill : 999;
     }
-    return fdmDualCriterionSF(a, b, c, d, e2, f, yieldXY, yieldZ, yieldZShear);
+    return fdmDualCriterionSF(a, b, c, d, e2, f, yieldXY, yieldZ, yieldZShear, INTERFACE_FRICTION_MU, inPlaneAniso);
   };
   const vonMises     = new Float64Array(mesh.elementCount);
   const safetyFactor = new Float64Array(mesh.elementCount);
@@ -1048,9 +1099,10 @@ export function buildSolverResult(
   computeErrorEstimate: boolean = true,
   field?:       ElementMaterialField,
   criterion:    CriterionKind = "fdm-interface",
+  inPlaneAniso: InPlaneAniso | null = null,
 ): SolverResult {
   const { vonMises, safetyFactor, elemPrincipal, maxVonMises, minSF, governingElement, elemStress6 } =
-    recoverElementStress(mesh, displacement, mat, field, criterion);
+    recoverElementStress(mesh, displacement, mat, field, criterion, inPlaneAniso);
 
   // Compute Zienkiewicz-Zhu error estimates if requested
   let errorEstimate: Float32Array | undefined;

@@ -69,7 +69,7 @@ import { rotationAligningZTo, rotateStress6ToLocal, computeGeometry } from "./so
 import {
   sprSmoothedStress, sprSmoothedStress6, recoverElementStress, nodeAveragedPrincipalStress,
   fdmInterfaceUtilization, interlaminarShearOf, INTERFACE_FRICTION_MU,
-  type CriterionKind,
+  type CriterionKind, type InPlaneAniso,
 } from "./solver/stress.js";
 import { flagMergedHoleWarnings }           from "./holes.js";
 import type { HoleFeature }                 from "./holes.js";
@@ -495,6 +495,13 @@ export interface CalibrationProfile {
    */
   bondCoeffs?: BondModelCoeffs | null;
   /**
+   * Measured in-plane cross-bead tensile strength as a fraction of the
+   * along-bead (in-plane) yield, 0 < r < 1 (feature #6). From a raster-oriented
+   * tensile coupon; overrides the literature default when in-plane anisotropy
+   * is enabled. Absent = no measurement.
+   */
+  crossBeadRatio?: number | null;
+  /**
    * Optional overrides for the two-region core's Gibson-Ashby exponents
    * (solver/lattice.ts). Escape hatch for printer-specific lattice data —
    * there is no coupon-fitting workflow for these yet. Absent/null = family
@@ -793,6 +800,15 @@ const FDM_ORTHO_RATIOS = {
  * S_zs directly (audit A5 — lap-shear is no longer converted into yieldZ).
  */
 export const INTERSHEAR_OVER_YIELDZ_DEFAULT = 1 / Math.sqrt(3);
+
+/**
+ * Literature cross-bead tensile ratio (feature #6) — in-plane strength across
+ * unidirectional beads vs along them. FDM unidirectional-raster coupons report
+ * ~0.7–0.9; 0.85 is a MILD LOW-confidence default applied ONLY when the raster
+ * is declared unidirectional and no coupon ratio was measured. Overridden by
+ * CalibrationProfile.crossBeadRatio.
+ */
+export const CROSS_BEAD_RATIO_LITERATURE = 0.85;
 
 
 /**
@@ -1340,6 +1356,19 @@ export interface PrintSettings {
    * of layerHeightFactor. Absent → legacy layer-height-only path, unchanged.
    */
   process?: ProcessSettings;
+  /**
+   * Bead (raster) direction in the layer plane, degrees from the part's +X
+   * axis. Consumed only by the in-plane raster anisotropy model (feature #6,
+   * AnalysisSettings.inPlaneAnisotropy) to orient the cross-bead check. Default 0.
+   */
+  rasterAngleDeg?: number;
+  /**
+   * Declares a UNIDIRECTIONAL / dominant raster (e.g. single-perimeter walls,
+   * unidirectional infill). Only then does opt-in in-plane anisotropy apply a
+   * literature cross-bead knockdown absent a measured ratio — alternating ±45°
+   * rasters homogenize and must stay isotropic.
+   */
+  unidirectionalRaster?: boolean;
 }
 
 /**
@@ -1396,6 +1425,16 @@ export interface AnalysisSettings {
    * compare against the pre-audit Hill (1948) criterion.
    */
   criterion?:    "fdm-interface" | "hill-legacy";
+  /**
+   * Opt-in in-plane raster (bead-to-bead) anisotropy for the bulk mechanism
+   * (feature #6). Default off ⇒ the bulk term is exactly isotropic von Mises
+   * (bit-identical). Even when ON it stays inert UNLESS there is real evidence
+   * for anisotropy — a measured `CalibrationProfile.crossBeadRatio` or a
+   * `PrintSettings.unidirectionalRaster` declaration — because typical ±45°
+   * alternating rasters homogenize toward isotropic. Applies to the FDM
+   * criterion only.
+   */
+  inPlaneAnisotropy?: boolean;
 }
 
 /**
@@ -1827,6 +1866,356 @@ export function computeInterfaceModePeaks(
   };
 }
 
+/** One build-height layer's peak interface state. */
+export interface LayerInterfaceRisk {
+  /** Layer index counting from the first-printed (lowest along the build axis) layer. */
+  layer:    number;
+  /** Layer mid-height along the build axis, mm (from the part's lowest point). */
+  zMidMm:   number;
+  /** Interface safety factor for this layer (1 / peak combined utilization), clamped [0,999]. */
+  sf:       number;
+  /** Peak tension (delamination-onset) utilization ⟨σzz⟩₊/S_zt in this layer. */
+  uTension: number;
+  /** Peak interlayer-shear utilization (friction-credited under compression) in this layer. */
+  uShear:   number;
+}
+
+/** Full per-layer interface risk profile for the layer-by-layer delamination map. */
+export interface LayerInterfaceProfile {
+  /** Unit build axis (weak-axis / layer normal) the layers are stacked along, global frame. */
+  buildAxis:      readonly [number, number, number];
+  /** Effective layer thickness used for binning, mm (may be coarsened from the print layer height to cap bin count). */
+  binHeightMm:    number;
+  /** True when binHeightMm was coarsened above the print layer height to keep the profile bounded. */
+  coarsened:      boolean;
+  /** Index of the governing (lowest-SF) layer within `layers`. */
+  governingIndex: number;
+  /** Per-layer peaks, ordered from first-printed to last-printed. Only layers containing elements are emitted. */
+  layers:         LayerInterfaceRisk[];
+}
+
+/** Cap on emitted layer bins so a thin-layer / tall-part combination can't bloat the payload. */
+const MAX_LAYER_BINS = 320;
+
+/**
+ * Build-height interface risk profile: which PRINTED LAYERS are most at risk of
+ * delamination, not just the single global peak that `computeInterfaceModePeaks`
+ * reports. Elements are binned by their centroid position along the build axis
+ * (the weak axis / layer normal); each bin reports its peak tension and shear
+ * interface utilization via the same material-frame `fdmInterfaceUtilization`
+ * used by the headline criterion. Returns null for non-orthotropic materials
+ * (no interlayer interface is defined). See CLAUDE.md — this is a reporting
+ * decomposition of physics already computed, it does not change any SF.
+ */
+export function computeLayerInterfaceProfile(
+  mesh:          import("./solver/types.js").TetMesh,
+  elemStress6:   Float64Array,
+  material:      AnyMaterial,
+  layerHeightMm: number,
+  field?:        ElementMaterialField | null,
+): LayerInterfaceProfile | null {
+  if (!isOrthotropic(material)) return null;
+  const n = mesh.elementCount;
+  if (n === 0) return null;
+
+  // Build axis = normalized weak axis (layer normal); default +Z. weakR rotates
+  // global stress into the material frame, matching computeInterfaceModePeaks.
+  const axisRaw = material.weakAxis;
+  const axLen = axisRaw ? Math.hypot(axisRaw[0], axisRaw[1], axisRaw[2]) : 0;
+  const buildAxis: readonly [number, number, number] =
+    axLen > 1e-12 ? [axisRaw![0] / axLen, axisRaw![1] / axLen, axisRaw![2] / axLen] : [0, 0, 1];
+  const weakR = (axLen > 1e-12 && buildAxis[2] < 1 - 1e-12) ? rotationAligningZTo(axisRaw!) : null;
+  const matZ  = material.yieldZ;
+  const matZS = interlaminarShearOf(material);
+  const npe   = mesh.nodesPerElem;
+
+  // Pass 1: element centroid projection onto the build axis + interface split.
+  const proj = new Float64Array(n);
+  const uT   = new Float64Array(n);
+  const uS   = new Float64Array(n);
+  const comb = new Float64Array(n);
+  let minP = Infinity, maxP = -Infinity;
+  for (let e = 0; e < n; e++) {
+    // Centroid from the 4 corner nodes (indices 0–3 for both C3D4 and C3D10).
+    let cx = 0, cy = 0, cz = 0;
+    for (let k = 0; k < 4; k++) {
+      const nd = mesh.elements[e * npe + k] ?? 0;
+      cx += mesh.nodes[nd * 3] ?? 0;
+      cy += mesh.nodes[nd * 3 + 1] ?? 0;
+      cz += mesh.nodes[nd * 3 + 2] ?? 0;
+    }
+    cx *= 0.25; cy *= 0.25; cz *= 0.25;
+    const p = cx * buildAxis[0] + cy * buildAxis[1] + cz * buildAxis[2];
+    proj[e] = p;
+    if (p < minP) minP = p;
+    if (p > maxP) maxP = p;
+
+    let szz = elemStress6[e * 6 + 2] ?? 0;
+    let tyz = elemStress6[e * 6 + 4] ?? 0;
+    let txz = elemStress6[e * 6 + 5] ?? 0;
+    if (weakR) {
+      const L = rotateStress6ToLocal([
+        elemStress6[e * 6] ?? 0, elemStress6[e * 6 + 1] ?? 0, szz,
+        elemStress6[e * 6 + 3] ?? 0, tyz, txz,
+      ], weakR);
+      szz = L[2]; tyz = L[4]; txz = L[5];
+    }
+    const bin = field ? (field.binOfElement[e] ?? 0) : 0;
+    const yZ  = field ? (field.yieldZ[bin] ?? matZ) : matZ;
+    const yZS = field ? (field.yieldZShear[bin] ?? matZS) : matZS;
+    const u = fdmInterfaceUtilization(szz, tyz, txz, yZ, yZS);
+    uT[e] = u.uTension; uS[e] = u.uShear; comb[e] = u.combined;
+  }
+
+  const span = Math.max(maxP - minP, 1e-9);
+  const lh   = layerHeightMm > 1e-6 ? layerHeightMm : 0.2;
+  const rawBins = Math.max(1, Math.ceil(span / lh));
+  const coarsened = rawBins > MAX_LAYER_BINS;
+  const nBins = coarsened ? MAX_LAYER_BINS : rawBins;
+  const binHeightMm = coarsened ? span / nBins : lh;
+
+  // Pass 2: accumulate per-bin peak utilizations.
+  const binUT = new Float64Array(nBins);
+  const binUS = new Float64Array(nBins);
+  const binComb = new Float64Array(nBins);
+  const binHas = new Uint8Array(nBins);
+  for (let e = 0; e < n; e++) {
+    let b = Math.floor((proj[e]! - minP) / binHeightMm);
+    if (b < 0) b = 0; else if (b >= nBins) b = nBins - 1;
+    binHas[b] = 1;
+    if (uT[e]!   > binUT[b]!)   binUT[b]   = uT[e]!;
+    if (uS[e]!   > binUS[b]!)   binUS[b]   = uS[e]!;
+    if (comb[e]! > binComb[b]!) binComb[b] = comb[e]!;
+  }
+
+  const clampSF = (v: number) => Math.min(Math.max(v, 0), 999);
+  const layers: LayerInterfaceRisk[] = [];
+  let governingIndex = 0, minSf = Infinity;
+  for (let b = 0; b < nBins; b++) {
+    if (!binHas[b]) continue;
+    const sf = clampSF(binComb[b]! > 1e-9 ? 1 / binComb[b]! : 999);
+    if (sf < minSf) { minSf = sf; governingIndex = layers.length; }
+    layers.push({
+      layer:    b,
+      zMidMm:   +((b + 0.5) * binHeightMm).toFixed(4),
+      sf:       +sf.toFixed(3),
+      uTension: +binUT[b]!.toFixed(4),
+      uShear:   +binUS[b]!.toFixed(4),
+    });
+  }
+  if (layers.length === 0) return null;
+  return {
+    buildAxis,
+    binHeightMm: +binHeightMm.toFixed(4),
+    coarsened,
+    governingIndex,
+    layers,
+  };
+}
+
+/**
+ * Peak in-plane cross-bead (bead-to-bead) utilization over all elements, for the
+ * feature-#6 failure-mode row. Same cross-bead tension⊕shear form the criterion
+ * uses, in the material frame. Returns null for non-orthotropic materials.
+ */
+export function computeCrossBeadPeak(
+  mesh:        import("./solver/types.js").TetMesh,
+  elemStress6: Float64Array,
+  material:    AnyMaterial,
+  aniso:       InPlaneAniso,
+  field?:      ElementMaterialField | null,
+): { sf: number; peakMPa: number; allowMPa: number } | null {
+  if (!isOrthotropic(material)) return null;
+  const axis = material.weakAxis;
+  const weakR = (axis && Math.hypot(axis[0], axis[1], axis[2]) > 0
+    && (axis[2] / (Math.hypot(axis[0], axis[1], axis[2]) || 1)) < 1 - 1e-12)
+    ? rotationAligningZTo(axis) : null;
+  const th = aniso.rasterAngleDeg * Math.PI / 180;
+  const c = Math.cos(th), s = Math.sin(th);
+  let maxU = 0, peak = 0, allow = aniso.crossBeadRatio * material.yieldXY;
+  for (let e = 0; e < mesh.elementCount; e++) {
+    let sxx = elemStress6[e * 6] ?? 0, syy = elemStress6[e * 6 + 1] ?? 0, txy = elemStress6[e * 6 + 3] ?? 0;
+    if (weakR) {
+      const L = rotateStress6ToLocal([
+        sxx, syy, elemStress6[e * 6 + 2] ?? 0, txy, elemStress6[e * 6 + 4] ?? 0, elemStress6[e * 6 + 5] ?? 0,
+      ], weakR);
+      sxx = L[0]; syy = L[1]; txy = L[3];
+    }
+    const bin  = field ? (field.binOfElement[e] ?? 0) : 0;
+    const yXY  = field ? (field.yieldXY[bin] ?? material.yieldXY) : material.yieldXY;
+    const yCr  = aniso.crossBeadRatio * yXY;
+    const sCr  = yCr / Math.sqrt(3);
+    const sPerp = s * s * sxx + c * c * syy - 2 * c * s * txy;
+    const tRp   = -c * s * sxx + c * s * syy + (c * c - s * s) * txy;
+    const u = sPerp > 0
+      ? Math.hypot(sPerp / yCr, tRp / sCr)
+      : Math.abs(tRp) / sCr;
+    if (u > maxU) { maxU = u; peak = Math.max(0, sPerp); allow = yCr; }
+  }
+  return { sf: Math.min(Math.max(maxU > 1e-9 ? 1 / maxU : 999, 0), 999), peakMPa: peak, allowMPa: allow };
+}
+
+/**
+ * Calibration state of the two interlayer allowables, in ONE place so the
+ * failure-mode-row confidence and the coupon recommender can never drift apart.
+ *   zCalibrated — a real Z-tension coupon set S_zt (NOT the τ/0.58 shear
+ *                 derivation, which leaves the row literature-grade).
+ *   sCalibrated — a lap-shear coupon measured S_zs directly.
+ *   bondActive/bondFitted — the process bond model is on / has fitted coeffs.
+ */
+export function interfaceCalibrationState(
+  cal: CalibrationProfile | null | undefined,
+  process: ProcessSettings | undefined,
+): { zCalibrated: boolean; sCalibrated: boolean; bondActive: boolean; bondFitted: boolean } {
+  return {
+    zCalibrated: cal?.yieldZ_MPa != null && cal?.yieldZFromShear !== true,
+    sCalibrated: cal?.interShear_MPa != null,
+    bondActive:  hasProcessSettings(process),
+    bondFitted:  cal?.bondCoeffs != null,
+  };
+}
+
+/** A prioritized suggestion to print/run a calibration coupon. */
+export interface CouponRecommendation {
+  /** Which coupon to run. */
+  coupon:  "z-tension" | "lap-shear" | "bond-sweep";
+  /** Short human label. */
+  label:   string;
+  /** Why it matters for THIS design (which mode it calibrates, whether that mode governs). */
+  reason:  string;
+  /** Confidence tier it unlocks, e.g. "LOW → MEDIUM". */
+  confidenceGain: string;
+  /** True when it calibrates the currently governing interlayer mode. */
+  governing: boolean;
+}
+
+/**
+ * Rank the calibration coupons that would most improve confidence for this
+ * specific result. Only the interlayer modes are considered (the tool's core
+ * claim); a coupon that calibrates the GOVERNING mode is prioritized over one
+ * that calibrates the non-governing mode. Returns [] when both interlayer
+ * allowables are already measured and the bond model (if active) is fitted —
+ * i.e. nothing left to recommend.
+ */
+export function computeCouponRecommendations(
+  cal:       CalibrationProfile | null | undefined,
+  process:   ProcessSettings | undefined,
+  sfTension: number,
+  sfShear:   number,
+): CouponRecommendation[] {
+  const st = interfaceCalibrationState(cal, process);
+  const tensionGoverns = sfTension <= sfShear;
+  const recs: Array<CouponRecommendation & { _priority: number }> = [];
+  // Urgency rises as the mode's margin approaches 1; governing mode gets a big
+  // base bump so it always sorts first.
+  const urgency = (sf: number, governing: boolean) =>
+    (governing ? 100 : 0) + 1 / Math.max(sf, 0.05);
+
+  if (!st.zCalibrated) {
+    recs.push({
+      coupon: "z-tension",
+      label:  "Z-tension dog-bone coupon",
+      reason: `Interlayer tension (delamination onset)${tensionGoverns ? " — the GOVERNING mode" : ""} is on the literature ratio; ` +
+              `a standing dog-bone measures the bond tensile allowable S_zt directly.`,
+      confidenceGain: "LOW → MEDIUM",
+      governing: tensionGoverns,
+      _priority: urgency(sfTension, tensionGoverns),
+    });
+  }
+  if (!st.sCalibrated) {
+    recs.push({
+      coupon: "lap-shear",
+      label:  "Lap-shear coupon",
+      reason: `Interlayer shear${!tensionGoverns ? " — the GOVERNING mode" : ""} uses the default S_zt/√3; ` +
+              `a lap-shear coupon measures the interlaminar allowable S_zs directly.`,
+      confidenceGain: "LOW → MEDIUM",
+      governing: !tensionGoverns,
+      _priority: urgency(sfShear, !tensionGoverns),
+    });
+  }
+  if (st.bondActive && !st.bondFitted) {
+    recs.push({
+      coupon: "bond-sweep",
+      label:  "Process bond-sweep fit",
+      reason: `The bead-penetration bond model is active but running on literature constants; ` +
+              `a Z-tension sweep across settings fits it to your printer.`,
+      confidenceGain: "bond model LOW → MEDIUM",
+      governing: false,
+      _priority: 5,   // useful but below an uncalibrated governing allowable
+    });
+  }
+  recs.sort((a, b) => b._priority - a._priority);
+  return recs.map(({ _priority, ...r }) => r);
+}
+
+/** Interface-aware design-for-manufacturing guidance for a delamination-governed result. */
+export interface DelaminationDFM {
+  /** Which interface mechanism drives failure at the hotspot. */
+  governingSubMode: "tension" | "shear";
+  /**
+   * Angle of the interface traction from the layer normal at the hotspot:
+   * ~0° = pure opening (delamination), ~90° = pure sliding (interlayer shear).
+   */
+  interfaceLoadAngleDeg: number;
+  /**
+   * Strength unlocked by moving this load into the layer plane: yieldXY / S_zt
+   * (tension) or yieldXY / S_zs (shear) — the factor by which the in-plane
+   * allowable exceeds the bond allowable now governing.
+   */
+  inPlaneGainX: number;
+  /** The current print orientation the advice is relative to. */
+  currentOrientation: string;
+  /** Concrete, ordered advice lines. */
+  suggestions: string[];
+}
+
+/**
+ * Turn a delamination-governed hotspot into concrete design advice: reorient so
+ * the load lies in the (strong) layer plane, or — for a sliding interface — add
+ * perimeter walls. Inputs are the governing element's stress in the MATERIAL
+ * frame (weak axis = local Z) and its allowables. The strength ratios are real
+ * material scalars (in-plane yield vs the bond allowable), so the "×N stronger"
+ * claim is grounded, not a heuristic. Advisory only — changes no SF.
+ */
+export function computeDelaminationDFM(
+  localSzz: number, localTyz: number, localTxz: number,
+  yieldXY: number, yieldZ: number, yieldZShear: number,
+  orientation: string,
+): DelaminationDFM {
+  const shear = Math.hypot(localTyz, localTxz);
+  const uT = Math.max(0, localSzz) / Math.max(yieldZ, 1e-9);
+  const uS = shear / Math.max(yieldZShear, 1e-9);
+  const tension = uT >= uS;
+  const angle = Math.atan2(shear, Math.max(localSzz, 0)) * 180 / Math.PI;
+  const gain = tension ? yieldXY / Math.max(yieldZ, 1e-9) : yieldXY / Math.max(yieldZShear, 1e-9);
+  const gainStr = `~${gain.toFixed(1)}×`;
+  const suggestions: string[] = [];
+  if (tension) {
+    suggestions.push(
+      `The layer bond is opening in tension (interface traction ${angle.toFixed(0)}° from the layer normal). ` +
+      `Reorient so this load lies in the layer plane — that trades the bond allowable S_zt for the in-plane strength, ${gainStr} stronger here.`,
+    );
+    if (orientation === "flat") {
+      suggestions.push(`Currently printed flat (layers ⟂ the pull). Printing upright or on-edge would carry this load along the beads instead of across the bond.`);
+    } else {
+      suggestions.push(`Aim the ${gainStr}-stronger in-plane direction at the peak tension, and keep interfaces out of the highest-tension region.`);
+    }
+  } else {
+    suggestions.push(
+      `Layers are sliding (interlayer shear, traction ${angle.toFixed(0)}° from the layer normal). ` +
+      `Add perimeter walls — the dense shell carries interlayer shear — or reorient so the shear acts in-plane (${gainStr} the interlaminar allowable).`,
+    );
+    suggestions.push(`Interlayer shear governs short overhangs and shear-loaded joints; more walls beat more infill here.`);
+  }
+  return {
+    governingSubMode: tension ? "tension" : "shear",
+    interfaceLoadAngleDeg: +angle.toFixed(1),
+    inPlaneGainX: +gain.toFixed(2),
+    currentOrientation: orientation,
+    suggestions,
+  };
+}
+
 // ─── Cosine-bearing nodal force distribution ──────────────────────────────────
 /**
  * Distribute a bolt bearing load over the loaded-face nodes using a cosine
@@ -2018,6 +2407,24 @@ export interface AnalysisResult {
   singularity:            SingularityWarning | null;
   rigidBodyMode:          RigidBodyModeWarning | null;
   topologySuggestions:    TopologySuggestion[];
+  /**
+   * Build-height interface risk profile (which printed layers are most at risk
+   * of delamination). Null when no interlayer interface is defined (isotropic
+   * material or the interface criterion is not active).
+   */
+  layerInterfaceProfile:  LayerInterfaceProfile | null;
+  /**
+   * Prioritized calibration-coupon suggestions for THIS result — which coupon
+   * would most improve confidence, governing interlayer mode first. Empty when
+   * both interlayer allowables are measured (and the bond model, if active, is
+   * fitted) or the interface criterion is not active.
+   */
+  couponRecommendations:  CouponRecommendation[];
+  /**
+   * Interface-aware design advice (reorient / add walls) — present only when the
+   * governing hotspot is delamination/interlayer-shear governed, null otherwise.
+   */
+  delaminationDFM:        DelaminationDFM | null;
   fatigue:                FatigueEstimate;
   isotropicComparison:    IsotropicComparison;
   /** Mode shapes projected to surface vertices, one per mode. Base64-encoded Float32Array. */
@@ -3380,11 +3787,29 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // on mesh connectivity and are shared by K, M and Kσ.
   const wantsModal = req.analysis.analysisType === 'modal';
   const mayBuckle  = req.analysis.computeBuckling === true;
+
+  // In-plane raster (bead-to-bead) anisotropy (feature #6, opt-in + evidence-
+  // gated). Stays inert — leaving the bulk term exactly isotropic von Mises —
+  // unless the user opted in AND there is real evidence: a measured cross-bead
+  // ratio, or a declared unidirectional raster (typical ±45° alternating
+  // rasters homogenize to isotropic, so the flag alone changes nothing).
+  let inPlaneAniso: InPlaneAniso | null = null;
+  if (req.analysis.inPlaneAnisotropy && criterion === "fdm-interface" && isOrthotropic(material)) {
+    const measured = req.calibration?.crossBeadRatio;
+    const ratio = (measured != null && measured > 0 && measured < 1)
+      ? measured
+      : (req.print.unidirectionalRaster ? CROSS_BEAD_RATIO_LITERATURE : null);
+    if (ratio != null && ratio > 0 && ratio < 1) {
+      inPlaneAniso = { rasterAngleDeg: req.print.rasterAngleDeg ?? 0, crossBeadRatio: ratio };
+    }
+  }
+
   const input: SolverInput = {
     mesh,
     material,
     ...(materialField ? { materialField } : {}),
     criterion,
+    ...(inPlaneAniso ? { inPlaneAniso } : {}),
     constraints,
     forces: effectiveForces,
     keepPristineK: wantsModal || mayBuckle,
@@ -4176,11 +4601,20 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // headline SF; these rows decompose the layer interface into its two
   // mechanisms so delamination onset ("breaking upon the layers") and
   // interlayer shear are reported — and calibrated — separately.
+  let layerInterfaceProfile: LayerInterfaceProfile | null = null;
+  let couponRecommendations: CouponRecommendation[] = [];
   if (result.elemStress6 && criterion === "fdm-interface" && isOrthotropic(material)) {
+    layerInterfaceProfile = computeLayerInterfaceProfile(
+      mesh, result.elemStress6, material, req.print.layerHeightMm ?? 0.2, materialField ?? null,
+    );
     const peaks = computeInterfaceModePeaks(mesh, result.elemStress6, material, materialField ?? null);
     if (peaks) {
-      const zCal = req.calibration?.yieldZ_MPa != null && req.calibration?.yieldZFromShear !== true;
-      const sCal = req.calibration?.interShear_MPa != null;
+      // Single source of truth for the interlayer calibration gates — shared
+      // with the coupon recommender so the two can't disagree.
+      const { zCalibrated: zCal, sCalibrated: sCal } = interfaceCalibrationState(req.calibration, req.print.process);
+      couponRecommendations = computeCouponRecommendations(
+        req.calibration, req.print.process, peaks.sfTension, peaks.sfShear,
+      );
       allFailureModes.push({
         mode:       "Interlayer tension (delamination onset)",
         sf:          +peaks.sfTension.toFixed(3),
@@ -4204,6 +4638,29 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
               (sCal ? `(CALIBRATED from your lap-shear coupon). `
                     : `(default S_zt/√3 — run the lap-shear coupon to measure it directly). `) +
               `Layers sliding over each other; governs shear-loaded joints and short overhangs.`,
+      });
+    }
+  }
+
+  // ── In-plane bead-to-bead bond (feature #6) ────────────────────────────────
+  // Only present when in-plane raster anisotropy is active (opt-in + evidence-
+  // gated). Reports the cross-bead margin, which is already folded into the
+  // headline SF via the bulk term's min().
+  if (inPlaneAniso && result.elemStress6 && isOrthotropic(material)) {
+    const cb = computeCrossBeadPeak(mesh, result.elemStress6, material, inPlaneAniso, materialField ?? null);
+    if (cb) {
+      const measured = req.calibration?.crossBeadRatio != null;
+      allFailureModes.push({
+        mode:       "In-plane bead bond (cross-raster)",
+        sf:          +cb.sf.toFixed(3),
+        failForceN:  +(totalForce2 * cb.sf).toFixed(0),
+        checked:     true,
+        confidence:  measured ? "medium" : "low",
+        note: `Peak cross-bead tension = ${cb.peakMPa.toFixed(2)} MPa vs cross-bead allowable ${cb.allowMPa.toFixed(1)} MPa ` +
+              `(${(inPlaneAniso.crossBeadRatio * 100).toFixed(0)}% of in-plane yield, raster ${inPlaneAniso.rasterAngleDeg.toFixed(0)}°, ` +
+              (measured ? `CALIBRATED from your cross-bead coupon). `
+                        : `literature default — you declared a unidirectional raster). `) +
+              `Beads pulling apart within the layer plane; only meaningful for unidirectional/dominant rasters (±45° alternating rasters homogenize to isotropic).`,
       });
     }
   }
@@ -4479,6 +4936,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // bulk-governed (the legacy blanket multiplication overstated uncertainty
   // for in-plane-governed parts). hill-legacy keeps the blanket behavior.
   let bandScalesSF = true;
+  let delaminationDFM: DelaminationDFM | null = null;
   if (criterion === "fdm-interface" && isOrthotropic(material)
       && result.elemStress6 && result.governingElement !== undefined) {
     const g = result.governingElement;
@@ -4497,6 +4955,13 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     const uBulk = gvm / gYXY;
     const uInt  = fdmInterfaceUtilization(gszz, gtyz, gtxz, gYZ, gYZS).combined;
     bandScalesSF = uInt >= uBulk;
+    // Interface-aware DFM (#5): only when the hotspot is interface-governed —
+    // reorientation / walls advice is meaningless for a bulk-governed part.
+    if (uInt >= uBulk && uInt > 1e-9) {
+      delaminationDFM = computeDelaminationDFM(
+        gszz, gtyz, gtxz, gYXY, gYZ, gYZS, req.print.orientation,
+      );
+    }
   }
   const sfLow  = +(bandScalesSF ? sf * yieldMul_low  * lhMul_low  : sf).toFixed(2);
   const sfHigh = +(bandScalesSF ? sf * yieldMul_high * lhMul_high : sf).toFixed(2);
@@ -4556,6 +5021,9 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     singularity,
     rigidBodyMode,
     topologySuggestions,
+    layerInterfaceProfile,
+    couponRecommendations,
+    delaminationDFM,
     fatigue,
     isotropicComparison,
     governingDirection,

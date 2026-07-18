@@ -1755,6 +1755,29 @@ body:not(.has-results) #btn-stress { display: none !important; }
         </div>
       </div>
 
+      <!-- Bond sensitivity (features #2/#4) — process→bond-strength sweeps + surface -->
+      <div style="margin-bottom:16px;padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
+        <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer" onclick="toggleBondSensitivity()">
+          <div style="font-size:10px;letter-spacing:.06em;color:var(--text-lo)">BOND SENSITIVITY (OPTIONAL)</div>
+          <button class="btn" id="bond-sens-toggle" type="button" style="font-size:10px;padding:3px 10px" onclick="event.stopPropagation();toggleBondSensitivity()">Show ▾</button>
+        </div>
+        <div id="bond-sens-body" style="display:none;margin-top:8px">
+          <div style="font-size:10px;color:var(--text-lo);line-height:1.5;margin-bottom:8px">
+            How each process setting moves the interlayer bond strength, relative to typical settings (1.0×). The dot marks your current value; the dashed line is the 1.0× reference. <b style="color:var(--warn)">LOW confidence</b> until fitted from a process sweep (CALIBRATE tab).
+          </div>
+          <div id="bond-sens-status" style="font-size:10px;color:var(--text-lo);min-height:14px;margin-bottom:8px"></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <canvas class="bond-sweep-cv" id="bond-sweep-nozzleTempC" style="width:100%;height:112px"></canvas>
+            <canvas class="bond-sweep-cv" id="bond-sweep-printSpeedMmS" style="width:100%;height:112px"></canvas>
+            <canvas class="bond-sweep-cv" id="bond-sweep-coolingFanPct" style="width:100%;height:112px"></canvas>
+            <canvas class="bond-sweep-cv" id="bond-sweep-layerHeightMm" style="width:100%;height:112px"></canvas>
+          </div>
+          <div style="font-size:10px;letter-spacing:.06em;color:var(--text-lo);margin:14px 0 4px">BOND-QUALITY SURFACE — nozzle × speed</div>
+          <canvas id="bond-surface-cv" style="width:100%;height:210px"></canvas>
+          <div id="bond-surface-legend" style="display:flex;align-items:center;gap:8px;font-size:9px;color:var(--text-lo);margin-top:5px"></div>
+        </div>
+      </div>
+
       <!-- GCode import — button to load a .gcode file for print-settings extraction -->
       <div style="margin-bottom:16px;padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
@@ -5739,6 +5762,7 @@ function updateWallBandReadout() {
 
 function updateSettingsPreview() {
   if (_sessionLoaded) dispatchStateChange();
+  _maybeRefreshBondSens();
   const matId   = document.getElementById('s-material').value;
   const infill  = +document.getElementById('s-infill').value;
   const walls   = +document.getElementById('s-walls').value;
@@ -6591,6 +6615,12 @@ function showResults(s) {
       }).join('')}
     </div>` : ''}
 
+    ${renderLayerRiskProfile(s)}
+
+    ${renderDelaminationDFM(s)}
+
+    ${renderCouponRecommendations(s)}
+
     ${s.recommendations && s.recommendations.length ? `
     <div style="margin-top:16px">
       <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:8px">PRINT SETTINGS RECOMMENDATIONS</div>
@@ -6624,6 +6654,104 @@ function showResults(s) {
   if (s.residualCheckpoints && s.residualCheckpoints.length > 0) {
     setTimeout(() => renderConvergenceGraph(s.residualCheckpoints), 0);
   }
+}
+
+// ── Layer-by-layer delamination risk strip ───────────────────────────────────
+// Maps interface utilization (1/SF) to a green→amber→red ramp so the worst
+// printed layers stand out at a glance. util 0 = safe (green), util≥1 = at the
+// interface limit (red). Independent of the heatmap colormap on purpose — this
+// is a pass/fail risk read, not a stress magnitude.
+function layerRiskColor(sf) {
+  const util = Math.min(sf > 1e-6 ? 1 / sf : 2, 1.5);   // 0 (safe) … 1.5 (well past limit)
+  const t = Math.min(util, 1);                          // clamp the hue ramp at the limit
+  const hue = 130 * (1 - t);                            // 130° green → 0° red
+  const light = 42 + 8 * (1 - t);                       // slightly brighter when safe
+  return `hsl(${hue.toFixed(0)},72%,${light.toFixed(0)}%)`;
+}
+
+function renderLayerRiskProfile(s) {
+  const p = s && s.layerInterfaceProfile;
+  if (!p || !p.layers || !p.layers.length) return '';
+  const layers = p.layers;
+  const gov = layers[p.governingIndex] || layers[0];
+  const ax = p.buildAxis || [0, 0, 1];
+  const axStr = (Math.abs(ax[2]) > 0.999) ? 'Z (upright build)'
+              : `[${ax.map(v => v.toFixed(2)).join(', ')}]`;
+  // Bars ordered first-printed (left) → last-printed (right). Height encodes
+  // utilization so a tall red bar reads as "worst layer"; color reinforces it.
+  const bars = layers.map((L, i) => {
+    const util = Math.min(L.sf > 1e-6 ? 1 / L.sf : 2, 1.5);
+    const hPct = 22 + 78 * Math.min(util / 1.5, 1);
+    const isGov = i === p.governingIndex;
+    const tip = `Layer ${L.layer} (z≈${U.lenStr ? U.lenStr(L.zMidMm) : L.zMidMm.toFixed(2) + ' mm'}) — SF ${L.sf.toFixed(2)}× · tension ${(L.uTension * 100).toFixed(0)}% · shear ${(L.uShear * 100).toFixed(0)}%`;
+    return `<div title="${tip}" style="flex:1 1 0;min-width:2px;height:${hPct.toFixed(0)}%;align-self:flex-end;background:${layerRiskColor(L.sf)};${isGov ? 'outline:1.5px solid var(--text-hi);outline-offset:-1px;z-index:1;' : ''}border-radius:1px"></div>`;
+  }).join('');
+  const govSfColor = gov.sf >= 2 ? 'var(--gold)' : gov.sf >= 1 ? 'var(--warn)' : 'var(--danger)';
+  return `
+    <div style="margin-top:16px">
+      <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:8px">DELAMINATION RISK BY LAYER</div>
+      <div style="font-size:10px;color:var(--text-lo);margin-bottom:8px;line-height:1.6">
+        Peak interlayer utilization in each printed layer along the build axis (${axStr}), first-printed at left. Tall/red = closest to delamination.
+      </div>
+      <div style="display:flex;align-items:flex-end;gap:1px;height:56px;padding:4px 6px;background:var(--bg-card);border:1px solid var(--border);border-radius:3px">
+        ${bars}
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-label);margin-top:4px">
+        <span>Worst: layer ${gov.layer} · <span style="color:${govSfColor}">SF ${gov.sf.toFixed(2)}×</span> at z≈${U.lenStr ? U.lenStr(gov.zMidMm) : gov.zMidMm.toFixed(2) + ' mm'}</span>
+        <span>${layers.length} layer${layers.length === 1 ? '' : 's'}${p.coarsened ? ` · ${U.lenStr ? U.lenStr(p.binHeightMm) : p.binHeightMm.toFixed(2) + ' mm'}/bin` : ''}</span>
+      </div>
+    </div>`;
+}
+
+// ── Delamination-specific DFM guidance (feature #5) ──────────────────────────
+// Shown only when the governing hotspot is interface-governed. Concrete advice:
+// reorient to move the load in-plane, or add walls for a sliding interface.
+function renderDelaminationDFM(s) {
+  const d = s && s.delaminationDFM;
+  if (!d || !d.suggestions || !d.suggestions.length) return '';
+  const modeLabel = d.governingSubMode === 'tension' ? 'Delamination (interlayer tension)' : 'Interlayer shear';
+  const lines = d.suggestions.map(t =>
+    `<div style="display:flex;gap:6px;margin-bottom:4px"><span style="color:var(--gold)">→</span><span style="flex:1;font-size:10px;color:var(--text-lo);line-height:1.5">${t}</span></div>`
+  ).join('');
+  return `
+    <div style="margin-top:16px;padding:10px 12px;background:var(--gold-faint);border:1px solid var(--gold-glow);border-radius:4px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <div style="flex:1;font-size:11px;letter-spacing:.04em;color:var(--text-label)">STRENGTHEN THE LAYER BOND</div>
+        <span style="font-size:9px;color:var(--gold)">${modeLabel} · ~${d.inPlaneGainX.toFixed(1)}× in-plane</span>
+      </div>
+      ${lines}
+    </div>`;
+}
+
+// ── Calibration coupon recommendations (feature #3) ──────────────────────────
+// A prioritized list of which coupon would most improve confidence for THIS
+// result — governing interlayer mode first. Jumps straight to the CALIBRATE tab.
+function renderCouponRecommendations(s) {
+  const recs = s && s.couponRecommendations;
+  if (!recs || !recs.length) return '';
+  const rows = recs.map(r => {
+    const gov = r.governing
+      ? '<span style="font-size:9px;color:var(--gold);border:1px solid var(--gold-glow);border-radius:2px;padding:0 4px;margin-left:6px">GOVERNING</span>'
+      : '';
+    return `<div style="padding:7px 10px;background:${r.governing ? 'var(--gold-faint)' : 'var(--bg-card)'};border:1px solid ${r.governing ? 'var(--gold-glow)' : 'var(--border)'};border-radius:3px;margin-bottom:5px">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">
+        <div style="flex:1;font-size:11px;color:var(--text-hi)">${r.label}${gov}</div>
+        <div style="font-size:9px;color:var(--warn)">${r.confidenceGain}</div>
+      </div>
+      <div style="font-size:10px;color:var(--text-lo);line-height:1.5">${r.reason}</div>
+    </div>`;
+  }).join('');
+  return `
+    <div style="margin-top:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label)">TO RAISE CONFIDENCE</div>
+        <button class="btn" type="button" style="font-size:10px;padding:3px 10px" onclick="switchTab('calibrate')">Open CALIBRATE →</button>
+      </div>
+      <div style="font-size:10px;color:var(--text-lo);margin-bottom:8px;line-height:1.6">
+        These interlayer allowables are still on literature values. Printing the coupon that calibrates the governing mode tightens this result the most.
+      </div>
+      ${rows}
+    </div>`;
 }
 
 // ── Convergence graph rendering ──────────────────────────────────────────────
@@ -6743,6 +6871,233 @@ function renderConvergenceGraph(checkpoints) {
   ctx.textAlign = 'center';
   ctx.fillText('Iteration', width / 2, height - 2);
   ctx.restore();
+}
+
+// ── Bond sensitivity dashboard (#2) + bond-quality surface (#4) ───────────────
+// Pure client-side visualization of the /api/bond-sensitivity response — the
+// physics lives server-side in predictBondMultipliers; we only draw it. No
+// solve is required, so this works from the settings panel before analysing.
+let _bondSensData = null;
+let _bondSensTimer = null;
+
+// Debounced live refresh — only when the panel is open, so keystrokes in the
+// process inputs don't fire a request per character.
+function _maybeRefreshBondSens() {
+  const body = document.getElementById('bond-sens-body');
+  if (!body || body.style.display === 'none' || !body.style.display) return;
+  clearTimeout(_bondSensTimer);
+  _bondSensTimer = setTimeout(refreshBondSensitivity, 250);
+}
+
+function _cssVar(name, fallback) {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
+}
+
+function toggleBondSensitivity() {
+  const body = document.getElementById('bond-sens-body');
+  const btn = document.getElementById('bond-sens-toggle');
+  if (!body) return;
+  const show = body.style.display === 'none' || !body.style.display;
+  body.style.display = show ? 'block' : 'none';
+  if (btn) btn.textContent = show ? 'Hide ▴' : 'Show ▾';
+  if (show) refreshBondSensitivity();
+}
+
+function _bondSensRequest() {
+  const materialId = document.getElementById('s-material')?.value || 'pla';
+  const layerHeightMm = +(document.getElementById('s-lh')?.value ?? 20) / 100;
+  const proc = {};
+  const nz = parseFloat(document.getElementById('s-proc-nozzle')?.value);
+  const sp = parseFloat(document.getElementById('s-proc-speed')?.value);
+  const fanEl = document.getElementById('s-proc-fan');
+  const fn = parseFloat(fanEl?.value);
+  const bd = parseFloat(document.getElementById('s-proc-bed')?.value);
+  if (isFinite(nz) && nz > 0) proc.nozzleTempC = nz;
+  if (isFinite(sp) && sp > 0) proc.printSpeedMmS = sp;
+  if (isFinite(fn) && fanEl?.value !== '') proc.coolingFanPct = Math.min(100, Math.max(0, fn));
+  if (isFinite(bd) && bd > 0) proc.bedTempC = bd;
+  const prof = (typeof getActiveProfile === 'function') ? getActiveProfile() : null;
+  const bondCoeffs = prof && prof.bondCoeffs ? prof.bondCoeffs : null;
+  return { materialId, layerHeightMm, process: proc, bondCoeffs };
+}
+
+async function refreshBondSensitivity() {
+  const status = document.getElementById('bond-sens-status');
+  const req = _bondSensRequest();
+  if (status) status.textContent = 'Computing…';
+  try {
+    const r = await fetch('/api/bond-sensitivity', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    _bondSensData = data;
+    const b = data.baseline;
+    const fitted = data.baseline.confidence === 'medium';
+    if (status) {
+      status.innerHTML = `Current: bond strength <b style="color:var(--text-hi)">×${b.relStrength.toFixed(2)}</b> ` +
+        `(interlayer allowable ×${b.strengthFactor.toFixed(2)} incl. layer height) · ` +
+        `<span style="color:${fitted ? 'var(--text-mid)' : 'var(--warn)'}">${fitted ? 'sweep-fitted' : 'literature constants'}</span>`;
+    }
+    ['nozzleTempC', 'printSpeedMmS', 'coolingFanPct', 'layerHeightMm'].forEach(k =>
+      renderBondSweep(document.getElementById('bond-sweep-' + k), data.sweeps[k]));
+    renderBondSurface(document.getElementById('bond-surface-cv'), data.surface);
+  } catch (e) {
+    if (status) status.innerHTML = `<span style="color:var(--danger)">Could not compute sensitivity (${String(e.message || e)})</span>`;
+  }
+}
+
+// Diverging color about the reference (value = 1.0×): red = weaker bond, gold =
+// stronger. Neutral warm-grey midpoint. Matches the app's gold/amber/red
+// language (no green in the palette).
+function bondQualityColor(v) {
+  const t = Math.max(-1, Math.min(1, (v - 1) / 0.5)); // −1 at 0.5×, +1 at 1.5×
+  const mid = [120, 110, 95];
+  const lo = [194, 69, 47];    // --danger
+  const hi = [232, 200, 64];   // --gold-bright
+  const lerp = (a, b, k) => Math.round(a + (b - a) * k);
+  const [a, b2] = t < 0 ? [mid, lo] : [mid, hi];
+  const k = Math.abs(t);
+  return `rgb(${lerp(a[0], b2[0], k)},${lerp(a[1], b2[1], k)},${lerp(a[2], b2[2], k)})`;
+}
+
+function _setupCanvas(canvas) {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, Math.round(rect.width * dpr));
+  canvas.height = Math.max(1, Math.round(rect.height * dpr));
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, rect.width, rect.height);
+  return { ctx, w: rect.width, h: rect.height };
+}
+
+// One process-parameter sweep as a small-multiple line chart. Single gold series
+// (no legend needed — the title names it), a fixed shared y-scale [0.35,1.55] so
+// the four charts are directly comparable, a dashed 1.0× reference, and a dot at
+// the user's current value.
+function renderBondSweep(canvas, sweep) {
+  if (!canvas || !sweep) return;
+  const { ctx, w, h } = _setupCanvas(canvas);
+  const pad = { l: 26, r: 8, t: 16, b: 20 };
+  const plotW = w - pad.l - pad.r, plotH = h - pad.t - pad.b;
+  const pts = sweep.points;
+  const xs = pts.map(p => p.value);
+  const xMin = Math.min(...xs), xMax = Math.max(...xs);
+  const yMin = 0.35, yMax = 1.55;
+  const gold = _cssVar('--gold', '#C9A227');
+  const grid = _cssVar('--border-mid', '#332810');
+  const textC = _cssVar('--text-lo', '#80786c');
+  const X = v => pad.l + (xMax > xMin ? (v - xMin) / (xMax - xMin) : 0.5) * plotW;
+  const Y = v => pad.t + plotH - (Math.max(yMin, Math.min(yMax, v)) - yMin) / (yMax - yMin) * plotH;
+
+  // title
+  ctx.font = '10px system-ui, sans-serif';
+  ctx.fillStyle = _cssVar('--text-mid', '#827668');
+  ctx.textAlign = 'left';
+  ctx.fillText(sweep.label, pad.l - 2, 11);
+
+  // y ticks 0.5 / 1.0 / 1.5
+  ctx.textAlign = 'right';
+  ctx.fillStyle = textC;
+  [0.5, 1.0, 1.5].forEach(t => {
+    const y = Y(t);
+    ctx.strokeStyle = grid; ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
+    ctx.fillText(t.toFixed(1), pad.l - 4, y + 3);
+  });
+  // 1.0 reference (dashed, emphasized)
+  ctx.strokeStyle = grid; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+  ctx.beginPath(); ctx.moveTo(pad.l, Y(1)); ctx.lineTo(w - pad.r, Y(1)); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // x range labels
+  ctx.textAlign = 'left';
+  ctx.fillText(`${(+xMin).toFixed(xMax < 5 ? 2 : 0)}`, pad.l, h - 5);
+  ctx.textAlign = 'right';
+  ctx.fillText(`${(+xMax).toFixed(xMax < 5 ? 2 : 0)} ${sweep.unit}`, w - pad.r, h - 5);
+
+  // curve
+  ctx.strokeStyle = gold; ctx.lineWidth = 2;
+  ctx.beginPath();
+  pts.forEach((p, i) => { const x = X(p.value), y = Y(p.relStrength); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  ctx.stroke();
+
+  // current-value marker
+  const bv = sweep.baseValue;
+  if (bv >= xMin && bv <= xMax) {
+    // nearest sampled point for the y position
+    let nearest = pts[0];
+    for (const p of pts) if (Math.abs(p.value - bv) < Math.abs(nearest.value - bv)) nearest = p;
+    ctx.strokeStyle = _cssVar('--gold-dim', '#8B6914'); ctx.lineWidth = 1; ctx.setLineDash([2, 2]);
+    ctx.beginPath(); ctx.moveTo(X(bv), pad.t); ctx.lineTo(X(bv), pad.t + plotH); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = _cssVar('--gold-bright', '#E8C840');
+    ctx.beginPath(); ctx.arc(X(bv), Y(nearest.relStrength), 3, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+// Bond-quality surface (#4): nozzle × speed grid, diverging color about the
+// reference. Low speed at the bottom, hot nozzle to the right; the current
+// operating point is ringed.
+function renderBondSurface(canvas, surf) {
+  if (!canvas || !surf) return;
+  const { ctx, w, h } = _setupCanvas(canvas);
+  const pad = { l: 34, r: 10, t: 8, b: 24 };
+  const plotW = w - pad.l - pad.r, plotH = h - pad.t - pad.b;
+  const nx = surf.xValues.length, ny = surf.yValues.length;
+  const cw = plotW / nx, ch = plotH / ny;
+  // grid[j] = row for yValues[j] (speed). Draw yValues[0] at the BOTTOM.
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const v = surf.grid[j][i];
+      ctx.fillStyle = bondQualityColor(v);
+      const x = pad.l + i * cw;
+      const y = pad.t + plotH - (j + 1) * ch;
+      ctx.fillRect(x, y, cw + 0.5, ch + 0.5);
+    }
+  }
+  // axes labels
+  ctx.font = '10px system-ui, sans-serif';
+  ctx.fillStyle = _cssVar('--text-lo', '#80786c');
+  ctx.textAlign = 'left';
+  ctx.fillText(`${surf.xValues[0].toFixed(0)}`, pad.l, h - 12);
+  ctx.textAlign = 'right';
+  ctx.fillText(`${surf.xValues[nx - 1].toFixed(0)} °C`, w - pad.r, h - 12);
+  ctx.textAlign = 'center';
+  ctx.fillText(surf.xLabel, pad.l + plotW / 2, h - 2);
+  // y axis (speed) — bottom = low, top = high
+  ctx.save();
+  ctx.translate(9, pad.t + plotH / 2); ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = 'center'; ctx.fillText(surf.yLabel + ' (mm/s)', 0, 0);
+  ctx.restore();
+  ctx.textAlign = 'right';
+  ctx.fillText(`${surf.yValues[0].toFixed(0)}`, pad.l - 3, pad.t + plotH - 1);
+  ctx.fillText(`${surf.yValues[ny - 1].toFixed(0)}`, pad.l - 3, pad.t + 8);
+
+  // operating point ring
+  const ix = (surf.baseX - surf.xValues[0]) / (surf.xValues[nx - 1] - surf.xValues[0]);
+  const iy = (surf.baseY - surf.yValues[0]) / (surf.yValues[ny - 1] - surf.yValues[0]);
+  if (ix >= 0 && ix <= 1 && iy >= 0 && iy <= 1) {
+    const px = pad.l + ix * plotW, py = pad.t + plotH - iy * plotH;
+    ctx.strokeStyle = _cssVar('--text-hi', '#f0e8d8'); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(px, py, 5, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = _cssVar('--bg-base', '#0a0806'); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(px, py, 6.5, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  // legend gradient bar
+  const leg = document.getElementById('bond-surface-legend');
+  if (leg) {
+    const stops = [];
+    for (let k = 0; k <= 6; k++) { const v = 0.4 + (1.5 - 0.4) * k / 6; stops.push(bondQualityColor(v)); }
+    leg.innerHTML =
+      '<span>weaker</span>' +
+      `<span style="flex:1;height:8px;border-radius:2px;background:linear-gradient(to right,${stops.join(',')})"></span>` +
+      '<span>stronger</span>' +
+      '<span style="margin-left:6px;color:var(--text-hi)">○ current</span>';
+  }
 }
 
 // ── Bolt load table ─────────────────────────────────────────────────────────────
