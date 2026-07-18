@@ -1570,6 +1570,63 @@ console.log("\n[25] Two-region material field — solve equivalence + sandwich b
       `δ_FE=${uzTip.toFixed(4)} δ_composite=${deltaAnalytic.toFixed(4)} δ_avgModel=${deltaAvgModel.toFixed(4)}mm ` +
       `(${mesh.elementCount} C3D10 elems)`);
   }
+
+  // [25.3] Wall-to-wall bond field: flag-off bit-identical, and a
+  // deliberately weak wall-to-wall allowable actually governs SF somewhere
+  // it previously didn't (the field must do real work when enabled).
+  {
+    const { buildWallBondField } = await import("../twoRegion.js");
+    const L = 60, B = 8, H = 8, T_LINE = 0.45, WALL_COUNT = 4, P = 8;
+    const E_S = 3500, NU = 0.36;
+    const mesh = generateBoxMeshC3D10(0, 0, 0, L, B, H, 15, 4, 4);
+    const faces = extractSurfaceFaces(mesh);
+    const mat = {
+      kind: "orthotropic" as const,
+      E_xy: E_S, E_z: E_S, nu_xy: NU, nu_xz: NU, G_xz: E_S / (2 * (1 + NU)),
+      yieldXY: 50, yieldZ: 29, label: "wall-bond-cantilever",
+    };
+    const fixed: number[] = [], tip: number[] = [];
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      const x = mesh.nodes[n * 3] ?? 0;
+      if (x < 1e-9) fixed.push(n);
+      if (x > L - 1e-9) tip.push(n);
+    }
+    const forces = tip.map(n => ({ nodeIndex: n, forceN: [0, 0, -P / tip.length] as [number, number, number] }));
+
+    // [25.3a] flag-off (wallBond absent) is bit-identical to a wallBond field
+    // with wallCount < 2 (buildWallBondField's own no-op).
+    const noWall = buildWallBondField(mesh, faces, T_LINE, 1, 29, 29 / Math.sqrt(3));
+    test("[25.3a] buildWallBondField returns null for wallCount<2", noWall === null, `noWall=${noWall}`);
+    const baseline = await runLinearStatic({ mesh, material: mat, constraints: [{ nodeIndices: fixed }], forces });
+
+    // [25.3b] a real wallBond field with generous (non-governing) allowables
+    // leaves minSF unchanged — the interior-fraction/direction machinery
+    // must not silently perturb results when it shouldn't govern.
+    const generousWall = buildWallBondField(mesh, faces, T_LINE, WALL_COUNT, 1e6, 1e6);
+    test("[25.3b] wallCount>=2 produces a real field", generousWall !== null, `generousWall=${generousWall}`);
+    if (generousWall) {
+      const withGenerous = await runLinearStatic({
+        mesh, material: mat, wallBond: generousWall,
+        constraints: [{ nodeIndices: fixed }], forces,
+      });
+      test("[25.3b] generous wall allowable does not change minSF",
+        Math.abs(withGenerous.minSafetyFactor - baseline.minSafetyFactor) < 1e-6,
+        `baseline=${baseline.minSafetyFactor.toFixed(4)} withGenerous=${withGenerous.minSafetyFactor.toFixed(4)}`);
+
+      // [25.3c] a deliberately weak wall-to-wall allowable governs: minSF
+      // drops well below the baseline bulk/interlayer-governed value.
+      const weakWall = buildWallBondField(mesh, faces, T_LINE, WALL_COUNT, 0.05, 0.05 / Math.sqrt(3));
+      if (weakWall) {
+        const withWeak = await runLinearStatic({
+          mesh, material: mat, wallBond: weakWall,
+          constraints: [{ nodeIndices: fixed }], forces,
+        });
+        test("[25.3c] weak wall-to-wall allowable governs (minSF drops)",
+          withWeak.minSafetyFactor < baseline.minSafetyFactor * 0.9,
+          `baseline=${baseline.minSafetyFactor.toFixed(4)} withWeak=${withWeak.minSafetyFactor.toFixed(4)}`);
+      }
+    }
+  }
 }
 
 // ── Test group 26: Numerical homogenization harness (perforated-plate cell) ──

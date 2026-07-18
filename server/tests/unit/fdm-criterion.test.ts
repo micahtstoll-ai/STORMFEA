@@ -23,7 +23,7 @@ import {
 } from "../../solver/stress.js";
 import { buildAnyConstitutiveMatrix } from "../../solver/element.js";
 import { generateBoxMeshC3D4 } from "../../solver/meshgen.js";
-import type { ElementMaterialField, OrthotropicMaterial } from "../../solver/types.js";
+import type { ElementMaterialField, OrthotropicMaterial, WallBondField } from "../../solver/types.js";
 
 const Y  = 50;            // in-plane yield
 const Z  = 29;            // through-layer (bond) tensile allowable, 0.58·Y
@@ -205,6 +205,81 @@ describe("per-bin yieldZShear plumbing through recoverElementStress", () => {
       const sig = hillEquivalentStress(s[0]!, s[1]!, s[2]!, s[3]!, s[4]!, s[5]!, Y, Z);
       const expected = Math.min(Math.max(sig > 1e-12 ? Y / sig : 999, 0), 999);
       expect(legacy.safetyFactor[e]).toBeCloseTo(expected, 10);
+    }
+  });
+});
+
+describe("wall-to-wall bond field: local-direction interface check", () => {
+  const MAT: OrthotropicMaterial = {
+    kind: "orthotropic",
+    E_xy: 3500, E_z: 2275, nu_xy: 0.36, nu_xz: 0.30, G_xz: 515,
+    yieldXY: Y, yieldZ: Z, label: "wall-bond-test",
+  };
+
+  // Uniform εxx strain (ux = k·x) → the constant-strain box produces pure
+  // normal stresses [σxx, σyy, σzz, 0, 0, 0] with σxx dominant (no shear
+  // coupling in an orthotropic C), σyy/σzz smaller via Poisson coupling —
+  // enough asymmetry to prove the criterion is sensitive to wallNormal
+  // direction, not just a global axis.
+  const mesh = generateBoxMeshC3D4(0, 0, 0, 4, 4, 4, 2, 2, 2);
+  const u = new Float64Array(mesh.nodeCount * 3);
+  for (let n = 0; n < mesh.nodeCount; n++) u[n * 3] = 0.01 * (mesh.nodes[n * 3] ?? 0);
+
+  function mkWallBond(normal: readonly [number, number, number], interiorFrac: number, yieldWallMPa: number): WallBondField {
+    const wallNormal = new Float64Array(mesh.elementCount * 3);
+    const wallInteriorFrac = new Float64Array(mesh.elementCount).fill(interiorFrac);
+    for (let e = 0; e < mesh.elementCount; e++) {
+      wallNormal[e * 3] = normal[0]; wallNormal[e * 3 + 1] = normal[1]; wallNormal[e * 3 + 2] = normal[2];
+    }
+    return { wallNormal, wallInteriorFrac, yieldWallMPa, yieldWallShearMPa: yieldWallMPa / Math.sqrt(3) };
+  }
+
+  it("wallBond absent is bit-identical to a zero-interior-fraction field (flag-off no-op)", () => {
+    const baseline = recoverElementStress(mesh, u, MAT);
+    const zeroInterior = mkWallBond([1, 0, 0], 0, 1);
+    const withField = recoverElementStress(mesh, u, MAT, undefined, "fdm-interface", null, zeroInterior);
+    for (let e = 0; e < mesh.elementCount; e++) {
+      expect(withField.safetyFactor[e]).toBe(baseline.safetyFactor[e]);
+    }
+    expect(withField.minSF).toBe(baseline.minSF);
+  });
+
+  it("governs differently depending on the LOCAL wall-normal direction (not a global axis)", () => {
+    // Same displacement field, same tiny allowable, only the per-element
+    // radial direction differs — SF must differ, proving the check uses
+    // the per-element direction rather than a hardcoded global one.
+    const along = recoverElementStress(mesh, u, MAT, undefined, "fdm-interface", null, mkWallBond([1, 0, 0], 1, 0.5));
+    const across = recoverElementStress(mesh, u, MAT, undefined, "fdm-interface", null, mkWallBond([0, 1, 0], 1, 0.5));
+    expect(along.minSF).toBeLessThan(across.minSF);
+  });
+
+  it("interiorFrac blends toward the unconstrained (999) value as it goes to 0", () => {
+    const full = recoverElementStress(mesh, u, MAT, undefined, "fdm-interface", null, mkWallBond([1, 0, 0], 1, 0.5));
+    const half = recoverElementStress(mesh, u, MAT, undefined, "fdm-interface", null, mkWallBond([1, 0, 0], 0.5, 0.5));
+    const none = recoverElementStress(mesh, u, MAT, undefined, "fdm-interface", null, mkWallBond([1, 0, 0], 0, 0.5));
+    const baseline = recoverElementStress(mesh, u, MAT);
+    expect(none.minSF).toBe(baseline.minSF);
+    expect(full.minSF).toBeLessThanOrEqual(half.minSF);
+    expect(half.minSF).toBeLessThanOrEqual(none.minSF);
+  });
+
+  it("zero-length wallNormal (no resolved direction) is a no-op, no NaN", () => {
+    const wb = mkWallBond([0, 0, 0], 1, 0.5);
+    const result = recoverElementStress(mesh, u, MAT, undefined, "fdm-interface", null, wb);
+    const baseline = recoverElementStress(mesh, u, MAT);
+    for (let e = 0; e < mesh.elementCount; e++) {
+      expect(Number.isFinite(result.safetyFactor[e])).toBe(true);
+      expect(result.safetyFactor[e]).toBe(baseline.safetyFactor[e]);
+    }
+  });
+
+  it("wall SF is always clamped to [0, 999], no negative or infinite values", () => {
+    const wb = mkWallBond([1, 0, 0], 1, 1e-6);
+    const result = recoverElementStress(mesh, u, MAT, undefined, "fdm-interface", null, wb);
+    for (let e = 0; e < mesh.elementCount; e++) {
+      expect(result.safetyFactor[e]).toBeGreaterThanOrEqual(0);
+      expect(result.safetyFactor[e]).toBeLessThanOrEqual(999);
+      expect(Number.isFinite(result.safetyFactor[e])).toBe(true);
     }
   });
 });

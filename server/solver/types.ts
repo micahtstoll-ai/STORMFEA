@@ -199,6 +199,30 @@ export interface ElementMaterialField {
   readonly shellFrac:    Float64Array;
 }
 
+/**
+ * Per-element wall-to-wall (bead-to-bead) bond field for the multi-loop
+ * shell model: unlike interlayer (Z) bonding, which uses one global weak
+ * axis for the whole solve, adjacent perimeter loops are fused along a
+ * LOCAL radial direction that varies continuously around the part's
+ * contour. This is a criterion-only, opt-in addition — it never enters the
+ * constitutive matrix or the assembly-worker payload (post-solve stress
+ * recovery only), so it does not interact with `ElementMaterialField`'s
+ * shell/core stiffness blend.
+ *
+ * Absent = feature off (bit-identical to today). Requires `wallCount >= 2`
+ * (no internal loop-to-loop boundary exists at wallCount=1).
+ */
+export interface WallBondField {
+  /** length = elementCount*3, per-element unit radial (wall-normal) direction, global frame. Zero where undefined (no interface here). */
+  readonly wallNormal: Float64Array;
+  /** length = elementCount, in [0,1]: how much of this element sits at an internal loop-to-loop boundary (bonded on both sides). */
+  readonly wallInteriorFrac: Float64Array;
+  /** Wall-to-wall tension allowable, MPa (post bond-model relStrength scaling). */
+  readonly yieldWallMPa: number;
+  /** Wall-to-wall shear allowable, MPa (post bond-model relStrength scaling). */
+  readonly yieldWallShearMPa: number;
+}
+
 export function validateGyroidOrthotropic(mat: GyroidOrthotropic): void {
   if (mat.density < 0 || mat.density > 1.0) {
     throw new Error(`Density must be in [0, 1.0], got ${mat.density}`);

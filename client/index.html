@@ -1956,6 +1956,13 @@ body:not(.has-results) #btn-stress { display: none !important; }
           <div style="font-size:10px;color:var(--text-mid);margin-bottom:8px">
             Wall band: <b id="wall-band-readout" style="color:var(--text-hi)">—</b>
           </div>
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:10px;color:var(--text-mid)">
+              <input type="checkbox" id="wall-bond-toggle" style="accent-color:var(--gold);width:13px;height:13px">
+              Model wall-to-wall (bead-to-bead) bonding
+            </label>
+            <span style="font-size:9px;color:var(--text-lo)">requires wall count ≥ 2; adjacent perimeter loops fused along a local radial direction, checked as a separate failure mode</span>
+          </div>
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
             <label for="two-region-top-layers" style="font-size:10px;color:var(--text-mid);white-space:nowrap">Top layers</label>
             <input type="number" id="two-region-top-layers" min="0" max="64" step="1" value="4"
@@ -5754,10 +5761,17 @@ function updateOrientDerivedDisplay() {
 // a solve. Same [0.1, 2.0] clamp analysis.ts applies to extrusionWidthMm.
 function updateWallBandReadout() {
   const readout = document.getElementById('wall-band-readout');
-  if (!readout) return;
   const walls = +(document.getElementById('s-walls')?.value ?? 3);
   const lineWidth = Math.min(2.0, Math.max(0.1, +(document.getElementById('two-region-linewidth')?.value ?? 0.45) || 0.45));
-  readout.textContent = (walls * lineWidth).toFixed(2) + ' mm';
+  if (readout) readout.textContent = (walls * lineWidth).toFixed(2) + ' mm';
+  // Wall-to-wall bonding needs >= 2 discrete loops to have an internal
+  // loop-to-loop boundary to model (server/twoRegion.ts buildWallBondField).
+  const wbToggle = document.getElementById('wall-bond-toggle');
+  if (wbToggle) {
+    const enabled = walls >= 2;
+    wbToggle.disabled = !enabled;
+    if (!enabled) wbToggle.checked = false;
+  }
 }
 
 function updateSettingsPreview() {
@@ -6408,6 +6422,7 @@ function showResults(s) {
       Effective yield: ${s.effectiveYieldMPa.toFixed(1)} MPa (print settings applied)<br>
       ${s.materialModel && s.materialModel.twoRegion ? `Material model: <b style="color:var(--text-hi)">two-region</b> — shell ${((s.materialModel.shellVolumeFraction ?? 0) * 100).toFixed(0)}% of volume (walls ${(s.materialModel.wallThicknessMm ?? 0).toFixed(2)} mm, yield ${(s.materialModel.shellYieldXYMPa ?? 0).toFixed(1)} MPa) · core yield ${(s.materialModel.coreYieldXYMPa ?? 0).toFixed(1)} MPa${strengthDivergenceHtml}${s.materialModel.degraded ? ` · <span style="color:var(--warn)">degraded: ${s.materialModel.degraded}</span>` : ''}<br>` : (s.materialModel && s.materialModel.degraded ? `Material model: <span style="color:var(--warn)">two-region requested but ran uniform — ${s.materialModel.degraded}</span><br>` : '')}
       ${s.materialModel && s.materialModel.bond ? `Bond model: interlayer strength <b style="color:${s.materialModel.bond.relStrength < 1 ? 'var(--warn)' : 'var(--text-hi)'}">×${s.materialModel.bond.relStrength.toFixed(2)}</b> · stiffness ×${s.materialModel.bond.relStiffness.toFixed(2)} vs typical settings (interface ${s.materialModel.bond.interfaceTempC.toFixed(0)}°C, substrate ${s.materialModel.bond.substrateTempC.toFixed(0)}°C, τ<sub>cool</sub> ${s.materialModel.bond.coolTimeConstS.toFixed(1)}s)${s.materialModel.bond.clamped ? ' <span style="color:var(--warn)">clamped</span>' : ''} · <span style="color:${s.materialModel.bond.confidence === 'medium' ? 'var(--warn)' : 'var(--danger)'};font-size:10px">${s.materialModel.bond.confidence.toUpperCase()} confidence</span><br>` : ''}
+      ${s.materialModel && s.materialModel.wallBond ? `Wall-to-wall bond: allowable <b style="color:var(--text-hi)">${s.materialModel.wallBond.yieldWallMPa.toFixed(2)} MPa</b> tension / ${s.materialModel.wallBond.yieldWallShearMPa.toFixed(2)} MPa shear (×${s.materialModel.wallBond.relStrength.toFixed(2)} vs interlayer baseline, est. perimeter ${s.materialModel.wallBond.perimeterLengthMm.toFixed(0)} mm${s.materialModel.wallBond.perimeterFallback ? ' <span style="color:var(--warn)">fallback</span>' : ''}) · <span style="color:var(--danger);font-size:10px">LOW confidence — no bead-to-bead coupon data</span><br>` : ''}
       ${s.sfCriterion ? `Criterion: <b style="color:var(--text-hi)">${s.sfCriterion === 'fdm-interface' ? 'FDM dual (bulk + interlayer interface)' : s.sfCriterion === 'hill' ? 'Hill 1948 (legacy path)' : 'von Mises'}</b><br>` : ''}
       Mesh: <b style="color:var(--text-hi)">${s.nodeCount.toLocaleString()} nodes</b> · <b style="color:var(--text-hi)">${s.elementCount.toLocaleString()} elements</b> · C3D10 quadratic tet<br>
       Solver: ${s.cgIterations} CG iterations · ${s.solverMs}ms · converged=${s.converged ? 'yes' : '<span style="color:var(--warn)">no</span>'}
@@ -8689,6 +8704,7 @@ function buildAnalyseBody(quality, opts) {
       computeBuckling: !!(opts && opts.buckling),
       useCLT:          !!(document.getElementById('clt-toggle')?.checked),
       twoRegion:       !!(document.getElementById('two-region-toggle')?.checked),
+      wallBond:        !!(document.getElementById('two-region-toggle')?.checked && document.getElementById('wall-bond-toggle')?.checked),
     },
     calibration:  getActiveProfile(),
     ...(gravityRequest() ? { gravity: gravityRequest() } : {}),

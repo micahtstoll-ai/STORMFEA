@@ -131,3 +131,90 @@ export function computeWallFractionsFromPhi(
   }
   return frac;
 }
+
+/**
+ * Per-element, per-loop volume fractions: the wall band [0, tWall) is split
+ * into `wallCount` discrete loops of width `lineWidth` (loop k spans
+ * [k·lineWidth, (k+1)·lineWidth)), matching how a slicer actually deposits
+ * `wallCount` separate perimeter beads instead of one homogeneous band.
+ *
+ * Reuses `tetFractionBelowIso` at each loop boundary — no new geometry
+ * primitive, just `wallCount+1` iso-surface evaluations instead of one.
+ * Report/mass-breakdown use only: does not feed the stiffness bins in
+ * twoRegion.ts (all loops share the shell material there by design).
+ *
+ * @returns Float64Array of length elementCount*wallCount, row-major by
+ *   element then loop index. Σ over loops for a given element equals
+ *   computeWallFractions(mesh, nodeDist, wallCount*lineWidth)[e] to fp
+ *   precision, since the loop bands exactly partition [0, tWall).
+ */
+export function computeLoopVolumeFractions(
+  mesh: TetMesh,
+  nodeDist: Float64Array,
+  lineWidth: number,
+  wallCount: number,
+): Float64Array {
+  const out = new Float64Array(mesh.elementCount * wallCount);
+  if (lineWidth <= 0 || wallCount <= 0) return out;
+  const npe = mesh.nodesPerElem;
+  for (let e = 0; e < mesh.elementCount; e++) {
+    const base = e * npe;
+    const n0 = mesh.elements[base] ?? 0;
+    const n1 = mesh.elements[base + 1] ?? 0;
+    const n2 = mesh.elements[base + 2] ?? 0;
+    const n3 = mesh.elements[base + 3] ?? 0;
+    const d0 = nodeDist[n0] ?? 0, d1 = nodeDist[n1] ?? 0, d2 = nodeDist[n2] ?? 0, d3 = nodeDist[n3] ?? 0;
+    // Cumulative "below outer boundary of loop k" fraction, then difference
+    // consecutive thresholds so each loop's fraction is exact and the sum
+    // telescopes back to the single-threshold wallFrac exactly.
+    let prevBelow = 0;
+    for (let k = 0; k < wallCount; k++) {
+      const iso = (k + 1) * lineWidth;
+      const below = tetFractionBelowIso(d0 - iso, d1 - iso, d2 - iso, d3 - iso);
+      out[e * wallCount + k] = Math.max(0, below - prevBelow);
+      prevBelow = below;
+    }
+  }
+  return out;
+}
+
+/**
+ * Per-element "wall interior" fraction: how much of this tet sits at a
+ * loop-to-loop internal boundary (i.e. has a bonded wall-loop neighbor on
+ * BOTH sides), rather than at the outer surface or the innermost
+ * shell/core boundary. Zero identically when wallCount < 2 (no internal
+ * loop boundary exists) — this is the natural flag-off no-op for the
+ * wall-to-wall bond criterion.
+ *
+ * Uses a band centered on the internal-boundary set, from the midpoint of
+ * the first loop to the midpoint of the last loop
+ * ([0.5·lineWidth, (wallCount−0.5)·lineWidth]), rather than gating on a
+ * discrete "interior loop index" (which would degenerate to zero at
+ * wallCount=2 even though a single valid internal boundary exists there).
+ *
+ * @returns Float64Array of length elementCount, values in [0, 1].
+ */
+export function computeWallInteriorFraction(
+  mesh: TetMesh,
+  nodeDist: Float64Array,
+  lineWidth: number,
+  wallCount: number,
+): Float64Array {
+  const frac = new Float64Array(mesh.elementCount);
+  if (lineWidth <= 0 || wallCount < 2) return frac;
+  const isoLo = 0.5 * lineWidth;
+  const isoHi = (wallCount - 0.5) * lineWidth;
+  const npe = mesh.nodesPerElem;
+  for (let e = 0; e < mesh.elementCount; e++) {
+    const base = e * npe;
+    const n0 = mesh.elements[base] ?? 0;
+    const n1 = mesh.elements[base + 1] ?? 0;
+    const n2 = mesh.elements[base + 2] ?? 0;
+    const n3 = mesh.elements[base + 3] ?? 0;
+    const d0 = nodeDist[n0] ?? 0, d1 = nodeDist[n1] ?? 0, d2 = nodeDist[n2] ?? 0, d3 = nodeDist[n3] ?? 0;
+    const belowHi = tetFractionBelowIso(d0 - isoHi, d1 - isoHi, d2 - isoHi, d3 - isoHi);
+    const belowLo = tetFractionBelowIso(d0 - isoLo, d1 - isoLo, d2 - isoLo, d3 - isoLo);
+    frac[e] = Math.max(0, belowHi - belowLo);
+  }
+  return frac;
+}

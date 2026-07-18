@@ -37,7 +37,7 @@
  * but require additional solver infrastructure and are a future improvement.
  */
 
-import type { TetMesh, IsotropicMaterial, AnyMaterial, SolverResult, ElementMaterialField } from "./types.js";
+import type { TetMesh, IsotropicMaterial, AnyMaterial, SolverResult, ElementMaterialField, WallBondField } from "./types.js";
 import { isOrthotropic } from "./types.js";
 import { buildAnyConstitutiveMatrix, computeGeometry, buildB, buildB_c3d10, C3D10_GAUSS, rotationAligningZTo, rotateStress6ToLocal } from "./element.js";
 import { buildNodeElementLists } from "./adjacency.js";
@@ -334,6 +334,7 @@ export function recoverElementStress(
   field?:       ElementMaterialField,
   criterion:    CriterionKind = "fdm-interface",
   inPlaneAniso: InPlaneAniso | null = null,
+  wallBond?:    WallBondField,
 ): {
   vonMises:      Float64Array;
   safetyFactor:  Float64Array;
@@ -551,6 +552,38 @@ export function recoverElementStress(
                      field ? eYieldZS : matZShear);
       } else {
         sf = vm > 1e-12 ? (field ? eYieldXY : yieldStr)/vm : 999;
+      }
+    }
+
+    // Wall-to-wall (bead-to-bead) bond check: a SECOND, independent interface
+    // criterion evaluated in the LOCAL per-element wall-normal frame (unlike
+    // the global-Z interlayer check above), governing via min() alongside
+    // the bulk/interlayer safety factors. No-op when wallBond is absent or
+    // this element has no internal loop-to-loop boundary.
+    if (wallBond && isOrthotropic(mat)) {
+      const interior = wallBond.wallInteriorFrac[e] ?? 0;
+      if (interior > 1e-6) {
+        const wnx = wallBond.wallNormal[e * 3] ?? 0;
+        const wny = wallBond.wallNormal[e * 3 + 1] ?? 0;
+        const wnz = wallBond.wallNormal[e * 3 + 2] ?? 0;
+        if (Math.hypot(wnx, wny, wnz) > 1e-9) {
+          const sxx = elemStress6[e * 6] ?? 0, syy = elemStress6[e * 6 + 1] ?? 0, szz = elemStress6[e * 6 + 2] ?? 0;
+          const txy = elemStress6[e * 6 + 3] ?? 0, tyz = elemStress6[e * 6 + 4] ?? 0, txz = elemStress6[e * 6 + 5] ?? 0;
+          const wallR = rotationAligningZTo([wnx, wny, wnz]);
+          const L = rotateStress6ToLocal([sxx, syy, szz, txy, tyz, txz], wallR);
+          const util = fdmInterfaceUtilization(L[2], L[4], L[5], wallBond.yieldWallMPa, wallBond.yieldWallShearMPa);
+          // Blend in UTILIZATION space (proportional to driving stress),
+          // not SF space: SF is 1/utilization, so blending SF directly
+          // toward "unconstrained" washes out a real failure signal for any
+          // interior fraction short of 1 (e.g. interior=0.7 would nearly
+          // cancel a utilization of 30). Scaling the utilization by the
+          // interior weight before inverting keeps the effective SF
+          // proportional to how much of the element actually sits at the
+          // internal loop boundary.
+          const utilEff = interior * util.combined;
+          const sfWallEff = utilEff > 1e-12 ? 1 / utilEff : 999;
+          sf = Math.min(sf, sfWallEff);
+        }
       }
     }
 
@@ -1100,9 +1133,10 @@ export function buildSolverResult(
   field?:       ElementMaterialField,
   criterion:    CriterionKind = "fdm-interface",
   inPlaneAniso: InPlaneAniso | null = null,
+  wallBond?:    WallBondField,
 ): SolverResult {
   const { vonMises, safetyFactor, elemPrincipal, maxVonMises, minSF, governingElement, elemStress6 } =
-    recoverElementStress(mesh, displacement, mat, field, criterion, inPlaneAniso);
+    recoverElementStress(mesh, displacement, mat, field, criterion, inPlaneAniso, wallBond);
 
   // Compute Zienkiewicz-Zhu error estimates if requested
   let errorEstimate: Float32Array | undefined;
