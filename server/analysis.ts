@@ -39,6 +39,14 @@ import {
 } from "./solver/bond.js";
 export { fitBondCoeffs, type BondSweepPoint } from "./solver/bond.js";
 
+/**
+ * Fallback characteristic inter-pass revisit length for the wall-to-wall
+ * bond model when the geometric perimeter estimate degenerates (near-zero
+ * part height, no classified perimeter faces). LOW confidence — a rough
+ * "typical small-part perimeter" placeholder, not fitted to any data.
+ */
+const WALL_BOND_PASS_LENGTH_FALLBACK_MM = 40;
+
 // ─── Memory profiling snap helper ────────────────────────────────────────────
 // Activated by STORMFEA_PROFILE_MEMORY=1. Mirrors the helper in pipeline.ts.
 const _analysisProfileMem = process.env["STORMFEA_PROFILE_MEMORY"] === "1";
@@ -52,8 +60,8 @@ function _snapAnalysis(label: string): void {
   _analysisLastHeapMB = heapMB;
 }
 import type { SolverInput }                 from "./solver/pipeline.js";
-import type { IsotropicMaterial, AnyMaterial, OrthotropicMaterial, ElementMaterialField } from "./solver/types.js";
-import { buildTwoRegionField, TWO_REGION_MAX_ELEMENTS } from "./twoRegion.js";
+import type { IsotropicMaterial, AnyMaterial, OrthotropicMaterial, ElementMaterialField, WallBondField } from "./solver/types.js";
+import { buildTwoRegionField, buildWallBondField, estimateWallLoopPerimeterMm, TWO_REGION_MAX_ELEMENTS } from "./twoRegion.js";
 import {
   LATTICE_PARAMS,
   LATTICE_STIFFNESS_FLOOR,
@@ -1417,6 +1425,16 @@ export interface AnalysisSettings {
    */
   twoRegion?:    boolean;
   /**
+   * When true (and twoRegion is also true, and print.wallCount >= 2), also
+   * model wall-to-wall (bead-to-bead) bonding as a distinct, criterion-only
+   * failure mode: adjacent perimeter loops are fused along a LOCAL radial
+   * direction (varies around the part's contour), separately from the
+   * global-Z interlayer bond check. Requires twoRegion because it rides on
+   * the same distance-field geometry that model already computes. Default
+   * false — legacy single-band wall model, bit-identical.
+   */
+  wallBond?:     boolean;
+  /**
    * Failure criterion override. Default (absent): "fdm-interface" — the
    * decoupled dual criterion (bulk von Mises + interlayer interface,
    * docs/layer-model-audit.md A1–A3) — except on the upright-no-bed
@@ -2356,6 +2374,22 @@ export interface MaterialModelInfo {
     confidence:     "low" | "medium";
     note:           string;
   };
+  /**
+   * Wall-to-wall (bead-to-bead) bond diagnostics — present when
+   * analysis.wallBond activated it (requires twoRegion and wallCount >= 2).
+   * Null when requested but there was no internal loop boundary to model.
+   */
+  wallBond?: {
+    relStrength:         number;
+    relStiffness:        number | null;
+    yieldWallMPa:         number;
+    yieldWallShearMPa:    number;
+    /** Estimated average wall-loop perimeter length used for the inter-pass revisit time, mm. */
+    perimeterLengthMm:    number;
+    /** True when the perimeter estimate degenerated and the fallback constant was used. */
+    perimeterFallback:    boolean;
+    note?:                string;
+  } | null;
 }
 
 export interface AnalysisResult {
@@ -3367,6 +3401,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // `material` becomes the volume-weighted AVERAGE (scalar consumers keep
   // working); the field carries the per-element stiffness/yield/density.
   let materialField: ElementMaterialField | undefined;
+  let wallBondField: WallBondField | undefined;
   let materialModel: MaterialModelInfo = {
     twoRegion: false,
     wallThicknessMm: null,
@@ -3460,6 +3495,61 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       const tr = buildTwoRegionField(mesh, surfaceFaces, shellMat, coreMat, tWall, skin);
       material = tr.averageMaterial;
       materialField = tr.field ?? undefined;
+
+      // ── Wall-to-wall (bead-to-bead) bond field ────────────────────────────
+      // Opt-in, requires twoRegion (rides on the same distance-field geometry)
+      // and wallCount >= 2 (no internal loop boundary otherwise). Criterion-
+      // only: never touches the constitutive matrix built above.
+      if (req.analysis.wallBond && req.print.wallCount >= 2) {
+        // Inter-pass revisit time for wall-to-wall bonding is a DIFFERENT
+        // geometry than interlayer (Z) bonding: adjacent loops are usually
+        // printed back-to-back within the same layer, so the relevant
+        // "return" is roughly the time to finish one full perimeter loop —
+        // perimeterLengthMm / printSpeed — not a fixed toolpath constant.
+        // Estimated from the classified perimeter-face area (exact for a
+        // prismatic part); degenerates (near-zero height, no perimeter
+        // faces) fall back to a fixed characteristic length.
+        const perimeterEstimate = estimateWallLoopPerimeterMm(mesh, surfaceFaces, buildAxis);
+        const perimeterFallback = !(perimeterEstimate > 1e-6);
+        const passLengthMmWall = perimeterFallback ? WALL_BOND_PASS_LENGTH_FALLBACK_MM : perimeterEstimate;
+
+        const bondRelWall: BondPrediction | null = hasProcessSettings(req.print.process)
+          ? predictBondMultipliers(
+              req.print.materialId,
+              lineWidth,
+              req.print.process,
+              req.calibration?.bondCoeffs ?? null,
+              passLengthMmWall,
+            )
+          : null;
+
+        // Wall-to-wall allowables: no dedicated coupon data exists for this
+        // interface anywhere in the codebase (genuinely unexplored design
+        // space). Pragmatic first-order stand-in: reuse the interlayer
+        // allowables (same polymer weld mechanism, different geometry),
+        // re-modulated by the wall-specific bond model's relative strength.
+        // LOW confidence by construction — labeled as such in the diagnostic.
+        const wallRelStrength = bondRelWall?.relStrength ?? 1.0;
+        const yieldWallMPa = shellMat.yieldZ * wallRelStrength;
+        const yieldWallShearMPa = interlaminarShearOf(shellMat) * wallRelStrength;
+
+        wallBondField = buildWallBondField(
+          mesh, surfaceFaces, lineWidth, req.print.wallCount, yieldWallMPa, yieldWallShearMPa,
+        ) ?? undefined;
+
+        materialModel = {
+          ...materialModel,
+          wallBond: wallBondField ? {
+            relStrength:      +wallRelStrength.toFixed(4),
+            relStiffness:     bondRelWall ? +bondRelWall.relStiffness.toFixed(4) : null,
+            yieldWallMPa:      +yieldWallMPa.toFixed(3),
+            yieldWallShearMPa: +yieldWallShearMPa.toFixed(3),
+            perimeterLengthMm: +passLengthMmWall.toFixed(1),
+            perimeterFallback,
+            ...(bondRelWall ? { note: bondRelWall.note } : {}),
+          } : null,
+        };
+      }
 
       // Anchor diagnostics: what the geometric split implies vs the legacy
       // geometry-blind global multiplier. Reported, deliberately not
@@ -3808,6 +3898,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     mesh,
     material,
     ...(materialField ? { materialField } : {}),
+    ...(wallBondField ? { wallBond: wallBondField } : {}),
     criterion,
     ...(inPlaneAniso ? { inPlaneAniso } : {}),
     constraints,

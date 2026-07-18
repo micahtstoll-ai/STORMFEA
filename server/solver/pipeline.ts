@@ -18,6 +18,7 @@ import type {
   TetMesh,
   AnyMaterial,
   ElementMaterialField,
+  WallBondField,
   PointForce,
   SolverResult,
   CSRMatrix,
@@ -41,6 +42,13 @@ export interface SolverInput {
    * field overrides per-element stiffness and yields in assembly and recovery.
    */
   readonly materialField?: ElementMaterialField;
+  /**
+   * Optional wall-to-wall (bead-to-bead) bond field for the multi-loop
+   * shell model (server/twoRegion.ts buildWallBondField). Criterion-only:
+   * never enters assembly, only stress recovery. Absent = feature off,
+   * bit-identical to today.
+   */
+  readonly wallBond?: WallBondField;
   /**
    * Failure criterion for orthotropic materials (default "fdm-interface" —
    * the decoupled bulk + interlayer-interface criterion). "hill-legacy"
@@ -204,7 +212,7 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
 
   const solverMs = Date.now() - t0;
   _snap("before buildSolverResult");
-  const result = buildSolverResult(mesh, cg.u, material, cg.iterations, cg.converged, solverMs, cg.residualCheckpoints, true, input.materialField, input.criterion, input.inPlaneAniso ?? null);
+  const result = buildSolverResult(mesh, cg.u, material, cg.iterations, cg.converged, solverMs, cg.residualCheckpoints, true, input.materialField, input.criterion, input.inPlaneAniso ?? null, input.wallBond);
   _snap("after buildSolverResult");
   validateResult(result, mesh);
 

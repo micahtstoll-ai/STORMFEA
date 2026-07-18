@@ -23,6 +23,80 @@
 import type { TetMesh } from "./types.js";
 
 /**
+ * Closest point on triangle (a, b, c) to point p, as the vector (p − q)
+ * FROM the closest point q TO p (i.e. pointing from the surface toward p).
+ * Ericson's closest-point-on-triangle: classifies p against the triangle's
+ * Voronoi regions (vertices, edges, face). Degenerate (zero-area) triangles
+ * collapse to point/segment distance. Shared kernel behind
+ * `pointTriangleDistance` and the normal-capturing distance field builder.
+ */
+function pointTriangleClosestVector(
+  px: number, py: number, pz: number,
+  ax: number, ay: number, az: number,
+  bx: number, by: number, bz: number,
+  cx: number, cy: number, cz: number,
+): readonly [number, number, number] {
+  const abx = bx - ax, aby = by - ay, abz = bz - az;
+  const acx = cx - ax, acy = cy - ay, acz = cz - az;
+  const apx = px - ax, apy = py - ay, apz = pz - az;
+
+  const d1 = abx * apx + aby * apy + abz * apz;
+  const d2 = acx * apx + acy * apy + acz * apz;
+  if (d1 <= 0 && d2 <= 0) {
+    return [apx, apy, apz]; // vertex A
+  }
+
+  const bpx = px - bx, bpy = py - by, bpz = pz - bz;
+  const d3 = abx * bpx + aby * bpy + abz * bpz;
+  const d4 = acx * bpx + acy * bpy + acz * bpz;
+  if (d3 >= 0 && d4 <= d3) {
+    return [bpx, bpy, bpz]; // vertex B
+  }
+
+  const vc = d1 * d4 - d3 * d2;
+  if (vc <= 0 && d1 >= 0 && d3 <= 0) {
+    const denom = d1 - d3;
+    const v = denom > 0 ? d1 / denom : 0; // edge AB (denom 0 ⇒ degenerate)
+    return [px - (ax + v * abx), py - (ay + v * aby), pz - (az + v * abz)];
+  }
+
+  const cpx = px - cx, cpy = py - cy, cpz = pz - cz;
+  const d5 = abx * cpx + aby * cpy + abz * cpz;
+  const d6 = acx * cpx + acy * cpy + acz * cpz;
+  if (d6 >= 0 && d5 <= d6) {
+    return [cpx, cpy, cpz]; // vertex C
+  }
+
+  const vb = d5 * d2 - d1 * d6;
+  if (vb <= 0 && d2 >= 0 && d6 <= 0) {
+    const denom = d2 - d6;
+    const w = denom > 0 ? d2 / denom : 0; // edge AC
+    return [px - (ax + w * acx), py - (ay + w * acy), pz - (az + w * acz)];
+  }
+
+  const va = d3 * d6 - d5 * d4;
+  if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
+    const denom = (d4 - d3) + (d5 - d6);
+    const w = denom > 0 ? (d4 - d3) / denom : 0; // edge BC
+    return [px - (bx + w * (cx - bx)), py - (by + w * (cy - by)), pz - (bz + w * (cz - bz))];
+  }
+
+  // Inside face region
+  const denom = va + vb + vc;
+  if (denom <= 0) {
+    // Fully degenerate triangle — fall back to vertex A distance (the edge
+    // cases above already handled collinear layouts).
+    return [apx, apy, apz];
+  }
+  const v = vb / denom, w = vc / denom;
+  return [
+    px - (ax + v * abx + w * acx),
+    py - (ay + v * aby + w * acy),
+    pz - (az + v * abz + w * acz),
+  ];
+}
+
+/**
  * Closest distance from point p to triangle (a, b, c).
  * Ericson's closest-point-on-triangle: classifies p against the triangle's
  * Voronoi regions (vertices, edges, face) and returns the exact distance.
@@ -34,65 +108,7 @@ export function pointTriangleDistance(
   bx: number, by: number, bz: number,
   cx: number, cy: number, cz: number,
 ): number {
-  const abx = bx - ax, aby = by - ay, abz = bz - az;
-  const acx = cx - ax, acy = cy - ay, acz = cz - az;
-  const apx = px - ax, apy = py - ay, apz = pz - az;
-
-  const d1 = abx * apx + aby * apy + abz * apz;
-  const d2 = acx * apx + acy * apy + acz * apz;
-  if (d1 <= 0 && d2 <= 0) {
-    return Math.sqrt(apx * apx + apy * apy + apz * apz); // vertex A
-  }
-
-  const bpx = px - bx, bpy = py - by, bpz = pz - bz;
-  const d3 = abx * bpx + aby * bpy + abz * bpz;
-  const d4 = acx * bpx + acy * bpy + acz * bpz;
-  if (d3 >= 0 && d4 <= d3) {
-    return Math.sqrt(bpx * bpx + bpy * bpy + bpz * bpz); // vertex B
-  }
-
-  const vc = d1 * d4 - d3 * d2;
-  if (vc <= 0 && d1 >= 0 && d3 <= 0) {
-    const denom = d1 - d3;
-    const v = denom > 0 ? d1 / denom : 0; // edge AB (denom 0 ⇒ degenerate)
-    const qx = ax + v * abx - px, qy = ay + v * aby - py, qz = az + v * abz - pz;
-    return Math.sqrt(qx * qx + qy * qy + qz * qz);
-  }
-
-  const cpx = px - cx, cpy = py - cy, cpz = pz - cz;
-  const d5 = abx * cpx + aby * cpy + abz * cpz;
-  const d6 = acx * cpx + acy * cpy + acz * cpz;
-  if (d6 >= 0 && d5 <= d6) {
-    return Math.sqrt(cpx * cpx + cpy * cpy + cpz * cpz); // vertex C
-  }
-
-  const vb = d5 * d2 - d1 * d6;
-  if (vb <= 0 && d2 >= 0 && d6 <= 0) {
-    const denom = d2 - d6;
-    const w = denom > 0 ? d2 / denom : 0; // edge AC
-    const qx = ax + w * acx - px, qy = ay + w * acy - py, qz = az + w * acz - pz;
-    return Math.sqrt(qx * qx + qy * qy + qz * qz);
-  }
-
-  const va = d3 * d6 - d5 * d4;
-  if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
-    const denom = (d4 - d3) + (d5 - d6);
-    const w = denom > 0 ? (d4 - d3) / denom : 0; // edge BC
-    const qx = bx + w * (cx - bx) - px, qy = by + w * (cy - by) - py, qz = bz + w * (cz - bz) - pz;
-    return Math.sqrt(qx * qx + qy * qy + qz * qz);
-  }
-
-  // Inside face region
-  const denom = va + vb + vc;
-  if (denom <= 0) {
-    // Fully degenerate triangle — fall back to vertex A distance (the edge
-    // cases above already handled collinear layouts).
-    return Math.sqrt(apx * apx + apy * apy + apz * apz);
-  }
-  const v = vb / denom, w = vc / denom;
-  const qx = ax + v * abx + w * acx - px;
-  const qy = ay + v * aby + w * acy - py;
-  const qz = az + v * abz + w * acz - pz;
+  const [qx, qy, qz] = pointTriangleClosestVector(px, py, pz, ax, ay, az, bx, by, bz, cx, cy, cz);
   return Math.sqrt(qx * qx + qy * qy + qz * qz);
 }
 
@@ -114,11 +130,42 @@ export function computeNodeSurfaceDistances(
   surfaceFaces: Int32Array,
   dMax: number,
 ): Float64Array {
+  return computeNodeSurfaceDistancesAndNormals(mesh, surfaceFaces, dMax, false).dist;
+}
+
+/**
+ * Same distance field as `computeNodeSurfaceDistances`, optionally also
+ * capturing, per corner node, the unit vector from the closest boundary
+ * point TOWARD the node — i.e. the local "wall-normal" / radial direction
+ * pointing from the surface into the part. This is the natural per-node
+ * weak-axis direction for a bead-to-bead (wall-loop-to-wall-loop) bond
+ * criterion, which varies continuously around a part's contour, unlike the
+ * single global weak axis used for interlayer (Z) bonding.
+ *
+ * `wantNormal=false` is bit-identical to `computeNodeSurfaceDistances` (same
+ * accumulation order, same clamping) — the normal capture is a pure
+ * additive readout of an already-computed intermediate, never altering the
+ * `dist` numerics. Boundary nodes (dist===0) and nodes with no resolved
+ * closest triangle within range have no well-defined direction and report
+ * a zero vector (no-NaN-by-construction; downstream per-element averaging
+ * treats zero as "no interface here").
+ *
+ * @returns `dist`: same as computeNodeSurfaceDistances. `normal`: null when
+ *   `wantNormal` is false, else Float64Array of length nodeCount*3 (unit
+ *   vectors, zero where undefined).
+ */
+export function computeNodeSurfaceDistancesAndNormals(
+  mesh: TetMesh,
+  surfaceFaces: Int32Array,
+  dMax: number,
+  wantNormal: boolean,
+): { dist: Float64Array; normal: Float64Array | null } {
   const nodeCount = mesh.nodeCount;
   const nodes = mesh.nodes;
   const dist = new Float64Array(nodeCount).fill(dMax);
+  const normal = wantNormal ? new Float64Array(nodeCount * 3) : null;
   const triCount = Math.floor(surfaceFaces.length / 3);
-  if (triCount === 0 || dMax <= 0) return dist;
+  if (triCount === 0 || dMax <= 0) return { dist, normal };
 
   // Boundary nodes are exactly on the surface.
   for (let i = 0; i < triCount * 3; i++) {
@@ -189,6 +236,7 @@ export function computeNodeSurfaceDistances(
     const px = nodes[n * 3] ?? 0, py = nodes[n * 3 + 1] ?? 0, pz = nodes[n * 3 + 2] ?? 0;
     const i0 = ci(px), j0 = cj(py), k0 = ck(pz);
     let best = dMax;
+    let bestDx = 0, bestDy = 0, bestDz = 0;
     for (let di = -1; di <= 1; di++) {
       const i = i0 + di;
       if (i < 0 || i >= gW) continue;
@@ -202,21 +250,28 @@ export function computeNodeSurfaceDistances(
           if (!bucket) continue;
           for (const t of bucket) {
             const na = surfaceFaces[t * 3] ?? 0, nb = surfaceFaces[t * 3 + 1] ?? 0, nc = surfaceFaces[t * 3 + 2] ?? 0;
-            const d = pointTriangleDistance(
+            const [vx, vy, vz] = pointTriangleClosestVector(
               px, py, pz,
               nodes[na * 3] ?? 0, nodes[na * 3 + 1] ?? 0, nodes[na * 3 + 2] ?? 0,
               nodes[nb * 3] ?? 0, nodes[nb * 3 + 1] ?? 0, nodes[nb * 3 + 2] ?? 0,
               nodes[nc * 3] ?? 0, nodes[nc * 3 + 1] ?? 0, nodes[nc * 3 + 2] ?? 0,
             );
-            if (d < best) best = d;
+            const d = Math.sqrt(vx * vx + vy * vy + vz * vz);
+            if (d < best) { best = d; bestDx = vx; bestDy = vy; bestDz = vz; }
           }
         }
       }
     }
     dist[n] = best;
+    if (normal && best > 1e-12) {
+      const inv = 1 / best;
+      normal[n * 3] = bestDx * inv;
+      normal[n * 3 + 1] = bestDy * inv;
+      normal[n * 3 + 2] = bestDz * inv;
+    }
   }
 
-  return dist;
+  return { dist, normal };
 }
 
 /**
@@ -348,4 +403,44 @@ export function computeNodeBandPenetration(
   }
 
   return phi;
+}
+
+/**
+ * Per-element local wall-normal direction: average the (up to 4) corner
+ * unit normals from `computeNodeSurfaceDistancesAndNormals` and renormalize.
+ * This is the per-element weak-axis direction for the wall-to-wall bond
+ * criterion — it varies continuously around a part's contour, unlike the
+ * single global weak axis used for interlayer (Z) bonding.
+ *
+ * A zero-length average (corners with no resolved direction, or directions
+ * that cancel — e.g. a flat/degenerate element far from any wall interface)
+ * yields a zero vector, which downstream consumers must treat as "no
+ * interface here" (no-NaN-by-construction).
+ *
+ * @returns Float64Array of length elementCount*3 (unit vectors, zero where undefined).
+ */
+export function computeElementWallNormals(
+  mesh: TetMesh,
+  nodeNormal: Float64Array,
+): Float64Array {
+  const out = new Float64Array(mesh.elementCount * 3);
+  const npe = mesh.nodesPerElem;
+  for (let e = 0; e < mesh.elementCount; e++) {
+    const base = e * npe;
+    let sx = 0, sy = 0, sz = 0;
+    for (let k = 0; k < 4; k++) {
+      const n = mesh.elements[base + k] ?? 0;
+      sx += nodeNormal[n * 3] ?? 0;
+      sy += nodeNormal[n * 3 + 1] ?? 0;
+      sz += nodeNormal[n * 3 + 2] ?? 0;
+    }
+    const len = Math.sqrt(sx * sx + sy * sy + sz * sz);
+    if (len > 1e-9) {
+      const inv = 1 / len;
+      out[e * 3] = sx * inv;
+      out[e * 3 + 1] = sy * inv;
+      out[e * 3 + 2] = sz * inv;
+    }
+  }
+  return out;
 }

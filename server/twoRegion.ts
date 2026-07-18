@@ -32,10 +32,20 @@ import type {
   ElementMaterialField,
   OrthotropicMaterial,
   TetMesh,
+  WallBondField,
 } from "./solver/types.js";
 import { buildAnyConstitutiveMatrix, computeGeometry } from "./solver/element.js";
-import { computeNodeSurfaceDistances, computeNodeBandPenetration } from "./solver/distance.js";
-import { computeWallFractions, computeWallFractionsFromPhi } from "./solver/wallfrac.js";
+import {
+  computeNodeSurfaceDistances,
+  computeNodeBandPenetration,
+  computeNodeSurfaceDistancesAndNormals,
+  computeElementWallNormals,
+} from "./solver/distance.js";
+import {
+  computeWallFractions,
+  computeWallFractionsFromPhi,
+  computeWallInteriorFraction,
+} from "./solver/wallfrac.js";
 import { interlaminarShearOf } from "./solver/stress.js";
 
 /** Quantization level count for the wall-fraction bins (f_b = b/(N−1)). */
@@ -368,4 +378,92 @@ export function buildTwoRegionField(
     wallThicknessMm: tWall,
     ...(skin ? { skinTopThicknessMm: skin.tSkinTop, skinBotThicknessMm: skin.tSkinBot } : {}),
   };
+}
+
+/**
+ * Build the wall-to-wall (bead-to-bead) bond field: per-element local
+ * radial direction + "sits at an internal loop boundary" weight, for the
+ * criterion-only wall-bond failure mode (see WallBondField doc). Kept as a
+ * SIBLING function to buildTwoRegionField (not folded into TwoRegionResult)
+ * to keep the stiffness-blend concern and the criterion-only bond concern
+ * separate — this never touches C, binOfElement, or anything that crosses
+ * the assembly-worker boundary.
+ *
+ * Returns null when there's no internal loop boundary to model
+ * (wallCount < 2 or lineWidth <= 0) — the natural flag-off no-op.
+ *
+ * @param yieldWallMPa       Wall-to-wall tension allowable, MPa (already
+ *                           scaled by the wall-to-wall bond model).
+ * @param yieldWallShearMPa  Wall-to-wall shear allowable, MPa (already
+ *                           scaled by the wall-to-wall bond model).
+ */
+/**
+ * Estimate the average wall-loop perimeter length (mm): sum of "perimeter"
+ * (non-skin, i.e. more-than-45°-off-build-axis) boundary triangle area,
+ * divided by the part's extent along the build axis. For a prismatic part
+ * this is exact (perimeter area = perimeter length × height); for general
+ * shapes it's a first-order average.
+ *
+ * Used to derive a physically-grounded inter-pass revisit time for the
+ * wall-to-wall bond model: unlike interlayer (Z) bonding, where the nozzle
+ * revisits a spot one Z-layer later, adjacent wall loops are typically
+ * printed back-to-back — the relevant "return" is roughly the time to
+ * traverse one full perimeter loop before starting the next, i.e.
+ * perimeterLengthMm / printSpeedMmS.
+ *
+ * Reuses the same face-classification logic as classifyFaceBands (normal
+ * vs build-axis, 45° threshold) but accumulates triangle AREA instead of
+ * assigning a band thickness — a distinct, reporting/timing-only quantity.
+ */
+export function estimateWallLoopPerimeterMm(
+  mesh: TetMesh,
+  surfaceFaces: Int32Array,
+  buildAxis: readonly [number, number, number],
+): number {
+  const nodes = mesh.nodes;
+  const triCount = Math.floor(surfaceFaces.length / 3);
+  const wlen = Math.hypot(buildAxis[0], buildAxis[1], buildAxis[2]) || 1;
+  const wx = buildAxis[0] / wlen, wy = buildAxis[1] / wlen, wz = buildAxis[2] / wlen;
+  const COS45 = Math.SQRT1_2;
+
+  let pMin = Infinity, pMax = -Infinity;
+  for (let n = 0; n < mesh.nodeCount; n++) {
+    const proj = (nodes[n * 3] ?? 0) * wx + (nodes[n * 3 + 1] ?? 0) * wy + (nodes[n * 3 + 2] ?? 0) * wz;
+    if (proj < pMin) pMin = proj;
+    if (proj > pMax) pMax = proj;
+  }
+  const height = Math.max(pMax - pMin, 1e-6);
+
+  let vertArea = 0;
+  for (let t = 0; t < triCount; t++) {
+    const na = surfaceFaces[t * 3] ?? 0, nb = surfaceFaces[t * 3 + 1] ?? 0, nc = surfaceFaces[t * 3 + 2] ?? 0;
+    const ax = nodes[na * 3] ?? 0, ay = nodes[na * 3 + 1] ?? 0, az = nodes[na * 3 + 2] ?? 0;
+    const bx = nodes[nb * 3] ?? 0, by = nodes[nb * 3 + 1] ?? 0, bz = nodes[nb * 3 + 2] ?? 0;
+    const cx = nodes[nc * 3] ?? 0, cy = nodes[nc * 3 + 1] ?? 0, cz = nodes[nc * 3 + 2] ?? 0;
+    const ux = bx - ax, uy = by - ay, uz = bz - az;
+    const vx = cx - ax, vy = cy - ay, vz = cz - az;
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const nlen = Math.hypot(nx, ny, nz);
+    if (nlen < 1e-12) continue;
+    const nDotW = (nx * wx + ny * wy + nz * wz) / nlen;
+    if (Math.abs(nDotW) < COS45) vertArea += nlen / 2; // "perimeter" (vertical-ish) face
+  }
+  return vertArea / height;
+}
+
+export function buildWallBondField(
+  mesh: TetMesh,
+  surfaceFaces: Int32Array,
+  lineWidth: number,
+  wallCount: number,
+  yieldWallMPa: number,
+  yieldWallShearMPa: number,
+): WallBondField | null {
+  if (lineWidth <= 0 || wallCount < 2) return null;
+  const tWall = lineWidth * wallCount;
+  const dMax = tWall + maxCornerEdge(mesh);
+  const { dist, normal } = computeNodeSurfaceDistancesAndNormals(mesh, surfaceFaces, dMax, true);
+  const wallInteriorFrac = computeWallInteriorFraction(mesh, dist, lineWidth, wallCount);
+  const wallNormal = computeElementWallNormals(mesh, normal!);
+  return { wallNormal, wallInteriorFrac, yieldWallMPa, yieldWallShearMPa };
 }

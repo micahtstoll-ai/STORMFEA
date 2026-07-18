@@ -181,6 +181,7 @@ function thermalBondPotential(
   proc: Required<Pick<ProcessSettings, "printSpeedMmS" | "coolingFanPct" | "bedTempC" | "ambientTempC">> & { nozzleTempC: number },
   h0: number,
   EaKJmol: number,
+  passLengthMmOverride?: number,
 ): ThermalResult {
   const hL_m  = clamp(layerHeightMm, 0.04, 1.0) / 1000;
   const fan   = clamp(proc.coolingFanPct, 0, 100) / 100;
@@ -194,7 +195,11 @@ function thermalBondPotential(
   const tauC = (Math.PI * mat.rho * mat.cp * hL_m) / (8 * hEff);
 
   // Substrate road cooled for one inter-pass time before the bead lands.
-  const tPass = PASS_LENGTH_MM / speed;
+  // Default: characteristic toolpath return distance (one Z-layer later, at
+  // roughly the same XY spot). Callers modeling a DIFFERENT revisit geometry
+  // (e.g. wall-to-wall bonding, where the "return" is finishing one full
+  // perimeter loop before starting the next) pass their own pass length.
+  const tPass = (passLengthMmOverride ?? PASS_LENGTH_MM) / speed;
   const Tsub  = Tenv + (Tn - Tenv) * Math.exp(-tPass / tauC);
   // Interface starts at the mix of the incoming melt and the substrate
   // (equal thermal masses — first-order).
@@ -238,6 +243,14 @@ export function predictBondMultipliers(
   layerHeightMm: number,
   proc:          ProcessSettings,
   coeffs?:       BondModelCoeffs | null,
+  /**
+   * Override for the characteristic inter-pass revisit distance (default
+   * PASS_LENGTH_MM, tuned for the Z/interlayer revisit geometry). Pass a
+   * different value when modeling a differently-shaped revisit pattern —
+   * e.g. wall-to-wall bonding, where the relevant "return" is finishing one
+   * full perimeter loop before starting the next.
+   */
+  passLengthMmOverride?: number,
 ): BondPrediction {
   const mat = BOND_MATERIALS[materialId] ?? BOND_MATERIALS["pla"]!;
   const h0  = coeffs?.hConv ?? H0_WPM2K;
@@ -259,8 +272,8 @@ export function predictBondMultipliers(
     ambientTempC:  BOND_REFERENCE.ambientTempC,
   };
 
-  const cur = thermalBondPotential(mat, layerHeightMm, filled, h0, Ea);
-  const ref = thermalBondPotential(mat, layerHeightMm, refProc, h0, Ea);
+  const cur = thermalBondPotential(mat, layerHeightMm, filled, h0, Ea, passLengthMmOverride);
+  const ref = thermalBondPotential(mat, layerHeightMm, refProc, h0, Ea, passLengthMmOverride);
 
   // Void/consolidation factor: 1.0 when the interface is at/above the reference
   // deposition temperature, dropping toward VOID_FLOOR as it cools toward Tg.

@@ -6,8 +6,17 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { tetFractionBelowIso, computeWallFractions } from "../../solver/wallfrac.js";
-import { computeNodeSurfaceDistances } from "../../solver/distance.js";
+import {
+  tetFractionBelowIso,
+  computeWallFractions,
+  computeLoopVolumeFractions,
+  computeWallInteriorFraction,
+} from "../../solver/wallfrac.js";
+import {
+  computeNodeSurfaceDistances,
+  computeNodeSurfaceDistancesAndNormals,
+  computeElementWallNormals,
+} from "../../solver/distance.js";
 import { generateBoxMeshC3D4 } from "../../solver/meshgen.js";
 import { extractSurfaceFaces } from "../../solver/meshgen.js";
 
@@ -135,6 +144,126 @@ describe("computeNodeSurfaceDistances + computeWallFractions on a box", () => {
     expect(zero.every(v => v === 0)).toBe(true);
     const all = computeWallFractions(mesh, dist, 100);
     expect(all.every(v => v === 1)).toBe(true);
+  });
+});
+
+describe("computeLoopVolumeFractions + computeWallInteriorFraction on a box", () => {
+  const mesh = generateBoxMeshC3D4(0, 0, 0, 20, 12, 8, 10, 6, 4);
+  const faces = extractSurfaceFaces(mesh);
+  const LINE_WIDTH = 0.45;
+  const dist = computeNodeSurfaceDistances(mesh, faces, LINE_WIDTH * 8 + 6.0);
+
+  it("sum over loops equals computeWallFractions(wallCount*lineWidth) to fp precision", () => {
+    for (const wallCount of [1, 2, 3, 5, 8]) {
+      const loopFrac = computeLoopVolumeFractions(mesh, dist, LINE_WIDTH, wallCount);
+      const wallFrac = computeWallFractions(mesh, dist, wallCount * LINE_WIDTH);
+      for (let e = 0; e < mesh.elementCount; e++) {
+        let sum = 0;
+        for (let k = 0; k < wallCount; k++) sum += loopFrac[e * wallCount + k] ?? 0;
+        expect(sum).toBeCloseTo(wallFrac[e] ?? 0, 12);
+      }
+    }
+  });
+
+  it("each per-loop fraction is within [0,1] and finite (no-NaN sweep)", () => {
+    for (const wallCount of [1, 2, 3, 4, 5, 6, 7, 8]) {
+      const loopFrac = computeLoopVolumeFractions(mesh, dist, LINE_WIDTH, wallCount);
+      for (const v of loopFrac) {
+        expect(Number.isFinite(v)).toBe(true);
+        expect(v).toBeGreaterThanOrEqual(0);
+        expect(v).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
+  it("degenerate lineWidth→0 produces all-zero fractions, no NaN", () => {
+    const loopFrac = computeLoopVolumeFractions(mesh, dist, 0, 3);
+    expect(loopFrac.every(v => v === 0)).toBe(true);
+    const interior = computeWallInteriorFraction(mesh, dist, 0, 3);
+    expect(interior.every(v => v === 0)).toBe(true);
+  });
+
+  it("wallInteriorFraction ≡ 0 for wallCount=1 (no internal boundary)", () => {
+    const interior = computeWallInteriorFraction(mesh, dist, LINE_WIDTH, 1);
+    expect(interior.every(v => v === 0)).toBe(true);
+  });
+
+  it("wallInteriorFraction is nonzero somewhere for wallCount=2 (single internal boundary)", () => {
+    const interior = computeWallInteriorFraction(mesh, dist, LINE_WIDTH, 2);
+    expect(interior.some(v => v > 0)).toBe(true);
+    for (const v of interior) {
+      expect(Number.isFinite(v)).toBe(true);
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("wallInteriorFraction no-NaN sweep across wallCount 1..8", () => {
+    for (let wallCount = 1; wallCount <= 8; wallCount++) {
+      const interior = computeWallInteriorFraction(mesh, dist, LINE_WIDTH, wallCount);
+      for (const v of interior) {
+        expect(Number.isFinite(v)).toBe(true);
+        expect(v).toBeGreaterThanOrEqual(0);
+        expect(v).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+});
+
+describe("computeNodeSurfaceDistancesAndNormals", () => {
+  const mesh = generateBoxMeshC3D4(0, 0, 0, 20, 12, 8, 10, 6, 4);
+  const faces = extractSurfaceFaces(mesh);
+  const DMAX = 6.0;
+
+  it("wantNormal=false is byte-identical to the legacy computeNodeSurfaceDistances", () => {
+    const legacy = computeNodeSurfaceDistances(mesh, faces, DMAX);
+    const { dist, normal } = computeNodeSurfaceDistancesAndNormals(mesh, faces, DMAX, false);
+    expect(normal).toBeNull();
+    expect(dist.length).toBe(legacy.length);
+    for (let i = 0; i < legacy.length; i++) expect(dist[i]).toBe(legacy[i]);
+  });
+
+  it("wantNormal=true reports the same dist values as the legacy path", () => {
+    const legacy = computeNodeSurfaceDistances(mesh, faces, DMAX);
+    const { dist } = computeNodeSurfaceDistancesAndNormals(mesh, faces, DMAX, true);
+    for (let i = 0; i < legacy.length; i++) expect(dist[i]).toBe(legacy[i]);
+  });
+
+  it("normals are unit length (or zero) and point from surface into the box", () => {
+    const { dist, normal } = computeNodeSurfaceDistancesAndNormals(mesh, faces, DMAX, true);
+    expect(normal).not.toBeNull();
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      const nx = normal![n * 3] ?? 0, ny = normal![n * 3 + 1] ?? 0, nz = normal![n * 3 + 2] ?? 0;
+      const len = Math.hypot(nx, ny, nz);
+      expect(Number.isFinite(len)).toBe(true);
+      if (dist[n] === 0 || dist[n] === DMAX) {
+        // boundary or deep-core/no-resolution nodes may report zero direction
+        continue;
+      }
+      expect(len).toBeCloseTo(1, 9);
+    }
+  });
+
+  it("no-NaN across the full normal array", () => {
+    const { normal } = computeNodeSurfaceDistancesAndNormals(mesh, faces, DMAX, true);
+    for (const v of normal!) expect(Number.isFinite(v)).toBe(true);
+  });
+});
+
+describe("computeElementWallNormals", () => {
+  const mesh = generateBoxMeshC3D4(0, 0, 0, 20, 12, 8, 10, 6, 4);
+  const faces = extractSurfaceFaces(mesh);
+  const { normal } = computeNodeSurfaceDistancesAndNormals(mesh, faces, 6.0, true);
+
+  it("produces unit-or-zero vectors, no NaN", () => {
+    const elNormal = computeElementWallNormals(mesh, normal!);
+    expect(elNormal.length).toBe(mesh.elementCount * 3);
+    for (let e = 0; e < mesh.elementCount; e++) {
+      const nx = elNormal[e * 3] ?? 0, ny = elNormal[e * 3 + 1] ?? 0, nz = elNormal[e * 3 + 2] ?? 0;
+      const len = Math.hypot(nx, ny, nz);
+      expect(Number.isFinite(len)).toBe(true);
+      expect(len).toBeLessThanOrEqual(1 + 1e-9);
+    }
   });
 });
 

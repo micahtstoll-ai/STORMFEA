@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { buildTwoRegionField, TWO_REGION_BIN_COUNT } from "../../twoRegion.js";
+import { buildTwoRegionField, buildWallBondField, TWO_REGION_BIN_COUNT } from "../../twoRegion.js";
 import { generateBoxMeshC3D4, extractSurfaceFaces } from "../../solver/meshgen.js";
 import { buildAnyConstitutiveMatrix } from "../../solver/element.js";
 import type { OrthotropicMaterial } from "../../solver/types.js";
@@ -121,6 +121,51 @@ describe("buildTwoRegionField", () => {
     const coreW: OrthotropicMaterial = { ...CORE, weakAxis: [0, 0, 1] as const };
     const tr = buildTwoRegionField(mesh, faces, shellW, coreW, 1.35);
     expect(tr.averageMaterial.weakAxis).toEqual([0, 0, 1]);
+  });
+});
+
+describe("buildWallBondField", () => {
+  const LINE_WIDTH = 0.45;
+
+  it("returns null for wallCount < 2 (no internal loop boundary — flag-off no-op)", () => {
+    expect(buildWallBondField(mesh, faces, LINE_WIDTH, 1, 27.5, 15.9)).toBeNull();
+    expect(buildWallBondField(mesh, faces, LINE_WIDTH, 0, 27.5, 15.9)).toBeNull();
+  });
+
+  it("returns null for lineWidth <= 0", () => {
+    expect(buildWallBondField(mesh, faces, 0, 3, 27.5, 15.9)).toBeNull();
+  });
+
+  it("produces a field with unit-or-zero normals and [0,1] interior fractions for wallCount>=2", () => {
+    const wb = buildWallBondField(mesh, faces, LINE_WIDTH, 3, 27.5, 15.9);
+    expect(wb).not.toBeNull();
+    expect(wb!.wallNormal.length).toBe(mesh.elementCount * 3);
+    expect(wb!.wallInteriorFrac.length).toBe(mesh.elementCount);
+    expect(wb!.yieldWallMPa).toBe(27.5);
+    expect(wb!.yieldWallShearMPa).toBe(15.9);
+    let sawInterior = false;
+    for (let e = 0; e < mesh.elementCount; e++) {
+      const nx = wb!.wallNormal[e * 3] ?? 0, ny = wb!.wallNormal[e * 3 + 1] ?? 0, nz = wb!.wallNormal[e * 3 + 2] ?? 0;
+      const len = Math.hypot(nx, ny, nz);
+      expect(Number.isFinite(len)).toBe(true);
+      expect(len).toBeLessThanOrEqual(1 + 1e-9);
+      const frac = wb!.wallInteriorFrac[e] ?? 0;
+      expect(Number.isFinite(frac)).toBe(true);
+      expect(frac).toBeGreaterThanOrEqual(0);
+      expect(frac).toBeLessThanOrEqual(1);
+      if (frac > 0) sawInterior = true;
+    }
+    expect(sawInterior).toBe(true);
+  });
+
+  it("elements with nonzero wallInteriorFrac have a nonzero (unit) wallNormal", () => {
+    const wb = buildWallBondField(mesh, faces, LINE_WIDTH, 3, 27.5, 15.9)!;
+    for (let e = 0; e < mesh.elementCount; e++) {
+      if ((wb.wallInteriorFrac[e] ?? 0) > 0.01) {
+        const nx = wb.wallNormal[e * 3] ?? 0, ny = wb.wallNormal[e * 3 + 1] ?? 0, nz = wb.wallNormal[e * 3 + 2] ?? 0;
+        expect(Math.hypot(nx, ny, nz)).toBeCloseTo(1, 6);
+      }
+    }
   });
 });
 
