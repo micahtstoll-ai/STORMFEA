@@ -39,7 +39,7 @@ delegated to two external binaries (**TetGen** for STL, **Gmsh** for STEP).
 ┌─────────────────────────────────────────────┐
 │ server/solver/*  (the FEA kernel)           │
 │   assemble K → apply BCs → PCG solve →       │
-│   SPR stress recovery → Hill safety factor  │
+│   SPR stress recovery → dual-criterion SF   │
 └─────────────────────────────────────────────┘
 ```
 
@@ -71,7 +71,8 @@ delegated to two external binaries (**TetGen** for STL, **Gmsh** for STEP).
    `runLinearStaticWithK`) drives the kernel: assemble **K** → apply Dirichlet
    BCs → **PCG** solve for displacements **u**.
 8. **Stress recovery.** `server/solver/stress.ts` recovers element stresses,
-   smooths them with **SPR**, and computes the **Hill** anisotropic safety factor.
+   smooths them with **SPR**, and computes the **FDM dual-criterion** safety
+   factor (bulk von Mises + interlayer interface; Hill 1948 is a legacy option).
 9. **Post-process.** `analysis.ts` runs the 5 bolt-region failure modes, the
    Goodman fatigue estimate, and print recommendations; optionally runs modal
    (`modal.ts`) and buckling (`buckling.ts`).
@@ -83,8 +84,8 @@ delegated to two external binaries (**TetGen** for STL, **Gmsh** for STEP).
 
 | Module | Responsibility |
 |--------|----------------|
-| `index.ts` | Express app, all ~29 routes, request validation, error envelope, startup binary probe |
-| `analysis.ts` | The orchestrator (~4,000 lines): meshing calls, material construction (incl. the two-region shell/core build, `buildCoreMaterial`), constraint/load setup, 5 failure modes, fatigue, recommendations, bolt database |
+| `index.ts` | Express app, all ~32 routes, request validation, error envelope, startup binary probe |
+| `analysis.ts` | The orchestrator (~5,100 lines): meshing calls, material construction (incl. the two-region shell/core build, `buildCoreMaterial`), constraint/load setup, bolt-region + interlayer failure modes, fatigue, recommendations, bolt database |
 | `twoRegion.ts` | Two-region (shell/core) classification: wall-band volume fractions → quantized 9-bin `ElementMaterialField` (true Voigt blends of the rotated endpoint **C** matrices) + volume-weighted average material |
 | `stl.ts` | Binary/ASCII STL parser |
 | `holes.ts` | Cylindrical hole detection from STL geometry; overlapping/merged-hole warning (`flagMergedHoleWarnings`) |
@@ -116,7 +117,8 @@ types → element → assembly (+ assembly-worker) → boundary → load → cg
 | `boundary.ts` | Dirichlet BCs via the penalty method |
 | `load.ts` | Force vector: point forces, equivalent nodal forces, body force, surface traction (uniform + per-triangle-normal), pressure-region selection (`selectPressureRegion`) |
 | `cg.ts` | Preconditioned Conjugate Gradient solver (Jacobi + IC0 preconditioners), streaming residual callbacks |
-| `stress.ts` | Element stress recovery, SPR smoothing, Hill criterion, node-averaged display stress, safety factor |
+| `stress.ts` | Element stress recovery, SPR smoothing, the FDM dual failure criterion (bulk von Mises + interlayer interface, `fdmDualCriterionSF`) with Hill (1948) as a legacy option, in-plane raster + wall-to-wall bond checks, node-averaged display stress, safety factor |
+| `bond.ts` | Bead-penetration process→bond strength model: interface-cooling → neck-growth → healing, normalized to reference settings; sweep-fittable coefficients |
 | `stress_detail.ts` | Full stress tensor (σxx,σyy,σzz,τxy,τyz,τxz) recovery |
 | `pipeline.ts` | `runLinearStatic()` — the kernel entry point that sequences assemble → BC → solve → recover |
 | `mass.ts` | Consistent mass matrix (C3D4/C3D10) for modal analysis |
@@ -132,7 +134,7 @@ types → element → assembly (+ assembly-worker) → boundary → load → cg
 
 ## The client (`client/`)
 
-- **`index.html`** — the entire frontend in one file (~12,000 lines, ~600
+- **`index.html`** — the entire frontend in one file (~13,600 lines, ~600
   functions): the Three.js scene, the tabbed UI, form handling, the stress
   heatmap (vertex welding + Gouraud shading — see the "Heatmap Rendering" notes in
   [`CLAUDE.md`](../CLAUDE.md)), the deflected-shape/section/A-B views, and the

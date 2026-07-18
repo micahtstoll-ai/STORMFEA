@@ -49,7 +49,23 @@ to the standard isotropic matrix — verified to `< 1e-6` by the validation suit
 
 **Layer-height correction.** Yield in Z varies roughly linearly with layer
 height (thicker layers bond worse): about −15% to +10% over the usable range,
-around a 0.2 mm baseline (Farashi & Vafaee 2022).
+around a 0.2 mm baseline (Farashi & Vafaee 2022). This `layerHeightFactor` is the
+default process input to bond strength when no full process block is supplied.
+
+**Process → bond strength (bead-penetration model, opt-in).** When the MATERIAL
+tab's process settings (nozzle temperature, print speed, cooling fan, bed/ambient
+temperature) are provided — G-code auto-fills them — `solver/bond.ts` predicts
+the `S_zt`, `S_zs`, and `E_z` ratios from an anchored physics chain: interface
+temperature history (lumped-capacitance cooling) → neck growth (Frenkel/Pokluda)
+→ reptation healing (Φ^¾), plus a void/consolidation factor for cold-deposition
+interbead porosity. Multipliers are **relative** and normalized to exactly `1.0`
+at the per-material reference condition (reference nozzle, 60 mm/s, fan 100%, bed
+60 °C) evaluated at the same layer height, so with no process block the legacy
+layer-height path is reproduced bit-for-bit. Trends are locked (hotter nozzle ↑,
+more fan ↓, faster printing ↑) even though the constants are LOW confidence until
+fitted from a printer process sweep (`POST /api/calibration/bond-sweep`). The
+`POST /api/bond-sensitivity` route evaluates the same model for the process
+dashboard and a nozzle×speed bond-quality surface without running a solve.
 
 **Infill & pattern.** Effective properties are scaled by infill fraction and
 pattern (gyroid degrades less than rectilinear at equal infill). Wall/bead
@@ -69,6 +85,19 @@ geometrically:
   marching-tet level-set cut on its 4 corner distances (`solver/wallfrac.ts`).
   Fractions — not hard labels — because volume elements (2.9–6.3 mm edges) are
   2–5× thicker than a typical 1.35 mm wall band.
+- **Floors & ceilings (top/bottom solid skins).** Slicers lay solid horizontal
+  skins on the top and bottom of a part independently of the vertical
+  perimeters. When modeled, `solver/wallfrac.ts` unions independent top/bottom
+  skin bands (split at the build-axis mid-plane, oriented by the build axis)
+  into the same shell penetration field, so a floor/ceiling element is treated
+  as dense shell just like a perimeter wall.
+- **Wall-to-wall (bead-to-bead) bond (opt-in).** With `twoRegion` and
+  `wallCount ≥ 2`, `buildWallBondField` (`server/twoRegion.ts`) marks elements on
+  the internal loop-to-loop boundary and their local wall-normal. Stress recovery
+  then applies a **second, independent interface check** in that per-element
+  wall-normal frame (distinct from the global-Z interlayer check), governing via
+  `min()` alongside the bulk/interlayer SFs. Uses the inter-pass revisit time for
+  bonding; no dedicated coupon data exists, so it is LOW confidence.
 - **Shell** carries solid-material properties (calibrated coupon values flow to
   it unchanged); **core** carries wall-free lattice properties from
   Gibson-Ashby power laws in relative density (`solver/lattice.ts`), applied as
@@ -122,8 +151,9 @@ geometrically:
 - **Known limits:** Voigt blending is an upper bound inside the one-element
   transition band; nozzle-temp/flow effects on bond quality are captured
   empirically via calibration coupons, not parametric inputs; the core yield
-  criterion remains deviatoric (Hill) — a Deshpande–Fleck–Ashby
-  pressure-dependent lattice criterion is a planned follow-up.
+  criterion remains deviatoric (the dual criterion's bulk von Mises term) — a
+  Deshpande–Fleck–Ashby pressure-dependent lattice criterion is a planned
+  follow-up.
 
 **Print orientation (weak-axis rotation).** The weak (through-layer) axis is the
 FDM layer normal. **C** is built in the material's local frame (weak along local
@@ -132,8 +162,8 @@ an exact 90°/arbitrary **Bond transform** implemented as a 4th-order tensor
 rotation (`rotateC6` / `rotationAligningZTo` in `solver/element.ts`), driven by
 the `weakAxis` field on the material. When a **bed face is picked** the client
 sends that layer normal (`layerNormal`), so flat, **upright**, and angled prints
-are all handled exactly — the Hill criterion (below) is likewise evaluated in the
-rotated frame. Flat prints have `weakAxis = +Z`, i.e. the identity, so the
+are all handled exactly — the failure criterion (below) is likewise evaluated in
+the rotated frame. Flat prints have `weakAxis = +Z`, i.e. the identity, so the
 common case is unchanged. When no bed is picked (azimuth unknown), an upright
 print falls back to a **conservative scalar swap** (both horizontal directions
 treated as weak). This supersedes the previous scalar-swap-only approximation
@@ -207,7 +237,7 @@ the heatmap has no artificial discontinuities.
 
 ## 6. Failure assessment
 
-### Hill (1948) anisotropic yield
+### The FDM dual criterion (default)
 
 The isotropic **von Mises** equivalent stress is
 
@@ -215,35 +245,86 @@ The isotropic **von Mises** equivalent stress is
 σ_vm = √( ½[(σxx−σyy)² + (σyy−σzz)² + (σzz−σxx)² + 6(τxy² + τyz² + τxz²)] )
 ```
 
-STORMFEA instead uses the **Hill (1948)** quadratic yield criterion
-(`hillEquivalentStress` in `solver/stress.ts`), specialized to a transversely
-isotropic part with in-layer yield `Y` and through-layer yield `Z`. The
-through-layer normal term carries a `(Y/Z)²` amplifier, so a load pushing across
-the layers is correctly magnified. The safety factor is
+STORMFEA's default failure criterion is the **FDM dual criterion**
+(`fdmDualCriterionSF` in `solver/stress.ts`), evaluated in the material (layer)
+frame with the weak/layer-normal axis as local *z*. It replaces the earlier
+single Hill (1948) quadratic (see the [layer-model audit](layer-model-audit.md),
+findings A1–A3) and separates two physically distinct mechanisms, taking the
+governing minimum:
 
-```
-SF = Y / σ_Hill
-```
+1. **Bulk (bead) yield** — plain von Mises against the in-layer yield `Y`:
+   `SF_bulk = Y / σ_vm`. This is **azimuth-invariant by construction** (a norm
+   cannot depend on the part's rotation about the build axis) — the property a
+   calibrated single Hill form provably *cannot* have while also matching the
+   measured in-plane shear yield.
+2. **Interface (layer-bond) failure** — a tension⊕shear interaction on the layer
+   plane, **tension-only** in the normal term (layers do not delaminate in
+   compression):
+   ```
+   σzz > 0:  U = √( (σzz/S_zt)² + (τ_z/S_zs)² ),   SF_int = 1/U
+   σzz ≤ 0:  Mohr–Coulomb friction credit — SF_int = S_zs / (τ_z − μ·|σzz|)
+   ```
+   with `τ_z = √(τyz² + τxz²)`, `S_zt = yieldZ` (through-layer tension) and
+   `S_zs = yieldZShear` (interlaminar shear, default `yieldZ/√3`; `μ = 0.3`,
+   LOW confidence). Compressive crushing is still caught by the bulk term.
 
-When `Y = Z`, Hill reduces **exactly** to von Mises — verified at the isotropic
-limit by the validation suite. The critical FTC case is a **flat print loaded
-through the layers**: `σ_zz` dominates, the amplifier bites, and a part that looks
-safe under von Mises drops to `SF ≈ Y/Z ≈ 0.58`. The result summary reports both
-the Hill SF and the von Mises SF for comparison.
+`SF = min(SF_bulk, SF_int)`. Both mechanisms scale linearly with load, so the
+safety factors are exact closed forms. At the isotropic anchor
+(`S_zt = Y`, `S_zs = Y/√3`) the criterion reproduces von Mises for every
+uniaxial, shear, and normal+transverse-shear state. The default `S_zs = yieldZ/√3`
+is **exactly** the transverse-shear yield the legacy Hill coefficients
+`L = M = 3/(2Z²)` encoded, so uncalibrated through-layer results match the legacy
+criterion. The critical FTC case is unchanged: a **flat print loaded through the
+layers** has `σzz` dominating and drops to `SF ≈ Y/Z ≈ 0.58` — the tool's core
+"false-safety" claim. The result summary reports the governing SF, its criterion
+label (`sfCriterion`), and the plain von Mises SF (`vonMisesSafetyFactor`) for
+comparison.
 
-### Five bolt-region failure modes
+**In-plane raster (cross-bead) anisotropy (opt-in).** A unidirectional or
+dominant raster is weaker *across* the beads than along them. When enabled
+(`AnalysisSettings.inPlaneAnisotropy`) **and** there is evidence — a measured
+`crossBeadRatio` or a declared unidirectional raster — a third cross-bead
+tension⊕shear check is added as a separate `min` on the **bulk** term, resolved
+onto the raster axes (audit A7). The interface term is untouched, so azimuth
+invariance about the weak axis is preserved. With no evidence the cross-bead
+ratio is 1 (no penalty) and the criterion collapses exactly to the von Mises
+bulk term; typical ±45° alternating rasters homogenize toward isotropic and stay
+isotropic, which is why this is opt-in and evidence-gated.
 
-Beyond bulk yielding, `server/analysis.ts` checks the mechanical failure modes
+**Legacy Hill.** The Hill (1948) quadratic (`hillEquivalentStress`) remains
+callable (`criterion: "hill-legacy"`) for comparison and as the
+upright-with-no-bed **scalar-swap** fallback — the interface criterion needs a
+known weak axis, which that fallback deliberately lacks. When `Y = Z`, Hill
+reduces exactly to von Mises, verified at the isotropic limit by the validation
+suite.
+
+### Bolt-region and interlayer failure modes
+
+Beyond the headline SF, `server/analysis.ts` checks the mechanical failure modes
 around bolted holes, each with an individual confidence level:
 
-1. **Bulk yield** — Hill SF over the volume.
+1. **Bulk yield** — the dual-criterion SF over the volume.
 2. **Net-section tension** — tension across the reduced section through a hole.
 3. **Shear-out** — the bolt tearing out toward a free edge.
 4. **Thread strip-out** — threaded-engagement failure.
 5. **Bearing (hole wall)** — crushing at the hole wall (confidence: LOW — no
    FDM-specific bearing data in literature).
 
-The governing (lowest-SF) mode drives the overall verdict.
+When the dual criterion is active the layer interface is additionally
+**decomposed** into two reported rows so delamination is calibrated separately
+from the headline SF (both already folded into it):
+
+6. **Interlayer tension (delamination onset)** — peak through-layer opening
+   stress `⟨σzz⟩₊` vs the bond tensile allowable `S_zt`. LOW confidence, raised
+   to MEDIUM when a Z-tension coupon is run.
+7. **Interlayer shear** — peak driving interlayer shear (friction-credited under
+   compression) vs `S_zs`. LOW confidence, raised to MEDIUM when a lap-shear
+   coupon is run.
+
+With in-plane raster anisotropy active, an **In-plane bead bond (cross-raster)**
+row is added likewise. The optional **Linear buckling (BLF)** mode is added when
+buckling is requested (§7). The governing (lowest-SF) mode drives the overall
+verdict.
 
 ### Fatigue (Goodman)
 
@@ -276,20 +357,31 @@ replace the literature defaults and lift the fatigue mode to MEDIUM confidence
 ## 8. Calibration
 
 Literature defaults carry **MEDIUM** confidence. Teams can upgrade to **HIGH** by
-printing three standard coupons on their own printer/filament, pulling them to
-failure, and entering the loads (`POST /api/calibration/*`):
+printing standard coupons on their own printer/filament, pulling them to failure,
+and entering the loads (`POST /api/calibration/calculate`, downloadable STLs at
+`GET /api/calibration/coupon/:type`):
 
-| Coupon | Measures | Derivation |
+| Coupon (`:type`) | Measures | Derivation |
 |--------|----------|------------|
-| Tensile dog-bone | `yield_XY`, `E_xy` | F/A at fracture; stress/strain at yield |
-| Lap-shear plate | `yield_Z` (via inter-layer shear) | F/(w·l) → shear → `yield_Z` |
-| Bearing plate | bearing strength | F/(d·t), corrected by Kt from FEA |
+| Tensile dog-bone (`tensile`) | `yield_XY`, `E_xy` | F/A at fracture; stress/strain at yield |
+| Z-tension dog-bone (`ztensile`) | `yield_Z` = `S_zt` (through-layer tension) | same gauge printed **standing on end**, loaded in pure opening; F/A directly |
+| Lap-shear plate (`lapshear`) | `S_zs` (interlaminar shear) | F/(w·l) → shear allowable |
+| Bearing plate (`bearing`) | bearing strength | F/(d·t), corrected by Kt from FEA |
 
-The **lap-shear coupon** directly measures inter-layer bond strength — the single
-most influential variable in the model. Lap-shear and bearing joints concentrate
+The dual criterion keeps `S_zt` (Z-tension) and `S_zs` (lap-shear) **independent**
+— the lap-shear coupon no longer back-derives `yield_Z` through a fixed `τ/0.58`
+coupling (audit A5). The **lap-shear** and **Z-tension** coupons measure the
+inter-layer bond, the single most influential input; running either lifts the
+matching delamination mode LOW→MEDIUM. Lap-shear and bearing joints concentrate
 stress beyond nominal F/A, so `POST /api/calibration/kt` runs FEA on the coupon
 geometry to recover the stress-concentration factor Kt and correct the derived
 strength.
+
+Two further calibrations fit process/cycle models rather than static allowables:
+`POST /api/calibration/fatigue` least-squares-fits the Basquin exponent and
+`Se/UTS` from cyclic-coupon points (fatigue LOW→MEDIUM), and
+`POST /api/calibration/bond-sweep` fits the bead-penetration bond coefficients
+from a process sweep of Z-tension coupons (bond model LOW→MEDIUM).
 
 ---
 
@@ -307,9 +399,11 @@ answers, grouped by:
   `Y_z = Y_xy` (`< 1e-6`).
 - **Element checks** — C3D10 shape-function partition of unity; `kₑ` symmetric
   (`< 1e-8`) and positive-definite.
-- **Hill criterion** — reproduces von Mises at the isotropic limit; in-plane
+- **Failure criterion** — the FDM dual criterion reproduces von Mises at the
+  isotropic limit and is **azimuth-invariant** about the weak axis; in-plane
   uniaxial yields exactly at `Y_xy`; the false-safety case (flat print,
-  through-layer load) detects `SF ≈ 0.58` — the core engineering claim.
+  through-layer load) detects `SF ≈ 0.58` — the core engineering claim. The
+  legacy Hill form is checked for the same anchors where it stays callable.
 - **Kt calibration** — a uniform coupon bar returns `Kt ≈ 1.0` within noise.
 - **Hole-in-plate concentration** — a plate with a central hole in uniaxial
   tension returns the classic Kirsch `Kt ≈ 3.0` (peak/gross) within ~15%, run
