@@ -6204,6 +6204,31 @@ function showConvergenceBadge(state, changePct, nodesStd, nodesFine) {
 }
 
 
+// ── Safety-factor verdict tiers (issue #141) ──────────────────────────────────
+// Single source of truth for where "Safe" starts on this client. Keep these
+// three numbers numerically in sync with the identically named constants in
+// server/analysis.ts (baseVerdict text) and server/report.ts (sfColor /
+// verdictBg) — client and server are separate runtimes with no shared import,
+// so grep both when changing a threshold here.
+//
+// Policy: green "Safe" requires SF >= 2.0 (the recommended minimum margin).
+// 1.5–2.0 is a non-green "Acceptable — below recommended 2× margin" band —
+// it must never render as "Safe". Below 1.5 is "Marginal"; below 1.0 fails.
+const FAIL_SF_THRESHOLD       = 1.0;  // below this: predicted to yield
+const ACCEPTABLE_SF_THRESHOLD = 1.5;  // below this: "Marginal" (amber)
+const SAFE_SF_THRESHOLD       = 2.0;  // at/above this only: "Safe" (green)
+
+// Pure SF -> verdict tier classifier shared by every renderer (headline
+// action card, sticky bar, uncertainty-band caution) so they can't drift
+// apart again. Returns null when SF isn't available.
+function sfVerdictTier(sf) {
+  if (sf == null || !isFinite(sf)) return null;
+  if (sf < FAIL_SF_THRESHOLD) return 'fail';
+  if (sf < ACCEPTABLE_SF_THRESHOLD) return 'marginal';
+  if (sf < SAFE_SF_THRESHOLD) return 'acceptable';
+  return 'safe';
+}
+
 // ── Sticky results summary ────────────────────────────────────────────────────
 function updateStickyResults(s) {
   const bar = document.getElementById('results-sticky');
@@ -6212,10 +6237,11 @@ function updateStickyResults(s) {
   if (!s.safetyFactorAvailable) { bar.style.display = 'none'; return; }
 
   const sf      = s.safetyFactor;
-  const sfColor = sf >= 2 ? 'var(--success)' : sf >= 1 ? 'var(--warn)' : 'var(--danger)';
-  const verdict = sf >= 2 ? 'Safe — exceeds 2× threshold'
-    : sf >= 1 ? 'Marginal — below recommended 2×'
-    : 'Will fail under applied load';
+  const tier    = sfVerdictTier(sf);
+  const sfColor = tier === 'safe' ? 'var(--success)' : tier === 'fail' ? 'var(--danger)' : 'var(--warn)';
+  const verdict = tier === 'safe' ? 'Safe — exceeds 2× threshold'
+    : tier === 'fail' ? 'Will fail under applied load'
+    : 'Marginal — below recommended 2×';
 
   const sfEl   = document.getElementById('sticky-sf');
   const stEl   = document.getElementById('sticky-stress');
@@ -6323,12 +6349,17 @@ function showResults(s) {
   let actionHTML = '';
   // Guard govSF comparisons on safetyFactorAvailable: null coerces to 0 in JS,
   // which would falsely trigger "Will fail" when SF data is simply unavailable.
-  if (!s.safetyFactorAvailable || govSF === null) {
+  // Tier boundaries come from sfVerdictTier (issue #141) — this used to render
+  // a green "Safe" headline starting at 1.5×, contradicting the "Recommended
+  // minimum: 2×" note in the SAME panel below. Green now requires SF >= 2.0;
+  // 1.5–2.0 renders as a distinct non-green "Acceptable" tier.
+  const govTier = sfVerdictTier(govSF);
+  if (!s.safetyFactorAvailable || govTier === null) {
     actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--border);border-radius:6px;margin-bottom:16px">
       <div style="font-size:13px;font-weight:600;color:var(--text-lo);margin-bottom:4px">Safety factor unavailable</div>
       <div style="font-size:11px;color:var(--text-lo)">Not enough material data to compute a safety factor for this configuration.</div>
     </div>`;
-  } else if (govSF < 1.0) {
+  } else if (govTier === 'fail') {
     const failN = U.forceStr(s.estimatedFailForce);
     const modeStr = govMode ? govMode.mode.toLowerCase() : 'bulk yield';
     actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--text-hi)66;border-radius:6px;margin-bottom:16px">
@@ -6338,10 +6369,21 @@ function showResults(s) {
         <span style="color:var(--success)">Fix: </span>Print ${bestRec.label} — estimated SF ${bestRec.estimatedSF.toFixed(2)}×, fails at ${U.forceStr(bestRec.estimatedFailN)}
       </div>` : ''}
     </div>`;
-  } else if (govSF < 1.5) {
+  } else if (govTier === 'marginal') {
     actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--gold-glow);border-radius:6px;margin-bottom:16px">
       <div style="font-size:13px;font-weight:600;color:var(--warn);margin-bottom:6px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Marginal — SF ${govSF.toFixed(2)}×</div>
       <div style="font-size:11px;color:var(--gold-dim);margin-bottom:10px">${s.verdict}</div>
+      ${bestRec ? `<div style="font-size:11px;color:var(--text-mid);border-top:1px solid var(--border);padding-top:8px;margin-top:4px">
+        <span style="color:var(--success)">Improve: </span>Print ${bestRec.label} — SF ${bestRec.estimatedSF.toFixed(2)}× (${bestRec.vsCurrentPct > 0 ? '+' : ''}${bestRec.vsCurrentPct}%)
+      </div>` : ''}
+    </div>`;
+  } else if (govTier === 'acceptable') {
+    // 1.5–2.0×: real positive margin, but below the recommended 2× design
+    // minimum. Styled distinctly from both "Marginal" (no gold-faint fill)
+    // and "Safe" (warn-colored text, no checkmark) so it never reads as green.
+    actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--gold-glow);border-radius:6px;margin-bottom:16px">
+      <div style="font-size:13px;font-weight:600;color:var(--warn);margin-bottom:6px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Acceptable — below recommended 2× margin</div>
+      <div style="font-size:11px;color:var(--gold-dim);margin-bottom:10px">SF ${govSF.toFixed(2)}× — ${s.verdict}</div>
       ${bestRec ? `<div style="font-size:11px;color:var(--text-mid);border-top:1px solid var(--border);padding-top:8px;margin-top:4px">
         <span style="color:var(--success)">Improve: </span>Print ${bestRec.label} — SF ${bestRec.estimatedSF.toFixed(2)}× (${bestRec.vsCurrentPct > 0 ? '+' : ''}${bestRec.vsCurrentPct}%)
       </div>` : ''}
@@ -6373,8 +6415,10 @@ function showResults(s) {
           const lo = s.safetyfactorLow, hi = s.safetyFactorHigh ?? s.safetyfactorLow, mid = s.safetyFactor;
           const span = Math.max(hi - lo, 0.01);
           const pctMid = Math.round(((mid - lo) / span) * 100);
-          const loColor = lo < 1.0 ? '#c01717' : lo < 1.5 ? '#d97a00' : '#3a8a3a';
-          const hiColor = hi < 1.5 ? '#d97a00' : '#3a8a3a';
+          // Green only at/above SAFE_SF_THRESHOLD (issue #141) — matches the
+          // headline verdict tiering above instead of a locally-copied 1.5.
+          const loColor = lo < FAIL_SF_THRESHOLD ? '#c01717' : lo < SAFE_SF_THRESHOLD ? '#d97a00' : '#3a8a3a';
+          const hiColor = hi < SAFE_SF_THRESHOLD ? '#d97a00' : '#3a8a3a';
           return `<div style="margin-top:5px" title="Material uncertainty range (yieldZ/yieldXY: 0.48–0.68, layer height slope: −1.3 to −0.7 /mm). Conservative=${lo.toFixed(2)}×, Central=${mid.toFixed(2)}×, Optimistic=${hi.toFixed(2)}×">
             <div style="font-size:8px;color:var(--text-lo);margin-bottom:2px;letter-spacing:.03em">MATERIAL UNCERTAINTY</div>
             <div style="position:relative;height:6px;background:linear-gradient(to right,${loColor},${hiColor});border-radius:3px;width:100%">
@@ -6409,12 +6453,12 @@ function showResults(s) {
       <div style="font-size:11px;color:var(--text-mid)">${s.verdict}</div>
     </div>
 
-    ${(s.safetyFactorAvailable && s.safetyfactorLow !== undefined && s.safetyfactorLow < 1.5 && s.safetyFactor >= 1.5) ? `
+    ${(s.safetyFactorAvailable && s.safetyfactorLow !== undefined && s.safetyfactorLow < SAFE_SF_THRESHOLD && s.safetyFactor >= SAFE_SF_THRESHOLD) ? `
     <div style="padding:10px 12px;background:#fdf3e0;border:1px solid #d97a00;border-radius:4px;margin-bottom:12px;display:flex;gap:8px;align-items:flex-start">
       <span style="font-size:16px;line-height:1">&#9888;</span>
       <div>
         <div style="font-size:10px;font-weight:600;color:#8a5000;letter-spacing:.04em;margin-bottom:2px">MATERIAL UNCERTAINTY CAUTION</div>
-        <div style="font-size:11px;color:#6b3e00;line-height:1.5">Central SF ${s.safetyFactor.toFixed(2)}× passes the 1.5 threshold, but conservative material properties (yieldZ/yieldXY=0.48, steeper layer height penalty) give SF ${s.safetyfactorLow.toFixed(2)}× — below 1.5×. Consider another design iteration or physical coupon testing to confirm margin.</div>
+        <div style="font-size:11px;color:#6b3e00;line-height:1.5">Central SF ${s.safetyFactor.toFixed(2)}× clears the recommended 2× threshold, but conservative material properties (yieldZ/yieldXY=0.48, steeper layer height penalty) give SF ${s.safetyfactorLow.toFixed(2)}× — below 2×. Consider another design iteration or physical coupon testing to confirm margin.</div>
       </div>
     </div>` : ''}
 

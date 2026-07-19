@@ -84,6 +84,21 @@ import type { HoleFeature }                 from "./holes.js";
 import { meshWithTetGen, TetGenNotFoundError } from "./tetgen.js";
 import { meshStepWithGmsh }                 from "./gmsh_mesh.js";
 
+// ─── Safety-factor verdict tiers (issue #141) ──────────────────────────────────
+// Single source of truth for where "Safe" starts on the server. report.ts
+// imports these directly (both run in the same Node process, so — unlike the
+// client — there's a real shared import instead of a duplicated literal).
+// client/index.html keeps identically-NAMED constants of its own (browser
+// runtime, no shared module system with the server) — grep both when a
+// threshold changes.
+//
+// Policy: "Safe" requires SF >= 2.0 (the recommended minimum margin). The
+// 1.5–2.0 band is "Acceptable" — real positive margin, but never reported as
+// Safe. Below 1.5 is "Marginal"; below 1.0 fails.
+export const FAIL_SF_THRESHOLD       = 1.0;
+export const ACCEPTABLE_SF_THRESHOLD = 1.5;
+export const SAFE_SF_THRESHOLD       = 2.0;
+
 // ─── Standard bolt database ───────────────────────────────────────────────────
 /**
  * Standard bolt sizes with clearance and tap drill diameters.
@@ -4774,10 +4789,15 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     // factor cannot be trusted in either direction — never report "Safe".
     ? `Inconclusive — solver did not converge (${result.cgIterations} iters). ` +
       `SF ${lowestSF.toFixed(2)}× shown for reference only; re-run with a finer mesh or check constraints.`
-    : lowestSF < 1.0
+    : lowestSF < FAIL_SF_THRESHOLD
     ? `Fails — predicted to yield at ${(totalForce2 * lowestSF).toFixed(0)} N (${governingMode2?.mode ?? "bulk yield"})`
-    : lowestSF < 1.5
+    : lowestSF < ACCEPTABLE_SF_THRESHOLD
     ? `Marginal — limited margin (SF ${lowestSF.toFixed(2)}×, governed by ${governingMode2?.mode ?? "bulk yield"})`
+    : lowestSF < SAFE_SF_THRESHOLD
+    // Real positive margin, but below the tool's recommended 2× minimum —
+    // must never say "Safe" (issue #141: this used to fall into the "Safe —
+    // adequate margin" branch below, contradicting the client's 2× threshold).
+    ? `Acceptable — below recommended 2× margin (SF ${lowestSF.toFixed(2)}×, governed by ${governingMode2?.mode ?? "bulk yield"})`
     : lowestSF < 2.5
     ? `Safe — adequate margin (SF ${lowestSF.toFixed(2)}×)`
     : `Safe — large margin (SF ${lowestSF.toFixed(2)}×)`;

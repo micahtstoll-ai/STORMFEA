@@ -564,6 +564,39 @@ console.log('\n[J] bed frame — bedDirToWorld maps bed Z to world +Y');
     `got (${rt.x.toFixed(3)},${rt.y.toFixed(3)},${rt.z.toFixed(3)})`);
 }
 
+// ── Test group K: sfVerdictTier — safety-factor verdict tiering (issue #141) ──
+console.log('\n[K] sfVerdictTier — Safe requires SF >= 2.0, not 1.5 (issue #141)');
+{
+  // Extract the shared thresholds + classifier that both the headline action
+  // card and sticky bar now read from, so this locks the exact regression:
+  // the headline used to render green "Safe" at SF 1.5x while the same panel
+  // said "Recommended minimum: 2x".
+  const m = html.match(/const FAIL_SF_THRESHOLD[\s\S]*?function sfVerdictTier\(sf\) \{[\s\S]*?\n\}\n/);
+  if (!m) throw new Error('Could not extract sfVerdictTier + its threshold constants');
+  const mod = { exports: {} };
+  new Function('module', 'exports',
+    m[0] + '\nmodule.exports = { sfVerdictTier, FAIL_SF_THRESHOLD, ACCEPTABLE_SF_THRESHOLD, SAFE_SF_THRESHOLD };'
+  )(mod, mod.exports);
+  const { sfVerdictTier, FAIL_SF_THRESHOLD, ACCEPTABLE_SF_THRESHOLD, SAFE_SF_THRESHOLD } = mod.exports;
+
+  test('Thresholds are 1.0 / 1.5 / 2.0',
+    FAIL_SF_THRESHOLD === 1.0 && ACCEPTABLE_SF_THRESHOLD === 1.5 && SAFE_SF_THRESHOLD === 2.0,
+    `got ${FAIL_SF_THRESHOLD}/${ACCEPTABLE_SF_THRESHOLD}/${SAFE_SF_THRESHOLD}`);
+
+  test('SF 0.9 -> fail tier', sfVerdictTier(0.9) === 'fail', `got ${sfVerdictTier(0.9)}`);
+  test('SF 1.2 -> marginal tier', sfVerdictTier(1.2) === 'marginal', `got ${sfVerdictTier(1.2)}`);
+  test('SF 1.6 -> acceptable tier, NOT "safe" (the exact issue #141 regression case — used to render green "Safe" here)',
+    sfVerdictTier(1.6) === 'acceptable', `got ${sfVerdictTier(1.6)}`);
+  test('SF 1.5 boundary resolves to acceptable, not marginal (>= 1.5 is the acceptable band)',
+    sfVerdictTier(1.5) === 'acceptable', `got ${sfVerdictTier(1.5)}`);
+  test('SF 2.1 -> safe tier', sfVerdictTier(2.1) === 'safe', `got ${sfVerdictTier(2.1)}`);
+  test('SF 2.0 boundary resolves to safe (green requires >= 2.0, not > 2.0)',
+    sfVerdictTier(2.0) === 'safe', `got ${sfVerdictTier(2.0)}`);
+  test('null SF -> null tier (safety factor unavailable)', sfVerdictTier(null) === null);
+  test('NaN SF -> null tier (guards against a false verdict, mirrors the safetyFactorAvailable guard)',
+    sfVerdictTier(NaN) === null);
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 if (failed > 0) {
