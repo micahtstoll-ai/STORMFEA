@@ -323,7 +323,9 @@ export interface SolverResult {
   /**
    * Per-constraint reaction force vector [Fx, Fy, Fz] in Newtons.
    * constraints[i] corresponds to constraints array passed to runLinearStatic.
-   * Length = number of FixedNodeSets. Computed from f_reaction = K×u - f_ext at constrained DOFs.
+   * Length = number of FixedNodeSets. Computed from f_reaction = K₀×u - f_ext at
+   * constrained DOFs, where K₀ is the pristine stiffness (the Dirichlet penalty is
+   * backed out of the modified diagonal — see computeBoltReactions, issue #136).
    */
   readonly boltReactions?: readonly { nodeCount: number; Fx: number; Fy: number; Fz: number }[];
 

@@ -188,8 +188,9 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
   // (issue #100: reused by modal/buckling, which apply their own BC flavors).
   const K0data = input.keepPristineK ? K.data.slice() : undefined;
 
-  // applyDirichletBC modifies K and f in-place (penalty method)
-  applyDirichletBC(K, f, diagIdx, constraints);
+  // applyDirichletBC modifies K and f in-place (penalty method); returns the
+  // penalty scalar so reaction recovery can back it out of the modified diagonal.
+  const K_PENALTY = applyDirichletBC(K, f, diagIdx, constraints);
   _snap("after applyDirichletBC");
 
   // Use the cooperative (event-loop-yielding) solver on the streaming analysis
@@ -216,7 +217,7 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
   _snap("after buildSolverResult");
   validateResult(result, mesh);
 
-  const boltReactions = computeBoltReactions(K, cg.u, f_ext, constraints);
+  const boltReactions = computeBoltReactions(K, cg.u, f_ext, constraints, K_PENALTY);
 
   return {
     result: { ...result, boltReactions, meshQualityReport },
@@ -228,16 +229,24 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
 
 /**
  * Per-constraint reaction forces via the residual method:
- *   f_reaction = K_modified × u − f_ext
- * At constrained DOFs this gives the force the boundary exerts on the structure.
- * K_modified × u is computed as a sparse row dot-product at the constrained DOF
- * rows only — O(nnz_at_constrained_rows), fast even for large meshes.
+ *   f_reaction = K₀ × u − f_ext
+ * where K₀ is the PRISTINE (pre-penalty) stiffness. At constrained DOFs this is
+ * the force the boundary exerts on the structure. K₀ × u is computed as a sparse
+ * row dot-product over the constrained DOF rows only — O(nnz_at_constrained_rows).
+ *
+ * Penalty back-out (issue #136): applyDirichletBC only mutated the DIAGONAL of
+ * each penalized DOF, adding K_PENALTY. So (K_modified × u)_i = (K₀ × u)_i +
+ * K_PENALTY·u_i, and subtracting K_PENALTY·u_i at those rows recovers the true
+ * (K₀ × u)_i. Using the modified K directly (the old code) gave (K₀ × u)_i +
+ * K_PENALTY·u_i − f_ext_i ≈ K_PENALTY·g_i, which collapses to ~0 for fixed
+ * supports (g = 0) and to a spurious K_PENALTY·g for prescribed displacements.
  */
 function computeBoltReactions(
   K: CSRMatrix,
   u: Float64Array,
   f_ext: Float64Array,
   constraints: readonly import("./boundary.js").FixedNodeSet[],
+  K_PENALTY: number,
 ): { nodeCount: number; Fx: number; Fy: number; Fz: number }[] {
   const boltReactions: { nodeCount: number; Fx: number; Fy: number; Fz: number }[] = [];
   const { data, colIdx, rowPtr } = K;
@@ -256,6 +265,10 @@ function computeBoltReactions(
           if (col === undefined) continue;
           Ku_i += (data[k] ?? 0) * (u[col] ?? 0);
         }
+        // Back out the penalty only where applyDirichletBC actually added it:
+        // a DOF is penalized unless fixedAxes explicitly releases it.
+        const penalized = !cs.fixedAxes || cs.fixedAxes[dof];
+        if (penalized) Ku_i -= K_PENALTY * (u[globalDof] ?? 0);
         const reaction = Ku_i - (f_ext[globalDof] ?? 0);
         if (dof === 0) Fx += reaction;
         else if (dof === 1) Fy += reaction;
