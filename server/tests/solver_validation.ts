@@ -1573,7 +1573,7 @@ console.log("\n[24b] Calibration Kt fixtures — bearing plate-with-hole + lap-s
 {
   try {
     const { solveCouponKt, buildBearingKtProbe } = await import("../coupon_fea.js");
-    const { COUPON_DIMS } = await import("../analysis.js");
+    const { COUPON_DIMS, backCalculateProfile } = await import("../analysis.js");
 
     // Representative orthotropic PLA (same profile the /kt endpoint solves with).
     const mat = {
@@ -1613,6 +1613,26 @@ console.log("\n[24b] Calibration Kt fixtures — bearing plate-with-hole + lap-s
     test("[24b] bearing probe nominal is referenced to the net section",
       near(ktStd.nominalVonMisesMPa, stdProbe.loadCase.totalForceN / netArea, 1e-6),
       `nomVM=${ktStd.nominalVonMisesMPa.toFixed(3)} expect=${(stdProbe.loadCase.totalForceN / netArea).toFixed(3)}`);
+
+    // ── #140: lap-shear allowable is the apparent (average) F/A_overlap, Kt ≡ 1
+    //    by policy. Locking the policy: the default profile (no ktLapShear) must
+    //    equal plain nominal F/A, and an explicit ktLapShear:1 must be identical.
+    const lapFail = 1600;
+    const nominalShear = lapFail
+      / (COUPON_DIMS.lapShear.overlapWidthMm * COUPON_DIMS.lapShear.overlapLengthMm);
+    const polDefault = backCalculateProfile({
+      id: "lap-default", label: "lap-default", materialId: "pla", layerHeightMm: 0.2,
+      tensileFailN: null, lapShearFailN: lapFail, bearingFailN: null, tensileDeflMm: null,
+    });
+    const polExplicit1 = backCalculateProfile({
+      id: "lap-kt1", label: "lap-kt1", materialId: "pla", layerHeightMm: 0.2,
+      tensileFailN: null, lapShearFailN: lapFail, bearingFailN: null, tensileDeflMm: null,
+      ktLapShear: 1.0,
+    });
+    test("[24b] lap-shear allowable is nominal F/A (Kt ≡ 1 policy)",
+      near(polDefault.shearStr_MPa ?? -1, nominalShear, 1e-9)
+      && near(polExplicit1.shearStr_MPa ?? -1, nominalShear, 1e-9),
+      `default=${polDefault.shearStr_MPa} explicit1=${polExplicit1.shearStr_MPa} nominal=${nominalShear}`);
   } catch (err) {
     test("[24b] calibration Kt fixtures did not throw", false, String(err));
   }

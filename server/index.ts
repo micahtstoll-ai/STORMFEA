@@ -1090,7 +1090,7 @@ app.post("/api/calibration/kt", async (req, res) => {
       layerHeightMm?: number;
     };
 
-    const { solveCouponKt, buildBearingKtProbe, buildGaugeBoxMesh } = await import("./coupon_fea.js");
+    const { solveCouponKt, buildBearingKtProbe } = await import("./coupon_fea.js");
     const { backCalculateProfile } = await import("./analysis.js");
 
     // Build a representative material profile from literature defaults
@@ -1113,12 +1113,18 @@ app.post("/api/calibration/kt", async (req, res) => {
       label: materialId,
     };
 
-    // Lap-shear coupon: 20×20mm overlap, 2mm thick
-    const lapBox = buildGaugeBoxMesh(20, 2, 20);
-    const ktLap = await solveCouponKt(lapBox, mat, {
-      totalForceN: 1000, axis: 0, nominalAreaMm2: 20 * 2,
-      gripFraction: 0.35, shear: true,
-    });
+    // Lap-shear: POLICY Kt ≡ 1.0 — the calibrated allowable is the APPARENT
+    // (average) interlaminar shear strength F/A_overlap, by design (issue #140).
+    // Two reasons this is correct, not a shortcut:
+    //   1. The end-of-overlap shear peak in a single-lap joint is a geometric
+    //      SINGULARITY (re-entrant corner): any FEA "Kt" there just tracks mesh
+    //      density and never converges, so a peak-based lap-shear allowable
+    //      would be false precision.
+    //   2. STORMFEA evaluates part interlaminar shear on element-AVERAGED stress
+    //      (fdmDualCriterion S_zs), so an average-based allowable is the
+    //      consistent measure. The previous plain-box probe returned Kt ≈ 1
+    //      anyway — this makes the ≡1 explicit and honest rather than incidental.
+    const ktLapShear = 1.0;
 
     // Bearing: plate-with-hole fixture at COUPON_DIMS.bearing geometry, loaded in
     // far-field tension (the only load the fixture supports). Kt is the
@@ -1129,9 +1135,9 @@ app.post("/api/calibration/kt", async (req, res) => {
     const ktBear = await solveCouponKt(bearingProbe.mesh, mat, bearingProbe.loadCase);
 
     res.json({
-      ktLapShear: ktLap.converged ? ktLap.Kt : null,
+      ktLapShear,
       ktBearing:  ktBear.converged ? ktBear.Kt : null,
-      converged:  ktLap.converged && ktBear.converged,
+      converged:  ktBear.converged,
     });
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -1440,7 +1446,7 @@ G_xz = out-of-plane shear mod  ν_xy, ν_xz = Poisson ratios</div>
 <table>
   <tr><th>Coupon</th><th>Measures</th><th>Derivation</th></tr>
   <tr><td>Tensile dog-bone</td><td>yield_XY, E_xy</td><td>F/A at fracture; stress/strain at yield</td></tr>
-  <tr><td>Lap-shear plate</td><td>yield_Z (via shear)</td><td>F/(w×l) → shear str → yield_Z = shear/0.58</td></tr>
+  <tr><td>Lap-shear plate</td><td>yield_Z (via shear)</td><td>F/(w×l) apparent shear → yield_Z = shear/0.58</td></tr>
   <tr><td>Bearing plate</td><td>Bearing strength</td><td>F/(d×t) corrected by Kt from FEA</td></tr>
 </table>
 
@@ -1452,6 +1458,12 @@ G_xz = out-of-plane shear mod  ν_xy, ν_xz = Poisson ratios</div>
   that factor — a first-order proxy, since the fixture applies far-field tension rather than a bolt
   bearing on the wall. This removes the non-conservatism of mixing nominal-stress calibration with
   peak-stress part analysis.
+</p>
+<p>
+  The <strong>lap-shear</strong> allowable is reported as the apparent (average) shear strength
+  F/(w×l), i.e. Kt ≡ 1 by design: the end-of-overlap shear peak is a geometric singularity that does
+  not converge under mesh refinement, and parts are checked on element-averaged interlaminar shear —
+  so an average-based allowable is the consistent measure, not a peak-corrected one.
 </p>
 </div>
 <div>
