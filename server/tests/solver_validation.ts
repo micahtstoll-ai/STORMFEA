@@ -10,7 +10,11 @@
 
 import { runLinearStatic }      from "../solver/pipeline.js";
 import { generateBoxMesh, generateBoxMeshC3D10 } from "../solver/meshgen.js";
-import { sprSmoothedStress, nodeAveragedStress } from "../solver/stress.js";
+import {
+  sprSmoothedStress, nodeAveragedStress, sprSmoothedStress6,
+  recoverElementStress, computeZZErrorEstimate, invert6x6, stressEnergyDensity,
+} from "../solver/stress.js";
+import type { TetMesh, ElementMaterialField } from "../solver/types.js";
 import {
   buildConstitutiveMatrix,
   buildOrthotropicConstitutiveMatrix,
@@ -1685,6 +1689,269 @@ console.log("\n[26] Numerical homogenization — perforated-plate cell vs isolat
     test("[26.2] g(ρ) monotonic decreasing", false);
     test("[26.3] dilute drop/void-fraction ≈ isolated-hole theory", false);
     test("[26.4] power-law fit residual small", false);
+  }
+}
+
+// ── Test group 27: True energy-norm ZZ error estimator (#143/#144/#145) ───────
+console.log("\n[27] Energy-norm ZZ estimator — full tensor, volume-weighted, shape-fn interp");
+{
+  const iso = { E: 3500, nu: 0.36, yieldStrength: 50, label: "pla" };
+
+  // [27.1/27.2] Compliance inversion is exact: C · C⁻¹ = I (iso + ortho).
+  const checkInverse = (C: Float64Array): number => {
+    const S = invert6x6(C);
+    let maxErr = 0;
+    for (let i = 0; i < 6; i++) for (let j = 0; j < 6; j++) {
+      let p = 0; for (let k = 0; k < 6; k++) p += (C[i*6+k] ?? 0) * (S[k*6+j] ?? 0);
+      maxErr = Math.max(maxErr, Math.abs(p - (i === j ? 1 : 0)));
+    }
+    return maxErr;
+  };
+  const Ciso = buildConstitutiveMatrix(iso);
+  const Cortho = buildOrthotropicConstitutiveMatrix({
+    kind: "orthotropic", E_xy: 3500, E_z: 350, nu_xy: 0.36, nu_xz: 0.30,
+    G_xz: 300, yieldXY: 50, yieldZ: 20, label: "ortho-soft-z",
+  });
+  test("[27.1] invert6x6 isotropic: C·C⁻¹ = I (err < 1e-9)", checkInverse(Ciso) < 1e-9,
+    `err=${checkInverse(Ciso).toExponential(2)}`);
+  test("[27.2] invert6x6 orthotropic: C·C⁻¹ = I (err < 1e-9)", checkInverse(Cortho) < 1e-9,
+    `err=${checkInverse(Cortho).toExponential(2)}`);
+
+  // [27.3] Energy weighting is real (#143): with E_z ≪ E_xy, an equal-magnitude
+  // through-thickness (σzz) stress error carries MORE energy than an in-plane
+  // (σxx) one, by exactly the compliance ratio S33/S11 = E_xy/E_z. A scalar
+  // von-Mises L2 norm (the old estimator) would rank them equal.
+  {
+    const S = invert6x6(Cortho);
+    const sig = 10;
+    const eZ = stressEnergyDensity([0, 0, sig, 0, 0, 0], S); // σzz only
+    const eX = stressEnergyDensity([sig, 0, 0, 0, 0, 0], S); // σxx only
+    const ratio = eZ / eX;
+    const expected = 3500 / 350; // E_xy / E_z = 10
+    test("[27.3] energy norm ranks through-thickness error above in-plane", eZ > eX,
+      `eZ=${eZ.toExponential(3)} eX=${eX.toExponential(3)}`);
+    test("[27.3b] energy ratio == E_xy/E_z (compliance-weighted)", near(ratio, expected, 1e-6),
+      `ratio=${ratio.toFixed(4)} expected=${expected.toFixed(4)}`);
+  }
+
+  // Manufactured nodal displacement fields (kinematic — no equilibrium needed;
+  // recoverElementStress computes σ = C·B·u for any u).
+  const setDisp = (mesh: TetMesh, f: (x: number, y: number, z: number) => [number, number, number]) => {
+    const d = new Float64Array(mesh.nodeCount * 3);
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      const [ux, uy, uz] = f(mesh.nodes[n*3] ?? 0, mesh.nodes[n*3+1] ?? 0, mesh.nodes[n*3+2] ?? 0);
+      d[n*3] = ux; d[n*3+1] = uy; d[n*3+2] = uz;
+    }
+    return d;
+  };
+
+  // [27.4/27.5] Constant stress ⇒ SPR exact ⇒ η ≈ 0 (#tight), both element types.
+  // A linear displacement field gives constant strain ⇒ constant stress; SPR6
+  // reproduces a constant exactly, so σ* = σ_h everywhere.
+  const linField = (x: number, y: number, z: number): [number, number, number] =>
+    [1e-3*x + 4e-4*y - 2e-4*z + 0.05, -3e-4*x + 6e-4*y + 1e-4*z, 2e-4*x - 1e-4*y + 5e-4*z - 0.02];
+  for (const [label, mesh] of [
+    ["C3D4",  generateBoxMesh(0, 0, 0, 6, 6, 6, 3, 3, 3)],
+    ["C3D10", generateBoxMeshC3D10(0, 0, 0, 6, 6, 6, 3, 3, 3)],
+  ] as const) {
+    const disp = setDisp(mesh, linField);
+    const { elemStress6 } = recoverElementStress(mesh, disp, iso);
+    const { globalRelativeError, errorEstimate } = computeZZErrorEstimate(mesh, disp, elemStress6, iso);
+    const maxEE = Math.max(...Array.from(errorEstimate));
+    test(`[27.4] ${label}: constant stress ⇒ globalRelativeError ≈ 0`, globalRelativeError < 1e-9,
+      `gre=${globalRelativeError.toExponential(2)}`);
+    test(`[27.5] ${label}: constant stress ⇒ all η ≈ 0`, maxEE < 1e-9,
+      `maxEE=${maxEE.toExponential(2)}`);
+  }
+
+  // [27.6] Scale invariance (#145): a mesh uniformly scaled ×1000 (with the
+  // displacement scaled ×1000 so strains — hence stresses — are identical)
+  // must produce an IDENTICAL normalized error field. The old estimator's
+  // 1/(1+dist²) weight (dist in mm²) broke this.
+  {
+    const quad = (x: number, y: number, z: number): [number, number, number] =>
+      [1e-4*x*x + 5e-5*y*z, 3e-5*y*y, 2e-5*z*x]; // nonlinear ⇒ nonzero recovery error
+    const mesh = generateBoxMesh(0, 0, 0, 6, 6, 6, 4, 4, 4);
+    const disp = setDisp(mesh, quad);
+    const { elemStress6 } = recoverElementStress(mesh, disp, iso);
+    const r1 = computeZZErrorEstimate(mesh, disp, elemStress6, iso);
+
+    const s = 1000;
+    const meshS: TetMesh = {
+      nodes: Float64Array.from(mesh.nodes, v => v * s),
+      elements: mesh.elements, nodeCount: mesh.nodeCount,
+      elementCount: mesh.elementCount, nodesPerElem: mesh.nodesPerElem,
+    };
+    const dispS = Float64Array.from(disp, v => v * s);
+    const { elemStress6: es6S } = recoverElementStress(meshS, dispS, iso);
+    const r2 = computeZZErrorEstimate(meshS, dispS, es6S, iso);
+
+    let maxDelta = 0;
+    for (let e = 0; e < mesh.elementCount; e++)
+      maxDelta = Math.max(maxDelta, Math.abs((r1.errorEstimate[e] ?? 0) - (r2.errorEstimate[e] ?? 0)));
+    const meaningful = Math.max(...Array.from(r1.errorEstimate));
+    test("[27.6] scale ×1000 ⇒ identical η ranking (no dimensional constants)",
+      maxDelta < 1e-7 && meaningful > 1e-3,
+      `maxΔ=${maxDelta.toExponential(2)} peakη=${meaningful.toExponential(2)}`);
+    test("[27.6b] scale ×1000 ⇒ identical global relative error",
+      near(r1.globalRelativeError, r2.globalRelativeError, 1e-6),
+      `gre1=${r1.globalRelativeError.toExponential(4)} gre2=${r2.globalRelativeError.toExponential(4)}`);
+  }
+
+  // [27.7] Volume weighting (#144): on a graded bar (element size grows with x)
+  // under a field whose true stress is LINEAR in x, every element sees the same
+  // stress slope, so the ONLY thing distinguishing per-element error is size.
+  // A true volume-weighted energy integral makes the coarse (under-resolved)
+  // elements rank highest; the old point-value estimator (σ* − σ_h at the
+  // centroid) reports ≈0 for a linear field and would invert this ranking.
+  {
+    // Bar of unit-cross-section cubes with increasing width; conforming shared
+    // interface nodes (4 per x-plane). Each cube → 6 Kuhn tets.
+    const widths = [0.5, 1, 2, 4];
+    const X = [0]; for (const w of widths) X.push(X[X.length - 1]! + w);
+    const nodesArr: number[] = [];
+    const nIdx = (plane: number, b: number, c: number) => plane*4 + b*2 + c;
+    for (let k = 0; k <= widths.length; k++)
+      for (let b = 0; b < 2; b++) for (let c = 0; c < 2; c++) nodesArr.push(X[k]!, b, c);
+    const paths = [
+      [[1,0,0],[1,1,0]], [[1,0,0],[1,0,1]], [[0,1,0],[1,1,0]],
+      [[0,1,0],[0,1,1]], [[0,0,1],[1,0,1]], [[0,0,1],[0,1,1]],
+    ];
+    const elemsArr: number[] = [];
+    for (let i = 0; i < widths.length; i++) {
+      const corner = (a: number, b: number, c: number) => nIdx(i + a, b, c);
+      const c000 = corner(0,0,0), c111 = corner(1,1,1);
+      for (const [m, p] of paths)
+        elemsArr.push(c000, corner(m![0]!, m![1]!, m![2]!), corner(p![0]!, p![1]!, p![2]!), c111);
+    }
+    const bar: TetMesh = {
+      nodes: Float64Array.from(nodesArr), elements: Int32Array.from(elemsArr),
+      nodeCount: nodesArr.length / 3, elementCount: elemsArr.length / 4, nodesPerElem: 4,
+    };
+    // u_x = k·x² ⇒ σxx = C11·(2k·x): linear in x, constant slope everywhere.
+    const disp = setDisp(bar, (x) => [1e-3 * x * x, 0, 0]);
+    const { elemStress6 } = recoverElementStress(bar, disp, iso);
+    const { errorEstimate, globalRelativeError, topErrorElements } =
+      computeZZErrorEstimate(bar, disp, elemStress6, iso);
+
+    // Per-element centroid x → segment. Widest segment is the last (x ≥ X[3]).
+    const segMax: number[] = new Array(widths.length).fill(0);
+    for (let e = 0; e < bar.elementCount; e++) {
+      let cx = 0;
+      for (let ni = 0; ni < 4; ni++) cx += bar.nodes[(bar.elements[e*4+ni] ?? 0)*3] ?? 0;
+      cx /= 4;
+      let seg = 0; for (let k = 0; k < widths.length; k++) if (cx >= X[k]!) seg = k;
+      segMax[seg] = Math.max(segMax[seg]!, errorEstimate[e] ?? 0);
+    }
+    const coarsePeak = segMax[widths.length - 1]!; // widest segment
+    const finePeak   = segMax[0]!;                 // narrowest segment
+    const topX = topErrorElements[0]!.x;
+    test("[27.7] volume weighting: top-error element is in the coarsest region",
+      topX >= X[widths.length - 1]!, `topX=${topX.toFixed(3)} coarseStart=${X[widths.length-1]!.toFixed(3)}`);
+    test("[27.7b] coarse-region peak error ≫ fine-region peak (>10×)",
+      coarsePeak > 10 * finePeak, `coarse=${coarsePeak.toExponential(2)} fine=${finePeak.toExponential(2)}`);
+    test("[27.7c] linear-field discretization error is captured (gre > 0)",
+      globalRelativeError > 1e-3, `gre=${globalRelativeError.toExponential(2)}`);
+  }
+
+  // [27.8] Independent cross-check of the whole C3D4 integral (#143+#144+#145):
+  // re-derive the global relative error with the EXACT tet mass-matrix integral
+  // ∫N_iN_j dV = V/20·(1+δ_ij) (a different integration method than the code's
+  // 4-point Gauss rule) and confirm they agree. This validates the compliance
+  // weighting, the shape-function interpolation, and the volume factor at once.
+  {
+    const quad = (x: number, y: number, z: number): [number, number, number] =>
+      [8e-4*x*x + 3e-5*y*y, 2e-5*z*z + 1e-5*x*y, 4e-5*y*z];
+    const mesh = generateBoxMesh(0, 0, 0, 5, 5, 5, 3, 3, 3);
+    const disp = setDisp(mesh, quad);
+    const { elemStress6 } = recoverElementStress(mesh, disp, iso);
+    const nodeStress6 = sprSmoothedStress6(mesh, elemStress6);
+    const { globalRelativeError } = computeZZErrorEstimate(mesh, disp, elemStress6, iso);
+
+    const S = invert6x6(Ciso);
+    const tetVol = (a: number, b: number, c: number, d: number): number => {
+      const nd = mesh.nodes;
+      const ax = nd[a*3]!, ay = nd[a*3+1]!, az = nd[a*3+2]!;
+      const e1x = nd[b*3]!-ax, e1y = nd[b*3+1]!-ay, e1z = nd[b*3+2]!-az;
+      const e2x = nd[c*3]!-ax, e2y = nd[c*3+1]!-ay, e2z = nd[c*3+2]!-az;
+      const e3x = nd[d*3]!-ax, e3y = nd[d*3+1]!-ay, e3z = nd[d*3+2]!-az;
+      const triple = e1x*(e2y*e3z - e2z*e3y) - e1y*(e2x*e3z - e2z*e3x) + e1z*(e2x*e3y - e2y*e3x);
+      return Math.abs(triple) / 6;
+    };
+    // Analytic tet-integral reference (mass-matrix formula for linear fields).
+    let errSum = 0, normSum = 0;
+    const dnode = new Float64Array(4 * 6); // per-corner σ* − σ_h
+    for (let e = 0; e < mesh.elementCount; e++) {
+      const n0 = mesh.elements[e*4] ?? 0, n1 = mesh.elements[e*4+1] ?? 0,
+            n2 = mesh.elements[e*4+2] ?? 0, n3 = mesh.elements[e*4+3] ?? 0;
+      const V = tetVol(n0, n1, n2, n3);
+      const sigH = elemStress6.subarray(e*6, e*6+6);
+      const corners = [n0, n1, n2, n3];
+      for (let ci = 0; ci < 4; ci++)
+        for (let k = 0; k < 6; k++)
+          dnode[ci*6+k] = (nodeStress6[corners[ci]!*6+k] ?? 0) - (sigH[k] ?? 0);
+      // ∫ dᵀ S d dV = Σ_ab S_ab ∫ d^a d^b dV, with linear d^a (nodal values):
+      //   ∫ d^a d^b dV = V/20·[ (Σ_i d^a_i)(Σ_j d^b_j) + Σ_i d^a_i d^b_i ]
+      for (let a = 0; a < 6; a++) for (let b = 0; b < 6; b++) {
+        let sumA = 0, sumB = 0, sumAB = 0;
+        for (let i = 0; i < 4; i++) {
+          sumA += dnode[i*6+a]!; sumB += dnode[i*6+b]!; sumAB += dnode[i*6+a]! * dnode[i*6+b]!;
+        }
+        errSum += (S[a*6+b] ?? 0) * (V/20) * (sumA*sumB + sumAB);
+      }
+      // ‖σ_h‖²_e = σ_hᵀ S σ_h · V  (σ_h constant)
+      normSum += stressEnergyDensity(sigH, S) * V;
+    }
+    const refGRE = Math.sqrt(errSum) / Math.sqrt(normSum);
+    test("[27.8] C3D4 global error matches independent mass-matrix tet integral",
+      near(globalRelativeError, refGRE, 1e-6),
+      `code=${globalRelativeError.toExponential(6)} ref=${refGRE.toExponential(6)}`);
+  }
+
+  // [27.9] Two-region per-bin compliance (criterion #6): the estimator selects
+  // C⁻¹ per element by bin. (a) Two identical bins collapse to the single-
+  // material estimate bit-for-bit; (b) a genuinely stiffer second bin changes
+  // the outcome — proving per-bin C is consulted per element, not the average.
+  {
+    const mesh = generateBoxMesh(0, 0, 0, 6, 6, 6, 3, 3, 3);
+    const disp = setDisp(mesh, (x, y, z) => [1e-4*x*x + 5e-5*y*z, 3e-5*y*y, 2e-5*z*x]);
+    const nEl = mesh.elementCount;
+
+    const makeField = (C0: Float64Array, C1: Float64Array): ElementMaterialField => {
+      const C = new Float64Array(72);
+      C.set(C0, 0); C.set(C1, 36);
+      const binOfElement = new Int32Array(nEl);
+      for (let e = 0; e < nEl; e++) binOfElement[e] = e < nEl / 2 ? 0 : 1;
+      return {
+        binCount: 2, binOfElement, C,
+        yieldXY: new Float64Array([50, 50]), yieldZ: new Float64Array([30, 30]),
+        yieldZShear: new Float64Array([17, 17]), massRho: new Float64Array([1240, 1240]),
+        shellFrac: new Float64Array([1, 0.3]),
+      };
+    };
+
+    // (a) identical bins ⇒ exact collapse to the no-field path.
+    const fieldSame = makeField(Ciso, Ciso);
+    const es6Same = recoverElementStress(mesh, disp, iso, fieldSame).elemStress6;
+    const rSame = computeZZErrorEstimate(mesh, disp, es6Same, iso, fieldSame);
+    const es6No = recoverElementStress(mesh, disp, iso).elemStress6;
+    const rNo = computeZZErrorEstimate(mesh, disp, es6No, iso);
+    let maxD = 0;
+    for (let e = 0; e < nEl; e++)
+      maxD = Math.max(maxD, Math.abs((rSame.errorEstimate[e] ?? 0) - (rNo.errorEstimate[e] ?? 0)));
+    test("[27.9] two identical bins collapse to single-material estimate (bit-identical)",
+      maxD < 1e-12 && near(rSame.globalRelativeError, rNo.globalRelativeError, 1e-12),
+      `maxΔ=${maxD.toExponential(2)}`);
+
+    // (b) a distinct stiffer second bin is actually consulted per element.
+    const Cstiff = buildConstitutiveMatrix({ E: 7000, nu: 0.36, yieldStrength: 50, label: "stiff" });
+    const fieldMixed = makeField(Ciso, Cstiff);
+    const es6Mix = recoverElementStress(mesh, disp, iso, fieldMixed).elemStress6;
+    const rMix = computeZZErrorEstimate(mesh, disp, es6Mix, iso, fieldMixed);
+    const finite = Array.from(rMix.errorEstimate).every(v => isFinite(v)) && isFinite(rMix.globalRelativeError);
+    test("[27.9b] a distinct second bin changes the estimate (per-bin C used per element)",
+      finite && Math.abs(rMix.globalRelativeError - rSame.globalRelativeError) > 1e-6,
+      `mixed=${rMix.globalRelativeError.toExponential(4)} same=${rSame.globalRelativeError.toExponential(4)}`);
   }
 }
 

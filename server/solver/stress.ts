@@ -39,7 +39,7 @@
 
 import type { TetMesh, IsotropicMaterial, AnyMaterial, SolverResult, ElementMaterialField, WallBondField } from "./types.js";
 import { isOrthotropic } from "./types.js";
-import { buildAnyConstitutiveMatrix, computeGeometry, buildB, buildB_c3d10, C3D10_GAUSS, rotationAligningZTo, rotateStress6ToLocal } from "./element.js";
+import { buildAnyConstitutiveMatrix, computeGeometry, buildB, buildB_c3d10, c3d10ShapeFunctions, C3D10_GAUSS, rotationAligningZTo, rotateStress6ToLocal } from "./element.js";
 import { buildNodeElementLists } from "./adjacency.js";
 
 // True when a vector points along +Z (within tolerance), i.e. no rotation needed.
@@ -981,125 +981,225 @@ export function nodeAveragedPrincipalStress(
 }
 
 // ─── Zienkiewicz-Zhu error estimation ──────────────────────────────────────
+
 /**
- * Compute per-element Zienkiewicz-Zhu error estimates from SPR-smoothed stress.
+ * Invert a 6×6 matrix stored row-major flat (36 entries) via Gauss-Jordan with
+ * partial pivoting. Used to obtain the compliance S = C⁻¹ of a constitutive
+ * matrix for the energy-norm error estimate. Called once per material bin —
+ * never per element (see computeZZErrorEstimate).
+ */
+export function invert6x6(M: Float64Array): Float64Array {
+  const n = 6, w = 2 * n;
+  const a = new Float64Array(n * w); // augmented [M | I]
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) a[i * w + j] = M[i * n + j] ?? 0;
+    a[i * w + n + i] = 1;
+  }
+  for (let col = 0; col < n; col++) {
+    // Partial pivot on the largest sub-column entry.
+    let piv = col, maxv = Math.abs(a[col * w + col] ?? 0);
+    for (let r = col + 1; r < n; r++) {
+      const v = Math.abs(a[r * w + col] ?? 0);
+      if (v > maxv) { maxv = v; piv = r; }
+    }
+    if (maxv < 1e-300) throw new Error("invert6x6: singular constitutive matrix");
+    if (piv !== col) {
+      for (let k = 0; k < w; k++) {
+        const t = a[col * w + k]!; a[col * w + k] = a[piv * w + k]!; a[piv * w + k] = t;
+      }
+    }
+    const pv = a[col * w + col]!;
+    for (let k = 0; k < w; k++) a[col * w + k] = a[col * w + k]! / pv;
+    for (let r = 0; r < n; r++) {
+      if (r === col) continue;
+      const f = a[r * w + col]!;
+      if (f === 0) continue;
+      for (let k = 0; k < w; k++) a[r * w + k] = a[r * w + k]! - f * a[col * w + k]!;
+    }
+  }
+  const inv = new Float64Array(n * n);
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) inv[i * n + j] = a[i * w + n + j]!;
+  return inv;
+}
+
+/**
+ * Energy inner product σᵀ · S · σ for a Voigt-6 stress and a 36-flat compliance
+ * S = C⁻¹ (STORMFEA Voigt order [xx,yy,zz,xy,yz,xz], engineering shear). Because
+ * the stiffness C uses engineering shear strains, σᵀ C⁻¹ σ equals twice the
+ * complementary strain-energy density — the correct energy norm for the ZZ
+ * estimator, exact for both isotropic and (rotated) orthotropic materials.
+ */
+export function stressEnergyDensity(s: ArrayLike<number>, S: Float64Array): number {
+  let acc = 0;
+  for (let i = 0; i < 6; i++) {
+    let row = 0;
+    for (let j = 0; j < 6; j++) row += (S[i * 6 + j] ?? 0) * (s[j] ?? 0);
+    acc += (s[i] ?? 0) * row;
+  }
+  return acc;
+}
+
+/**
+ * Compute per-element Zienkiewicz-Zhu error estimates as a TRUE energy-norm
+ * integral (issues #143 / #144 / #145). For each element:
  *
- * For each element, the energy-norm error is estimated as:
- *   η_e = ‖σ_SPR − σ_centroid‖_energy,e / ‖σ_global‖_energy
+ *   η_e² = Σ_gauss w_g · |detJ_g| · (σ*(x_g) − σ_h(x_g))ᵀ C⁻¹ (σ*(x_g) − σ_h(x_g))
  *
- * where σ_SPR is interpolated from nodal values (result of sprSmoothedStress)
- * to the element centroid, and σ_centroid is the recovered stress at the centroid.
+ *   σ*   — the RECOVERED field: the 6-component SPR nodal stress
+ *          (sprSmoothedStress6) interpolated to Gauss points with the element's
+ *          OWN shape functions (midside nodes included for C3D10, linear
+ *          barycentric for C3D4). No distance weights, no dimensional constants.
+ *   σ_h  — the ELEMENT field: σ = C·B·u recomputed at each Gauss point (exact
+ *          per-point stress for C3D10; constant = elemStress6 for C3D4).
+ *   C⁻¹  — per-element compliance: a single 6×6 inverse per material BIN. With
+ *          no material field this is the one (rotated) material C; with a
+ *          two-region ElementMaterialField it is the per-bin blended C already
+ *          used by assembly, selected via binOfElement.
  *
- * The energy norm at an element is:
- *   ‖σ‖²_energy,e = σᵀ · C⁻¹ · σ
+ * Volume weighting (#144) falls out of the Gauss factor w_g·|detJ_g|; the full
+ * tensor energy norm (#143) makes soft directions dominate (through-thickness
+ * error ranks above an equal-magnitude in-plane one when E_z ≪ E_xy); and the
+ * shape-function interpolation (#145) is exact and scale-invariant.
  *
- * where C is the constitutive matrix. For isotropic material:
- *   C⁻¹[i,j] = ((1+ν)/E) · δ_ij − (ν/(1+ν)) · I_1 (trace term)
+ * The global norm ‖σ‖² uses the same integral of σ_hᵀ C⁻¹ σ_h. Returned
+ * errorEstimate[e] = η_e / ‖σ‖_global keeps the previous per-element ranking
+ * semantics (a monotone map of η_e), so downstream wiring is unchanged.
  *
  * Reference: Zienkiewicz OC, Zhu JZ. The superconvergent patch recovery
  * and a posteriori error estimates. Int J Numer Methods Eng. 1992;33(7):1331–64.
  */
 export function computeZZErrorEstimate(
   mesh:           TetMesh,
-  vonMises:       Float64Array,
-  sprStress:      Float64Array | null,  // per-node von Mises from SPR (or null for fallback)
+  displacement:   Float64Array,
+  elemStress6:    Float64Array,   // recovered per-element σ_h (Voigt6) — also SPR6 input
   mat:            AnyMaterial,
+  field?:         ElementMaterialField,
 ): {
   errorEstimate:      Float32Array;
   globalRelativeError: number;
   topErrorElements:   Array<{ x: number; y: number; z: number; errorEstimate: number }>;
 } {
-  const errorEstimate = new Float32Array(mesh.elementCount);
-  let errorSum2 = 0;      // Σ η_e²
-  let stressNormSum2 = 0; // Σ ‖σ_e‖²_energy
-
-  // Get material properties for energy-norm calculation
-  const E = 'kind' in mat ? (mat as import("./types.js").OrthotropicMaterial).E_xy
-                          : (mat as IsotropicMaterial).E;
-  const nu = 'kind' in mat ? (mat as import("./types.js").OrthotropicMaterial).nu_xy
-                           : (mat as IsotropicMaterial).nu;
-
-  // Energy-norm normalization constant
-  const factor1 = (1 + nu) / E;
-
   const npe = mesh.nodesPerElem ?? 4;
+  const errorEstimate = new Float32Array(mesh.elementCount);
 
-  // Compute element centroid coordinates (corner-node average; stride by npe — issue #96)
+  // ── Per-bin constitutive matrix C_b and its compliance S_b = C_b⁻¹ ──────────
+  // One 6×6 inversion per material bin (binCount is 1 for a single material, a
+  // handful for a two-region field). Never inverted per element.
+  const Cs = field ? field.C : buildAnyConstitutiveMatrix(mat);
+  const binCount = Cs.length / 36;
+  const Cviews: Float64Array[] = [];
+  const Sinv:   Float64Array[] = [];
+  for (let b = 0; b < binCount; b++) {
+    const Cb = Cs.subarray(b * 36, b * 36 + 36);
+    Cviews.push(Cb);
+    Sinv.push(invert6x6(Cb));
+  }
+  const binOf = field ? field.binOfElement : null;
+
+  // ── Recovered field σ*: 6-component SPR nodal stress ────────────────────────
+  const nodeStress6 = sprSmoothedStress6(mesh, elemStress6);
+
+  // Centroids (corner-node average) for topErrorElements reporting.
   const elemCentX = new Float64Array(mesh.elementCount);
   const elemCentY = new Float64Array(mesh.elementCount);
   const elemCentZ = new Float64Array(mesh.elementCount);
+
+  // Per-element scratch (no per-element heap allocations in the hot loop).
+  const nodeCoords = new Float64Array(30);
+  const ue         = new Float64Array(30);
+  const epsG       = new Float64Array(6);
+  const sigH       = new Float64Array(6);
+  const sigStar    = new Float64Array(6);
+  const dsig       = new Float64Array(6);
+
+  let errorSum2      = 0; // Σ η_e²
+  let stressNormSum2 = 0; // Σ ‖σ_e‖²_energy
+
   for (let e = 0; e < mesh.elementCount; e++) {
     const base = e * npe;
+    const bin  = binOf ? (binOf[e] ?? 0) : 0;
+    const S    = Sinv[bin]!;
+    const C    = Cviews[bin]!;
+
+    // Gather node coordinates + displacements; accumulate corner-node centroid.
     let cx = 0, cy = 0, cz = 0;
-    for (let ni = 0; ni < 4; ni++) {
+    for (let ni = 0; ni < npe; ni++) {
       const n = mesh.elements[base + ni] ?? 0;
-      cx += mesh.nodes[n * 3]     ?? 0;
-      cy += mesh.nodes[n * 3 + 1] ?? 0;
-      cz += mesh.nodes[n * 3 + 2] ?? 0;
+      const x = mesh.nodes[n * 3] ?? 0, y = mesh.nodes[n * 3 + 1] ?? 0, z = mesh.nodes[n * 3 + 2] ?? 0;
+      nodeCoords[ni * 3] = x; nodeCoords[ni * 3 + 1] = y; nodeCoords[ni * 3 + 2] = z;
+      ue[ni * 3]     = displacement[n * 3]     ?? 0;
+      ue[ni * 3 + 1] = displacement[n * 3 + 1] ?? 0;
+      ue[ni * 3 + 2] = displacement[n * 3 + 2] ?? 0;
+      if (ni < 4) { cx += x; cy += y; cz += z; }
     }
-    elemCentX[e] = cx / 4;
-    elemCentY[e] = cy / 4;
-    elemCentZ[e] = cz / 4;
+    elemCentX[e] = cx / 4; elemCentY[e] = cy / 4; elemCentZ[e] = cz / 4;
+
+    let eErr2 = 0, eNorm2 = 0;
+
+    if (npe === 10) {
+      // ── C3D10: σ_h = C·B·u recomputed at each Gauss point; σ* from the 10
+      // quadratic shape functions (midside SPR values included). ──────────────
+      for (const gp of C3D10_GAUSS) {
+        let B: Float64Array, detJ: number;
+        try { ({ B, detJ } = buildB_c3d10(nodeCoords, gp.xi, gp.eta, gp.zeta)); }
+        catch { continue; } // degenerate Gauss point — skip (mesh handled upstream)
+        const vol = Math.abs(detJ) * gp.w;
+
+        for (let r = 0; r < 6; r++) { let s = 0; for (let c = 0; c < 30; c++) s += (B[r * 30 + c] ?? 0) * (ue[c] ?? 0); epsG[r] = s; }
+        for (let r = 0; r < 6; r++) { let s = 0; for (let c = 0; c < 6;  c++) s += (C[r * 6 + c] ?? 0) * (epsG[c] ?? 0); sigH[r] = s; }
+
+        const N = c3d10ShapeFunctions(gp.xi, gp.eta, gp.zeta);
+        sigStar.fill(0);
+        for (let ni = 0; ni < 10; ni++) {
+          const n = mesh.elements[base + ni] ?? 0;
+          const wN = N[ni] ?? 0;
+          for (let k = 0; k < 6; k++) sigStar[k] = (sigStar[k] ?? 0) + wN * (nodeStress6[n * 6 + k] ?? 0);
+        }
+        for (let k = 0; k < 6; k++) dsig[k] = (sigStar[k] ?? 0) - (sigH[k] ?? 0);
+        eErr2  += vol * stressEnergyDensity(dsig, S);
+        eNorm2 += vol * stressEnergyDensity(sigH, S);
+      }
+    } else {
+      // ── C3D4: σ_h is constant (= elemStress6); σ* linearly interpolated from
+      // the 4 corner nodes. |detJ| = 6V is constant, so the 4-point tet rule
+      // integrates the (quadratic) energy integrand exactly. ──────────────────
+      for (let k = 0; k < 6; k++) sigH[k] = elemStress6[e * 6 + k] ?? 0;
+      const n0 = mesh.elements[base] ?? 0, n1 = mesh.elements[base + 1] ?? 0,
+            n2 = mesh.elements[base + 2] ?? 0, n3 = mesh.elements[base + 3] ?? 0;
+      let detJ: number;
+      try { detJ = 6 * computeGeometry(mesh.nodes, n0, n1, n2, n3).V; }
+      catch { errorEstimate[e] = 0; continue; }
+
+      for (const gp of C3D10_GAUSS) {
+        const vol = gp.w * detJ;
+        const L0 = gp.xi, L1 = gp.eta, L2 = gp.zeta, L3 = 1 - gp.xi - gp.eta - gp.zeta;
+        sigStar.fill(0);
+        const Ls = [L0, L1, L2, L3];
+        for (let ni = 0; ni < 4; ni++) {
+          const n  = mesh.elements[base + ni] ?? 0;
+          const wN = Ls[ni]!;
+          for (let k = 0; k < 6; k++) sigStar[k] = (sigStar[k] ?? 0) + wN * (nodeStress6[n * 6 + k] ?? 0);
+        }
+        for (let k = 0; k < 6; k++) dsig[k] = (sigStar[k] ?? 0) - (sigH[k] ?? 0);
+        eErr2  += vol * stressEnergyDensity(dsig, S);
+        eNorm2 += vol * stressEnergyDensity(sigH, S);
+      }
+    }
+
+    errorSum2      += eErr2;
+    stressNormSum2 += eNorm2;
+    errorEstimate[e] = Math.sqrt(Math.max(0, eErr2)); // unnormalized η_e; normalized below
   }
 
-  // If SPR stress not provided, fall back to direct averaging (lower accuracy)
-  const nodeSprStress = sprStress ?? nodeAveragedStress(mesh, vonMises);
+  // Global energy norm and relative error.
+  const globalNorm = Math.sqrt(Math.max(1e-30, stressNormSum2));
+  const globalRelativeError = globalNorm > 0 ? Math.sqrt(Math.max(0, errorSum2)) / globalNorm : 0;
 
-  // Interpolate SPR stress to element centroids using patch-weighted average
+  // Normalize per-element η_e by the global norm (per-element share of ‖σ‖).
   for (let e = 0; e < mesh.elementCount; e++) {
-    const base = e * npe;
-
-    // Get element corner nodes (first 4 entries for both C3D4 and C3D10)
-    const elemNodes: number[] = [];
-    for (let ni = 0; ni < Math.min(4, npe); ni++) {
-      elemNodes.push(mesh.elements[base + ni] ?? 0);
-    }
-
-    // Interpolate nodal SPR stress to centroid using distance-weighted average
-    let sprAtCentroid = 0;
-    let totalWeight = 0;
-    const cx = elemCentX[e]!;
-    const cy = elemCentY[e]!;
-    const cz = elemCentZ[e]!;
-
-    for (const n of elemNodes) {
-      const nx = mesh.nodes[n * 3]     ?? 0;
-      const ny = mesh.nodes[n * 3 + 1] ?? 0;
-      const nz = mesh.nodes[n * 3 + 2] ?? 0;
-      const dist2 = (cx - nx) * (cx - nx) + (cy - ny) * (cy - ny) + (cz - nz) * (cz - nz);
-      const weight = dist2 < 1e-12 ? 1e6 : 1.0 / (1.0 + dist2); // Nodes very close → higher weight
-      sprAtCentroid += (nodeSprStress[n] ?? 0) * weight;
-      totalWeight += weight;
-    }
-    sprAtCentroid = totalWeight > 0 ? sprAtCentroid / totalWeight : (vonMises[e] ?? 0);
-
-    // Energy norm of error: ‖σ_SPR − σ_centroid‖²_energy
-    const errStress = sprAtCentroid - (vonMises[e] ?? 0);
-    // Von Mises is scalar, but energy norm uses full tensor. Approximate with von Mises magnitude:
-    const errEnergy2 = errStress * errStress * factor1;
-
-    // Energy norm of element centroid stress for normalization
-    const vm = vonMises[e] ?? 0;
-    const stressEnergy2 = vm * vm * factor1;
-
-    errorSum2 += errEnergy2;
-    stressNormSum2 += stressEnergy2;
-
-    // Per-element error estimate (0–1): relative to global norm
-    // For now, store as magnitude; will normalize after global norm is known
-    errorEstimate[e] = Math.sqrt(Math.max(0, errEnergy2));
+    errorEstimate[e] = globalNorm > 0 ? (errorEstimate[e]! / globalNorm) : 0;
   }
 
-  // Global normalization
-  const globalEnergyNorm = Math.sqrt(Math.max(1e-12, stressNormSum2));
-  const globalRelativeError = globalEnergyNorm > 1e-12 ? Math.sqrt(errorSum2) / globalEnergyNorm : 0;
-
-  // Normalize per-element estimates by global norm
-  for (let e = 0; e < mesh.elementCount; e++) {
-    errorEstimate[e] = globalEnergyNorm > 1e-12 ? (errorEstimate[e]! / globalEnergyNorm) : 0;
-  }
-
-  // Find top-20 elements by error estimate
   const indexedErrors = Array.from({ length: mesh.elementCount }, (_, i) => ({
     index: i,
     error: errorEstimate[i] ?? 0,
@@ -1144,9 +1244,11 @@ export function buildSolverResult(
   let topErrorElements: Array<{ x: number; y: number; z: number; errorEstimate: number }> | undefined;
 
   if (computeErrorEstimate) {
-    const sprStress = sprSmoothedStress(mesh, vonMises);
+    // True energy-norm ZZ estimator: full tensor σ*, volume-weighted Gauss
+    // integral, per-bin C⁻¹ (issues #143/#144/#145). σ* is recovered internally
+    // via SPR6 from elemStress6; σ_h is recomputed from `displacement`.
     const { errorEstimate: ee, globalRelativeError: gre, topErrorElements: tee } =
-      computeZZErrorEstimate(mesh, vonMises, sprStress, mat);
+      computeZZErrorEstimate(mesh, displacement, elemStress6, mat, field);
     errorEstimate = ee;
     globalRelativeError = gre;
     topErrorElements = tee;
