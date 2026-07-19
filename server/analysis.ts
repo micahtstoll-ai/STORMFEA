@@ -4001,7 +4001,14 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       const fDummy = assembleForceVector(mesh.nodeCount, effectiveForces);
       applyDirichletBC(Kbuck, fDummy, buckDiagIdx, constraints);
 
-      const Ksigma = assembleKsigma(mesh, result.elemStress6, Kbuck.rowPtr, Kbuck.colIdx);
+      // For C3D10, recover σ per Gauss point (issue #164) so the linear stress
+      // gradient of bending members enters Kσ instead of being averaged away.
+      const Ksigma = assembleKsigma(
+        mesh, result.elemStress6, Kbuck.rowPtr, Kbuck.colIdx,
+        mesh.nodesPerElem === 10
+          ? { displacement: result.displacement, material, field: materialField ?? null }
+          : undefined,
+      );
       const bResult = await runLinearBuckling(Kbuck, Ksigma, buckDiagIdx);
       bucklingConverged     = bResult.converged;
       bucklingTensile       = bResult.tensileDominated;
