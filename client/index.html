@@ -1206,6 +1206,16 @@ body:not(.has-results) #btn-stress { display: none !important; }
              to the actual heatmap coloring, not an approximation. -->
         <div id="legend-gradient" style="width:14px;border-radius:2px;min-height:84px"></div>
       </div>
+      <!-- Gamma scale indicator + toggle (issue #142): the heatmap color
+           scale is gamma-warped (γ=0.55, expands low-stress detail) and the
+           legend gradient/labels are kept consistent with it (see
+           currentGamma()/updateLegendSwatches). This makes that fact visible
+           and lets users flip to a literal linear scale without needing the
+           ?disableGamma=true URL param. -->
+      <div id="legend-gamma" style="display:flex;align-items:center;justify-content:space-between;gap:6px;width:100%;font-size:8px;color:var(--text-lo);letter-spacing:.02em">
+        <span id="legend-gamma-label" title="Color scale expands low-stress detail (γ=0.55) so hotspots don't wash out the whole model. Legend and model always use the same scale.">γ 0.55 perceptual scale</span>
+        <button class="btn" id="legend-gamma-toggle" onclick="toggleGammaScale()" style="font-size:8px;padding:1px 5px" title="Toggle between the perceptual (γ) and a literal linear stress color scale">LINEAR</button>
+      </div>
       <!-- Threshold filter: greys out one side of a stress cutoff so only the
            hot spots (or only the calm regions) stay colored. -->
       <div id="legend-filter" style="display:flex;flex-direction:column;gap:3px;align-items:stretch;width:100%;margin-top:3px;border-top:1px solid var(--border);padding-top:5px">
@@ -3009,6 +3019,51 @@ document.getElementById('viewer').addEventListener('mouseleave', () => {
   clearStressHover();
 });
 
+// ── Heatmap color gamma (issue #142) ──────────────────────────────────────────
+// GAMMA<1 expands the low-stress end of the color scale so hotspots stay
+// visible without flooding the whole model in "hot" colors. currentGamma()
+// is the SINGLE source of truth for every paint path that applies it —
+// computeSmoothedStressColors (the model), setColormap's fallback repaint,
+// renderSplitFrame (split view), and updateLegendSwatches (the legend
+// gradient bar). Previously the legend sampled its gradient LINEARLY in
+// stress fraction while the model applied this same gamma curve, so a
+// legend color at the visual midpoint actually corresponded to only ~28% of
+// the stress range on the model — a ~1.8x over-read. Routing every consumer
+// through this one function closes that gap, and means toggling gamma off
+// here makes the legend linear again too, instead of needing a second copy
+// of the flag kept manually in sync.
+//
+// Defaults from ?disableGamma=true (kept for back-compat / old bookmarks),
+// but is now also togglable from a small control in the legend (LINEAR/γ
+// button) and persisted across sessions.
+(function() {
+  const stored = localStorage.getItem('sf-gamma-disabled');
+  S.gammaEnabled = stored !== null
+    ? stored !== 'true'
+    : !new URLSearchParams(window.location.search).has('disableGamma');
+})();
+function currentGamma() { return S.gammaEnabled ? 0.55 : 1.0; }
+function toggleGammaScale() {
+  S.gammaEnabled = !S.gammaEnabled;
+  localStorage.setItem('sf-gamma-disabled', (!S.gammaEnabled).toString());
+  // Repaint the model (which also repaints the legend, keeping them in sync)
+  // if a solve is loaded; otherwise just refresh the legend swatch preview.
+  if (S._stressArrays && mesh3d) applyStressColorsFromArrays(S._stressArrays);
+  else updateLegendSwatches();
+}
+function _syncGammaUI() {
+  const btn = document.getElementById('legend-gamma-toggle');
+  const lbl = document.getElementById('legend-gamma-label');
+  if (btn) {
+    btn.textContent = S.gammaEnabled ? 'LINEAR' : 'γ 0.55';
+    btn.classList.toggle('active', !S.gammaEnabled);
+    btn.title = S.gammaEnabled
+      ? 'Switch to a literal linear stress color scale'
+      : 'Switch back to the perceptual γ=0.55 scale (expands low-stress detail)';
+  }
+  if (lbl) lbl.textContent = S.gammaEnabled ? 'γ 0.55 perceptual scale' : 'linear scale';
+}
+
 // ─── Stress colormap system ──────────────────────────────────────────────────
 // S.colormap: 'rainbow' | 'viridis' | 'plasma'  (default: 'viridis')
 // All maps: 5-stop RGB arrays, t in [0,1] -> [r,g,b]
@@ -3130,7 +3185,7 @@ function setColormap(name) {
     const cols = mesh3d.geometry.attributes.color.array;
     const nVerts = S.stressColors.length;
     const range = (S.stressMax - S.stressMin) || 1;
-    const GAMMA = 0.55;
+    const GAMMA = currentGamma();
     for (let i = 0; i < nVerts; i++) {
       const linear = Math.max(0, Math.min(1, (S.stressColors[i] - S.stressMin) / range));
       const t = Math.pow(linear, GAMMA);
@@ -3143,21 +3198,30 @@ function setColormap(name) {
 
 function updateLegendSwatches() {
   const bar = document.getElementById('legend-gradient');
-  if (!bar) return;
-  const map = S.colormap || 'viridis';
-  // Sample stressColor at enough stops for a visually smooth CSS gradient.
-  // 12 stops is comfortably more than the 5 raw colormap stops, so the
-  // rendered bar matches the true continuous interpolation rather than
-  // looking like discrete bands.
-  const STOPS = 12;
-  const stops = [];
-  for (let i = 0; i <= STOPS; i++) {
-    const pct = (i / STOPS) * 100;
-    const t = 1 - i / STOPS; // HIGH at top (pct=0), LOW at bottom (pct=100)
-    const [r, g, b] = stressColor(t, map);
-    stops.push(`rgb(${Math.round(r*255)},${Math.round(g*255)},${Math.round(b*255)}) ${pct.toFixed(1)}%`);
+  if (bar) {
+    const map = S.colormap || 'viridis';
+    // Sample stressColor at enough stops for a visually smooth CSS gradient.
+    // 12 stops is comfortably more than the 5 raw colormap stops, so the
+    // rendered bar matches the true continuous interpolation rather than
+    // looking like discrete bands.
+    const STOPS = 12;
+    const stops = [];
+    const GAMMA = currentGamma();
+    for (let i = 0; i <= STOPS; i++) {
+      const pct = (i / STOPS) * 100;
+      const linear = 1 - i / STOPS; // HIGH at top (pct=0), LOW at bottom (pct=100)
+      // Gamma-warp the position the SAME way the model warps stress fraction
+      // (computeSmoothedStressColors) so the color shown here matches the
+      // color painted on the part at this same fraction of the range —
+      // issue #142. When gamma is disabled, GAMMA=1 and pow() is a no-op,
+      // so this collapses back to the old linear sampling.
+      const t = Math.pow(linear, GAMMA);
+      const [r, g, b] = stressColor(t, map);
+      stops.push(`rgb(${Math.round(r*255)},${Math.round(g*255)},${Math.round(b*255)}) ${pct.toFixed(1)}%`);
+    }
+    bar.style.background = `linear-gradient(to bottom, ${stops.join(', ')})`;
   }
-  bar.style.background = `linear-gradient(to bottom, ${stops.join(', ')})`;
+  _syncGammaUI();
 }
 
 // Restore saved colormap (default: viridis)
@@ -3672,9 +3736,10 @@ function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverrid
 
   // Gamma curve so mid-range detail is visible: gamma < 1 expands the
   // low-stress end, compresses the peak — hotspots stay visible as warm
-  // colors but don't flood the whole model.
-  const disableGamma = new URLSearchParams(window.location.search).has('disableGamma');
-  const GAMMA = disableGamma ? 1.0 : 0.55;
+  // colors but don't flood the whole model. currentGamma() is shared with
+  // the legend gradient (updateLegendSwatches) so the two can't drift apart
+  // again (issue #142).
+  const GAMMA = currentGamma();
   // Threshold filter: keep only the side of the threshold the user asked for;
   // the rest paints neutral grey. The decision is a pure function of the welded
   // per-vertex value, so coincident (welded) vertices share it — the smoothing
@@ -8030,7 +8095,7 @@ function renderSplitFrame() {
   const W = el.clientWidth, H = el.clientHeight;
   const splitPx = Math.round(0.5 * W);
   const range = _splitMax || 1;
-  const GAMMA = 0.55;
+  const GAMMA = currentGamma(); // shared with the main paint path (issue #142)
 
   // Save camera state
   const savedAspect = camera.aspect;
@@ -12431,8 +12496,13 @@ function applyStressColorsFromArrays(arrays) {
 
   // Update legend gradient bar
   const bar = document.getElementById('legend-gradient');
+  const gammaRow = document.getElementById('legend-gamma');
   if (bar) {
     if (meta.kind === 'diverging') {
+      // Diverging fields (e.g. signed von Mises) are never gamma-warped
+      // (computeDivergingColors has no GAMMA step) — hide the gamma control
+      // here so it isn't shown as if it affects colors it doesn't touch.
+      if (gammaRow) gammaRow.style.display = 'none';
       const STOPS = 12;
       const stops = [];
       for (let i = 0; i <= STOPS; i++) {
@@ -12443,6 +12513,7 @@ function applyStressColorsFromArrays(arrays) {
       }
       bar.style.background = `linear-gradient(to bottom, ${stops.join(', ')})`;
     } else {
+      if (gammaRow) gammaRow.style.display = 'flex';
       updateLegendSwatches();
     }
   }
