@@ -1090,7 +1090,7 @@ app.post("/api/calibration/kt", async (req, res) => {
       layerHeightMm?: number;
     };
 
-    const { solveCouponKt, buildGaugeBoxMesh } = await import("./coupon_fea.js");
+    const { solveCouponKt, buildBearingKtProbe, buildGaugeBoxMesh } = await import("./coupon_fea.js");
     const { backCalculateProfile } = await import("./analysis.js");
 
     // Build a representative material profile from literature defaults
@@ -1120,12 +1120,13 @@ app.post("/api/calibration/kt", async (req, res) => {
       gripFraction: 0.35, shear: true,
     });
 
-    // Bearing coupon: 20×3mm plate, 3mm hole → approximate as uniform bar
-    const bearBox = buildGaugeBoxMesh(20, 3, 20);
-    const ktBear = await solveCouponKt(bearBox, mat, {
-      totalForceN: 1000, axis: 1, nominalAreaMm2: 3 * 3,
-      gripFraction: 0.35, shear: false,
-    });
+    // Bearing: plate-with-hole fixture at COUPON_DIMS.bearing geometry, loaded in
+    // far-field tension (the only load the fixture supports). Kt is the
+    // net-section OPEN-HOLE tension SCF used as a first-order proxy for the
+    // bearing concentration — see buildBearingKtProbe (issue #139). Replaces the
+    // old hole-less bar whose Kt ≈ 1 made this correction a silent no-op.
+    const bearingProbe = buildBearingKtProbe(COUPON_DIMS.bearing);
+    const ktBear = await solveCouponKt(bearingProbe.mesh, mat, bearingProbe.loadCase);
 
     res.json({
       ktLapShear: ktLap.converged ? ktLap.Kt : null,
@@ -1452,11 +1453,12 @@ SF = min(SF_bulk, SF_int)</div>
 
 <h3>Stress Concentration Correction</h3>
 <p>
-  Lap-shear and bearing joints concentrate stress beyond the nominal F/A value. STORMFEA optionally
-  runs FEA on the coupon geometry to compute Kt (stress concentration factor), then corrects the
-  derived strength upward — making the calibrated allowable consistent with how real parts are
-  evaluated. This eliminates the systematic non-conservatism introduced by mixing nominal-stress
-  calibration with peak-stress analysis.
+  The <strong>bearing</strong> coupon concentrates stress at the hole bore, so its nominal F/(d×t)
+  understates the peak. STORMFEA runs FEA on a plate-with-hole model of the coupon to extract the
+  net-section open-hole Kt (stress concentration factor) and lifts the derived bearing strength by
+  that factor — a first-order proxy, since the fixture applies far-field tension rather than a bolt
+  bearing on the wall. This removes the non-conservatism of mixing nominal-stress calibration with
+  peak-stress part analysis.
 </p>
 </div>
 <div>

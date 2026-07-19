@@ -1472,6 +1472,56 @@ console.log("\n[24] Hole-in-plate stress concentration — Kirsch Kt ≈ 3.0");
   }
 }
 
+// ── Test group 24b: calibration Kt fixtures (issues #139 / #140) ──────────────
+console.log("\n[24b] Calibration Kt fixtures — bearing plate-with-hole + lap-shear policy");
+{
+  try {
+    const { solveCouponKt, buildBearingKtProbe } = await import("../coupon_fea.js");
+    const { COUPON_DIMS } = await import("../analysis.js");
+
+    // Representative orthotropic PLA (same profile the /kt endpoint solves with).
+    const mat = {
+      kind: "orthotropic" as const,
+      E_xy: 3500, E_z: 3500 * 0.65, nu_xy: 0.36, nu_xz: 0.30,
+      G_xz: (3500 / (2 * 1.36)) * 0.4, yieldXY: 50, yieldZ: 29, label: "pla-cal",
+    };
+
+    // ── #139: bearing Kt is now the net-section open-hole SCF of the plate-with-
+    //    hole fixture at the COUPON_DIMS.bearing geometry — NOT the old hole-less
+    //    bar whose Kt ≈ 1 made the correction a silent no-op. Geometry is sourced
+    //    from COUPON_DIMS (single source of truth), never hard-coded here.
+    const stdProbe = buildBearingKtProbe(COUPON_DIMS.bearing);
+    const ktStd = await solveCouponKt(stdProbe.mesh, mat, stdProbe.loadCase);
+    test("[24b] bearing Kt probe converged", ktStd.converged, `converged=${ktStd.converged}`);
+    // d/W ≈ 0.16 ⇒ net-section open-hole SCF ≈ 2.8, comfortably above the ~1.06
+    // noise floor and the ≥1.5 acceptance bound. Band [2.2, 3.2] is the justified
+    // window (finite-width open-hole tension SCF for this ratio, ±mesh residual).
+    test("[24b] bearing Kt materially above noise floor (2.2 ≤ Kt ≤ 3.2)",
+      ktStd.converged && ktStd.Kt >= 2.2 && ktStd.Kt <= 3.2,
+      `Kt=${ktStd.Kt.toFixed(3)} (expect net-section open-hole SCF ≈ 2.8)`);
+    test("[24b] bearing Kt >> 1.5 (correction is no longer a no-op)",
+      ktStd.Kt > 1.5, `Kt=${ktStd.Kt.toFixed(3)}`);
+
+    // Mesh stability: the standard tier must agree with a finer tier within the
+    // coupon-FEA noise floor (~10%). Measured drift standard→fine is ~2%.
+    const fineProbe = buildBearingKtProbe(COUPON_DIMS.bearing, { nTheta: 64, ns: 16, nThick: 3 });
+    const ktFine = await solveCouponKt(fineProbe.mesh, mat, fineProbe.loadCase);
+    const drift = Math.abs(ktStd.Kt - ktFine.Kt) / ktFine.Kt;
+    test("[24b] bearing Kt stable across mesh tiers (<10% drift)",
+      ktFine.converged && drift < 0.10,
+      `std=${ktStd.Kt.toFixed(3)} fine=${ktFine.Kt.toFixed(3)} drift=${(drift * 100).toFixed(1)}%`);
+
+    // The probe nominal is the NET ligament section (W−d)·t, so nominalVM = F/A_net.
+    const netArea = (COUPON_DIMS.bearing.plateWidthMm - COUPON_DIMS.bearing.holeDiamMm)
+      * COUPON_DIMS.bearing.plateThickMm;
+    test("[24b] bearing probe nominal is referenced to the net section",
+      near(ktStd.nominalVonMisesMPa, stdProbe.loadCase.totalForceN / netArea, 1e-6),
+      `nomVM=${ktStd.nominalVonMisesMPa.toFixed(3)} expect=${(stdProbe.loadCase.totalForceN / netArea).toFixed(3)}`);
+  } catch (err) {
+    test("[24b] calibration Kt fixtures did not throw", false, String(err));
+  }
+}
+
 // ── Test group 25: two-region (shell/core) material field ────────────────────
 console.log("\n[25] Two-region material field — solve equivalence + sandwich beam");
 {
