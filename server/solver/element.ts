@@ -806,20 +806,32 @@ export function c3d10ElementStiffness(
  * dNᵢ/dz] are read from the B matrix already assembled by buildB_c3d10, so the
  * (tested) Jacobian inversion is reused rather than duplicated.
  *
+ * C3D10 stress is LINEAR across the element, so a single element-constant stress
+ * used at every Gauss point washes the ± bending stress of a bending member
+ * toward zero and under-builds Kσ (non-conservative BLF — issue #164). Pass the
+ * per-Gauss-point stress to integrate the true stress gradient.
+ *
  * @param nodes 10×3 node coordinates for this element
- * @param sig   Element Cauchy stress [σxx, σyy, σzz, τxy, τyz, τxz] in MPa
+ * @param sig   Cauchy stress in MPa [σxx, σyy, σzz, τxy, τyz, τxz]. Length 6 =
+ *              element-constant (legacy: the same 6-vector is applied at every
+ *              Gauss point, reproducing the old behaviour bit-for-bit). Length
+ *              ≥24 = the four per-Gauss-point stresses laid out [σ(gp0)…σ(gp3)]
+ *              in the C3D10_GAUSS point order.
  */
 export function c3d10ElementGeometricStiffness(
   nodes: Float64Array,
   sig:   Float64Array,
 ): Float64Array {
-  const sxx = sig[0]??0, syy = sig[1]??0, szz = sig[2]??0;
-  const txy = sig[3]??0, tyz = sig[4]??0, txz = sig[5]??0;
+  const perGP = sig.length >= 24;
 
   const ksg  = new Float64Array(30 * 30);
   const grad = new Float64Array(10 * 3);  // per-node [dN/dx, dN/dy, dN/dz]
 
+  let g = 0;
   for (const gp of C3D10_GAUSS) {
+    const o = perGP ? g * 6 : 0;
+    const sxx = sig[o]??0, syy = sig[o+1]??0, szz = sig[o+2]??0;
+    const txy = sig[o+3]??0, tyz = sig[o+4]??0, txz = sig[o+5]??0;
     const { B, detJ } = buildB_c3d10(nodes, gp.xi, gp.eta, gp.zeta);
     const vol = Math.abs(detJ) * gp.w;
 
@@ -845,6 +857,7 @@ export function c3d10ElementGeometricStiffness(
         ksg[(3*i+2)*30 + (3*j+2)] = (ksg[(3*i+2)*30 + (3*j+2)] ?? 0) + s;
       }
     }
+    g++;
   }
 
   return ksg;
