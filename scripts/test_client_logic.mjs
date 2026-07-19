@@ -597,6 +597,121 @@ console.log('\n[K] sfVerdictTier — Safe requires SF >= 2.0, not 1.5 (issue #14
     sfVerdictTier(NaN) === null);
 }
 
+// ── Test group L: legend/model heatmap color agreement (issue #142) ──────────
+console.log('\n[L] Legend gradient bar matches model gamma color at 25/50/75% (issue #142)');
+{
+  // Extract currentGamma (+ its localStorage/URL-backed init), stressColor,
+  // COLORMAPS, and updateLegendSwatches together — updateLegendSwatches calls
+  // currentGamma() and stressColor() directly, so they need to come from the
+  // same extracted block rather than being re-implemented by the test.
+  const m = html.match(/\(function\(\) \{\n  const stored = localStorage\.getItem\('sf-gamma-disabled'\);[\s\S]*?\n\}\n\n\/\/ Restore saved colormap/);
+  if (!m) throw new Error('Could not extract gamma-init IIFE..updateLegendSwatches block');
+  const src = m[0];
+
+  let gradientCss = null;
+  global.document = {
+    getElementById(id) {
+      if (id === 'legend-gradient') {
+        const el = { style: {} };
+        Object.defineProperty(el.style, 'background', {
+          set(v) { gradientCss = v; }, get() { return gradientCss; },
+        });
+        return el;
+      }
+      return { style: {}, classList: { toggle() {} }, textContent: '' };
+    },
+  };
+  global.window = { location: { search: '' } };
+  global.localStorage = {
+    _store: {},
+    getItem(k) { return Object.prototype.hasOwnProperty.call(this._store, k) ? this._store[k] : null; },
+    setItem(k, v) { this._store[k] = v; },
+  };
+
+  // Runs the REAL extracted updateLegendSwatches() with gamma on/off (driven
+  // through localStorage exactly like the app's own init IIFE does — not by
+  // poking S.gammaEnabled directly, so this exercises the real init path)
+  // and returns helpers to read back the generated gradient plus an
+  // independent re-derivation of what the model would paint.
+  function run(gammaEnabled) {
+    gradientCss = null;
+    global.localStorage._store = { 'sf-gamma-disabled': gammaEnabled ? 'false' : 'true' };
+    global.S = { colormap: 'viridis' };
+    const mod = { exports: {} };
+    new Function('module', 'exports',
+      src + '\nmodule.exports = { currentGamma, stressColor, updateLegendSwatches };'
+    )(mod, mod.exports);
+    const { currentGamma, stressColor, updateLegendSwatches } = mod.exports;
+    updateLegendSwatches();
+    const stopRe = /rgb\((\d+),(\d+),(\d+)\)\s+([\d.]+)%/g;
+    const stops = [];
+    let mm;
+    while ((mm = stopRe.exec(gradientCss))) {
+      stops.push({ pct: parseFloat(mm[4]), r: +mm[1], g: +mm[2], b: +mm[3] });
+    }
+    const colorAtPct = (pct) => {
+      const s = stops.find(s => Math.abs(s.pct - pct) < 1e-6);
+      if (!s) throw new Error(`No legend stop at pct=${pct}`);
+      return [s.r, s.g, s.b];
+    };
+    // computeSmoothedStressColors paints each vertex with
+    // stressColor(pow(stressFraction, GAMMA)) — reproduce that exactly for a
+    // given stress fraction (0 = min, 1 = max) as the "model" color.
+    const modelColorAtFraction = (f) => {
+      const t = Math.pow(f, currentGamma());
+      const [r, g, b] = stressColor(t, 'viridis');
+      return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+    };
+    return { colorAtPct, modelColorAtFraction, stressColor, gammaValue: currentGamma() };
+  }
+
+  // Legend label rows sit at fixed positions 0/25/50/75/100% (flexbox
+  // space-between over 5 rows), each labeled with the linear stress fraction
+  // f = 1 - pct/100 (HIGH at top/0%, LOW at bottom/100%). For each position,
+  // the legend bar's color there must equal the model's color for that same
+  // stress fraction — that's the exact property issue #142 broke.
+  {
+    const { colorAtPct, modelColorAtFraction, stressColor, gammaValue } = run(true);
+    test('gamma enabled -> currentGamma() = 0.55', gammaValue === 0.55, `got ${gammaValue}`);
+    [25, 50, 75].forEach(pct => {
+      const f = 1 - pct / 100;
+      const legend = colorAtPct(pct);
+      const model = modelColorAtFraction(f);
+      test(`gamma ON: legend color at ${pct}% matches model color at stress fraction ${f.toFixed(2)}`,
+        legend[0] === model[0] && legend[1] === model[1] && legend[2] === model[2],
+        `legend=rgb(${legend}) model=rgb(${model})`);
+    });
+
+    // Sanity check that the fix isn't a no-op: the gamma-mapped 50% stop must
+    // differ from the naive linear stressColor(0.5) — otherwise this test
+    // group wouldn't actually have caught the original ~1.8x over-read bug.
+    const legendMid = colorAtPct(50);
+    const [rNaive, gNaive, bNaive] = stressColor(0.5, 'viridis');
+    const naiveLinear = [Math.round(rNaive * 255), Math.round(gNaive * 255), Math.round(bNaive * 255)];
+    test('gamma ON: 50% stop is NOT the naive linear color (proves gamma actually changed the output)',
+      !(legendMid[0] === naiveLinear[0] && legendMid[1] === naiveLinear[1] && legendMid[2] === naiveLinear[2]),
+      `legend50%=rgb(${legendMid}) naiveLinear=rgb(${naiveLinear})`);
+  }
+
+  // When gamma is disabled, GAMMA=1 and pow(f,1)=f, so the legend must go
+  // back to sampling linearly — i.e. exactly stressColor(1 - pct/100) with no
+  // warp, keyed to the same currentGamma() the model itself reads (not a
+  // second copy of the disableGamma flag).
+  {
+    const { colorAtPct, gammaValue, stressColor } = run(false);
+    test('gamma disabled -> currentGamma() = 1.0', gammaValue === 1.0, `got ${gammaValue}`);
+    [25, 50, 75].forEach(pct => {
+      const f = 1 - pct / 100;
+      const legend = colorAtPct(pct);
+      const [r, g, b] = stressColor(f, 'viridis');
+      const linear = [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+      test(`gamma OFF: legend color at ${pct}% is exactly linear (fraction ${f.toFixed(2)}, no warp)`,
+        legend[0] === linear[0] && legend[1] === linear[1] && legend[2] === linear[2],
+        `legend=rgb(${legend}) linear=rgb(${linear})`);
+    });
+  }
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 if (failed > 0) {
