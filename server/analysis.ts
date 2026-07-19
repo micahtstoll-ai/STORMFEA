@@ -3834,8 +3834,8 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         //   Normal:  each loaded triangle uses its own outward normal n̂, so the
         //   inward push is −magnitude·n̂ per triangle (physical on curved faces).
         const pf = p.normal
-          ? assembleSurfaceTractionNormal(mesh.nodes, surfaceFaces, isLoaded, -p.magnitude)
-          : assembleSurfaceTraction(mesh.nodes, surfaceFaces, isLoaded,
+          ? assembleSurfaceTractionNormal(mesh, surfaceFaces, isLoaded, -p.magnitude)
+          : assembleSurfaceTraction(mesh, surfaceFaces, isLoaded,
               [-p.magnitude*ux, -p.magnitude*uy, -p.magnitude*uz]);
         let resN = 0;
         for (let n = 0; n < mesh.nodeCount; n++) {
