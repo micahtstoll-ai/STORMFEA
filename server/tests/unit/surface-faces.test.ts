@@ -86,7 +86,7 @@ describe("assembleSurfaceTractionNormal", () => {
 
   it("integrates to pressure × area × outward-normal on a flat face", () => {
     const P = 2.5; // MPa, positive → along +normal (outward) here
-    const f = assembleSurfaceTractionNormal(box.nodes, faces, loaded, P);
+    const f = assembleSurfaceTractionNormal(box, faces, loaded, P);
     let fx=0, fy=0, fz=0;
     for (let n = 0; n < box.nodeCount; n++) { fx+=f[n*3]!; fy+=f[n*3+1]!; fz+=f[n*3+2]!; }
     expect(fx).toBeCloseTo(0, 6);
@@ -96,11 +96,81 @@ describe("assembleSurfaceTractionNormal", () => {
 
   it("matches the uniform assembler on a flat face (traction = P·n̂)", () => {
     const P = -1.7;
-    const fNormal  = assembleSurfaceTractionNormal(box.nodes, faces, loaded, P);
-    const fUniform = assembleSurfaceTraction(box.nodes, faces, loaded, [0, 0, P]);
+    const fNormal  = assembleSurfaceTractionNormal(box, faces, loaded, P);
+    const fUniform = assembleSurfaceTraction(box, faces, loaded, [0, 0, P]);
     for (let i = 0; i < fNormal.length; i++) {
       expect(fNormal[i]).toBeCloseTo(fUniform[i]!, 9);
     }
+  });
+});
+
+describe("assembleSurfaceTraction — C3D10 T6 consistent load (issue #137)", () => {
+  // A quadratic (C3D10) face is a 6-node T6 triangle: under a uniform traction
+  // the corner shape-function integrals VANISH and each mid-side integral is
+  // A/3, so the load must land on the mid-side nodes — the exact inverse of the
+  // pre-fix corner-only lumping. Load the +Z face of a C3D10 box and check the
+  // full distribution (not just the resultant).
+  const qbox = generateBoxMeshC3D10(0, 0, 0, W, H, D, 2, 2, 2);
+  const qf = extractSurfaceFaces(qbox);
+  const qTri = qf.length / 3;
+  const loaded: boolean[] = [];
+  for (let t = 0; t < qTri; t++) {
+    const za = qbox.nodes[qf[t*3]!*3+2]!, zb = qbox.nodes[qf[t*3+1]!*3+2]!, zc = qbox.nodes[qf[t*3+2]!*3+2]!;
+    loaded[t] = (za > D-1e-6 && zb > D-1e-6 && zc > D-1e-6);
+  }
+  const P = 3.1;
+  const f = assembleSurfaceTraction(qbox, qf, loaded, [0, 0, P]);
+
+  // Independently locate the mid-side node at the midpoint of a corner pair.
+  const midOf = (p: number, q: number): number => {
+    const mx=(qbox.nodes[p*3]!+qbox.nodes[q*3]!)/2;
+    const my=(qbox.nodes[p*3+1]!+qbox.nodes[q*3+1]!)/2;
+    const mz=(qbox.nodes[p*3+2]!+qbox.nodes[q*3+2]!)/2;
+    for (let n = 0; n < qbox.nodeCount; n++)
+      if (Math.abs(qbox.nodes[n*3]!-mx)<1e-9 && Math.abs(qbox.nodes[n*3+1]!-my)<1e-9 && Math.abs(qbox.nodes[n*3+2]!-mz)<1e-9) return n;
+    return -1;
+  };
+
+  // Reference T6 load, built without touching the solver's edge map.
+  const expected = new Float64Array(qbox.nodeCount * 3);
+  const corners = new Set<number>();
+  let faceArea = 0;
+  for (let t = 0; t < qTri; t++) {
+    if (!loaded[t]) continue;
+    const a=qf[t*3]!, b=qf[t*3+1]!, c=qf[t*3+2]!;
+    corners.add(a); corners.add(b); corners.add(c);
+    const ax=qbox.nodes[a*3]!,ay=qbox.nodes[a*3+1]!,az=qbox.nodes[a*3+2]!;
+    const bx=qbox.nodes[b*3]!,by=qbox.nodes[b*3+1]!,bz=qbox.nodes[b*3+2]!;
+    const cx=qbox.nodes[c*3]!,cy=qbox.nodes[c*3+1]!,cz=qbox.nodes[c*3+2]!;
+    const area=0.5*Math.hypot((by-ay)*(cz-az)-(bz-az)*(cy-ay),(bz-az)*(cx-ax)-(bx-ax)*(cz-az),(bx-ax)*(cy-ay)-(by-ay)*(cx-ax));
+    faceArea += area;
+    for (const m of [midOf(a,b), midOf(b,c), midOf(c,a)]) expected[m*3+2]! += P*area/3;
+  }
+
+  it("finds the loaded quadratic face", () => {
+    expect(qbox.nodesPerElem).toBe(10);
+    expect(faceArea).toBeCloseTo(W*H, 9);
+    expect(corners.size).toBeGreaterThan(0);
+  });
+
+  it("puts ≈ 0 on every corner node (not A/3 as the pre-fix code did)", () => {
+    for (const c of corners) {
+      expect(f[c*3]!).toBeCloseTo(0, 9);
+      expect(f[c*3+1]!).toBeCloseTo(0, 9);
+      expect(f[c*3+2]!).toBeCloseTo(0, 9);
+    }
+  });
+
+  it("puts Σ(A/3)·t on the mid-side nodes (matches the independent T6 reference)", () => {
+    for (let i = 0; i < expected.length; i++) expect(f[i]!).toBeCloseTo(expected[i]!, 9);
+  });
+
+  it("keeps the total resultant exact (Σf = P·A on the loaded face)", () => {
+    let fx=0, fy=0, fz=0;
+    for (let n = 0; n < qbox.nodeCount; n++) { fx+=f[n*3]!; fy+=f[n*3+1]!; fz+=f[n*3+2]!; }
+    expect(fx).toBeCloseTo(0, 9);
+    expect(fy).toBeCloseTo(0, 9);
+    expect(fz).toBeCloseTo(P * W * H, 6);
   });
 });
 
@@ -144,7 +214,7 @@ describe("selectPressureRegion", () => {
 
   it("normal pressure over the whole closed box nets ~zero resultant (hydrostatic balance)", () => {
     const all = selectPressureRegion(box.nodes, faces, [0,0,0], "all");
-    const f = assembleSurfaceTractionNormal(box.nodes, faces, all, -3.0); // inward everywhere
+    const f = assembleSurfaceTractionNormal(box, faces, all, -3.0); // inward everywhere
     let fx=0, fy=0, fz=0;
     for (let n = 0; n < box.nodeCount; n++) { fx+=f[n*3]!; fy+=f[n*3+1]!; fz+=f[n*3+2]!; }
     expect(fx).toBeCloseTo(0, 6);
