@@ -369,3 +369,86 @@ export function buildPlateWithHoleMesh(opts: {
 
   return { nodes, elements: elemConnFlat, nodeCount, elementCount, nodesPerElem: 10 };
 }
+
+/**
+ * Bearing coupon geometry needed to build its Kt probe. This is a structural
+ * subset of `COUPON_DIMS.bearing` (server/analysis.ts) — the single source of
+ * truth for coupon dimensions. Passed in by the caller (dependency injection)
+ * so this module stays free of an `analysis.ts` import cycle; callers MUST
+ * source the numbers from `COUPON_DIMS.bearing`, never hard-code them.
+ */
+export interface BearingCouponGeom {
+  holeDiamMm:    number;
+  plateWidthMm:  number;
+  plateThickMm:  number;
+  plateLengthMm: number;
+}
+
+/** Mesh-density knobs for a plate-with-hole Kt probe (defaults = standard tier). */
+export interface KtProbeMeshOpts {
+  nTheta?:      number;
+  ns?:          number;
+  nThick?:      number;
+  radialGrade?: number;
+}
+
+/**
+ * Build the BEARING-coupon Kt probe: the plate-with-hole fixture at the coupon's
+ * own geometry (from `COUPON_DIMS.bearing`), loaded in far-field tension along
+ * its length.
+ *
+ * WHY OPEN-HOLE TENSION (an honest first-order proxy)
+ * ---------------------------------------------------
+ * A bearing coupon fails with a bolt shaft pressing on the hole WALL, but the
+ * only load the plate-with-hole fixture can apply is far-field tension: the
+ * axial-pull BC helper (`buildAxialConstraintsAndForces`) clamps one end face
+ * and pulls the other, and no contact/bearing BC exists in the solver. So we do
+ * NOT claim to reproduce the bearing load. Instead we extract the OPEN-HOLE
+ * TENSION stress-concentration factor and use it as a FIRST-ORDER proxy for the
+ * bearing concentration: both peak at the bore, both are O(2–3), and this is the
+ * concentration the fixture can resolve honestly. It replaces the previous
+ * hole-less solid bar whose Kt ≈ 1 made the bearing correction a silent no-op
+ * (issue #139). Downstream (`backCalculateProfile`) multiplies this factor into
+ * the bearing nominal F/(d·t); conflating a tension SCF with a bearing nominal
+ * is the deliberate approximation, not an exact identity.
+ *
+ * NOMINAL REFERENCE — NET SECTION
+ * -------------------------------
+ * Nominal stress is referenced to the NET ligament section (W−d)·t (the material
+ * that actually carries the pull past the hole), so the reported Kt is the
+ * net-section open-hole SCF (≈2.3 for this coupon's d/W ≈ 0.16). The hole is
+ * centred (the fixture centres it); the coupon's edge distance is not modelled
+ * because it does not enter an open-hole tension SCF.
+ */
+export function buildBearingKtProbe(
+  geom: BearingCouponGeom,
+  meshOpts: KtProbeMeshOpts = {},
+): { mesh: TetMesh; loadCase: AxialLoadCase } {
+  const W = geom.plateWidthMm;
+  const T = geom.plateThickMm;
+  const L = geom.plateLengthMm;
+  const r = geom.holeDiamMm / 2;
+
+  const mesh = buildPlateWithHoleMesh({
+    widthMm:  W,
+    thickMm:  T,
+    lengthMm: L,
+    holeR:    r,
+    nTheta:      meshOpts.nTheta      ?? 48,
+    ns:          meshOpts.ns          ?? 12,
+    nThick:      meshOpts.nThick      ?? 2,
+    radialGrade: meshOpts.radialGrade ?? 2.0,
+  });
+
+  // Net-section area of the ligament beside the hole (see doc comment).
+  const netAreaMm2 = (W - geom.holeDiamMm) * T;
+
+  const loadCase: AxialLoadCase = {
+    totalForceN:   1000,   // linear solve ⇒ Kt is load-independent
+    axis:          2,      // pull along length (z)
+    nominalAreaMm2: netAreaMm2,
+    gripFraction:  0.30,   // exclude clamped/loaded ends (Saint-Venant)
+    shear:         false,  // open-hole tension: nominal is uniaxial σ
+  };
+  return { mesh, loadCase };
+}
