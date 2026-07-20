@@ -103,6 +103,13 @@ export interface BondPrediction {
   consolidation:   number;   // void/consolidation factor (1.0 at/above reference temp)
   clamped:         boolean;  // true when the raw ratio hit the clamp
   confidence:      "low" | "medium";
+  /**
+   * False when the material id has no entry in {@link BOND_MATERIALS} (issue
+   * #186): the bond path was REFUSED rather than silently run on PLA physics, so
+   * the multipliers are the reference no-op (1.0) and the diagnostic temps are
+   * NaN. Callers must surface `note` and must NOT read the temp fields.
+   */
+  supported:       boolean;
   note:            string;
 }
 
@@ -135,6 +142,11 @@ export const BOND_MATERIALS: Record<string, BondMaterialParams> = {
   pa12:  { nozzleRefC: 255, TgC:  50, EaKJmol: 65, rho: 1010, cp: 2100 },
   asa:   { nozzleRefC: 245, TgC: 100, EaKJmol: 90, rho: 1070, cp: 1900 },
 };
+
+/** True when the bond property table carries physics for this material id (issue #186). */
+export function isKnownBondMaterial(materialId: string): boolean {
+  return Object.prototype.hasOwnProperty.call(BOND_MATERIALS, materialId);
+}
 
 /** Reference process condition (nozzle temp is per-material). */
 export const BOND_REFERENCE = {
@@ -252,7 +264,24 @@ export function predictBondMultipliers(
    */
   passLengthMmOverride?: number,
 ): BondPrediction {
-  const mat = BOND_MATERIALS[materialId] ?? BOND_MATERIALS["pla"]!;
+  const mat = BOND_MATERIALS[materialId];
+  if (!mat) {
+    // Unknown material (issue #186): NEVER silently substitute PLA bond physics.
+    // For e.g. a PA-CF (nozzle ~280 °C, Tg ~180 °C) the PLA constants
+    // (Tg 60, nozzleRef 210, Ea 60) are catastrophically wrong. Refuse the bond
+    // path by returning the reference (no-op) multipliers of exactly 1.0 — which
+    // reproduces the legacy no-process behavior bit-for-bit in the material
+    // builders — with a disclosed note the caller surfaces (materialModel.bond).
+    return {
+      relStrength: 1, relStiffness: 1,
+      interfaceTempC: NaN, substrateTempC: NaN, coolTimeConstS: NaN,
+      bondPotentialS: NaN, refPotentialS: NaN, consolidation: 1,
+      clamped: false, confidence: "low", supported: false,
+      note: `Bond model skipped: material "${materialId}" has no entry in the bond property table (BOND_MATERIALS). ` +
+            `Falling back to the reference (no-process) interlayer behavior — NOT PLA physics. ` +
+            `Add sourced bond constants for this material to enable process-aware bonding.`,
+    };
+  }
   const h0  = coeffs?.hConv ?? H0_WPM2K;
   const Ea  = coeffs?.activationEnergyKJmol ?? mat.EaKJmol;
   const pre = coeffs?.strengthPrefactor ?? 1.0;
@@ -300,6 +329,7 @@ export function predictBondMultipliers(
     consolidation,
     clamped,
     confidence: fitted ? "medium" : "low",
+    supported: true,
     note: `Bond model (${fitted ? "sweep-fitted" : "literature constants, LOW confidence"}): ` +
           `interface ${cur.T0.toFixed(0)}°C on a ${cur.Tsub.toFixed(0)}°C substrate, τc=${cur.tauC.toFixed(1)}s, ` +
           `Φ/Φ_ref=${(cur.phi / Math.max(ref.phi, 1e-9)).toFixed(2)}` +
@@ -375,6 +405,11 @@ export function fitBondCoeffs(
   if (points.length < 3) {
     throw new Error("fitBondCoeffs needs ≥3 sweep points with measured Z-tension strengths.");
   }
+  if (!isKnownBondMaterial(materialId)) {
+    // Issue #186: fitting against PLA physics for an unknown material would hand
+    // back coefficients calibrated to the wrong reference — refuse instead.
+    throw new Error(`fitBondCoeffs: material "${materialId}" has no entry in the bond property table (BOND_MATERIALS).`);
+  }
   const sse = (h: number, ea: number, pre: number, vs: number): number => {
     let s = 0;
     for (const p of points) {
@@ -388,7 +423,7 @@ export function fitBondCoeffs(
   };
 
   // Coarse grid over the three thermal params at the default void sensitivity.
-  let best = { h: H0_WPM2K, ea: (BOND_MATERIALS[materialId] ?? BOND_MATERIALS["pla"]!).EaKJmol, pre: 1.0, vs: VOID_TEMP_GAIN };
+  let best = { h: H0_WPM2K, ea: BOND_MATERIALS[materialId]!.EaKJmol, pre: 1.0, vs: VOID_TEMP_GAIN };
   let bestSse = sse(best.h, best.ea, best.pre, best.vs);
   for (const h of [20, 30, 45, 60, 80]) {
     for (const ea of [40, 55, 70, 90, 110]) {

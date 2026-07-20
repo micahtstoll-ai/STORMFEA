@@ -808,6 +808,21 @@ const MATERIALS: Record<string, { E: number; nu: number; yieldMPa: number; densi
   asa:   { E: 2100,  nu: 0.35, yieldMPa: 40,  densityKgM3: 1070, label: "ASA"   },
 };
 
+/**
+ * The supported material ids — the single source of truth (issue #186). Every
+ * other material table (BOND_MATERIALS, DEFAULT_BEAD_PROPS) must stay in sync
+ * with this set; the invariant is locked by material-tables.test.ts. Request
+ * validation rejects any id outside this set BEFORE analysis, so the downstream
+ * `MATERIALS[id] ?? pla` fallbacks are defensive dead code, never a silent
+ * wrong-physics substitution.
+ */
+export const MATERIAL_IDS = Object.keys(MATERIALS);
+
+/** True when `materialId` is a supported material (issue #186). */
+export function isKnownMaterial(materialId: string): boolean {
+  return Object.prototype.hasOwnProperty.call(MATERIALS, materialId);
+}
+
 /** Literature in-plane yield for a material id (bond-sweep fit fallback). */
 export function literatureYieldMPa(materialId: string): number {
   return (MATERIALS[materialId] ?? MATERIALS["pla"]!).yieldMPa;
@@ -2423,9 +2438,15 @@ export interface MaterialModelInfo {
   bond?: {
     relStrength:    number;
     relStiffness:   number;
-    interfaceTempC: number;
-    substrateTempC: number;
-    coolTimeConstS: number;
+    /**
+     * False when the material has no bond-table entry (issue #186): the bond
+     * path was refused, so `relStrength`/`relStiffness` are the reference no-op
+     * (1.0) and the thermal diagnostics below are omitted. Absent ⇒ applied.
+     */
+    applied?:       boolean;
+    interfaceTempC?: number;
+    substrateTempC?: number;
+    coolTimeConstS?: number;
     clamped:        boolean;
     confidence:     "low" | "medium";
     note:           string;
@@ -3264,6 +3285,15 @@ export function mapErrorEstimateToVertices(
  * not just the post-processing failure check.
  */
 export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult> {
+  // Reject unknown material ids at the boundary (issue #186) rather than let the
+  // downstream `MATERIALS[id] ?? pla` fallbacks silently substitute PLA physics.
+  // The HTTP layer validates this too (with a friendlier 400); this guard also
+  // protects direct library callers so the wrong-physics path cannot be reached.
+  if (!isKnownMaterial(req.print.materialId)) {
+    throw new Error(
+      `Unknown materialId "${req.print.materialId}". Supported materials: ${MATERIAL_IDS.join(", ")}.`);
+  }
+
   const t0 = Date.now();
 
   // ── Progress + cancellation plumbing (issue #109) ──────────────────────────
@@ -3471,13 +3501,22 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     coreYieldXYMPa: null,
     impliedAvgStrengthMul: null,
     globalModelStrengthMul: strengthMul * orientFallbackMul,
-    ...(bondRel ? { bond: {
+    ...(bondRel ? { bond: bondRel.supported ? {
       relStrength:    +bondRel.relStrength.toFixed(4),
       relStiffness:   +bondRel.relStiffness.toFixed(4),
       interfaceTempC: +bondRel.interfaceTempC.toFixed(1),
       substrateTempC: +bondRel.substrateTempC.toFixed(1),
       coolTimeConstS: +bondRel.coolTimeConstS.toFixed(2),
       clamped:        bondRel.clamped,
+      confidence:     bondRel.confidence,
+      note:           bondRel.note,
+    } : {
+      // Unknown material (issue #186): bond path refused, reference no-op
+      // multipliers applied. Surface the disclosure; omit the meaningless temps.
+      relStrength:    1,
+      relStiffness:   1,
+      applied:        false,
+      clamped:        false,
       confidence:     bondRel.confidence,
       note:           bondRel.note,
     } } : {}),
