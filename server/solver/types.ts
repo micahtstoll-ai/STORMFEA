@@ -349,6 +349,32 @@ export interface SolverResult {
   readonly residualCheckpoints?: readonly { iteration: number; relativeResidual: number }[];
 
   /**
+   * TRUE relative residual ‖f − K·u‖₂/‖f‖₂ measured by one final SpMV after the
+   * CG loop exits (issue #153). This is the residual `converged` is keyed to.
+   */
+  readonly trueRelativeResidual?: number;
+
+  /**
+   * The CG RECURRENCE residual at exit (the quantity the loop iterated against).
+   * A large gap vs trueRelativeResidual flags finite-precision drift from a
+   * penalty-inflated / ill-conditioned operator (issue #153).
+   */
+  readonly recurrenceRelativeResidual?: number;
+
+  /**
+   * Condition-number estimate κ ≈ λmax/λmin of the PRECONDITIONED operator,
+   * from the CG-implied Lanczos tridiagonal (issue #153). NOTE it is the
+   * preconditioned conditioning CG actually sees, not κ(K).
+   */
+  readonly conditionEstimate?: number;
+
+  /**
+   * Honest order-of-magnitude estimate of the relative displacement error,
+   * κ_preconditioned × trueRelativeResidual (issue #153).
+   */
+  readonly displacementErrorEstimate?: number;
+
+  /**
    * Zienkiewicz-Zhu error estimates η_e at each element centroid (0–1 fraction).
    * Computed from ‖σ_SPR − σ_centroid‖_energy,e / ‖σ_global‖_energy.
    * High values indicate under-resolved elements. Length = elementCount.

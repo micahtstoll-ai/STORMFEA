@@ -213,7 +213,12 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
 
   const solverMs = Date.now() - t0;
   _snap("before buildSolverResult");
-  const result = buildSolverResult(mesh, cg.u, material, cg.iterations, cg.converged, solverMs, cg.residualCheckpoints, true, input.materialField, input.criterion, input.inPlaneAniso ?? null, input.wallBond);
+  const result = buildSolverResult(mesh, cg.u, material, cg.iterations, cg.converged, solverMs, cg.residualCheckpoints, true, input.materialField, input.criterion, input.inPlaneAniso ?? null, input.wallBond, {
+    trueRelativeResidual:       cg.trueRelativeResidual,
+    recurrenceRelativeResidual: cg.recurrenceRelativeResidual,
+    conditionEstimate:          cg.conditionEstimate,
+    displacementErrorEstimate:  cg.displacementErrorEstimate,
+  });
   _snap("after buildSolverResult");
   validateResult(result, mesh);
 
