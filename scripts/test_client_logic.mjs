@@ -801,6 +801,70 @@ console.log('\n[M] Observed order of convergence — recovers known p, clamps, f
   }
 }
 
+// ── Test group N: selectConvergenceMetric / stressPercentile (#147) ──────────
+console.log('\n[N] Singularity-aware convergence metric — evidence hierarchy + p99');
+{
+  const mA = html.match(/function selectConvergenceMetric\(singularity, peakOrder\) \{[\s\S]*?\n\}/);
+  const mB = html.match(/function stressPercentile\(stressArr, pct\) \{[\s\S]*?\n\}/);
+  if (!mA) throw new Error('Could not extract selectConvergenceMetric');
+  if (!mB) throw new Error('Could not extract stressPercentile');
+  const mod = { exports: {} };
+  new Function('module', 'exports',
+    mA[0] + '\n' + mB[0] + '\nmodule.exports = { selectConvergenceMetric, stressPercentile };'
+  )(mod, mod.exports);
+  const { selectConvergenceMetric, stressPercentile } = mod.exports;
+
+  // No singularity, healthy observed order -> converge on peak VM as usual.
+  {
+    const r = selectConvergenceMetric(null, { source: 'observed', raw: 1.8 });
+    test('N healthy peak: metric peakVM, not singular', !r.singularAtPeak && r.metric === 'peakVM' && r.evidence === 'none');
+  }
+  // Refinement divergence (raw <= 0.5) is PRIMARY, scale-independent evidence.
+  {
+    const r = selectConvergenceMetric(null, { source: 'observed', raw: 0.1 });
+    test('N diverging observed order -> singular, p99, refinement evidence',
+      r.singularAtPeak && r.metric === 'p99' && r.evidence === 'refinement');
+  }
+  // Negative observed order (peak growing) also counts as refinement evidence.
+  {
+    const r = selectConvergenceMetric(null, { source: 'observed', raw: -1 });
+    test('N negative observed order -> refinement evidence', r.evidence === 'refinement' && r.metric === 'p99');
+  }
+  // Server single-mesh flag with no refinement signal -> single-mesh evidence.
+  {
+    const r = selectConvergenceMetric({ detected: true }, { source: 'observed', raw: 2.2 });
+    test('N server flag only -> singular, p99, single-mesh evidence',
+      r.singularAtPeak && r.metric === 'p99' && r.evidence === 'single-mesh');
+  }
+  // Refinement OUTRANKS the single-mesh heuristic when both fire.
+  {
+    const r = selectConvergenceMetric({ detected: true }, { source: 'observed', raw: 0 });
+    test('N refinement outranks single-mesh heuristic', r.evidence === 'refinement');
+  }
+  // Non-monotone peak order (theoretical fallback) is NOT treated as divergence.
+  {
+    const r = selectConvergenceMetric(null, { source: 'theoretical', raw: null });
+    test('N non-monotone order alone is not a singularity flag', !r.singularAtPeak && r.metric === 'peakVM');
+  }
+  // A server flag still fires even with a non-monotone client order.
+  {
+    const r = selectConvergenceMetric({ detected: true }, { source: 'theoretical', raw: null });
+    test('N server flag fires under non-monotone order (single-mesh evidence)',
+      r.singularAtPeak && r.evidence === 'single-mesh');
+  }
+  // stressPercentile: p99 excludes a lone unbounded spike; p100 == max.
+  {
+    const arr = new Float32Array(1000);
+    for (let i = 0; i < 1000; i++) arr[i] = 10;      // uniform background
+    arr[500] = 100000;                                // singular spike
+    const p99 = stressPercentile(arr, 99);
+    const p100 = stressPercentile(arr, 100);
+    test('N p99 rejects the lone singular spike (stays at background)', p99 === 10, `p99=${p99}`);
+    test('N p100 is the max (includes the spike)', p100 === 100000, `p100=${p100}`);
+    test('N stressPercentile of empty array is null', stressPercentile(new Float32Array(0), 99) === null);
+  }
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 if (failed > 0) {

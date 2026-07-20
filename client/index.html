@@ -6024,7 +6024,7 @@ async function runAnalysis() {
     if (dataStd.summary.nodesPerElem === 10) {
       showConvergenceBadge('c3d10', 0, dataStd.summary.nodeCount, 0);
       S._convergenceData = {
-        standard: { nodes: dataStd.summary.nodeCount, maxVM: dataStd.summary.maxVonMisesMPa, sf: dataStd.summary.safetyFactor, safetyFactorAvailable: dataStd.summary.safetyFactorAvailable },
+        standard: convDatumFromPayload(dataStd),
         fine: null, changePct: 0, converged: true, skipped: true,
       };
     } else {
@@ -6124,7 +6124,7 @@ async function runAnalysis() {
     // would always launch an expensive fine-mesh analysis that produces no useful output.
     showConvergenceBadge('c3d4_no_sf', 0, dataStd.summary.nodeCount, 0);
     S._convergenceData = {
-      standard: { nodes: dataStd.summary.nodeCount, maxVM: dataStd.summary.maxVonMisesMPa, sf: null, safetyFactorAvailable: false },
+      standard: convDatumFromPayload(dataStd),
       fine: null, changePct: 0, converged: true, skipped: true,
     };
     return;
@@ -6133,7 +6133,7 @@ async function runAnalysis() {
     // C3D4 with high SF: fine mesh not run, but C3D4 may still underpredict bending stress.
     showConvergenceBadge('c3d4_skipped', 0, dataStd.summary.nodeCount, 0);
     S._convergenceData = {
-      standard: { nodes: dataStd.summary.nodeCount, maxVM: dataStd.summary.maxVonMisesMPa, sf: stdSF, safetyFactorAvailable: dataStd.summary.safetyFactorAvailable },
+      standard: convDatumFromPayload(dataStd),
       fine: null, changePct: 0, converged: true, skipped: true,
     };
     return;
@@ -6144,12 +6144,40 @@ async function runAnalysis() {
 
     const dataFine = await analyzeWithWorker(bodyFine);
 
-    const vmStd   = dataStd.summary.maxVonMisesMPa;
-    const vmFine  = dataFine.summary.maxVonMisesMPa;
+    const stdDatum  = convDatumFromPayload(dataStd);
+    const fineDatum = convDatumFromPayload(dataFine);
+    const vmStd   = stdDatum.maxVM;
+    const vmFine  = fineDatum.maxVM;
     const changePct = Math.abs((vmFine - vmStd) / vmStd * 100);
-    const converged = changePct < 5.0;
 
-    if (converged) {
+    // Singularity-aware convergence (issue #147). The peak VM diverges at a
+    // geometric singularity, so a naive >5% check would flag "not converged"
+    // forever and keep upgrading to an ever-worse (still-singular) fine mesh.
+    // When the peak sits at a singularity, converge on the robust p99 metric
+    // instead and report honestly. Two meshes (std, fine) is not enough for an
+    // observed order, so here the evidence is the server single-mesh flag on the
+    // fine mesh, corroborated by a large diverging peak jump.
+    const peakJumpUp = vmFine > vmStd && changePct > 5.0;
+    const sel = selectConvergenceMetric(
+      fineDatum.singularity,
+      peakJumpUp ? { source: 'observed', raw: 0 } : null,   // 2-mesh divergence hint
+    );
+    if (sel.evidence === 'refinement' && fineDatum.singularity) {
+      fineDatum.singularity = { ...fineDatum.singularity, evidence: 'refinement' };
+    }
+
+    let converged = changePct < 5.0;
+    if (sel.singularAtPeak && stdDatum.p99 != null && fineDatum.p99 != null) {
+      // Robust metric drives the decision at a singular peak.
+      const robustChange = Math.abs((fineDatum.p99 - stdDatum.p99) / (stdDatum.p99 || 1) * 100);
+      const robustConverged = robustChange < 5.0;
+      converged = robustConverged;
+      showConvergenceBadge('singular_robust', robustChange, dataStd.summary.nodeCount, dataFine.summary.nodeCount, {
+        peakChange: changePct, robustConverged, reason: sel.reason,
+      });
+      // Do NOT auto-upgrade to the fine mesh: its peak is a larger singularity
+      // artifact, not a better answer. Keep the standard-mesh result displayed.
+    } else if (converged) {
       // Both C3D4 meshes agree — but agreement between two locked meshes is not convergence.
       showConvergenceBadge('c3d4_stable', changePct, dataStd.summary.nodeCount, dataFine.summary.nodeCount);
     } else {
@@ -6174,8 +6202,8 @@ async function runAnalysis() {
 
     // Store convergence data for the manual study button
     S._convergenceData = {
-      standard: { nodes: dataStd.summary.nodeCount, maxVM: vmStd, sf: dataStd.summary.safetyFactorAvailable ? dataStd.summary.safetyFactor : null },
-      fine:     { nodes: dataFine.summary.nodeCount, maxVM: vmFine, sf: dataFine.summary.safetyFactorAvailable ? dataFine.summary.safetyFactor : null },
+      standard: stdDatum,
+      fine:     fineDatum,
       changePct, converged,
     };
 
@@ -6188,7 +6216,7 @@ async function runAnalysis() {
 }
 
 // ── Convergence badge ─────────────────────────────────────────────────────────
-function showConvergenceBadge(state, changePct, nodesStd, nodesFine) {
+function showConvergenceBadge(state, changePct, nodesStd, nodesFine, opts) {
   // Find or create the badge element inside results-content
   let badge = document.getElementById('convergence-badge');
   if (!badge) {
@@ -6252,6 +6280,16 @@ function showConvergenceBadge(state, changePct, nodesStd, nodesFine) {
       icon: '',
       text: `Mesh auto-upgraded — standard mesh was not converged (${changePct?.toFixed(1)}% change)`,
       sub: `Results updated to fine mesh (${nodesFine?.toLocaleString()} nodes). Standard mesh underestimated peak stress by ${changePct?.toFixed(1)}%.`,
+    },
+    // Singularity-robust convergence (issue #147): peak VM is at a geometric
+    // singularity and won't converge, so we report the robust 99th-percentile
+    // metric instead of a stuck "not converged" badge, and do NOT auto-upgrade.
+    singular_robust: {
+      color: opts?.robustConverged ? 'var(--success)' : 'var(--warn)',
+      bg: 'var(--bg-card)', border: 'var(--gold)33',
+      icon: '<svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg>',
+      text: `Peak stress is at a likely geometric singularity — ${opts?.robustConverged ? 'robust metric converged' : 'showing robust metric'} (99th-pct VM ${changePct?.toFixed(1)}% between meshes)`,
+      sub: `The peak von Mises grows without bound under refinement (${opts?.peakChange?.toFixed(1)}% peak change — ${opts?.reason || 'peak sits at a singularity'}), so it is not a convergence failure: the mesh is fine. Convergence is judged on the 99th-percentile stress instead, which excludes the singular point. Add a fillet at the flagged corner for a physical peak stress.`,
     },
     failed: {
       color: 'var(--text-lo)', bg: 'var(--bg-card)', border: 'var(--border)',
@@ -6616,10 +6654,11 @@ function showResults(s) {
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
         <span style="font-size:10px;color:var(--warn)"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> STRESS SINGULARITY DETECTED</span>
         <span style="font-size:9px;color:var(--warn);border:1px solid var(--gold-glow);padding:1px 5px;border-radius:2px">${s.singularity.confidence.toUpperCase()} CONFIDENCE</span>
+        <span style="font-size:9px;color:var(--text-lo);border:1px solid var(--border);padding:1px 5px;border-radius:2px">${s.singularity.evidence === 'refinement' ? 'REFINEMENT EVIDENCE' : 'SINGLE-MESH HEURISTIC'}</span>
       </div>
       <div style="font-size:10px;color:var(--gold-dim);line-height:1.6">${s.singularity.message}</div>
       <div style="font-size:10px;color:var(--text-lo);margin-top:6px">
-        Peak: ${U.stressStr(s.singularity.peakStressMPa)} · 1mm neighborhood: ${U.stressStr(s.singularity.stressAt1mmMPa)} · ratio: ${s.singularity.concentrationRatio}×
+        Peak: ${U.stressStr(s.singularity.peakStressMPa)} · neighborhood${s.singularity.neighborhoodRadiusMm != null ? ` (${s.singularity.neighborhoodRadiusMm.toFixed(2)}mm ≈ 2.5× element)` : ''}: ${U.stressStr(s.singularity.stressAt1mmMPa)} · ratio: ${s.singularity.concentrationRatio}×${s.singularity.peakLocation ? ` · at (${s.singularity.peakLocation.map(v=>v.toFixed(1)).join(', ')}) mm` : ''}
       </div>
     </div>` : ''}
 
@@ -8684,6 +8723,74 @@ function richardsonExtrapolate(second, finest, orderInfo) {
   return out;
 }
 
+// Singularity-aware convergence-metric selection (issue #147). Given the finest
+// mesh's server-side SingularityWarning (the scale-invariant single-mesh
+// heuristic from issue #148) and the observed-order result for the PEAK metric
+// across meshes, decide whether the peak sits at a likely geometric singularity
+// and, if so, which mesh-robust metric the study should converge on instead of
+// max von Mises (which grows without bound under refinement at a re-entrant
+// corner / point load).
+//
+// Metric chosen: the 99th-percentile vertex von Mises (p99). A geometric
+// singularity is spatially a point, so its vertices stay a vanishing fraction of
+// the surface even as the mesh is refined; p99 tracks the genuine high-stress
+// field while excluding the unbounded point peak. It needs no server change (the
+// vertex-stress array is already in every analyse payload) and is directly
+// comparable across meshes because the DISPLAY mesh — hence the vertex count —
+// is identical for every quality level in the study.
+//
+// Evidence hierarchy (issue #148b): refinement-based divergence is scale- and
+// unit-independent, so it OUTRANKS the server's single-mesh geometric heuristic
+// as primary evidence. The peak observed order collapsing to ≤ 0.5 (peak not
+// converging / growing under refinement) IS that refinement evidence.
+//
+// Returns { singularAtPeak, metric, evidence, reason }:
+//   metric   — 'peakVM' (normal) | 'p99' (robust)
+//   evidence — 'refinement' | 'single-mesh' | 'none'
+function selectConvergenceMetric(singularity, peakOrder) {
+  const refinementDiverging = !!(peakOrder && peakOrder.source === 'observed'
+    && isFinite(peakOrder.raw) && peakOrder.raw <= 0.5);
+  const heuristicFlag = !!(singularity && singularity.detected);
+  const singularAtPeak = refinementDiverging || heuristicFlag;
+  if (!singularAtPeak) {
+    return { singularAtPeak: false, metric: 'peakVM', evidence: 'none',
+             reason: 'Peak stress converges under refinement.' };
+  }
+  const evidence = refinementDiverging ? 'refinement' : 'single-mesh';
+  const reason = refinementDiverging
+    ? 'peak stress grows systematically under mesh refinement (observed order ≈ 0) — a re-entrant corner or point load is a geometric singularity and will not converge'
+    : 'peak stress is flagged as a likely geometric singularity (steep local gradient) — it will not converge under refinement';
+  return { singularAtPeak: true, metric: 'p99', evidence, reason };
+}
+
+// 99th-percentile (nearest-rank) of a stress array — the singularity-robust
+// convergence metric. Pure; returns null on empty input.
+function stressPercentile(stressArr, pct) {
+  if (!stressArr || !stressArr.length) return null;
+  const arr = Array.prototype.slice.call(stressArr).sort((a, b) => a - b);
+  const idx = Math.min(arr.length - 1, Math.max(0, Math.round((pct / 100) * (arr.length - 1))));
+  return arr[idx];
+}
+
+// Extract the per-mesh convergence datum from a full analyse payload. Captures
+// the singularity-robust p99 metric (decoded from the vertex-stress array the
+// payload already carries) and the server's singularity flag, so both the
+// auto-upgrade check and the manual study can reuse cached mesh results without
+// re-solving (issue #147).
+function convDatumFromPayload(data) {
+  const s  = data.summary;
+  const vs = _decodeStressF32(data.vertexStressB64);
+  return {
+    nodes:                s.nodeCount,
+    maxVM:                s.maxVonMisesMPa,
+    sf:                   s.safetyFactorAvailable ? s.safetyFactor : null,
+    safetyFactorAvailable: s.safetyFactorAvailable,
+    nodesPerElem:         s.nodesPerElem,
+    p99:                  vs ? stressPercentile(vs, 99) : null,
+    singularity:          s.singularity || null,
+  };
+}
+
 // ─── Mesh convergence study ──────────────────────────────────────────────────
 async function runConvergenceStudy() {
   if (!S.fileData || !S.bolts.length || !S.forces.length) return;
@@ -8714,11 +8821,8 @@ async function runConvergenceStudy() {
       const data = await analyzeWithWorker(body);
       results.push({
         quality:     q,
-        nodes:       data.summary.nodeCount,
         elements:    data.summary.elementCount,
-        maxVM:       data.summary.maxVonMisesMPa,
-        sf:          data.summary.safetyFactor,
-        nodesPerElem: data.summary.nodesPerElem,
+        ...convDatumFromPayload(data),
       });
     } catch(e) {
       console.error('Convergence step failed:', e);
@@ -8738,7 +8842,6 @@ async function runConvergenceStudy() {
   const finest  = results[results.length - 1];
   const second  = results[results.length - 2];
   const changePct = Math.abs((finest.maxVM - second.maxVM) / second.maxVM * 100);
-  const converged = changePct < 5.0;
 
   // OBSERVED order of convergence (issue #146). STRESS converges O(h^p) with
   // p = element order (1 for C3D4, 2 for C3D10); the old code hard-coded p=2
@@ -8773,6 +8876,21 @@ async function runConvergenceStudy() {
       (orderDiverging ? ' <b style="color:var(--warn)">p_obs ≪ theory — peak stress is not converging (likely singularity).</b>' : '')
     : `Observed order undefined — the peak-VM sequence is non-monotone across meshes (a singularity signature). Using theoretical order ${theoryLabel}.`;
 
+  // Singularity-aware metric selection (issue #147). The max von Mises diverges
+  // at a geometric singularity, so when the peak is flagged (by the observed
+  // order collapsing — primary, scale-independent evidence — or the finest
+  // mesh's server heuristic) we converge on the robust 99th-percentile stress
+  // instead, and say so honestly rather than showing a stuck not-converged badge.
+  const sel = selectConvergenceMetric(finest.singularity, peakOrder);
+  const haveP99 = second.p99 != null && finest.p99 != null;
+  const robustChangePct = haveP99 ? Math.abs((finest.p99 - second.p99) / (second.p99 || 1) * 100) : null;
+  const useRobust = sel.singularAtPeak && haveP99;
+  const metricChangePct = useRobust ? robustChangePct : changePct;
+  const converged = metricChangePct < 5.0;
+  const singularNote = sel.singularAtPeak
+    ? `<div style="padding:6px 8px;margin-top:6px;background:var(--gold-faint);border:1px solid var(--gold-glow);border-radius:3px;font-size:10px;color:var(--gold-dim);line-height:1.6"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Peak stress is at a likely geometric singularity (evidence: ${sel.evidence === 'refinement' ? 'refinement divergence' : 'single-mesh gradient heuristic'}) — ${sel.reason}. It will not converge under refinement; showing convergence of the 99th-percentile stress instead${finest.singularity?.peakLocation ? ` (peak at ${finest.singularity.peakLocation.map(v=>v.toFixed(1)).join(', ')} mm)` : ''}.</div>`
+    : '';
+
   // Find or create report
   let reportEl = document.getElementById('convergence-report');
   if (!reportEl) {
@@ -8782,36 +8900,44 @@ async function runConvergenceStudy() {
     document.getElementById('results-content')?.appendChild(reportEl);
   }
 
+  const metricName = useRobust ? '99th-percentile stress' : 'peak stress';
   const statusColor = converged ? 'var(--success)' : 'var(--warn)';
   const statusText  = converged
-    ? `<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> Converged — peak stress stable within ${changePct.toFixed(1)}% between last two mesh levels`
-    : `<svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Not converged — ${changePct.toFixed(1)}% change between last two meshes`;
+    ? `<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> Converged — ${metricName} stable within ${metricChangePct.toFixed(1)}% between last two mesh levels`
+    : `<svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Not converged — ${metricChangePct.toFixed(1)}% change in ${metricName} between last two meshes`;
 
+  // Columns: add a p99 column only when the robust metric is engaged.
+  const gridCols = useRobust ? '64px 1fr 74px 74px 62px' : '70px 1fr 80px 70px';
   const rows = results.map(r => `
-    <div style="display:grid;grid-template-columns:70px 1fr 80px 70px;gap:6px;padding:5px 0;border-bottom:1px solid var(--border);font-size:11px;align-items:center">
+    <div style="display:grid;grid-template-columns:${gridCols};gap:6px;padding:5px 0;border-bottom:1px solid var(--border);font-size:11px;align-items:center">
       <span style="color:var(--text-mid)">${r.quality}</span>
       <span style="color:var(--text-label)">${(r.nodes||0).toLocaleString()} nodes</span>
       <span style="color:var(--text-hi)">${U.stressStr(r.maxVM,2)}</span>
+      ${useRobust ? `<span style="color:var(--text-hi)">${r.p99 != null ? U.stressStr(r.p99,2) : '—'}</span>` : ''}
       <span style="color:${r.sf !== null && r.sf >= 1 ? 'var(--warn)' : 'var(--danger)'}">${r.sf !== null ? `SF ${r.sf.toFixed(2)}×` : 'SF —'}</span>
     </div>`).join('');
 
   reportEl.innerHTML = `
     <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:8px">MESH CONVERGENCE STUDY</div>
-    <div style="display:grid;grid-template-columns:70px 1fr 80px 70px;gap:6px;padding:4px 0;margin-bottom:2px">
+    <div style="display:grid;grid-template-columns:${gridCols};gap:6px;padding:4px 0;margin-bottom:2px">
       <span style="font-size:10px;color:var(--text-lo)">Mesh</span>
       <span style="font-size:10px;color:var(--text-lo)">Nodes</span>
       <span style="font-size:10px;color:var(--text-lo)">Peak VM</span>
+      ${useRobust ? '<span style="font-size:10px;color:var(--text-lo)">99% VM</span>' : ''}
       <span style="font-size:10px;color:var(--text-lo)">SF</span>
     </div>
     ${rows}
+    ${singularNote}
     <div style="padding:5px 0;font-size:10px;color:var(--text-lo);border-bottom:1px solid var(--border);line-height:1.6">${orderDiag}</div>
     ${richardsonNote ? `<div style="padding:5px 0;font-size:10px;color:var(--text-label);border-bottom:1px solid var(--border)">${richardsonNote}</div>` : ''}
     <div style="margin-top:8px;padding:8px;background:var(--bg-card);border:1px solid ${statusColor}44;border-radius:3px;font-size:11px;color:${statusColor}">
       ${statusText}
     </div>
     <div style="font-size:10px;color:var(--text-lo);margin-top:6px;line-height:1.6">
-      Criterion: &lt;5% change in peak VM stress between mesh levels.<br>
-      ${!converged ? 'Results shown use the <b>fine mesh</b> values (auto-upgraded above).' : 'Results are mesh-independent within the 5% tolerance.'}
+      Criterion: &lt;5% change in ${metricName} between mesh levels.<br>
+      ${useRobust
+        ? 'The <b>peak</b> von Mises is excluded from the convergence test because it sits at a geometric singularity (unbounded under refinement). The standard-mesh result is retained — the fine mesh does not give a more physical peak.'
+        : (!converged ? 'Results shown use the <b>fine mesh</b> values (auto-upgraded above).' : 'Results are mesh-independent within the 5% tolerance.')}
     </div>`;
 }
 
