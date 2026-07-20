@@ -1705,13 +1705,29 @@ export interface RigidBodyModeWarning {
 export interface SingularityWarning {
   detected:      boolean;
   peakVertexIdx: number;
+  /** World-frame (raw mm) coordinate of the peak-stress vertex. Lets the client
+   *  confirm the flagged singular vertex coincides with the peak-stress
+   *  location and drives the convergence metric choice (issue #147). */
+  peakLocation:  [number, number, number];
   peakStressMPa: number;
-  /** Stress at 1mm radius from peak — if much lower, singularity likely */
+  /** Average stress in the local neighborhood (radius = neighborhoodRadiusMm).
+   *  Name kept for payload back-compat; the radius is no longer a fixed 1mm. */
   stressAt1mmMPa: number;
-  /** Ratio: peakStress / stressAt1mm — >3× suggests singularity */
+  /** Neighborhood radius actually used, mm. Scaled to the LOCAL element size at
+   *  the peak (not an absolute 1mm) so the heuristic is scale-invariant across a
+   *  5mm bracket and a 500mm frame rail alike (issue #148). */
+  neighborhoodRadiusMm: number;
+  /** Local median surface-element edge length at the peak, mm (issue #148). */
+  localElementSizeMm: number;
+  /** Ratio: peakStress / neighborhood average — >3× suggests singularity */
   concentrationRatio: number;
   message:       string;
   confidence:    "high" | "medium" | "low";
+  /** What the flag rests on (issue #148c): the server's single-mesh GEOMETRIC
+   *  heuristic, or (set client-side) scale/unit-independent REFINEMENT
+   *  divergence across a multi-mesh study. The client upgrades this field when
+   *  it corroborates the flag with refinement evidence (issue #147). */
+  evidence:      "single-mesh-heuristic" | "refinement";
 }
 
 export interface TopologySuggestion {
@@ -2596,13 +2612,23 @@ export interface AnalysisResult {
  *
  * Detection method:
  *   1. Find peak stress vertex
- *   2. Compute average stress in a 1mm radius neighborhood
- *   3. If peak/neighborhood ratio > 3.0, flag as likely singularity
- *   4. Additional check: if peak stress vertex has very few neighboring triangles
- *      (isolated point), more likely to be a singularity
+ *   2. Measure the LOCAL element size at the peak (median edge length of the
+ *      surface triangles touching it) and set the neighborhood radius to a
+ *      small multiple of it (SINGULARITY_NEIGHBORHOOD_FACTOR × h_local). Using
+ *      an element-relative radius instead of an absolute 1mm makes the test
+ *      scale-invariant: on a 5mm part 1mm spanned much of the geometry (false
+ *      positives); on a 500mm part 1mm was sub-element (missed) — issue #148.
+ *   3. Compute the average stress in that neighborhood; if peak/neighborhood
+ *      ratio > 3.0 (and the peak is well above yield), flag as likely singular.
+ *   4. Additional check: if the peak vertex has NO neighbors within the radius
+ *      (isolated point), that is a strong singularity indicator.
  *
- * This is a heuristic. False positives possible at genuine stress concentrations
- * (e.g. tight hole radii). Confidence is reported accordingly.
+ * This is a SINGLE-MESH GEOMETRIC heuristic (evidence: "single-mesh-heuristic").
+ * The stronger, scale- and unit-independent test — the peak growing
+ * systematically under refinement (p_obs ≈ 0) — needs multi-mesh data and is
+ * applied client-side, which upgrades `evidence` to "refinement" (issue #147).
+ * False positives are still possible at genuine stress concentrations (e.g.
+ * tight hole radii); confidence is reported accordingly.
  */
 /**
  * Detects whether the constraint set leaves a rigid-body rotation mode
@@ -2760,11 +2786,78 @@ export function detectUnconstrainedRigidBodyMode(
   };
 }
 
-function detectSingularity(
+/** Neighborhood radius as a multiple of the local element size (issue #148). */
+export const SINGULARITY_NEIGHBORHOOD_FACTOR = 2.5;
+
+/**
+ * Local characteristic element size at a display-mesh vertex: the median edge
+ * length of the surface triangles that touch it. `positions` is the display
+ * mesh (9 floats per triangle, 3 consecutive vertices per triangle), so
+ * triangle t owns vertices 3t, 3t+1, 3t+2. Coincident vertices (shared corners,
+ * which STL duplicates per-triangle) are gathered with a tolerance RELATIVE to
+ * the owning triangle's smallest edge — scaling every coordinate by s scales
+ * that tolerance and every edge by s, so the SAME triangles are gathered and
+ * the returned length scales by s. That relative construction is what makes the
+ * downstream neighborhood radius scale-invariant. Returns NaN if the peak's
+ * owning triangle is degenerate/out of range.
+ */
+export function localEdgeLengthAtPeak(
+  positions: Float32Array | Float64Array,
+  peakIdx:   number,
+): number {
+  const triCount = Math.floor(positions.length / 9);
+  const ownTri   = Math.floor(peakIdx / 3);
+  if (ownTri < 0 || ownTri >= triCount) return NaN;
+
+  const px = positions[peakIdx * 3]     ?? 0;
+  const py = positions[peakIdx * 3 + 1] ?? 0;
+  const pz = positions[peakIdx * 3 + 2] ?? 0;
+
+  const edgeLensOf = (t: number): number[] => {
+    const v = [t * 3, t * 3 + 1, t * 3 + 2];
+    const pair = (u: number, w: number): number => {
+      const dx = (positions[u * 3]     ?? 0) - (positions[w * 3]     ?? 0);
+      const dy = (positions[u * 3 + 1] ?? 0) - (positions[w * 3 + 1] ?? 0);
+      const dz = (positions[u * 3 + 2] ?? 0) - (positions[w * 3 + 2] ?? 0);
+      return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    };
+    return [pair(v[0]!, v[1]!), pair(v[1]!, v[2]!), pair(v[2]!, v[0]!)];
+  };
+
+  const ownEdges = edgeLensOf(ownTri).filter(e => e > 0);
+  const seed = ownEdges.length ? Math.min(...ownEdges) : 0;
+  // Relative coincidence tolerance → scale-invariant. eps=0 still matches the
+  // exact per-triangle duplicates STL produces at a shared corner.
+  const eps2 = (seed * 0.05) ** 2;
+
+  const edges: number[] = [];
+  for (let t = 0; t < triCount; t++) {
+    let touches = false;
+    for (let k = 0; k < 3; k++) {
+      const vi = t * 3 + k;
+      const dx = (positions[vi * 3]     ?? 0) - px;
+      const dy = (positions[vi * 3 + 1] ?? 0) - py;
+      const dz = (positions[vi * 3 + 2] ?? 0) - pz;
+      if (dx * dx + dy * dy + dz * dz <= eps2) { touches = true; break; }
+    }
+    if (touches) for (const e of edgeLensOf(t)) if (e > 0) edges.push(e);
+  }
+
+  const pool = edges.length ? edges : ownEdges;
+  if (!pool.length) return NaN;
+  pool.sort((a, b) => a - b);
+  return pool[Math.floor(pool.length / 2)]!;
+}
+
+/**
+ * Single-mesh geometric singularity heuristic. `positions` MUST be aligned with
+ * `vertexStress` (both indexed by display-mesh surface vertex) so the peak's
+ * coordinate and its neighborhood are computed in the same index space — the
+ * caller passes req.positions, not the internal FEA node array.
+ */
+export function detectSingularity(
   vertexStress:  Float32Array,
-  positions:     Float64Array,
-  surfaceTris:   Int32Array | null,
-  meshScale:     number,
+  positions:     Float32Array | Float64Array,
 ): SingularityWarning | null {
   if (vertexStress.length === 0) return null;
 
@@ -2782,9 +2875,22 @@ function detectSingularity(
   const px = positions[peakIdx * 3]     ?? 0;
   const py = positions[peakIdx * 3 + 1] ?? 0;
   const pz = positions[peakIdx * 3 + 2] ?? 0;
+  const peakLocation: [number, number, number] = [px, py, pz];
 
-  // Find all vertices within 1mm radius and compute their average stress
-  const radius1mm = 1.0 / meshScale;  // 1mm in model units
+  // Scale the neighborhood radius to the LOCAL element size at the peak (issue
+  // #148) rather than a fixed 1mm. Without a local length scale we can't assess
+  // a singularity, so bail out.
+  const localH = localEdgeLengthAtPeak(positions, peakIdx);
+  if (!(localH > 0) || !isFinite(localH)) return null;
+  const radius  = SINGULARITY_NEIGHBORHOOD_FACTOR * localH;
+  const radius2 = radius * radius;
+  // The display mesh duplicates each shared corner once per incident triangle,
+  // so the peak location appears as several coincident vertices all carrying the
+  // singular stress. They are the SAME physical point, not neighborhood samples,
+  // so exclude anything within a small (element-relative → scale-invariant)
+  // coincidence tolerance of the peak; counting them would deflate the ratio.
+  const coincident2 = (localH * 0.05) ** 2;
+
   let neighborSum = 0, neighborCount = 0;
   const nVerts = vertexStress.length;
 
@@ -2794,7 +2900,8 @@ function detectSingularity(
     const dy = (positions[i * 3 + 1] ?? 0) - py;
     const dz = (positions[i * 3 + 2] ?? 0) - pz;
     const dist2 = dx*dx + dy*dy + dz*dz;
-    if (dist2 < radius1mm * radius1mm) {
+    if (dist2 <= coincident2) continue;   // coincident duplicate of the peak
+    if (dist2 < radius2) {
       neighborSum   += vertexStress[i] ?? 0;
       neighborCount++;
     }
@@ -2805,11 +2912,15 @@ function detectSingularity(
     return {
       detected:           true,
       peakVertexIdx:      peakIdx,
+      peakLocation,
       peakStressMPa:      peakVal,
       stressAt1mmMPa:     0,
+      neighborhoodRadiusMm: +radius.toFixed(3),
+      localElementSizeMm:   +localH.toFixed(3),
       concentrationRatio: 999,
       confidence:         "medium",
-      message: `Peak stress vertex (${peakVal.toFixed(1)} MPa) has no neighbors within 1mm — isolated point stress. This is likely a geometric singularity at a sharp corner. The true stress is lower. Add a fillet radius of ≥0.5mm to resolve.`,
+      evidence:           "single-mesh-heuristic",
+      message: `Peak stress vertex (${peakVal.toFixed(1)} MPa) has no neighbors within ${radius.toFixed(2)}mm (2.5× the local element size) — isolated point stress. This is likely a geometric singularity at a sharp corner. The true stress is lower. Add a fillet radius of ≥0.5mm to resolve.`,
     };
   }
 
@@ -2827,11 +2938,15 @@ function detectSingularity(
   return {
     detected:           true,
     peakVertexIdx:      peakIdx,
+    peakLocation,
     peakStressMPa:      peakVal,
     stressAt1mmMPa:     +avgNeighbor.toFixed(1),
+    neighborhoodRadiusMm: +radius.toFixed(3),
+    localElementSizeMm:   +localH.toFixed(3),
     concentrationRatio: +ratio.toFixed(1),
     confidence,
-    message: `Peak stress ${peakVal.toFixed(1)} MPa is ${ratio.toFixed(1)}× higher than the 1mm neighborhood average (${avgNeighbor.toFixed(1)} MPa). This gradient suggests a geometric singularity at a sharp re-entrant corner. The safety factor may be artificially low. Add a fillet radius ≥0.5mm at this location in your CAD model.`,
+    evidence:           "single-mesh-heuristic",
+    message: `Peak stress ${peakVal.toFixed(1)} MPa is ${ratio.toFixed(1)}× higher than the surrounding neighborhood average (${avgNeighbor.toFixed(1)} MPa, within ${radius.toFixed(2)}mm ≈ 2.5× the local element size). This gradient suggests a geometric singularity at a sharp re-entrant corner. The safety factor may be artificially low. Add a fillet radius ≥0.5mm at this location in your CAD model.`,
   };
 }
 
@@ -4912,11 +5027,13 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   const currentMul  = strengthMul;
 
   // ── Singularity detection ─────────────────────────────────────────────────
+  // Pass req.positions (the display-mesh surface vertices) — NOT mesh.nodes —
+  // so the peak's coordinate and its neighborhood are read in the SAME index
+  // space as vertexStress (both indexed by display vertex). The radius is scaled
+  // to the local element size inside detectSingularity (issue #148).
   const singularity = detectSingularity(
     vertexStress,
-    mesh.nodes,
-    null,
-    1.0,
+    req.positions,
   );
 
   // ── Topology suggestions ──────────────────────────────────────────────────
