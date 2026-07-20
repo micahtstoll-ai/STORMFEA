@@ -8602,6 +8602,88 @@ function showOrientComparison(results) {
   el.style.display = 'block';
 }
 
+// ─── Mesh-convergence order & extrapolation (issue #146) ─────────────────────
+// Pure, testable helpers extracted from the convergence study so the observed-
+// order logic can be unit-checked against synthetic sequences.
+
+// Observed order of convergence p_obs from a mesh-refinement sequence, per
+// standard Grid Convergence Index (GCI) practice:
+//
+//     p_obs = ln( (f_coarse − f_std) / (f_std − f_fine) ) / ln(r)
+//
+// where f_* are the tracked metric on three successively finer meshes and r is
+// the representative linear refinement ratio between the two finest meshes
+// (node-count ratio^(1/3) — the same r Richardson uses here). STRESS converges
+// at O(h^p) with p = element order: 1 for linear C3D4, 2 for quadratic C3D10.
+// The previous code hard-coded p=2 with the comment "p=2 for linear elements",
+// which is the DISPLACEMENT-energy-norm rate — wrong for the peak STRESS being
+// extrapolated (linear elements recover stress only to O(h)). Computing the
+// OBSERVED order fixes this AND doubles as a singularity diagnostic: when the
+// peak diverges under refinement the differences GROW instead of shrink, so
+// p_obs collapses toward 0 or goes negative (raw ≤ 0) — the fingerprint the
+// singularity-aware metric logic (issue #147) keys on. When the 3-point
+// sequence is non-monotone (differences flip sign) the observed order is
+// undefined, so we fall back to the element-order theoretical rate.
+//
+// Returns { order, source, monotone, raw }:
+//   order    — clamped to [0.5, 3] (observed) or the theoretical fallback
+//   source   — 'observed' | 'theoretical'
+//   monotone — whether the 3-point sequence was usable (monotone, finite)
+//   raw      — the UNclamped observed p (null on fallback); raw ≤ 0 is the
+//              refinement-divergence signal consumed by the singularity logic.
+function convergenceObservedOrder(meshes, theoreticalP) {
+  const P_MIN = 0.5, P_MAX = 3.0;
+  const fallbackP = isFinite(theoreticalP) ? theoreticalP : 2;
+  const fallback = { order: fallbackP, source: 'theoretical', monotone: false, raw: null };
+  if (!Array.isArray(meshes) || meshes.length < 3) return fallback;
+  const n = meshes.length;
+  const c = meshes[n - 3], s = meshes[n - 2], f = meshes[n - 1];
+  const d1 = c.value - s.value;   // coarse → standard step
+  const d2 = s.value - f.value;   // standard → fine step
+  if (!isFinite(d1) || !isFinite(d2) || d2 === 0) return fallback;
+  // Representative per-refinement linear ratio from the two finest meshes.
+  if (!(f.nodes > s.nodes) || !(s.nodes > 0)) return fallback;
+  const r = Math.pow(f.nodes / s.nodes, 1 / 3);
+  if (!(r > 1)) return fallback;
+  const ratio = d1 / d2;
+  const raw = Math.log(ratio) / Math.log(r);   // NaN when ratio ≤ 0
+  if (ratio <= 0 || !isFinite(raw)) {
+    // Sign flip: the sequence is non-monotone, so a single power-law order is
+    // undefined. Use the theoretical rate for extrapolation but keep any finite
+    // raw so callers can still read it as (weak) singularity evidence.
+    return { order: fallbackP, source: 'theoretical', monotone: false, raw: isFinite(raw) ? raw : null };
+  }
+  // Monotone (possibly diverging: raw < 0 when the differences GROW under
+  // refinement). Clamp the reported order into a physically-plausible band but
+  // preserve raw for the divergence signal.
+  const order = Math.max(P_MIN, Math.min(P_MAX, raw));
+  return { order, source: 'observed', monotone: true, raw };
+}
+
+// Given the two finest convergence meshes and an observed-order result,
+// Richardson-extrapolate the finest metric toward its mesh-independent limit:
+//   f_exact ≈ f_fine + (f_fine − f_std) / (r^p − 1)
+// r is the linear refinement ratio between the two finest meshes; p is the
+// observed order (or the theoretical fallback for a non-monotone sequence).
+// Pure so the extrapolation math is testable independently of the DOM.
+function richardsonExtrapolate(second, finest, orderInfo) {
+  const out = { value: finest.value, valid: false, r: null, p: null };
+  if (!(second.nodes > 0) || !(finest.nodes > second.nodes)) return out;
+  const r = Math.pow(finest.nodes / second.nodes, 1 / 3);
+  const p = orderInfo && isFinite(orderInfo.order) ? orderInfo.order : 2;
+  const rp = Math.pow(r, p);
+  if (!(rp > 1)) return out;
+  const extrapolated = finest.value + (finest.value - second.value) / (rp - 1);
+  out.r = r; out.p = p;
+  // Guard against runaway extrapolation (diverging peak) — only trust a value
+  // within a sane band of the finest computed metric.
+  if (extrapolated > 0 && extrapolated < finest.value * 3) {
+    out.value = extrapolated;
+    out.valid = true;
+  }
+  return out;
+}
+
 // ─── Mesh convergence study ──────────────────────────────────────────────────
 async function runConvergenceStudy() {
   if (!S.fileData || !S.bolts.length || !S.forces.length) return;
@@ -8631,11 +8713,12 @@ async function runConvergenceStudy() {
       if (!body) continue;
       const data = await analyzeWithWorker(body);
       results.push({
-        quality:  q,
-        nodes:    data.summary.nodeCount,
-        elements: data.summary.elementCount,
-        maxVM:    data.summary.maxVonMisesMPa,
-        sf:       data.summary.safetyFactor,
+        quality:     q,
+        nodes:       data.summary.nodeCount,
+        elements:    data.summary.elementCount,
+        maxVM:       data.summary.maxVonMisesMPa,
+        sf:          data.summary.safetyFactor,
+        nodesPerElem: data.summary.nodesPerElem,
       });
     } catch(e) {
       console.error('Convergence step failed:', e);
@@ -8657,20 +8740,38 @@ async function runConvergenceStudy() {
   const changePct = Math.abs((finest.maxVM - second.maxVM) / second.maxVM * 100);
   const converged = changePct < 5.0;
 
-  // Richardson extrapolated value (p=2 assumed for linear elements)
-  // σ_exact ≈ σ_fine + (σ_fine - σ_std) / (r^p - 1)
-  // where r = refinement ratio = (nodes_fine/nodes_std)^(1/3)
-  let richardsonVM = finest.maxVM;
-  let richardsonNote = '';
-  if (results.length >= 2 && second.nodes > 0 && finest.nodes > second.nodes) {
-    const r = Math.pow(finest.nodes / second.nodes, 1/3);
-    const rp = r * r; // p=2
-    const extrapolated = finest.maxVM + (finest.maxVM - second.maxVM) / (rp - 1);
-    if (extrapolated > 0 && extrapolated < finest.maxVM * 3) {
-      richardsonVM = extrapolated;
-      richardsonNote = `Richardson extrapolation: ~${U.stressStr(extrapolated,1)} (estimated true solution)`;
-    }
-  }
+  // OBSERVED order of convergence (issue #146). STRESS converges O(h^p) with
+  // p = element order (1 for C3D4, 2 for C3D10); the old code hard-coded p=2
+  // (the displacement-norm rate) which over-extrapolates linear-element stress
+  // and — worse — hides singularities behind a confident number. We instead
+  // measure p from the 3-point sequence and fall back to the theoretical rate
+  // only when the sequence is non-monotone.
+  const theoreticalP = (finest.nodesPerElem === 10) ? 2 : 1;
+  const orderMeshes  = results.map(r => ({ nodes: r.nodes, value: r.maxVM }));
+  const peakOrder    = convergenceObservedOrder(orderMeshes, theoreticalP);
+
+  // Richardson extrapolated value using the observed order.
+  // σ_exact ≈ σ_fine + (σ_fine - σ_std) / (r^p - 1),  r = (nodes_fine/nodes_std)^(1/3)
+  const rich = richardsonExtrapolate(
+    { nodes: second.nodes, value: second.maxVM },
+    { nodes: finest.nodes, value: finest.maxVM },
+    peakOrder,
+  );
+  const orderLabel = peakOrder.source === 'observed'
+    ? `observed order p ≈ ${peakOrder.order.toFixed(2)}`
+    : `theoretical order p = ${peakOrder.order.toFixed(0)} (${finest.nodesPerElem === 10 ? 'C3D10' : 'C3D4'} stress; sequence non-monotone)`;
+  let richardsonNote = rich.valid
+    ? `Richardson extrapolation (${orderLabel}): ~${U.stressStr(rich.value,1)} (estimated true peak VM)`
+    : `Richardson extrapolation skipped (${orderLabel}) — sequence not extrapolable.`;
+
+  // Observed-order diagnostic (issue #146): p_obs ≪ theory is the fingerprint of
+  // a stress singularity (the peak grows under refinement instead of settling).
+  const theoryLabel   = `${theoreticalP} (${finest.nodesPerElem === 10 ? 'C3D10' : 'C3D4'} stress, O(hᵖ))`;
+  const orderDiverging = peakOrder.source === 'observed' && isFinite(peakOrder.raw) && peakOrder.raw <= 0.5;
+  const orderDiag = peakOrder.source === 'observed'
+    ? `Observed order of convergence p_obs ≈ ${peakOrder.raw.toFixed(2)} (theory: ${theoryLabel}).` +
+      (orderDiverging ? ' <b style="color:var(--warn)">p_obs ≪ theory — peak stress is not converging (likely singularity).</b>' : '')
+    : `Observed order undefined — the peak-VM sequence is non-monotone across meshes (a singularity signature). Using theoretical order ${theoryLabel}.`;
 
   // Find or create report
   let reportEl = document.getElementById('convergence-report');
@@ -8703,6 +8804,7 @@ async function runConvergenceStudy() {
       <span style="font-size:10px;color:var(--text-lo)">SF</span>
     </div>
     ${rows}
+    <div style="padding:5px 0;font-size:10px;color:var(--text-lo);border-bottom:1px solid var(--border);line-height:1.6">${orderDiag}</div>
     ${richardsonNote ? `<div style="padding:5px 0;font-size:10px;color:var(--text-label);border-bottom:1px solid var(--border)">${richardsonNote}</div>` : ''}
     <div style="margin-top:8px;padding:8px;background:var(--bg-card);border:1px solid ${statusColor}44;border-radius:3px;font-size:11px;color:${statusColor}">
       ${statusText}

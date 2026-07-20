@@ -712,6 +712,95 @@ console.log('\n[L] Legend gradient bar matches model gamma color at 25/50/75% (i
   }
 }
 
+// ── Test group M: convergenceObservedOrder / richardsonExtrapolate (#146) ────
+console.log('\n[M] Observed order of convergence — recovers known p, clamps, falls back');
+{
+  const mA = html.match(/function convergenceObservedOrder\(meshes, theoreticalP\) \{[\s\S]*?\n\}/);
+  const mB = html.match(/function richardsonExtrapolate\(second, finest, orderInfo\) \{[\s\S]*?\n\}/);
+  if (!mA) throw new Error('Could not extract convergenceObservedOrder');
+  if (!mB) throw new Error('Could not extract richardsonExtrapolate');
+  const mod = { exports: {} };
+  new Function('module', 'exports',
+    mA[0] + '\n' + mB[0] + '\nmodule.exports = { convergenceObservedOrder, richardsonExtrapolate };'
+  )(mod, mod.exports);
+  const { convergenceObservedOrder, richardsonExtrapolate } = mod.exports;
+
+  // Synthetic sequence with constant linear refinement r=2 (node counts scale
+  // by 8 each step) and f_i = f_exact + C*h_i^p. With h halving each refinement
+  // the closed-form order recovers p exactly regardless of C or f_exact.
+  const seq = (p, fExact = 100, C = 40) => {
+    // coarsest h=4, std h=2, fine h=1 ; nodes ∝ (1/h)^3
+    const hs = [4, 2, 1];
+    const nodesFine = 64000; // 1/h=1 -> base; scale so ratios are exactly 8
+    const nodesFor = h => Math.round(nodesFine / (h * h * h)); // (1/h)^3 * (nodesFine)
+    return hs.map(h => ({ nodes: nodesFor(h), value: fExact + C * Math.pow(h, p) }));
+  };
+
+  // p = 2 (quadratic-stress-like), converging from above (C>0)
+  {
+    const r = convergenceObservedOrder(seq(2), 2);
+    test('M recovers p=2 from a clean O(h^2) sequence',
+      r.source === 'observed' && Math.abs(r.order - 2) < 1e-6, `order=${r.order} src=${r.source}`);
+    test('M p=2 sequence is monotone', r.monotone === true);
+  }
+  // p = 1 (linear-stress), the exact case the old hard-coded p=2 got wrong
+  {
+    const r = convergenceObservedOrder(seq(1), 1);
+    test('M recovers p=1 from a clean O(h^1) sequence (C3D4 stress rate)',
+      r.source === 'observed' && Math.abs(r.order - 1) < 1e-6, `order=${r.order}`);
+  }
+  // Clamp high: p=5 synthetic must clamp to 3
+  {
+    const r = convergenceObservedOrder(seq(5), 2);
+    test('M clamps a super-cubic observed order to the [0.5,3] ceiling',
+      r.order === 3 && r.raw > 3, `order=${r.order} raw=${r.raw?.toFixed(2)}`);
+  }
+  // Diverging peak: values GROW under refinement (singularity) -> raw <= 0,
+  // order clamps to floor 0.5, still flagged observed so the raw signal survives
+  {
+    const diverge = [
+      { nodes: 1000,  value: 50 },
+      { nodes: 8000,  value: 80 },
+      { nodes: 64000, value: 140 },  // difference grows 30 -> 60
+    ];
+    const r = convergenceObservedOrder(diverge, 1);
+    test('M diverging peak yields raw order ≤ 0 (singularity signal)',
+      isFinite(r.raw) && r.raw <= 0, `raw=${r.raw}`);
+    test('M diverging peak clamps reported order to the 0.5 floor',
+      r.order === 0.5, `order=${r.order}`);
+  }
+  // Non-monotone (sign flip) -> theoretical fallback
+  {
+    const osc = [
+      { nodes: 1000,  value: 100 },
+      { nodes: 8000,  value: 108 },
+      { nodes: 64000, value: 104 },  // up then down
+    ];
+    const r = convergenceObservedOrder(osc, 1);
+    test('M non-monotone sequence falls back to theoretical order',
+      r.source === 'theoretical' && r.order === 1 && r.monotone === false, `order=${r.order} src=${r.source}`);
+  }
+  // Fewer than 3 meshes -> theoretical fallback
+  {
+    const r = convergenceObservedOrder([{ nodes: 1000, value: 10 }, { nodes: 8000, value: 12 }], 2);
+    test('M <3 meshes falls back to theoretical order', r.source === 'theoretical' && r.order === 2);
+  }
+  // Richardson uses the observed order, not a hard-coded p=2
+  {
+    // O(h^1) sequence: f_exact=100. Extrapolation with p=1 must land ~100.
+    const s = seq(1, 100, 40);
+    const order = convergenceObservedOrder(s, 1);
+    const rich = richardsonExtrapolate(s[1], s[2], order);
+    test('M Richardson with observed p=1 recovers the true limit (~100)',
+      rich.valid && Math.abs(rich.value - 100) < 1e-6, `value=${rich.value}`);
+    // The old hard-coded p=2 would UNDER-correct an O(h) sequence: r^2-1=3 vs
+    // the correct r-1=1, so it lands at 105, not 100 — prove the fix matters.
+    const wrong = richardsonExtrapolate(s[1], s[2], { order: 2 });
+    test('M hard-coded p=2 would mis-extrapolate the O(h) sequence (proves fix matters)',
+      Math.abs(wrong.value - 100) > 1, `p2 value=${wrong.value}`);
+  }
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 if (failed > 0) {
