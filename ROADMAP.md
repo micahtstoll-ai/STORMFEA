@@ -60,7 +60,8 @@
       blends of the rotated endpoint C matrices
 
 ### Failure Modes
-- [x] Bulk yield — FEM Hill criterion (high confidence)
+- [x] Bulk yield — FEM FDM dual criterion (bulk von Mises + interlayer interface;
+      Hill legacy option), high confidence — see the layer-model overhaul below
 - [x] Net-section tension — classical Shigley formula (high confidence)
 - [x] Shear-out — classical, layer-height-aware (medium confidence)
 - [x] Thread strip-out — layer-interface penalty model (medium confidence)

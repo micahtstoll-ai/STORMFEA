@@ -1296,7 +1296,8 @@ app.get("/api/methodology", (_req, res) => {
   are not isotropic: layer boundaries are weak planes, and through-layer strength is typically 42–58%
   of in-layer strength. A part that appears safe in SolidWorks Simulation or ANSYS may actually fail
   at its layer boundaries under real FTC loads. STORMFEA is a custom FEA solver built to model this
-  anisotropy explicitly using the Hill (1948) quadratic yield criterion.
+  anisotropy explicitly using the FDM dual failure criterion — bulk (bead) von Mises yield plus a
+  separate interlayer-interface (delamination) check.
 </p>
 
 <div class="two-col">
@@ -1328,21 +1329,25 @@ G_xz = out-of-plane shear mod  ν_xy, ν_xz = Poisson ratios</div>
 </div>
 
 <div>
-<h2>Yield Criterion</h2>
-<h3>Hill (1948) Quadratic Form</h3>
+<h2>Failure Criterion</h2>
+<h3>FDM Dual Criterion</h3>
 <p>
-  The isotropic von Mises criterion uses a single yield strength. Hill extended this to orthotropic
-  materials using six directional yield stresses. For a transversely isotropic FDM part with in-layer
-  yield Y and through-layer yield Z, the Hill equivalent stress simplifies to:
+  A single quadratic (Hill) form cannot be rotationally symmetric about the layer normal while also
+  matching a polymer's measured in-plane shear yield, so STORMFEA separates the two physical
+  mechanisms and takes the governing minimum, both evaluated in the material (layer) frame:
 </p>
-<div class="eq">σ_Hill² = (Y/Z)²[(σ_zz)²] + σ_xx² - σ_xx·σ_yy + σ_yy²
-         + [(Y²/Z² + 1)/2](σ_xz² + σ_yz²) + 3σ_xy²
-                                               — divided by Y</div>
+<div class="eq">BULK  (bead yield):     SF_bulk = Y / σ_vm        (plain von Mises, azimuth-invariant)
+INTERFACE (delamination): σ_zz&gt;0: U=√[(σ_zz/S_zt)²+(τ_z/S_zs)²], SF_int=1/U
+                          σ_zz≤0: Mohr–Coulomb friction credit
+SF = min(SF_bulk, SF_int)</div>
 <p>
-  When Y = Z (isotropic limit), this reduces exactly to von Mises. The safety factor is
-  SF = Y / σ_Hill. The critical case for FTC parts is flat-print loading: when a force is applied
-  perpendicular to the layer plane, σ_zz dominates and the (Y/Z)² multiplier amplifies it —
-  a part that looks safe under von Mises fails at SF ≈ 0.58×Y/Z.
+  with τ_z=√(τ_yz²+τ_xz²), S_zt=yield_Z (through-layer tension) and S_zs=interlaminar shear
+  (default yield_Z/√3, μ=0.3). The interface normal term is <strong>tension-only</strong> — layers do
+  not delaminate in compression. At the isotropic anchor (S_zt=Y, S_zs=Y/√3) the criterion reproduces
+  von Mises exactly. The critical case for FTC parts is flat-print loading: when a force is applied
+  perpendicular to the layer plane, σ_zz opens the interface and a part that looks safe under von
+  Mises fails at SF ≈ 0.58 (= Z/Y). The legacy Hill (1948) quadratic remains available for comparison
+  and as the upright-with-no-bed fallback.
 </p>
 
 <h3>Orientation Derivation</h3>
@@ -1408,7 +1413,7 @@ G_xz = out-of-plane shear mod  ν_xy, ν_xz = Poisson ratios</div>
 
 <h2>Solver Validation</h2>
 <p>
-  STORMFEA includes a 33-test automated validation suite run against problems with known analytical
+  STORMFEA includes a 117-test automated validation suite run against problems with known analytical
   solutions. All tests must pass before a release is packaged. Results can be reproduced live from
   the DEBUG tab in the application.
 </p>
@@ -1426,18 +1431,19 @@ G_xz = out-of-plane shear mod  ν_xy, ν_xz = Poisson ratios</div>
 </div>
 <div class="card">
   <div class="card-title">Test Groups 7–8</div>
-  <strong>Hill criterion &amp; Kt calibration</strong><br>
-  <span class="muted">Hill must reproduce von Mises at isotropic limit exactly. In-plane uniaxial must yield exactly at Y_xy. False-safety case (flat print, through-layer load) must detect SF ≈ 0.58 — the core engineering claim. Uniform coupon bar must give Kt ≈ 1.0 ± 8% noise floor.</span>
+  <strong>Failure criterion &amp; Kt calibration</strong><br>
+  <span class="muted">The FDM dual criterion must reproduce von Mises at the isotropic limit and stay azimuth-invariant about the weak axis. In-plane uniaxial must yield exactly at Y_xy. False-safety case (flat print, through-layer load) must detect SF ≈ 0.58 — the core engineering claim. Uniform coupon bar must give Kt ≈ 1.0 ± 8% noise floor.</span>
 </div>
 </div>
 
 <h2>Printer Calibration</h2>
 <p>
   Literature values carry <span class="badge badge-med">MEDIUM</span> confidence. STORMFEA supports
-  FEA-in-the-loop calibration: the user prints standard coupons (tensile dog-bone, lap-shear, bearing
-  plate) on their actual printer with their actual filament and settings, measures failure loads with
-  a force gauge, and enters results. The solver back-calculates true material properties and
-  upgrades confidence to <span class="badge badge-pass">HIGH</span>.
+  FEA-in-the-loop calibration: the user prints standard coupons (tensile dog-bone, Z-tension dog-bone,
+  lap-shear, bearing plate) on their actual printer with their actual filament and settings, measures
+  failure loads with a force gauge, and enters results. The solver back-calculates true material
+  properties and upgrades confidence to <span class="badge badge-pass">HIGH</span>. Cyclic and process
+  sweeps additionally fit the fatigue S-N curve and the bead-penetration bond model.
 </p>
 
 <div class="two-col">
@@ -1446,7 +1452,8 @@ G_xz = out-of-plane shear mod  ν_xy, ν_xz = Poisson ratios</div>
 <table>
   <tr><th>Coupon</th><th>Measures</th><th>Derivation</th></tr>
   <tr><td>Tensile dog-bone</td><td>yield_XY, E_xy</td><td>F/A at fracture; stress/strain at yield</td></tr>
-  <tr><td>Lap-shear plate</td><td>yield_Z (via shear)</td><td>F/(w×l) apparent shear → yield_Z = shear/0.58</td></tr>
+  <tr><td>Z-tension dog-bone</td><td>yield_Z = S_zt</td><td>same gauge printed standing on end; F/A in pure opening</td></tr>
+  <tr><td>Lap-shear plate</td><td>S_zs (interlaminar shear)</td><td>F/(w×l) → shear allowable, independent of S_zt</td></tr>
   <tr><td>Bearing plate</td><td>Bearing strength</td><td>F/(d×t) corrected by Kt from FEA</td></tr>
 </table>
 
@@ -1478,8 +1485,9 @@ G_xz = out-of-plane shear mod  ν_xy, ν_xz = Poisson ratios</div>
 <h3>Failure Mode Coverage</h3>
 <ul>
   <li>Von Mises yield (isotropic reference)</li>
-  <li>Hill (1948) directional yield — governing for flat-printed parts</li>
-  <li>Inter-layer delamination (SF vs shear strength)</li>
+  <li>FDM dual criterion — bulk bead yield, governing for flat-printed parts</li>
+  <li>Interlayer tension (delamination onset, ⟨σ_zz⟩₊ vs S_zt)</li>
+  <li>Interlayer shear (τ_z vs S_zs, friction-credited in compression)</li>
   <li>Bearing failure at bolt holes</li>
   <li>Fatigue estimate (Goodman diagram, PLA S-N data)</li>
   <li>Stress singularity detection at sharp corners</li>

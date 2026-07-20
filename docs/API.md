@@ -36,7 +36,8 @@ script. This document covers every route defined in
 | Geometry | `POST /api/upload` |
 | Analysis | `POST /api/analyse` |
 | Demo | `GET /api/demo/part` · `GET /api/demo/archetypes` |
-| Calibration | `GET /api/calibration` · `POST /api/calibration/calculate` · `POST /api/calibration/save` · `DELETE /api/calibration/:id` · `GET /api/calibration/export-all` · `POST /api/calibration/import-all` · `GET /api/calibration/coupon/:type` · `POST /api/calibration/kt` |
+| Calibration | `GET /api/calibration` · `POST /api/calibration/calculate` · `POST /api/calibration/fatigue` · `POST /api/calibration/bond-sweep` · `POST /api/calibration/save` · `DELETE /api/calibration/:id` · `GET /api/calibration/export-all` · `POST /api/calibration/import-all` · `GET /api/calibration/coupon/:type` · `POST /api/calibration/kt` |
+| Bond model | `POST /api/bond-sensitivity` |
 | Validation | `GET /api/validation` · `POST /api/validation/save` · `DELETE /api/validation/:id` |
 | Solver tests | `GET /api/solver-tests` |
 | Methodology | `GET /api/methodology` |
@@ -119,10 +120,8 @@ endpoint.
 | `boltHoleIds[]` | number[] | Which holes are bolted (constraints) |
 | `boltFasteners[]` | array | Optional per-hole fastener spec |
 | `forces[]` | array | `{ magnitude, direction[3], position[3], loadDistribution? }` |
-| `print` | object | `{ materialId, infillPct, wallCount, pattern, orientation, layerHeightMm, meshOrder?, useCLT?, beadProps?, twoRegion?, extrusionWidthMm? }`. `twoRegion: true` enables the two-region (walls vs infill) material model — the infill core follows Gibson-Ashby power laws in density per pattern family (see `materialModel.core` in the response); `extrusionWidthMm` (default 0.45, clamped [0.1, 2.0]) sets the wall band = `wallCount × extrusionWidthMm`. |
-| `meshQuality` | `"coarse"｜"standard"｜"fine"` | Optional |
-| `analysisType` | string | `linear_static` (default) or `modal` |
-| `computeBuckling` | boolean | Opt-in linear buckling |
+| `print` | object | `{ materialId, infillPct, wallCount, pattern, orientation, layerHeightMm, extrusionWidthMm?, topLayers?, bottomLayers?, process? }`. `extrusionWidthMm` (default 0.45, clamped [0.1, 2.0]) sets the wall band = `wallCount × extrusionWidthMm`; `topLayers`/`bottomLayers` set the independent floor/ceiling solid-skin bands (× layer height) for the two-region model. `process` (`{ nozzleTempC?, bedTempC?, printSpeedMmS?, coolingFanPct?, ambientTempC? }`) activates the bead-penetration bond model — **absent → legacy layer-height factor only.** |
+| `analysis` | object | Optional numerical-method knobs, separated from print settings: `{ meshQuality?, meshOrder?, analysisType?, computeBuckling?, uncertaintyMode?, useCLT?, beadProps?, twoRegion? }`. `meshQuality` ∈ `coarse｜standard｜fine`. `meshOrder` `1` (C3D4) or `2` (C3D10, default). `analysisType` `linear_static` (default) or `modal`. `computeBuckling: true` opts into linear buckling. `twoRegion: true` enables the two-region (walls vs infill) material model — the infill core follows Gibson-Ashby power laws in density per pattern family (see `materialModel.core` in the response). |
 | `gravity` | `{ g, direction[3] }` | Optional body-force load |
 | `pressures[]` | array | Optional surface loads `{ magnitude, direction[3], normal?, region? }`. `magnitude` in MPa (negative = outward/suction). `normal:true` follows each triangle's own outward normal. `region` ∈ `"face"` (default, extreme face toward `direction`), `"facing"` (all faces toward `direction`), `"all"` (whole surface / hydrostatic). |
 | `fatigueLoadRatio` | number | Optional fatigue load ratio `R = σ_min/σ_max` (default `0`; clamped to `[-1, 0.95]`) |
@@ -149,7 +148,7 @@ endpoint.
     "maxDisplacementMm": 0.83,
     "effectiveYieldMPa": 29.0,
     "safetyFactor": 0.70,
-    "sfCriterion": "Hill",
+    "sfCriterion": "fdm-interface",
     "vonMisesSafetyFactor": 1.21,
     "safetyfactorLow": 0.58, "safetyFactorHigh": 0.86,
     "estimatedFailForce": 140.0,
@@ -217,9 +216,27 @@ List saved profiles and standard coupon dimensions.
 
 ### `POST /api/calibration/calculate`
 Back-calculate a material profile from measured coupon failure loads (no save).
-**Body** `{ id, label, materialId, layerHeightMm, tensileFailN?, lapShearFailN?, bearingFailN?, tensileDeflMm?, ktLapShear?, ktBearing? }`
-(coupon loads are nullable — `null` means "not tested").
+**Body** `{ id, label, materialId, layerHeightMm, tensileFailN?, zTensileFailN?, lapShearFailN?, bearingFailN?, tensileDeflMm?, ktLapShear?, ktBearing? }`
+(coupon loads are nullable — `null` means "not tested"). `zTensileFailN` measures
+the through-layer tension allowable `S_zt` directly; `lapShearFailN` calibrates
+the interlaminar shear allowable `S_zs` independently.
 **Response** `{ "profile": {...} }`
+
+### `POST /api/calibration/fatigue`
+Fit an S-N (Basquin) curve from cyclic-coupon points — the fatigue analogue of
+`/calculate`. Lifts the fatigue mode LOW→MEDIUM.
+**Body** `{ materialId?, utsMPa?, enduranceLifeCycles?, points: [{ stressAmplitudeMPa, cycles }, …] }`
+(≥ 2 points at distinct cycle counts required).
+**Response** `{ fit, fatigueFields: { fatigueSeRatio, fatigueBasquinB, fatigueUTS_MPa } }`
+(merge `fatigueFields` into a profile). `400` if fewer than 2 points.
+
+### `POST /api/calibration/bond-sweep`
+Fit the bead-penetration bond model's coefficients to a process sweep of
+Z-tension coupons printed at varied nozzle temp / speed / fan / layer height.
+Lifts the bond model LOW→MEDIUM.
+**Body** `{ materialId, yieldXY_MPa?, yieldZ_over_yieldXY?, points: [{ layerHeightMm, measuredSztMPa? | zTensileFailN?, nozzleTempC?, printSpeedMmS?, coolingFanPct?, bedTempC?, ambientTempC? }, …] }`
+(each point needs a measured strength or a Z-tension failure load).
+**Response** `{ fit, bondFields: { bondCoeffs } }` (merge `bondFields` into a profile).
 
 ### `POST /api/calibration/save`
 Persist a profile (upserted by `id`).
@@ -240,14 +257,32 @@ entries are skipped and reported.
 **Response** `{ imported, skipped, skippedSamples, totalProfiles }`
 
 ### `GET /api/calibration/coupon/:type`
-Download a calibration coupon STL. `:type` ∈ `tensile` | `lapshear` | `bearing`.
-Response is `application/octet-stream`; `400` for unknown types.
+Download a calibration coupon STL. `:type` ∈ `tensile` | `ztensile` | `lapshear`
+| `bearing` (`ztensile` is the same dog-bone geometry printed standing on end for
+the through-layer tension coupon). Response is `application/octet-stream`; `400`
+for unknown types.
 
 ### `POST /api/calibration/kt`
 Run FEA on standard coupon geometry to extract stress-concentration factors (Kt)
 for lap-shear and bearing coupons.
 **Body** `{ materialId, layerHeightMm? }` (defaults to 0.2 mm)
 **Response** `{ ktLapShear, ktBearing, converged }`
+
+---
+
+## Bond model
+
+### `POST /api/bond-sensitivity`
+Evaluate the bead-penetration bond model over process-parameter sweeps and a
+nozzle×speed bond-quality surface (no solve — pure evaluation of
+`predictBondMultipliers`, so the client never duplicates the physics). Powers the
+BOND SENSITIVITY panel. An empty `process` block sits exactly at the reference
+condition (`relStrength = 1.0`).
+**Body** `{ materialId, layerHeightMm, process?: { nozzleTempC?, printSpeedMmS?, coolingFanPct?, bedTempC?, ambientTempC? }, bondCoeffs?: { hConv?, activationEnergyKJmol?, strengthPrefactor? } | null }`
+**Response** `{ materialId, layerHeightMm, reference, baseline, sweeps, surface }` —
+`sweeps` holds nozzle/speed/fan/layer-height 1-D curves of `relStrength` and the
+full `strengthFactor` (= `layerHeightFactor × relStrength`); `surface` is the
+nozzle×speed grid for the sweet-spot map.
 
 ---
 

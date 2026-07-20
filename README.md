@@ -35,10 +35,10 @@ STORMFEA models the anisotropic reality.
 ## Key Features
 
 - **Transversely isotropic material model** — 5 independent elastic constants calibrated from peer-reviewed literature, with an exact weak-axis tensor rotation (Bond transform) for upright/angled prints when a bed face is picked
-- **Hill (1948) anisotropic yield criterion** — collapses to von Mises when the material is isotropic; correctly amplifies through-layer stresses when it's not (evaluated in the rotated material frame for non-flat prints)
+- **FDM dual failure criterion** — bulk (bead) von Mises yield plus a separate, tension-only interlayer-interface (delamination) check with Mohr–Coulomb friction under compression; azimuth-invariant about the layer normal, collapses to von Mises in the isotropic limit, and still drops a flat print loaded through the layers to SF ≈ 0.58 (evaluated in the rotated material frame for non-flat prints). The legacy Hill (1948) quadratic stays selectable for comparison. Optional, evidence-gated in-plane raster (cross-bead) anisotropy for unidirectional rasters
 - **Two-region material model** (opt-in) — classifies each element geometrically into dense perimeter walls vs homogenized infill core (exact surface-distance field + per-element volume fractions) instead of one averaged material; the MATERIAL tab shows the wall band (wall count × line width) live, and results report how the geometric split diverges from the legacy global strength multiplier
 - **Gibson-Ashby infill homogenization** — the infill core follows cellular-solid power laws in density (E ∝ ρ^1.75–2.0 by pattern family, not the naive linear scaling), with per-axis anisotropy: extruded-wall patterns (grid/lines/honeycomb) stay stiff along the build axis but soften as ρ²–ρ³ in-plane, while TPMS patterns (gyroid/cubic) degrade near-isotropically; exponents are confidence-labelled and calibration-overridable
-- **5 distinct failure modes** with individual confidence levels: bulk yield, net-section tension, shear-out, thread strip-out, bearing
+- **Failure modes with individual confidence levels** — five bolt-region checks (bulk yield, net-section tension, shear-out, thread strip-out, bearing) plus a decomposed layer interface (interlayer tension / delamination onset and interlayer shear), and an optional wall-to-wall bead-bond check for multi-wall parts
 - **Superconvergent Patch Recovery (SPR)** stress smoothing (Zienkiewicz & Zhu 1992) — more accurate nodal stresses than direct averaging
 - **Deflected-shape visualization** — warp the mesh by the computed displacement field, with an exaggeration slider and animation; the stress heatmap follows the deformed surface
 - **Modal analysis** (opt-in) — natural frequencies with animated mode shapes
@@ -47,7 +47,8 @@ STORMFEA models the anisotropic reality.
 - **Body-force loads** — self-weight and robot-acceleration/impact (in multiples of g) using the infill-scaled mass, plus surface-pressure loads with a normal-to-surface option, a region selector (extreme face / all faces facing a direction / whole surface), and suction (negative pressure)
 - **Fatigue life estimate** using modified Goodman + Basquin with FDM-specific endurance ratio (Se/UTS = 0.37) and a selectable load ratio R (pulsating / fully reversed / tension-biased)
 - **Layer height correction** — accounts for −15% to +10% Z-property variation with layer height
-- **3-coupon calibration** — tensile, lap shear, and bearing coupons let you tune the model to your specific printer and filament
+- **Bead-penetration bond model** (opt-in) — predicts interlayer strength from process settings (nozzle temp, print speed, cooling fan, bed temp) via an anchored interface-cooling → neck-growth → healing chain, with a process-sensitivity dashboard and nozzle×speed bond-quality surface; normalized so typical settings reproduce the literature anchors
+- **Coupon calibration** — tensile, Z-tension, lap-shear, and bearing coupons tune static allowables to your printer/filament (Z-tension and lap-shear calibrate the through-layer tension and interlaminar shear independently); cyclic and process sweeps additionally fit the fatigue S-N curve and the bond model
 - **Onshape integration** — import directly from Part Studio via REST API, no export step
 - **Client-side PDF export** — full report generated in-browser, works offline at competition venues
 - **Automatic mesh convergence** — fine mesh runs in the background; you get a result and then it quietly improves
@@ -60,13 +61,13 @@ STORMFEA models the anisotropic reality.
 | Feature | Conventional FEA | STORMFEA |
 |---------|-----------------|----------|
 | Material model | Isotropic (E, ν) | Transversely isotropic (5 constants) |
-| Yield criterion | Von Mises | Hill (1948) anisotropic |
+| Yield criterion | Von Mises | FDM dual criterion (bulk von Mises + interlayer interface; Hill legacy option) |
 | Stress smoothing | Direct averaging | SPR (Zienkiewicz-Zhu 1992) |
-| Failure modes | Bulk yield only | 5 modes with confidence levels |
+| Failure modes | Bulk yield only | Bolt-region + interlayer modes, each with confidence levels |
 | Mesh convergence | Manual | Automatic (fine mesh in background) |
 | Layer height effect | Not modeled | −15% to +10% on Z-direction properties |
 | Walls vs infill | One smeared material | Opt-in two-region model: solid perimeter shell + Gibson-Ashby lattice core, blended per element |
-| FDM calibration | Not possible | 3-coupon physical calibration |
+| FDM calibration | Not possible | Physical coupon calibration (tensile / Z-tension / lap-shear / bearing) |
 
 ---
 
@@ -126,8 +127,8 @@ Express Server (Node.js + TypeScript)
                      │
     ┌────────────────▼──────────────────┐
     │  Post-processing                  │
-    │  Hill criterion → safety factor   │
-    │  5 failure mode checks            │
+    │  dual criterion → safety factor   │
+    │  bolt + interlayer failure modes  │
     │  Goodman fatigue estimate         │
     │  Print recommendations            │
     │  PDF report (client-side)         │
@@ -144,7 +145,7 @@ Express Server (Node.js + TypeScript)
 | Boundary conditions | Dirichlet via penalty method |
 | Linear solve | Preconditioned Conjugate Gradient (PCG) |
 | Stress recovery | SPR (Zienkiewicz-Zhu 1992) |
-| Yield criterion | Hill (1948) anisotropic quadratic form |
+| Failure criterion | FDM dual criterion (bulk von Mises + interlayer interface); Hill (1948) legacy option |
 
 ---
 
@@ -185,7 +186,7 @@ The **lap shear coupon** directly measures inter-layer bond strength — the sin
 stormfea/
 ├── server/
 │   ├── index.ts          Express routes (upload, analyse, calibrate, Onshape)
-│   ├── analysis.ts       FEM pipeline, failure modes, fatigue (~4,000 lines)
+│   ├── analysis.ts       FEM pipeline, failure modes, fatigue (~5,100 lines)
 │   ├── twoRegion.ts      Two-region (shell/core) material field builder
 │   ├── stl.ts            Binary/ASCII STL parser
 │   ├── holes.ts          Cylindrical hole detection from STL geometry
@@ -215,7 +216,8 @@ stormfea/
 │       ├── pipeline.ts   runLinearStatic() entry point
 │       ├── meshgen.ts    Box-mesh fallback generators + surface extraction
 │       ├── meshQuality.ts  Element quality metrics (Jacobian, aspect ratio)
-│       ├── stress.ts     SPR recovery, Hill criterion, nodal averaging
+│       ├── stress.ts     SPR recovery, FDM dual criterion (+ Hill legacy), nodal averaging
+│       ├── bond.ts       Bead-penetration process→bond strength model
 │       └── stress_detail.ts  Full stress tensor (σxx,σyy,σzz,τxy,τyz,τxz)
 ├── client/
 │   └── index.html        Single-file frontend (vanilla JS + Three.js)
@@ -243,7 +245,7 @@ stormfea/
 | Doc | What's in it |
 |-----|--------------|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How a request flows from upload to heatmap; module-by-module map of `server/` and `server/solver/` |
-| [docs/METHODOLOGY.md](docs/METHODOLOGY.md) | The FEA theory — constitutive model, elements, PCG solve, SPR, Hill criterion, failure modes, calibration, validation |
+| [docs/METHODOLOGY.md](docs/METHODOLOGY.md) | The FEA theory — constitutive model, elements, PCG solve, SPR, the FDM dual failure criterion, bond model, failure modes, calibration, validation |
 | [docs/API.md](docs/API.md) | Every HTTP endpoint with request/response shapes |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Setup, ground rules, PR checklist |
 | [DESIGN.md](DESIGN.md) | Frontend design system (typography, color, spacing) |
@@ -287,7 +289,7 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the ful
 
 1. Fork → create a branch (`git checkout -b fix/my-fix`)
 2. Make changes; if touching physics, verify the 65% stiffness / 58% bond constants are unchanged
-3. Run `npm run test` — everything must pass: 328 vitest unit tests across 34 files, 103 solver validation tests in `solver_validation.ts`, the parallel-assembly equivalence suite, and 53 client logic checks (a few vitest tests self-skip where the TetGen/Gmsh binaries are absent, so the raw totals show a handful of skips)
+3. Run `npm run test` — everything must pass: 430 vitest unit tests across 42 files, 117 solver validation tests in `solver_validation.ts`, the parallel-assembly equivalence suite, and 71 client logic checks (a few vitest tests self-skip where the TetGen/Gmsh binaries are absent, so the raw totals show a handful of skips)
 4. Open a pull request using the provided template
 
 ---
