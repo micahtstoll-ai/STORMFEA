@@ -542,6 +542,14 @@ export interface CalibrationProfile {
   fatigueSeRatio?:   number | null;   // endurance ratio Se/UTS at the endurance life
   fatigueBasquinB?:  number | null;   // fitted Basquin exponent b (negative)
   fatigueUTS_MPa?:   number | null;   // UTS used as the S-N strength basis
+  /**
+   * Fit quality of the S-N regression that produced the fields above (issue
+   * #179). "poor" (logRms > FATIGUE_LOGRMS_MAX) forces estimateFatigue to keep
+   * LOW confidence even though calibrated values are present — the measured
+   * scatter did not earn the LOW→MEDIUM upgrade. Absent/"good"/null = a clean
+   * fit (or a legacy profile) behaves exactly as before.
+   */
+  fatigueFitQuality?: "good" | "poor" | null;
 }
 
 /** One (stress amplitude, cycles-to-failure) point from a fatigue coupon. */
@@ -549,6 +557,19 @@ export interface FatigueCouponPoint {
   stressAmplitudeMPa: number;
   cycles:             number;
 }
+
+/**
+ * Fit-quality gate for the cyclic-coupon S-N fit (issue #179). `logRms` is the
+ * RMS residual of the log-log Basquin regression, i.e. the typical multiplicative
+ * scatter in stress amplitude: logRms 0.15 ≈ e^0.15 ≈ ±16% about the fitted line.
+ * Clean data fits to ~0 (fatigue-calibration.test.ts). Unlike the bond sweep this
+ * endpoint does NOT reject above the bound — S-N scatter is physically inherent,
+ * so a team's own noisy coupons are still their best available data. Instead a
+ * poor fit is ACCEPTED but KEPT AT LOW CONFIDENCE (fitQuality: "poor" carried into
+ * the profile): estimateFatigue still uses the measured Se/b but must not claim
+ * the LOW→MEDIUM upgrade a clean fit earns.
+ */
+export const FATIGUE_LOGRMS_MAX = 0.15;
 
 export interface FatigueFit {
   /** Fitted Basquin exponent b (σ_a = σ_f′·N^b), negative. */
@@ -561,6 +582,8 @@ export interface FatigueFit {
   seRatio:    number;
   /** RMS residual of the log-log fit (fit-quality diagnostic). */
   logRms:     number;
+  /** "good" when logRms ≤ FATIGUE_LOGRMS_MAX, else "poor" (issue #179). */
+  fitQuality: "good" | "poor";
 }
 
 /**
@@ -609,6 +632,7 @@ export function fitFatigueProfile(
     se_MPa:     se,
     seRatio:    utsMPa > 0 ? se / utsMPa : 0,
     logRms,
+    fitQuality: logRms <= FATIGUE_LOGRMS_MAX ? "good" : "poor",
   };
 }
 
@@ -1742,10 +1766,15 @@ export function estimateFatigue(
    * replaced by the measured values and confidence rises LOW→MEDIUM — mirroring
    * how a bearing coupon lifts the bearing mode.
    */
-  calib?: { fatigueSeRatio?: number | null; fatigueBasquinB?: number | null; fatigueUTS_MPa?: number | null } | null,
+  calib?: { fatigueSeRatio?: number | null; fatigueBasquinB?: number | null; fatigueUTS_MPa?: number | null; fatigueFitQuality?: "good" | "poor" | null } | null,
 ): FatigueEstimate {
   const R = Math.max(-1, Math.min(0.95, Number.isFinite(loadRatioR) ? loadRatioR : 0));
   const isCalibrated = calib != null && calib.fatigueSeRatio != null && Number.isFinite(calib.fatigueSeRatio);
+  // Fit-quality gate (issue #179): a poor S-N fit still supplies the measured
+  // Se/b (the team's own best data), but does NOT earn the LOW→MEDIUM upgrade —
+  // the scatter is too large to call the estimate calibrated-grade.
+  const calibPoorFit = isCalibrated && calib?.fatigueFitQuality === "poor";
+  const calibratedConfident = isCalibrated && !calibPoorFit;
   // Base material UTS — use literature values, not FDM-reduced yield
   // UTS ≈ 1.15-1.25 × yield for PLA-like polymers
   // For FDM, we use the effective yield as the strength basis
@@ -1813,12 +1842,14 @@ export function estimateFatigue(
     enduranceLimitMPa: +Se.toFixed(1),
     utsMPa: +utsMPa.toFixed(1),
     loadRatio: R,
-    confidence: isCalibrated ? "medium" : "low",
+    confidence: calibratedConfident ? "medium" : "low",
     note: `${R === 0 ? "Pulsating load (R=0)" : `Load ratio R=${R.toFixed(2)}`}: ${cycleStr}. ` +
           `σ_a=${sigma_a.toFixed(1)} MPa, σ_m=${sigma_m_eff.toFixed(1)} MPa. ` +
           `Se=${Se.toFixed(1)} MPa (${(seRatio*100).toFixed(0)}% of ${isCalibrated ? "measured" : "base"} UTS ${baseMaterialUTS.toFixed(0)} MPa, ${orientation} orientation). ` +
-          (isCalibrated
+          (calibratedConfident
             ? `Using CALIBRATED S-N fit from cyclic coupon data (Se/UTS and Basquin b=${b.toFixed(3)} measured on your printer/filament). Goodman criterion + Basquin.`
+            : calibPoorFit
+            ? `Using your cyclic-coupon S-N fit (Se/UTS and Basquin b=${b.toFixed(3)}), but the fit quality was POOR (log-log scatter above the threshold) so confidence stays LOW — treat as order-of-magnitude and re-check the coupon data. Goodman criterion + Basquin.`
             : `FDM fatigue data sparse — treat as order-of-magnitude. Goodman criterion + Basquin b=-0.1. Run a fatigue coupon (POST /api/calibration/fatigue) to raise confidence. Source: Wang et al. 2020.`),
   };
 }
