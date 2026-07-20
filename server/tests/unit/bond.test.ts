@@ -17,6 +17,7 @@ import {
   hasProcessSettings,
   BOND_REFERENCE,
   BOND_MATERIALS,
+  BOND_FIT_RMSE_MAX_PCT,
   type BondSweepPoint,
 } from "../../solver/bond.js";
 import { buildOrthotropicMaterial, layerHeightFactor } from "../../analysis.js";
@@ -235,5 +236,46 @@ describe("process-sweep coefficient fit", () => {
       { layerHeightMm: 0.2, measuredSztMPa: 20 },
       { layerHeightMm: 0.3, measuredSztMPa: 18 },
     ], 50, 0.58, layerHeightFactor)).toThrow(/≥3/);
+  });
+
+  // ── Residual gate (issue #179) ─────────────────────────────────────────────
+  const Y = 50, yZ = 0.58;
+  const cleanSettings: Array<Omit<BondSweepPoint, "measuredSztMPa">> = [
+    { layerHeightMm: 0.2, nozzleTempC: 190, printSpeedMmS: 60, coolingFanPct: 100 },
+    { layerHeightMm: 0.2, nozzleTempC: 210, printSpeedMmS: 60, coolingFanPct: 100 },
+    { layerHeightMm: 0.2, nozzleTempC: 230, printSpeedMmS: 60, coolingFanPct: 100 },
+    { layerHeightMm: 0.1, nozzleTempC: 210, printSpeedMmS: 120, coolingFanPct: 50 },
+    { layerHeightMm: 0.3, nozzleTempC: 220, printSpeedMmS: 30, coolingFanPct: 0 },
+    { layerHeightMm: 0.2, nozzleTempC: 200, printSpeedMmS: 90, coolingFanPct: 100 },
+  ];
+  const cleanMeasured = (s: Omit<BondSweepPoint, "measuredSztMPa">) =>
+    Y * yZ * layerHeightFactor(s.layerHeightMm) * predictBondMultipliers("pla", s.layerHeightMm, s, {
+      hConv: 50, activationEnergyKJmol: 75, strengthPrefactor: 1.1,
+    }).relStrength;
+
+  it("a clean sweep reports fitQuality 'good' with rmsePct under the bound", () => {
+    const points: BondSweepPoint[] = cleanSettings.map(s => ({ ...s, measuredSztMPa: cleanMeasured(s) }));
+    const fit = fitBondCoeffs("pla", points, Y, yZ, layerHeightFactor);
+    expect(fit.fitQuality).toBe("good");
+    expect(fit.rmsePct).toBeLessThan(BOND_FIT_RMSE_MAX_PCT);
+    // Every datum carries its residual — evidence is shown even for good fits.
+    expect(fit.points).toHaveLength(points.length);
+    for (const p of fit.points) expect(Number.isFinite(p.deviationPct)).toBe(true);
+  });
+
+  it("a gross outlier makes the fit 'poor' and names the worst datum (would 400)", () => {
+    // Clean data except point index 3, whose measured strength is corrupted to
+    // 3× — the physical model cannot reproduce it, so the RMS blows past 15%.
+    const points: BondSweepPoint[] = cleanSettings.map((s, i) => ({
+      ...s,
+      measuredSztMPa: cleanMeasured(s) * (i === 3 ? 3.0 : 1.0),
+    }));
+    const fit = fitBondCoeffs("pla", points, Y, yZ, layerHeightFactor);
+    expect(fit.fitQuality).toBe("poor");
+    expect(fit.rmsePct).toBeGreaterThan(BOND_FIT_RMSE_MAX_PCT);
+    // The worst-fit datum is the corrupted one — the reject response points here.
+    expect(fit.worstPoint.index).toBe(3);
+    expect(Math.abs(fit.worstPoint.deviationPct)).toBeGreaterThan(
+      Math.max(...fit.points.filter(p => p.index !== 3).map(p => Math.abs(p.deviationPct))));
   });
 });

@@ -15,6 +15,7 @@ import { describe, it, expect } from "vitest";
 import {
   fitFatigueProfile,
   estimateFatigue,
+  FATIGUE_LOGRMS_MAX,
   type FatigueCouponPoint,
 } from "../../analysis.js";
 
@@ -45,6 +46,28 @@ describe("fitFatigueProfile — S-N Basquin regression", () => {
       [{ stressAmplitudeMPa: 30, cycles: 1e5 }, { stressAmplitudeMPa: 25, cycles: 1e5 }], 60,
     )).toThrow(/distinct/);
   });
+
+  it("flags a clean fit 'good' and a scattered fit 'poor' (issue #179 residual gate)", () => {
+    // Clean power-law data → ~zero residual → good.
+    const clean: FatigueCouponPoint[] = [1e3, 1e4, 1e5, 1e6].map(N => ({
+      cycles: N, stressAmplitudeMPa: 90 * Math.pow(N, -0.1),
+    }));
+    const good = fitFatigueProfile(clean, 60);
+    expect(good.fitQuality).toBe("good");
+    expect(good.logRms).toBeLessThan(FATIGUE_LOGRMS_MAX);
+
+    // Same lives, but the amplitudes scatter badly around the trend — one point
+    // is off by ~2×, which no straight log-log line can absorb.
+    const noisy: FatigueCouponPoint[] = [
+      { cycles: 1e3, stressAmplitudeMPa: 90 * Math.pow(1e3, -0.1) },
+      { cycles: 1e4, stressAmplitudeMPa: 90 * Math.pow(1e4, -0.1) * 1.9 },
+      { cycles: 1e5, stressAmplitudeMPa: 90 * Math.pow(1e5, -0.1) * 0.6 },
+      { cycles: 1e6, stressAmplitudeMPa: 90 * Math.pow(1e6, -0.1) },
+    ];
+    const poor = fitFatigueProfile(noisy, 60);
+    expect(poor.fitQuality).toBe("poor");
+    expect(poor.logRms).toBeGreaterThan(FATIGUE_LOGRMS_MAX);
+  });
 });
 
 describe("estimateFatigue — calibration confidence gate", () => {
@@ -71,5 +94,22 @@ describe("estimateFatigue — calibration confidence gate", () => {
     const calib = { fatigueSeRatio: null, fatigueBasquinB: -0.12, fatigueUTS_MPa: 58 };
     const f = estimateFatigue(peakVM, yieldMPa, "pla", "flat", 0, calib);
     expect(f.confidence).toBe("low");
+  });
+
+  it("a POOR-quality fit is used but kept LOW confidence — never MEDIUM (issue #179)", () => {
+    // Same calibrated values as the MEDIUM case, but flagged as a poor fit: the
+    // measured Se is still applied, yet confidence must not claim the upgrade.
+    const calib = { fatigueSeRatio: 0.30, fatigueBasquinB: -0.12, fatigueUTS_MPa: 58, fatigueFitQuality: "poor" as const };
+    const f = estimateFatigue(peakVM, yieldMPa, "pla", "flat", 0, calib);
+    expect(f.confidence).toBe("low");
+    // Still USES the measured Se = 0.30 × 58 (not the literature 0.37 × 65).
+    expect(f.enduranceLimitMPa).toBeCloseTo(0.30 * 58, 1);
+    expect(f.note).toMatch(/POOR/);
+  });
+
+  it("an explicit 'good' fit quality still rises to MEDIUM (issue #179)", () => {
+    const calib = { fatigueSeRatio: 0.30, fatigueBasquinB: -0.12, fatigueUTS_MPa: 58, fatigueFitQuality: "good" as const };
+    const f = estimateFatigue(peakVM, yieldMPa, "pla", "flat", 0, calib);
+    expect(f.confidence).toBe("medium");
   });
 });

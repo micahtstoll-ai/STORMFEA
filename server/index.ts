@@ -599,6 +599,7 @@ app.get("/api/calibration/coupon/:type", (req, res) => {
 import {
   backCalculateProfile,
   fitFatigueProfile,
+  FATIGUE_LOGRMS_MAX,
   COUPON_DIMS,
 } from "./analysis.js";
 import type { CalibrationProfile, FatigueCouponPoint } from "./analysis.js";
@@ -689,13 +690,25 @@ app.post("/api/calibration/fatigue", (req, res) => {
     }
     const uts = typeof body.utsMPa === "number" && body.utsMPa > 0 ? body.utsMPa : 55;
     const fit = fitFatigueProfile(body.points, uts, body.enduranceLifeCycles ?? 1e6);
+    // Residual gate (issue #179), keep-LOW decision: accept the fit either way —
+    // cyclic-coupon scatter is physically inherent, so a team's own noisy S-N
+    // data is still their best available. A POOR fit is carried into the profile
+    // as fatigueFitQuality:"poor", which keeps estimateFatigue at LOW confidence
+    // (it still USES the measured Se/b). Clean fits behave exactly as before
+    // (LOW→MEDIUM). logRms is always returned so even good fits show their
+    // evidence.
     res.json({
-      fit,
+      fit,   // includes logRms + fitQuality
+      fitQuality: fit.fitQuality,
       fatigueFields: {
-        fatigueSeRatio:  +fit.seRatio.toFixed(4),
-        fatigueBasquinB: +fit.basquinB.toFixed(4),
-        fatigueUTS_MPa:  uts,
+        fatigueSeRatio:    +fit.seRatio.toFixed(4),
+        fatigueBasquinB:   +fit.basquinB.toFixed(4),
+        fatigueUTS_MPa:    uts,
+        fatigueFitQuality: fit.fitQuality,
       },
+      ...(fit.fitQuality === "poor" ? {
+        warning: `S-N fit quality is POOR: log-log residual ${fit.logRms.toFixed(3)} exceeds the ${FATIGUE_LOGRMS_MAX} bound (~±${(Math.expm1(FATIGUE_LOGRMS_MAX) * 100).toFixed(0)}% amplitude scatter). The fields are accepted — your coupons are the best data — but the fatigue mode stays LOW confidence. Re-check for outliers or mixed test conditions.`,
+      } : {}),
     });
   } catch (e) {
     res.status(400).json({ error: String(e) });
@@ -748,10 +761,38 @@ app.post("/api/calibration/bond-sweep", async (req, res) => {
       });
       return;
     }
+    const { BOND_FIT_RMSE_MAX_PCT } = await import("./solver/bond.js");
     const yieldXY = body.yieldXY_MPa ?? literatureYieldMPa(body.materialId);
     const yZRatio = body.yieldZ_over_yieldXY ?? literatureYieldZRatio();
     const fit = fitBondCoeffs(body.materialId, points, yieldXY, yZRatio, layerHeightFactor);
-    res.json({ fit, bondFields: { bondCoeffs: fit.coeffs } });
+    // Residual gate (issue #179), reject decision: bond coefficients are applied
+    // MULTIPLICATIVELY to interlayer strength/stiffness in every later analysis
+    // that carries process settings, and their presence lifts bond confidence
+    // LOW→MEDIUM. A fit the physical model cannot reproduce would silently
+    // corrupt all of those, so refuse it (400) and name the worst datum rather
+    // than hand back numbers the fit itself says are wrong. The legacy
+    // literature-constants path (no bondCoeffs) remains the honest default.
+    if (fit.fitQuality === "poor") {
+      const w = fit.worstPoint;
+      res.status(400).json({
+        error: `Bond sweep fit quality too poor to accept: RMS error ${fit.rmsePct.toFixed(1)}% of mean measured strength exceeds the ${BOND_FIT_RMSE_MAX_PCT}% bound. The bead-penetration model cannot reproduce this data — check for a mislabeled point, mixed filament, or a bad measurement, then re-fit.`,
+        field: "points",
+        rmsePct: +fit.rmsePct.toFixed(2),
+        thresholdPct: BOND_FIT_RMSE_MAX_PCT,
+        fitQuality: "poor",
+        worstPoint: {
+          index: w.index, measuredMPa: +w.measuredMPa.toFixed(3),
+          predictedMPa: +w.predictedMPa.toFixed(3), deviationPct: +w.deviationPct.toFixed(1),
+        },
+        points: fit.points.map(p => ({
+          index: p.index, measuredMPa: +p.measuredMPa.toFixed(3),
+          predictedMPa: +p.predictedMPa.toFixed(3), deviationPct: +p.deviationPct.toFixed(1),
+        })),
+      });
+      return;
+    }
+    // Good fit: return the evidence (rmsePct + per-point residuals live on `fit`).
+    res.json({ fit, fitQuality: fit.fitQuality, bondFields: { bondCoeffs: fit.coeffs } });
   } catch (e) {
     res.status(400).json({ error: String(e) });
   }
