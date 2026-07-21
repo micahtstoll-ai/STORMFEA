@@ -25,8 +25,11 @@ import {
   latticeStiffnessScale,
   latticeStiffnessScales,
   latticeStrengthFraction,
+  lumpedInPlaneStiffnessScale,
+  wallCreditFraction,
   patternFamilyOf,
 } from "../../solver/lattice.js";
+import { buildLaminateCMatrix, DEFAULT_BEAD_PROPS, PATTERN_PLY_ANGLES } from "../../solver/laminate.js";
 import { buildAnyConstitutiveMatrix } from "../../solver/element.js";
 import { buildTwoRegionField } from "../../twoRegion.js";
 import { generateBoxMeshC3D4, extractSurfaceFaces } from "../../solver/meshgen.js";
@@ -316,5 +319,76 @@ describe("buildCoreMaterial frame handling + stability", () => {
     expect(core.E_xy).toBeCloseTo(solid.E_xy * g, 8);
     expect(core.E_z).toBeCloseTo(solid.E_z * g, 8);   // ratios preserved
     expect(core.nu_xz).toBe(solid.nu_xz);             // no Poisson guard needed
+  });
+});
+
+// ─── Issue #176: ONE in-plane density knockdown across all paths ──────────────
+
+describe("unified in-plane density knockdown (issue #176)", () => {
+  const PAT = "grid";
+  const wc1 = wallCreditFraction(1);
+
+  it("100% infill knockdown is EXACTLY 1.0 (solid anchor) for every structural pattern & wall count", () => {
+    for (const p of STRUCTURAL) {
+      for (const walls of [0, 1, 3, 5]) {
+        // g_GA(1) = 1 ⇒ wallCredit + (1−wallCredit)·1 = 1 bit-for-bit.
+        expect(lumpedInPlaneStiffnessScale(p, 1, wallCreditFraction(walls))).toBe(1.0);
+      }
+    }
+  });
+
+  it("wall credit is the +0.10-per-wall proxy, capped at 0.9", () => {
+    expect(wallCreditFraction(0)).toBe(0);
+    expect(wallCreditFraction(1)).toBeCloseTo(0.10, 12);
+    expect(wallCreditFraction(3)).toBeCloseTo(0.30, 12);
+    expect(wallCreditFraction(20)).toBe(0.9);
+  });
+
+  it("the lumped law sits between bare Gibson-Ashby and the legacy linear model (fixes the 2–5× swing)", () => {
+    for (const rho of [0.2, 0.5]) {
+      const k = lumpedInPlaneStiffnessScale(PAT, rho, wc1);
+      const bareGA = latticeStiffnessScale(PAT, rho);             // e.g. 0.0368 at 0.2
+      const legacyLinear = Math.min(1, 0.30 + 0.70 * rho);        // grid patternMul 1.0
+      expect(k).toBeGreaterThan(bareGA);
+      expect(k).toBeLessThan(legacyLinear);
+    }
+  });
+
+  it("non-CLT single-material E_xy uses the shared knockdown and preserves the E_z/E_xy ratio", () => {
+    for (const rho of [0.2, 0.5]) {
+      const k = lumpedInPlaneStiffnessScale(PAT, rho, wc1);
+      const solid = buildOrthotropicMaterial("pla", 1.0, "flat", 0.2, null, null);
+      const part  = buildOrthotropicMaterial("pla", 1.0, "flat", 0.2, null, null, null, k);
+      expect(part.E_xy / solid.E_xy).toBeCloseTo(k, 12);
+      expect(part.E_z  / solid.E_z ).toBeCloseTo(k, 12);
+      // Anchor: at ρ=1 the built part IS the solid, bit-for-bit.
+      const anchor = buildOrthotropicMaterial("pla", 1.0, "flat", 0.2, null, null, null,
+        lumpedInPlaneStiffnessScale(PAT, 1, wc1));
+      expect(anchor.E_xy).toBe(solid.E_xy);
+    }
+  });
+
+  it("CLT and non-CLT single-material paths agree on the in-plane knockdown RATIO to <1% (unified ρ-law)", () => {
+    const bead = DEFAULT_BEAD_PROPS["pla"]!;
+    const stack = PATTERN_PLY_ANGLES[PAT]!;
+    for (const rho of [0.2, 0.5]) {
+      const k = lumpedInPlaneStiffnessScale(PAT, rho, wc1);
+
+      // Non-CLT isotropic-base path: E_xy scales by k.
+      const nSolid = buildOrthotropicMaterial("pla", 1.0, "flat", 0.2, null, null);
+      const nPart  = buildOrthotropicMaterial("pla", 1.0, "flat", 0.2, null, null, null, k);
+      const rNon = nPart.E_xy / nSolid.E_xy;
+
+      // CLT path: the SAME k is the A-matrix scale, and CLT E is linear in A.
+      const cSolid = buildLaminateCMatrix(bead, stack.angles, stack.fracs, 1.0, 1400, 0.30, 540, 50, 29, "s");
+      const cPart  = buildLaminateCMatrix(bead, stack.angles, stack.fracs, k,   1400, 0.30, 540, 50, 29, "p");
+      const rCLT = cPart.E_xy / cSolid.E_xy;
+
+      // Both knockdown ratios equal k (the shared law) — the cross-path swing is
+      // gone. Absolute E still differs (CLT laminate vs isotropic base), by design.
+      expect(rNon).toBeCloseTo(k, 10);
+      expect(rCLT).toBeCloseTo(k, 6);
+      expect(Math.abs(rNon - rCLT) / rNon).toBeLessThan(0.01);
+    }
   });
 });
