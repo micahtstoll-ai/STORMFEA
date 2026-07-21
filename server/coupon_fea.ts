@@ -187,7 +187,10 @@ export async function solveCouponKt(
   const { constraints, forces, loMin, loMax } =
     buildAxialConstraintsAndForces(mesh, lc.axis, lc.totalForceN);
 
-  const result = await runLinearStatic({ mesh, material, constraints, forces });
+  // Coupon Kt probes run on controlled, deliberately hole-graded structured
+  // fixtures; downgrade the mesh hard gate (issue #166) to a warning so the
+  // intentional near-bore grading doesn't abort the internal calibration solve.
+  const result = await runLinearStatic({ mesh, material, constraints, forces, meshGate: 'warn' });
 
   const span = loMax - loMin;
   const gaugeLo = loMin + span * lc.gripFraction;

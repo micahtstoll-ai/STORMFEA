@@ -77,6 +77,17 @@ export interface SolverInput {
    */
   readonly keepPristineK?: boolean;
   /**
+   * Mesh-quality hard gate policy (issue #166). Default 'throw': a hard shape
+   * violation aborts the solve to protect user-facing results. Internal
+   * calibration probes that run on a controlled, deliberately-graded structured
+   * fixture (e.g. the coupon Kt plate-with-hole, whose hole-clustered O-grid
+   * layers are graded on purpose and whose peak is read at the fine hole edge)
+   * pass 'warn' — the hard-violation elements are logged but the solve proceeds,
+   * since the fixture geometry and its extracted quantity are known-good. Never
+   * expose this to the user analysis path.
+   */
+  readonly meshGate?: 'throw' | 'warn';
+  /**
    * Optional abort signal (issue #109). Forwarded to solvePCG, which checks it
    * at CG iteration checkpoints and throws if the caller has cancelled.
    */
@@ -170,7 +181,13 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
   // remesher on this path, fail with an actionable message naming the worst
   // elements' coordinates so the client can highlight them.
   if (meshQualityReport.hardViolationCount > 0) {
-    throw new Error(formatHardViolations(meshQualityReport));
+    if ((input.meshGate ?? 'throw') === 'warn') {
+      // Internal calibration probe on a controlled fixture: log but proceed
+      // (the extracted quantity is validated for this known geometry).
+      console.warn(`[Mesh quality] ${formatHardViolations(meshQualityReport)}`);
+    } else {
+      throw new Error(formatHardViolations(meshQualityReport));
+    }
   }
 
   // SOFT tier: advisory only. A broadly marginal mesh (> SOFT_POOR_WARN_PERCENT
