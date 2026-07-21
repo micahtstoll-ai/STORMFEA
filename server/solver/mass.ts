@@ -12,6 +12,7 @@
 import type { TetMesh, CSRMatrix, AnyMaterial, ElementMaterialField } from "./types.js";
 import { buildSparsityPattern, type SparsityPattern } from "./assembly.js";
 import { findEntry } from "./csr.js";
+import { isAffineC3D10, c3d10IsoparametricMass, c3d10Volume } from "./element.js";
 
 // Default mass density for PLA in kg/m³
 const DEFAULT_MASS_RHO_KG_M3 = 1240;
@@ -133,58 +134,89 @@ export function assembleM(
       [0,1], [1,2], [0,2], [0,3], [1,3], [2,3]
     ];
 
+    const elemCoords = new Float64Array(30);  // this element's 10×3 node coords
+
     for (let e = 0; e < mesh.elementCount; e++) {
       const base = e * 10;
       for (let ni = 0; ni < 10; ni++) {
-        elemNodes[ni] = mesh.elements[base + ni] ?? 0;
+        const nd = mesh.elements[base + ni] ?? 0;
+        elemNodes[ni] = nd;
+        elemCoords[ni*3]   = mesh.nodes[nd*3]   ?? 0;
+        elemCoords[ni*3+1] = mesh.nodes[nd*3+1] ?? 0;
+        elemCoords[ni*3+2] = mesh.nodes[nd*3+2] ?? 0;
       }
 
-      // Compute element volume using corner nodes (indices 0-3)
-      const n0 = elemNodes[0]!, n1 = elemNodes[1]!, n2 = elemNodes[2]!, n3 = elemNodes[3]!;
-      const Ve = tetVolume(mesh.nodes, n0, n1, n2, n3);
+      const densityE = rhoOfElement ? (rhoOfElement[e] ?? rho) : rho;
 
-      // Scale = ρ × 6 × Ve  (because M_ref is for unit tet with V_ref = 1/6)
-      const scale = (rhoOfElement ? (rhoOfElement[e] ?? rho) : rho) * 6.0 * Ve;
+      if (isAffineC3D10(elemCoords)) {
+        // ── Straight-sided element: exact closed-form (regression anchor) ─────
+        // For an affine tet the reference matrix is exact; keep the SAME
+        // operation order so this path stays bit-identical to the legacy mass.
+        const n0 = elemNodes[0]!, n1 = elemNodes[1]!, n2 = elemNodes[2]!, n3 = elemNodes[3]!;
+        const Ve = tetVolume(mesh.nodes, n0, n1, n2, n3);
 
-      // Scatter: for each pair (a, b) of local nodes and each DOF direction d
-      for (let a = 0; a < 10; a++) {
-        for (let b = 0; b < 10; b++) {
-          // Determine entry type for M_ref[a,b]
-          let mref: number;
-          const aIsCorner = a < 4;
-          const bIsCorner = b < 4;
+        // Scale = ρ × 6 × Ve  (because M_ref is for unit tet with V_ref = 1/6)
+        const scale = densityE * 6.0 * Ve;
 
-          if (aIsCorner && bIsCorner) {
-            mref = (a === b) ? MR_CC_DIAG : MR_CC_OFF;
-          } else if (aIsCorner && !bIsCorner) {
-            // b is midpoint: edge index (b-4), corners are EDGE_PAIRS[b-4]
-            const [ep0, ep1] = EDGE_PAIRS[b - 4]!;
-            mref = (a === ep0 || a === ep1) ? MR_CM_ADJ : MR_CM_OPP;
-          } else if (!aIsCorner && bIsCorner) {
-            // a is midpoint
-            const [ep0, ep1] = EDGE_PAIRS[a - 4]!;
-            mref = (b === ep0 || b === ep1) ? MR_CM_ADJ : MR_CM_OPP;
-          } else {
-            // Both midpoints
-            if (a === b) {
-              mref = MR_MM_DIAG;
+        // Scatter: for each pair (a, b) of local nodes and each DOF direction d
+        for (let a = 0; a < 10; a++) {
+          for (let b = 0; b < 10; b++) {
+            // Determine entry type for M_ref[a,b]
+            let mref: number;
+            const aIsCorner = a < 4;
+            const bIsCorner = b < 4;
+
+            if (aIsCorner && bIsCorner) {
+              mref = (a === b) ? MR_CC_DIAG : MR_CC_OFF;
+            } else if (aIsCorner && !bIsCorner) {
+              // b is midpoint: edge index (b-4), corners are EDGE_PAIRS[b-4]
+              const [ep0, ep1] = EDGE_PAIRS[b - 4]!;
+              mref = (a === ep0 || a === ep1) ? MR_CM_ADJ : MR_CM_OPP;
+            } else if (!aIsCorner && bIsCorner) {
+              // a is midpoint
+              const [ep0, ep1] = EDGE_PAIRS[a - 4]!;
+              mref = (b === ep0 || b === ep1) ? MR_CM_ADJ : MR_CM_OPP;
             } else {
-              const [a0, a1] = EDGE_PAIRS[a - 4]!;
-              const [b0, b1] = EDGE_PAIRS[b - 4]!;
-              const shareCoord = (a0 === b0 || a0 === b1 || a1 === b0 || a1 === b1);
-              mref = shareCoord ? MR_MM_ADJ : MR_MM_OPP;
+              // Both midpoints
+              if (a === b) {
+                mref = MR_MM_DIAG;
+              } else {
+                const [a0, a1] = EDGE_PAIRS[a - 4]!;
+                const [b0, b1] = EDGE_PAIRS[b - 4]!;
+                const shareCoord = (a0 === b0 || a0 === b1 || a1 === b0 || a1 === b1);
+                mref = shareCoord ? MR_MM_ADJ : MR_MM_OPP;
+              }
+            }
+
+            const mval = scale * mref;
+            if (mval === 0) continue;
+            const na = elemNodes[a]!;
+            const nb = elemNodes[b]!;
+            for (let d = 0; d < 3; d++) {
+              const globalR = na * 3 + d;
+              const globalC = nb * 3 + d;
+              const pos = findEntry(colIdx, rowPtr, globalR, globalC);
+              data[pos] = (data[pos] ?? 0) + mval;
             }
           }
-
-          const mval = scale * mref;
-          if (mval === 0) continue;
+        }
+      } else {
+        // ── Curved (Gmsh high-order) element: isoparametric mass (issue #158) ──
+        // ∫ ρ Nₐ N_b |detJ| dV, integrated with the degree-7-exact 125-point
+        // rule. The corner-tet reference formula above understates the true mass
+        // (|detJ| varies across the element); this follows the real geometry.
+        const block = c3d10IsoparametricMass(elemCoords);
+        for (let a = 0; a < 10; a++) {
           const na = elemNodes[a]!;
-          const nb = elemNodes[b]!;
-          for (let d = 0; d < 3; d++) {
-            const globalR = na * 3 + d;
-            const globalC = nb * 3 + d;
-            const pos = findEntry(colIdx, rowPtr, globalR, globalC);
-            data[pos] = (data[pos] ?? 0) + mval;
+          const rowBase = a * 10;
+          for (let b = 0; b < 10; b++) {
+            const mval = densityE * (block[rowBase + b] ?? 0);
+            if (mval === 0) continue;
+            const nb = elemNodes[b]!;
+            for (let d = 0; d < 3; d++) {
+              const pos = findEntry(colIdx, rowPtr, na * 3 + d, nb * 3 + d);
+              data[pos] = (data[pos] ?? 0) + mval;
+            }
           }
         }
       }
@@ -227,13 +259,28 @@ function hrzLumpedC3D10(
   rhoOfElement?: Float64Array | null,
 ): Float64Array {
   const lumped = new Float64Array(mesh.nodeCount * 3);
+  const elemCoords = new Float64Array(30);
   for (let e = 0; e < mesh.elementCount; e++) {
     const base = e * 10;
     const n0 = mesh.elements[base]   ?? 0;
     const n1 = mesh.elements[base+1] ?? 0;
     const n2 = mesh.elements[base+2] ?? 0;
     const n3 = mesh.elements[base+3] ?? 0;
-    const mVe = (rhoOfElement ? (rhoOfElement[e] ?? rho) : rho) * tetVolume(mesh.nodes, n0, n1, n2, n3);
+    // Element volume: exact corner-tet volume for straight-sided elements
+    // (bit-identical), true isoparametric volume for curved ones so the lumped
+    // total mass still equals ρ·V (issue #158). The corner/midside HRZ split is
+    // exact only for affine elements; on curved elements it stays a positive,
+    // mass-conserving diagonal (its distribution is a first-order approximation).
+    for (let ni = 0; ni < 10; ni++) {
+      const nd = mesh.elements[base + ni] ?? 0;
+      elemCoords[ni*3]   = mesh.nodes[nd*3]   ?? 0;
+      elemCoords[ni*3+1] = mesh.nodes[nd*3+1] ?? 0;
+      elemCoords[ni*3+2] = mesh.nodes[nd*3+2] ?? 0;
+    }
+    const Ve = isAffineC3D10(elemCoords)
+      ? tetVolume(mesh.nodes, n0, n1, n2, n3)
+      : c3d10Volume(elemCoords);
+    const mVe = (rhoOfElement ? (rhoOfElement[e] ?? rho) : rho) * Ve;
     for (let a = 0; a < 10; a++) {
       const na = mesh.elements[base + a] ?? 0;
       const mval = mVe * (a < 4 ? HRZ_C3D10_CORNER : HRZ_C3D10_MIDSIDE);
