@@ -251,18 +251,40 @@ describe("assembleMass C3D10 — lumped on multi-element box mesh", () => {
   });
 });
 
-describe("assembleMass — default massRho fallback", () => {
+describe("assembleMass — honest density resolution (issue #159)", () => {
   const matNoRho: IsotropicMaterial = {
     E: 3500, nu: 0.35, yieldStrength: 56, label: "no-rho",
-    // massRho omitted → defaults to 1240 kg/m³
+    // massRho omitted on purpose
   };
   const matWithRho: IsotropicMaterial = { ...matNoRho, massRho: 1240 };
 
-  it("omitting massRho uses 1240 kg/m³ default", () => {
-    const a = assembleMass(CUBE_MESH, matNoRho,   'lumped') as Float64Array;
+  it("throws (no silent PLA fallback) when neither massRho nor defaultRho is given", () => {
+    expect(() => assembleMass(CUBE_MESH, matNoRho, 'lumped')).toThrow(/massRho/);
+    // The old behaviour silently assumed 1240 kg/m³ — must never happen now.
+    expect(() => assembleMass(CUBE_MESH, matNoRho, 'lumped')).toThrow(/no longer assumes PLA/);
+  });
+
+  it("uses the caller-supplied defaultRho when the material has no massRho", () => {
+    // defaultRho (kg/m³) owned by the caller — here we mirror the old PLA number
+    // EXPLICITLY, proving the value is caller-chosen, not kernel-invented.
+    const a = assembleMass(CUBE_MESH, matNoRho,   'lumped', undefined, undefined, 1240) as Float64Array;
     const b = assembleMass(CUBE_MESH, matWithRho, 'lumped') as Float64Array;
     for (let i = 0; i < a.length; i++) {
       expect(a[i]).toBeCloseTo(b[i] ?? 0, 25);
     }
+  });
+
+  it("a non-PLA defaultRho scales the mass linearly (density is honoured, not ignored)", () => {
+    const light = assembleMass(CUBE_MESH, matNoRho, 'lumped', undefined, undefined, 1000) as Float64Array;
+    const heavy = assembleMass(CUBE_MESH, matNoRho, 'lumped', undefined, undefined, 8000) as Float64Array;
+    for (let i = 0; i < light.length; i++) {
+      expect(heavy[i]).toBeCloseTo((light[i] ?? 0) * 8, 22);
+    }
+  });
+
+  it("material.massRho takes precedence over defaultRho", () => {
+    const a = assembleMass(CUBE_MESH, matWithRho, 'lumped', undefined, undefined, 9999) as Float64Array;
+    const b = assembleMass(CUBE_MESH, matWithRho, 'lumped') as Float64Array;
+    for (let i = 0; i < a.length; i++) expect(a[i]).toBe(b[i]);
   });
 });
