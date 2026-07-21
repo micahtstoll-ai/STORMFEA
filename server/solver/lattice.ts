@@ -92,8 +92,19 @@ export interface LatticeFamilyParams {
   readonly stiffCorrXY:    number;
   /** Prefactor pf: 1.0 for structural families, <1 for sparse. */
   readonly stiffPrefactor: number;
-  /** Strength power-law exponent m in s = min(1, patternMul·ρ^m). */
-  readonly strengthExp:    number;
+  /** In-plane strength power-law exponent m_xy in s = min(1, patternMul·ρ^m)
+   *  (yieldXY). This is the representative scalar `latticeStrengthFraction`
+   *  returns — its value is unchanged from the pre-per-axis `strengthExp`. */
+  readonly strengthExpXY:  number;
+  /** Through-layer strength exponent m_z (yieldZ). Per-axis so the strength
+   *  anisotropy tracks the stiffness anisotropy (issue #177): for extruded
+   *  walls the continuous vertical walls give the mildest law (rule of
+   *  mixtures, m ≈ 1), so at low ρ yieldZ_core can exceed yieldXY_core, exactly
+   *  as E_z_core exceeds E_xy_core — the sign of (Z − XY) now agrees between
+   *  stiffness and strength. */
+  readonly strengthExpZ:   number;
+  /** Interlaminar-shear strength exponent m_zs (yieldZShear). */
+  readonly strengthExpZS:  number;
   // Per-axis laws (natural frame: local Z = layer normal = build axis).
   // Consumed by the gyroid constitutive builder today and by the anisotropic
   // core model (Stage 2). tpms3d values are the pre-existing locked gyroid
@@ -114,7 +125,12 @@ export const LATTICE_PARAMS: Record<PatternFamily, LatticeFamilyParams> = {
   // gyroid formula in element.ts; strength stretch-dominated.
   tpms3d: {
     family: "tpms3d",
-    stiffExpXY: 1.75, stiffCorrXY: 0.12, stiffPrefactor: 1.0, strengthExp: 1.25,
+    stiffExpXY: 1.75, stiffCorrXY: 0.12, stiffPrefactor: 1.0,
+    // Strength stretch-dominated; per-axis exponents MIRROR the stiffness
+    // ordering (XY < Z < Gxz) so the near-isotropic core keeps Z weaker AND
+    // softer than XY at low ρ (both signs already agreed here; the per-axis
+    // law keeps them consistent). m_xy unchanged from the legacy strengthExp.
+    strengthExpXY: 1.25, strengthExpZ: 1.5, strengthExpZS: 1.6,
     stiffExpZ: 2.1, stiffCorrZ: 0.18, stiffExpGxz: 2.3, stiffCorrGxz: 0.22, stiffExpGxy: null,
     confidence: "LOW",
   },
@@ -123,14 +139,22 @@ export const LATTICE_PARAMS: Record<PatternFamily, LatticeFamilyParams> = {
   // (continuous walls → rule of mixtures, n = 1).
   walls25d: {
     family: "walls25d",
-    stiffExpXY: 2.0, stiffCorrXY: 0.10, stiffPrefactor: 1.0, strengthExp: 1.5,
+    stiffExpXY: 2.0, stiffCorrXY: 0.10, stiffPrefactor: 1.0,
+    // Per-axis strength (issue #177): in-plane bending collapse m_xy = 1.5
+    // (unchanged from the legacy strengthExp); through-layer follows the
+    // continuous vertical walls (rule of mixtures m_z = 1.0, matching gZ's
+    // n = 1) so the strength anisotropy INVERTS at low ρ just like the
+    // stiffness; interlaminar shear stays conservative at 1.5.
+    strengthExpXY: 1.5, strengthExpZ: 1.0, strengthExpZS: 1.5,
     stiffExpZ: 1.0, stiffCorrZ: 0.0, stiffExpGxz: 1.5, stiffCorrGxz: 0.10, stiffExpGxy: 3.0,
     confidence: "LOW",
   },
   // Lightning: decorative — prefactor 0.3 on top of the power law.
   sparse: {
     family: "sparse",
-    stiffExpXY: 2.0, stiffCorrXY: 0.0, stiffPrefactor: 0.3, strengthExp: 1.5,
+    stiffExpXY: 2.0, stiffCorrXY: 0.0, stiffPrefactor: 0.3,
+    // Decorative — isotropic strength (no directional wall network to credit).
+    strengthExpXY: 1.5, strengthExpZ: 1.5, strengthExpZS: 1.5,
     stiffExpZ: 2.0, stiffCorrZ: 0.0, stiffExpGxz: 2.0, stiffCorrGxz: 0.0, stiffExpGxy: null,
     confidence: "LOW",
   },
@@ -270,12 +294,63 @@ export function latticeStiffnessScales(pattern: string, rho: number): LatticeAxi
   };
 }
 
+/** Per-axis wall-free lattice strength fractions in the NATURAL material frame
+ *  (local Z = layer normal = build axis), each s = min(1, patternMul·ρ^m). */
+export interface LatticeStrengthScales {
+  /** Scales yieldXY (in-plane). Representative scalar (see latticeStrengthFraction). */
+  readonly sXY:  number;
+  /** Scales yieldZ (through-layer). */
+  readonly sZ:   number;
+  /** Scales yieldZShear (interlaminar shear). */
+  readonly sZS:  number;
+}
+
 /**
- * Wall-free lattice strength fraction s(ρ) = max(floor, min(1, patternMul·ρ^m)).
+ * Per-axis wall-free lattice strength fractions s_a(ρ) = max(floor,
+ * min(1, patternMul·ρ^m_a)) for a = XY, Z, ZS (issue #177).
  *
- * Excludes orientation — the single source for BOTH coreStrengthMultiplier
- * (which multiplies by orientationMultiplier) and the impliedAvgStrengthMul
- * diagnostic in analysis.ts, so the two can never desynchronize.
+ * The single scalar `latticeStrengthFraction` knocked yieldXY, yieldZ, and
+ * yieldZShear down by the SAME factor, so the core kept the solid's
+ * yieldZ/yieldXY = 0.58 ratio while the per-axis STIFFNESS law inverted the
+ * anisotropy (E_z > E_xy for extruded walls at low ρ) — the model claimed
+ * Z-stiffer-yet-Z-weaker at once. Per-axis strength exponents (mirroring the
+ * stiffness family structure) fix the sign inconsistency.
+ *
+ * Anchors (invariant #8): Math.pow(1, m) = 1, so every s_a(1) = min(1, patternMul)
+ * EXACTLY and identically across axes — the 100%-infill materialsEqual collapse
+ * is preserved. Floored at LATTICE_STRENGTH_FLOOR.
+ *
+ * A calibration `overrideExp` (a single fitted number) applies to ALL axes
+ * uniformly — collapsing to the isotropic-in-ratio strength law, exactly as the
+ * stiffness override routes to the scalar `latticeStiffnessScale`. One fitted
+ * exponent cannot say which axis it belongs to.
+ */
+export function latticeStrengthFractions(
+  pattern: string,
+  rho: number,
+  overrideExp?: number | null,
+): LatticeStrengthScales {
+  const p = LATTICE_PARAMS[patternFamilyOf(pattern)];
+  const patternMul = PATTERN_MULTIPLIERS[pattern] ?? 1.0;
+  const r = clampRho(rho);
+  const s = (m: number) => Math.max(LATTICE_STRENGTH_FLOOR, Math.min(1, patternMul * Math.pow(r, m)));
+  return {
+    sXY: s(overrideExp ?? p.strengthExpXY),
+    sZ:  s(overrideExp ?? p.strengthExpZ),
+    sZS: s(overrideExp ?? p.strengthExpZS),
+  };
+}
+
+/**
+ * Representative (in-plane) wall-free lattice strength fraction
+ * s_xy(ρ) = max(floor, min(1, patternMul·ρ^m_xy)) — the yieldXY axis of
+ * latticeStrengthFractions.
+ *
+ * Kept as the single source for BOTH coreStrengthMultiplier (which multiplies
+ * by orientationMultiplier) and the impliedAvgStrengthMul diagnostic in
+ * analysis.ts, so the two can never desynchronize; in-plane is what coupons
+ * measure. Its VALUE is unchanged from the pre-per-axis law (m_xy equals the
+ * old strengthExp), so every locked regression value holds.
  *
  * s(1) = min(1, patternMul) exactly — identical to the legacy linear curve's
  * ρ=1 value pattern-for-pattern, preserving the 100%-infill degenerate
@@ -287,9 +362,5 @@ export function latticeStrengthFraction(
   rho: number,
   overrideExp?: number | null,
 ): number {
-  const p = LATTICE_PARAMS[patternFamilyOf(pattern)];
-  const m = overrideExp ?? p.strengthExp;
-  const patternMul = PATTERN_MULTIPLIERS[pattern] ?? 1.0;
-  const r = clampRho(rho);
-  return Math.max(LATTICE_STRENGTH_FLOOR, Math.min(1, patternMul * Math.pow(r, m)));
+  return latticeStrengthFractions(pattern, rho, overrideExp).sXY;
 }
