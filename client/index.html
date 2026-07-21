@@ -6452,19 +6452,28 @@ function showResults(s) {
 
     ${S.modal && S.modal.modes && S.modal.modes.length ? (() => {
       const rows = S.modal.modes.map((m, k) => {
-        const rigid = m.frequencyHz < 1.0;
+        // Prefer the solver's rigid flag (#160.4); fall back to the freq heuristic.
+        const rigid = (m.rigid != null) ? m.rigid : (m.frequencyHz < 1.0);
         const hz = m.frequencyHz < 10 ? m.frequencyHz.toFixed(2) : m.frequencyHz.toFixed(1);
         const canView = !!(S.modeShapes && S.modeShapes[k]);
         return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px solid var(--border)">
-          <span style="font-family:'DM Mono',monospace;font-size:9px;letter-spacing:.06em;color:var(--text-lo)">MODE ${k + 1}${rigid ? ' <span style="color:var(--text-lo)">· rigid body</span>' : ''}</span>
+          <span style="font-family:'DM Mono',monospace;font-size:9px;letter-spacing:.06em;color:var(--text-lo)">MODE ${k + 1}${rigid ? ' <span style="color:var(--warn)">· rigid body</span>' : ''}</span>
           <span style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text-hi)">${hz} <span style="font-size:8px;color:var(--text-label)">Hz</span></span>
           <button class="btn" id="mode-btn-${k}" onclick="viewModeShape(${k})" style="font-size:9px;padding:2px 8px"${canView ? '' : ' disabled'}>View</button>
         </div>`;
       }).join('');
+      const warnLine = (S.modal.warnings && S.modal.warnings.length)
+        ? `<div style="font-size:9px;color:var(--warn);margin-top:6px;line-height:1.5">${S.modal.warnings.map(w => '⚠ ' + w).join('<br>')}</div>`
+        : '';
+      const certLine = (S.modal.certified && S.modal.certified !== 'guard-block')
+        ? `<div style="font-size:8.5px;color:var(--text-lo);margin-top:4px">Mode completeness: ${S.modal.certified}.</div>`
+        : '';
       return `
       <div style="border-left:2px solid var(--gold);background:var(--bg-input);padding:10px 14px;margin-bottom:12px">
         <div style="font-family:'Rajdhani',sans-serif;font-size:13px;letter-spacing:.08em;color:var(--text-mid);margin-bottom:6px">NATURAL FREQUENCIES</div>
         ${rows}
+        ${warnLine}
+        ${certLine}
         <div style="font-size:9px;color:var(--text-lo);margin-top:6px;line-height:1.5">Mode shapes show relative amplitude (unit-normalized eigenvectors), not physical deflection. Click View to animate a mode in the viewer.</div>
       </div>`;
     })() : ''}

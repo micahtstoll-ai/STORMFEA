@@ -10,8 +10,11 @@
  *   ω² in rad²/s²,  f_Hz = sqrt(ω²) / (2π)  [no extra factor]
  *
  * Algorithm:
- *   1. Build shifted matrix Kσ = K - σ·M (σ=1.0)
- *   2. Initialize random subspace X (n×p) and M-orthonormalize
+ *   1. Build shifted matrix Kσ = K - σ·M. σ is problem-scaled by default
+ *      (autoScaledShift: a fraction of the Rayleigh quotient of the static
+ *      deflection under a uniform body load), not a fixed 1.0 (#160.3).
+ *   2. Initialize random subspace X (n×p) and M-orthonormalize. p carries a
+ *      guard block (p ≥ nModes+8) so clustered/degenerate pairs are resolved.
  *   3. Iterate:
  *      a. Solve Kσ·Y[:,j] = M·X[:,j] via PCG
  *      b. Compute reduced matrices: Ktilde = Yᵀ·K_orig·Y, Mtilde = Yᵀ·M·Y
@@ -19,7 +22,10 @@
  *      c. Solve dense p×p generalized eigenproblem
  *      d. Update X = Y·Z, re-orthonormalize
  *      e. Check convergence on first nModes eigenvalues
- *   4. Extract nModes smallest positive eigenvalues
+ *   4. Extract nModes smallest positive eigenvalues.
+ *   5. Certify band-completeness (guard-block + per-mode residual, #160.1/.2),
+ *      label rigid modes (#160.4), and form three-direction participation and
+ *      effective modal mass (#161).
  */
 
 import type { CSRMatrix, TetMesh, AnyMaterial, ElementMaterialField, ModalAnalysisResult, ModeResult } from "./types.js";
@@ -104,7 +110,9 @@ export interface ModalInput {
   readonly tolerance?: number;
   /** Inner PCG tolerance. Default: 1e-9. */
   readonly cgTol?:    number;
-  /** Spectral shift σ (rad²/s²). Default: 1.0 */
+  /** Spectral shift σ (rad²/s²). Default: problem-scaled (autoScaledShift) —
+   *  a fraction of the static-deflection Rayleigh quotient, kept below λ_min so
+   *  Kσ stays SPD. Pass an explicit value to override (#160.3). */
   readonly sigma?:    number;
   /** Optional pristine prebuilt K — skips re-assembling K and rebuilding the
    *  sparsity pattern for M (issue #100). */
@@ -285,6 +293,9 @@ function denseUpperSolve(L: Float64Array, B: Float64Array, p: number, nrhs: numb
 /**
  * Symmetric Jacobi on A (p×p, column-major).
  * Returns Q (eigenvectors as columns); A is overwritten with eigenvalues on diagonal.
+ *
+ * Exported: the buckling solver (buckling.ts, #138) reuses this dense symmetric
+ * eigensolver. Keep the signature stable.
  */
 function symmetricJacobi(A: Float64Array, p: number): Float64Array {
   const Q = new Float64Array(p * p);
@@ -453,7 +464,19 @@ function subspaceIterate(
   maxIter:   number,
   tol:       number,
   cgTol:     number,
-): { eigenvalues: Float64Array; eigenvectors: Float64Array; iterations: number; converged: boolean } {
+): {
+  /** All p Ritz values (ascending). The lowest nModes are the reported modes;
+   *  the remaining q = p − nModes are the guard block used for #160 certification. */
+  eigenvalues:  Float64Array;
+  /** n×p column-major M-orthonormal Ritz vectors (all p, not just nModes). */
+  eigenvectors: Float64Array;
+  /** n×p column-major M·(Ritz vectors), consistent with `eigenvectors`. */
+  MX:           Float64Array;
+  iterations:   number;
+  /** Eigenvalue-change convergence only; per-mode residual gating is applied by
+   *  the caller (runModalAnalysis) so it can also fold in guard-block certification. */
+  converged:    boolean;
+} {
   // Initialize random subspace X (n×p, column-major)
   let X = initRandomSubspace(n, p, 42);
   let MX = mOrthonormalize(X, M, n, p);
@@ -474,6 +497,7 @@ function subspaceIterate(
   let prevEigvals: Float64Array = new Float64Array(nModes).fill(Infinity);
   let eigenvalues: Float64Array = new Float64Array(p);
   let eigenvectors: Float64Array = new Float64Array(p * p);
+  const residWork = new Float64Array(n);   // scratch for the step-f residual check
   let converged = false;
   let iterations = 0;
 
@@ -549,7 +573,11 @@ function subspaceIterate(
     // Step e: M-orthonormalize
     MX = mOrthonormalize(X, M, n, p);
 
-    // Step f: Check convergence on first nModes eigenvalues
+    // Step f: convergence — eigenvalue change AND per-mode residual (#160.2).
+    // Eigenvalue-change alone freezes on clustered/degenerate pairs (their
+    // eigenvalues coincide while the vectors are still mixing), so it can report
+    // "converged" with mode shapes that are not yet true eigenvectors. Require
+    // ‖Kφ − ω²Mφ‖/‖ω²Mφ‖ < MODAL_RESIDUAL_TOL on every non-rigid reported mode.
     let maxRelChange = 0;
     for (let j = 0; j < nModes; j++) {
       const prev = prevEigvals[j] ?? Infinity;
@@ -563,8 +591,22 @@ function subspaceIterate(
     for (let j = 0; j < nModes; j++) prevEigvals[j] = eigenvalues[j] ?? 0;
 
     if (maxRelChange < tol) {
-      converged = true;
-      break;
+      // Eigenvalues have stabilized — verify the shapes are true eigenvectors
+      // before declaring convergence (the extra K matvecs run only in this
+      // stabilized tail, not every iteration).
+      let maxResid = 0;
+      for (let j = 0; j < nModes; j++) {
+        const omega2 = eigenvalues[j] ?? 0;
+        if (omega2 < 1e-3) continue;   // rigid/near-zero: relative residual undefined
+        const xj  = X.subarray(j * n, (j + 1) * n);
+        const Mxj = MX.subarray(j * n, (j + 1) * n);
+        matvec(K, xj, residWork);
+        maxResid = Math.max(maxResid, modeResidual(residWork, Mxj, omega2, n));
+      }
+      if (maxResid < MODAL_RESIDUAL_TOL) {
+        converged = true;
+        break;
+      }
     }
   }
 
@@ -572,15 +614,16 @@ function subspaceIterate(
     console.warn(`[modal] Subspace iteration did not converge in ${iterations} iterations. maxRelChange may still be large. Returning best estimate.`);
   }
 
-  // Extract first nModes columns of X as eigenvectors
-  const finalEigvecs = new Float64Array(n * nModes);
-  for (let j = 0; j < nModes; j++) {
-    finalEigvecs.set(X.subarray(j * n, (j+1) * n), j * n);
-  }
-
+  // Return the FULL p-dimensional Ritz space. X (updated + M-orthonormalized on
+  // the last iteration) holds the M-orthonormal Ritz vectors and MX = M·X is the
+  // matching product; eigenvalues holds all p Ritz values. The caller slices the
+  // lowest nModes for reporting and uses the q = p − nModes guard vectors to
+  // certify band-completeness (#160) — and reuses MX for participation (#161)
+  // with no extra M matvecs.
   return {
-    eigenvalues: eigenvalues.slice(0, nModes),
-    eigenvectors: finalEigvecs,
+    eigenvalues: eigenvalues.slice(),   // length p
+    eigenvectors: X,                    // n×p
+    MX,                                 // n×p
     iterations,
     converged,
   };
@@ -597,6 +640,96 @@ function computeParticipationFactor(modeShape: Float64Array, M: CSRMatrix, n: nu
   return dot(modeShape, Mr);
 }
 
+/**
+ * Relative eigen-residual ‖K·φ − ω²·M·φ‖ / ‖ω²·M·φ‖ for one Ritz pair (#160.2).
+ * Returns 0 for near-zero ω² (rigid modes), where the denominator vanishes.
+ * `Kphi` and `Mphi` are precomputed matvecs.
+ */
+function modeResidual(Kphi: Float64Array, Mphi: Float64Array, omega2: number, n: number): number {
+  let rr = 0, denom = 0;
+  for (let i = 0; i < n; i++) {
+    const t = (Kphi[i] ?? 0) - omega2 * (Mphi[i] ?? 0);
+    rr += t * t;
+    const dref = omega2 * (Mphi[i] ?? 0);
+    denom += dref * dref;
+  }
+  if (denom < 1e-300) return 0;
+  return Math.sqrt(rr / denom);
+}
+
+/** Per-mode relative eigen-residual tolerance — the true convergence gate
+ *  (#160.2). Eigenvalue-change alone can freeze on clustered/degenerate pairs
+ *  (equal eigenvalues, un-converged vectors); a mode counts as converged only
+ *  once ‖Kφ−ω²Mφ‖/‖ω²Mφ‖ falls below this. */
+const MODAL_RESIDUAL_TOL = 1e-3;
+
+/**
+ * Problem-scaled spectral shift (#160.3). A fixed σ = 1.0 rad²/s² is meaningless
+ * against a stiff SI-mm part (ω² ~ 1e8) and — worse — a POSITIVE shift near the
+ * spectrum makes Kσ = K − σM indefinite whenever the part carries rigid-body
+ * modes (partial or full under-constraint), collapsing the reduced mass matrix.
+ *
+ * We use a NEGATIVE shift scaled to the problem: σ = −SHIFT_FRACTION·λ_est, so
+ * Kσ = K + |σ|·M is symmetric positive-definite in EVERY case (well-constrained
+ * or rigid-mode-bearing), which both keeps the SPD PCG/IC(0) path valid and
+ * regularizes rigid modes to a small positive Kσ eigenvalue (the textbook fix).
+ * Shift-invert still targets the lowest ω² (largest 1/(ω²+|σ|)).
+ *
+ * λ_est estimates the lowest-eigenvalue scale from a static deflection: solve
+ * K·y = M·1 (deflection under a uniform body excitation — a smooth, fundamental-
+ * dominated field) and take its Rayleigh quotient λ_est = (yᵀKy)/(yᵀMy) ≥ λ_min.
+ * The raw RHS Rayleigh quotient Rg = (gᵀKg)/(gᵀMg) is an upper bound and a
+ * guard: a good solve LOWERS the quotient (Ry ≤ Rg), so Ry > Rg means the solve
+ * was unreliable (e.g. a singular K) and we fall back to Rg. Total failure →
+ * σ = 0 (still SPD when K itself is SPD).
+ */
+function autoScaledShift(
+  K: CSRMatrix, M: CSRMatrix, diagIdxK: Int32Array,
+  fixedNodes: readonly number[], n: number,
+): number {
+  const SHIFT_FRACTION = 0.5;
+  try {
+    const g = new Float64Array(n).fill(1.0);
+    // Keep the excitation off the penalized (constrained) DOFs.
+    for (const ni of fixedNodes) {
+      for (let d = 0; d < 3; d++) { const dof = ni * 3 + d; if (dof < n) g[dof] = 0; }
+    }
+    const Mg = new Float64Array(n);
+    const Kg = new Float64Array(n);
+    matvec(M, g, Mg);
+    matvec(K, g, Kg);
+    const gMg = dot(g, Mg);
+    const Rg = gMg > 0 ? dot(g, Kg) / gMg : 0;   // upper bound on λ_min (Rayleigh)
+    if (!(Rg > 0) || !isFinite(Rg)) return 0;
+
+    // Static-deflection Rayleigh quotient — IC(0) with a Jacobi fallback.
+    let lambdaEst = Rg;
+    try {
+      let ic0: IC0Factor | null = null;
+      try { ic0 = buildIC0(K, diagIdxK); } catch { ic0 = null; }
+      const y = ic0
+        ? solvePCG(K, Mg, diagIdxK, 1e-8, 5000, 'ic0', ic0).u
+        : solvePCG(K, Mg, diagIdxK, 1e-6, 5000, 'jacobi').u;
+      const Ky = new Float64Array(n);
+      const My = new Float64Array(n);
+      matvec(K, y, Ky);
+      matvec(M, y, My);
+      const num = dot(y, Ky);   // yᵀ·K·y
+      const den = dot(y, My);   // yᵀ·M·y
+      const Ry = den > 0 ? num / den : Infinity;
+      // Accept the refined estimate only if the solve genuinely improved it.
+      if (isFinite(Ry) && Ry > 0 && Ry <= Rg * (1 + 1e-6)) lambdaEst = Ry;
+    } catch {
+      // keep lambdaEst = Rg
+    }
+
+    const sigma = -SHIFT_FRACTION * lambdaEst;
+    return isFinite(sigma) ? sigma : 0;
+  } catch {
+    return 0;
+  }
+}
+
 // ─── Main exported function ───────────────────────────────────────────────────
 
 /**
@@ -610,7 +743,8 @@ export async function runModalAnalysis(input: ModalInput): Promise<ModalAnalysis
   const maxIter = input.maxIter ?? 300;
   const tol     = input.tolerance ?? 1e-6;
   const cgTol   = input.cgTol    ?? 1e-9;
-  const sigma   = input.sigma    ?? 1.0;
+  // σ (#160.3): default is now problem-scaled (autoScaledShift, computed below
+  // once K and M exist). An explicit input.sigma still wins for callers/tests.
 
   const { mesh, material, fixedNodes } = input;
   const n = mesh.nodeCount * 3;
@@ -673,33 +807,103 @@ export async function runModalAnalysis(input: ModalInput): Promise<ModalAnalysis
     }
   }
 
+  // Spectral shift σ (#160.3): problem-scaled by default, explicit override honored.
+  const sigma = input.sigma ?? autoScaledShift(K, M, kDiagIdx, fixedNodes, n);
+
   // Build shifted matrix Kσ = K - σ·M
   const Ksigma    = buildShiftedMatrix(K, M, sigma);
   const diagIdxKs = buildDiagIdx(Ksigma);
 
-  // Run subspace iteration
-  const { eigenvalues, eigenvectors, iterations, converged } = subspaceIterate(
+  // Run subspace iteration — returns the FULL p-dimensional Ritz space so we can
+  // certify band-completeness (#160.1), gate on residuals (#160.2), and form
+  // participation/effective mass (#161) here where K and M are in scope.
+  const { eigenvalues, eigenvectors, MX, iterations, converged: eigenConverged } = subspaceIterate(
     Ksigma, K, M, diagIdxKs, n, p, nModes, sigma, maxIter, tol, cgTol
   );
 
-  // Pack results
-  const RIGID_BODY_THRESHOLD = 1e-3;
+  // ── Per-Ritz-pair diagnostics for all p vectors: residual + rigid flag. ─────
+  // Reused twice: reported modes (0..nModes) and guard block (nModes..p) for
+  // #160 certification. K·φ needs a matvec; M·φ is already MX (no extra matvec).
+  const RIGID_BODY_THRESHOLD = 1e-3;         // ω² threshold for a near-zero (rigid) mode
+  const RESIDUAL_TOL = MODAL_RESIDUAL_TOL;   // relative eigen-residual gate for "converged"
+  const CLUSTER_REL_GAP = 1e-4;              // boundary spectral-gap tolerance for certification
+
+  const Kphi = new Float64Array(n);
+  const residualsAll = new Float64Array(p);
+  for (let j = 0; j < p; j++) {
+    const omega2 = eigenvalues[j] ?? 0;
+    const phij = eigenvectors.subarray(j * n, (j + 1) * n);
+    const Mphij = MX.subarray(j * n, (j + 1) * n);
+    matvec(K, phij, Kphi);
+    residualsAll[j] = modeResidual(Kphi, Mphij, omega2, n);
+  }
+
+  // ── Pack the reported modes (lowest nModes). ────────────────────────────────
   let rigidBodyModeCount = 0;
   const modes: ModeResult[] = [];
+  let maxReportedResidual = 0;
 
   for (let j = 0; j < nModes; j++) {
     const omega2 = eigenvalues[j] ?? 0;
     const modeShape = new Float64Array(n);
-    for (let i = 0; i < n; i++) modeShape[i] = eigenvectors[i + j*n] ?? 0;
+    modeShape.set(eigenvectors.subarray(j * n, (j + 1) * n));
 
     const frequencyHz = omega2 > 0 ? Math.sqrt(omega2) / (2 * Math.PI) : 0;
+    const rigid = omega2 < RIGID_BODY_THRESHOLD;
+    if (rigid) rigidBodyModeCount++;
+
     const participationFactor = computeParticipationFactor(modeShape, M, n);
+    const residual = residualsAll[j] ?? 0;
+    if (!rigid) maxReportedResidual = Math.max(maxReportedResidual, residual);
 
-    if (omega2 < RIGID_BODY_THRESHOLD) rigidBodyModeCount++;
-
-    modes.push({ frequencyHz, omega2, modeShape, participationFactor });
+    modes.push({ frequencyHz, omega2, modeShape, participationFactor, residual, rigid });
   }
 
+  // ── Missed-mode certification (#160.1): guard-block + residual. ──────────────
+  // The working subspace carries q = p − nModes guard vectors above the reported
+  // band. If every reported mode has a small residual AND there is a spectral gap
+  // between the last reported eigenvalue and the first guard eigenvalue, then no
+  // eigenvalue below the highest reported ω² was skipped — clustered/degenerate
+  // pairs inside the band are resolved because the enlarged subspace has room for
+  // both members. A cluster straddling the top boundary cannot be certified (one
+  // member sits in the guard block, outside the reported set) → 'none' + warning.
+  // A full sparse Sturm (LDLᵀ inertia count) is out of scope for this PCG solver,
+  // so 'sturm' is never emitted — the marker stays honest.
+  const warnings: string[] = [];
+  const lastReported = eigenvalues[nModes - 1] ?? 0;
+  const firstGuard   = eigenvalues[nModes] ?? Infinity;   // p > nModes guaranteed
+  const boundaryRelGap = Math.abs(firstGuard - lastReported) /
+                         Math.max(Math.abs(lastReported), 1e-30);
+  const residualsPass = maxReportedResidual < RESIDUAL_TOL;
+  const boundaryGapClear = boundaryRelGap > CLUSTER_REL_GAP;
+
+  let certified: 'guard-block' | 'sturm' | 'none';
+  if (residualsPass && boundaryGapClear) {
+    certified = 'guard-block';
+  } else {
+    certified = 'none';
+    if (!residualsPass) {
+      warnings.push(
+        `Missed-mode check not certified: peak reported eigen-residual ` +
+        `${maxReportedResidual.toExponential(2)} exceeds ${RESIDUAL_TOL.toExponential(0)} ` +
+        `— some reported modes are not fully converged eigenpairs.`
+      );
+    }
+    if (residualsPass && !boundaryGapClear) {
+      warnings.push(
+        `Missed-mode check not certified: a clustered/degenerate pair straddles the ` +
+        `top of the reported band (mode ${nModes} and ${nModes + 1} within ` +
+        `${CLUSTER_REL_GAP.toExponential(0)} relative gap). Increase nModes to resolve ` +
+        `the full cluster.`
+      );
+    }
+  }
+
+  // Residual gating (#160.2): the returned `converged` requires BOTH eigenvalue
+  // convergence AND all reported (non-rigid) modes passing the residual check.
+  const converged = eigenConverged && residualsPass;
+
+  // All-rigid: still a hard error (no effective constraints → problem ill-posed).
   if (rigidBodyModeCount === nModes) {
     throw new Error(
       `Modal analysis found ${nModes} rigid-body modes (ω² < ${RIGID_BODY_THRESHOLD}). ` +
@@ -707,8 +911,36 @@ export async function runModalAnalysis(input: ModalInput): Promise<ModalAnalysis
     );
   }
 
-  const modalMs = Date.now() - t0;
-  console.log(`[modal] ${nModes} modes in ${modalMs}ms, converged=${converged}, iter=${iterations}, f1=${modes.find(m => m.frequencyHz > 1)?.frequencyHz.toFixed(1) ?? '?'}Hz`);
+  // Partial-rigid (#160.4): ANY near-zero mode while constraints ARE applied is a
+  // red flag (under-constraint / mechanism), not a silent 0 Hz fundamental. The
+  // modes are labeled per-mode (rigid:true); surface an aggregate warning too.
+  if (rigidBodyModeCount > 0 && fixedNodes.length > 0) {
+    warnings.push(
+      `${rigidBodyModeCount} near-zero (rigid-body) mode(s) found despite ${fixedNodes.length} ` +
+      `constrained node(s) — the structure may be under-constrained or contain a mechanism. ` +
+      `Affected modes are labeled rigid:true; the reported fundamental may not be a true ` +
+      `structural frequency.`
+    );
+  }
 
-  return { modes, converged, iterations, rigidBodyModeCount, modalMs };
+  if (!converged) {
+    warnings.push(
+      `Eigensolver did not fully converge (eigenvalue-converged=${eigenConverged}, ` +
+      `residuals-pass=${residualsPass}). Frequencies are best estimates.`
+    );
+  }
+
+  const modalMs = Date.now() - t0;
+  console.log(
+    `[modal] ${nModes} modes in ${modalMs}ms, converged=${converged}, certified=${certified}, ` +
+    `iter=${iterations}, σ=${sigma.toExponential(2)}, ` +
+    `f1=${modes.find(m => m.frequencyHz > 1)?.frequencyHz.toFixed(1) ?? '?'}Hz` +
+    (warnings.length ? `, warnings=${warnings.length}` : '')
+  );
+
+  return {
+    modes, converged, iterations, rigidBodyModeCount, modalMs,
+    certified,
+    ...(warnings.length ? { warnings } : {}),
+  };
 }

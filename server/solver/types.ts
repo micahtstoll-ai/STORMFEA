@@ -394,6 +394,11 @@ export interface ModeResult {
   readonly omega2:               number;        // rad²/s² (eigenvalue of K·φ = ω²·M·φ)
   readonly modeShape:            Float64Array;  // length = nodeCount * 3
   readonly participationFactor:  number;        // φᵀ·M·r, r = X-direction unit excitation
+  // ── Issue #160: per-mode robustness diagnostics ──────────────────────────────
+  /** Relative eigen-residual ‖Kφ − ω²Mφ‖ / ‖ω²Mφ‖ (0 for near-zero/rigid modes). */
+  readonly residual:             number;
+  /** True when ω² is below the rigid-body threshold (near-zero / mechanism mode). */
+  readonly rigid:                boolean;
 }
 
 /**
@@ -406,6 +411,24 @@ export interface ModalAnalysisResult {
   readonly iterations:          number;
   readonly rigidBodyModeCount:  number;
   readonly modalMs:             number;          // wall-clock ms for eigensolver only
+  // ── Issue #160: missed-mode certification ────────────────────────────────────
+  /**
+   * How completeness of the reported band was verified:
+   *   'guard-block' — the enlarged working subspace (p > nModes guard vectors)
+   *                   converged with small residuals AND a spectral gap separates
+   *                   the last reported mode from the first guard mode, so no
+   *                   eigenvalue below the highest reported ω² was skipped
+   *                   (clustered/degenerate pairs inside the band are resolved).
+   *   'sturm'       — reserved: full sparse Sturm (LDLᵀ inertia) count. NOT
+   *                   implemented; a true negative-eigenvalue count via sparse
+   *                   factorization is out of scope for this PCG-based solver.
+   *   'none'        — could not certify (residuals too large, or a cluster
+   *                   straddles the top boundary — see warnings).
+   */
+  readonly certified:           'guard-block' | 'sturm' | 'none';
+  /** Non-fatal advisories surfaced to the caller (partial rigid modes, un-certified
+   *  band, non-convergence). Empty/absent when the solve is clean. */
+  readonly warnings?:           readonly string[];
 }
 
 // ─── Mesh Quality Types ───────────────────────────────────────────────────────
