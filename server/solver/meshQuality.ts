@@ -40,6 +40,7 @@
  */
 
 import type { TetMesh, ElementQualityMetrics, MeshQualityReport, ElementQualitySeverity } from "./types.js";
+import { c3d10GaussDetJ } from "./element.js";
 
 // ─── Re-derived, scale-invariant thresholds ───────────────────────────────────
 /** |normalizedJacobian| below this ⇒ genuine sliver → degenerate + hard block. */
@@ -54,6 +55,13 @@ export const HARD_AR = 100;
 export const POOR_MIN_DIHEDRAL = 5;
 /** dihedral above this (deg) ⇒ poor (near-flat cap sliver). */
 export const POOR_MAX_DIHEDRAL = 175;
+/** C3D10 midside offset (‖mid−edgeMidpoint‖/edgeLen) above this ⇒ poor. A
+ *  perfect straight-sided element is 0; Gmsh curved elements stay well under. */
+export const POOR_MIDSIDE = 0.25;
+/** C3D10 midside offset at/above this ⇒ treated as a fold (the node is pushed
+ *  half an edge or more — past the corner — which tangles the mapping even if
+ *  the 4 interior Gauss points happen not to sample the inverted region). */
+export const MIDSIDE_FOLD = 0.5;
 
 // ─── Vector/Matrix Operations ─────────────────────────────────────────────────
 
@@ -259,16 +267,82 @@ function assessSeverity(
   minDihedralDeg: number,
   maxDihedralDeg: number,
   curvedFolded: boolean,
+  maxMidsideOffset?: number,
 ): ElementQualitySeverity {
   const absNJ = Math.abs(normalizedJacobian);
   if (curvedFolded || !Number.isFinite(normalizedJacobian) || absNJ < HARD_SLIVER_NJ) {
     return "degenerate";
   }
+  const midsidePoor = maxMidsideOffset !== undefined && maxMidsideOffset > POOR_MIDSIDE;
   if (absNJ < POOR_NJ || aspectRatio > POOR_AR ||
-      minDihedralDeg < POOR_MIN_DIHEDRAL || maxDihedralDeg > POOR_MAX_DIHEDRAL) {
+      minDihedralDeg < POOR_MIN_DIHEDRAL || maxDihedralDeg > POOR_MAX_DIHEDRAL || midsidePoor) {
     return "poor";
   }
   return "normal";
+}
+
+// ─── C3D10 curved-mapping metrics (issue #162) ────────────────────────────────
+
+/** Per-element curved-mapping diagnostics for a quadratic (C3D10) element. */
+interface CurvedMetrics {
+  readonly curvedFolded: boolean;
+  /** Worst corner-orientation-relative Gauss detJ (cornerSign·detJ); ≤0 ⇒ fold. */
+  readonly minGaussDetJ: number;
+  /** Max over the 6 edges of ‖midsideNode − edgeMidpoint‖ / edgeLength. */
+  readonly maxMidsideOffset: number;
+}
+
+// Midside node index per corner-pair, matching STORMFEA C3D10 ordering
+// (types.ts): 4=mid(0,1), 5=mid(1,2), 6=mid(0,2), 7=mid(0,3), 8=mid(1,3), 9=mid(2,3).
+const C3D10_EDGE_MIDS: readonly [number, number, number][] = [
+  [0, 1, 4], [1, 2, 5], [0, 2, 6], [0, 3, 7], [1, 3, 8], [2, 3, 9],
+];
+
+/**
+ * Evaluate the C3D10 curved-mapping health of one element.
+ *
+ * A fold is detected two independent ways:
+ *   1. Gauss-point sign: the four detJ must all share one sign. Referencing each
+ *      against the element's OWN majority orientation (sign of Σ detJ) rather
+ *      than a bare detJ ≤ 0 keeps a legitimately MIRRORED element (all detJ
+ *      negative, which the assembler's Math.abs handles) from false-positiving,
+ *      while still reducing to "detJ ≤ 0 at a Gauss point" for the usual
+ *      positively-oriented mesh. `minGaussDetJ = min(orient·detJ)`; ≤ 0 ⇒ the
+ *      mapping inverts between Gauss points (a genuine fold). Note the corner-tet
+ *      triple-product sign is NOT a valid reference here — its ordering
+ *      convention is opposite to the isoparametric detJ.
+ *   2. Midside displacement: a node pushed ≥ MIDSIDE_FOLD of its edge length is
+ *      past the corner and tangles the mapping even if the 4 interior Gauss
+ *      points miss the inverted pocket — a cheap geometric screen.
+ */
+function computeCurvedMetrics(coords10: Float64Array): CurvedMetrics {
+  const gaussDetJ = c3d10GaussDetJ(coords10);
+  let sum = 0;
+  for (let g = 0; g < gaussDetJ.length; g++) sum += gaussDetJ[g]!;
+  const orient = Math.sign(sum); // element's own majority orientation
+  let minRel = Infinity;
+  for (let g = 0; g < gaussDetJ.length; g++) {
+    const rel = orient === 0 ? 0 : orient * gaussDetJ[g]!;
+    if (rel < minRel) minRel = rel;
+  }
+  if (!Number.isFinite(minRel)) minRel = 0;
+
+  let maxMidsideOffset = 0;
+  for (const [a, b, m] of C3D10_EDGE_MIDS) {
+    const ax = coords10[a * 3]!, ay = coords10[a * 3 + 1]!, az = coords10[a * 3 + 2]!;
+    const bx = coords10[b * 3]!, by = coords10[b * 3 + 1]!, bz = coords10[b * 3 + 2]!;
+    const mx = coords10[m * 3]!, my = coords10[m * 3 + 1]!, mz = coords10[m * 3 + 2]!;
+    const edgeLen = Math.hypot(bx - ax, by - ay, bz - az);
+    if (edgeLen < 1e-15) continue;
+    const ex = mx - 0.5 * (ax + bx), ey = my - 0.5 * (ay + by), ez = mz - 0.5 * (az + bz);
+    const off = Math.hypot(ex, ey, ez) / edgeLen;
+    if (off > maxMidsideOffset) maxMidsideOffset = off;
+  }
+
+  const curvedFolded =
+    orient === 0 || minRel <= 0 || maxMidsideOffset >= MIDSIDE_FOLD;
+
+  return { curvedFolded, minGaussDetJ: minRel, maxMidsideOffset };
 }
 
 /**
@@ -314,13 +388,37 @@ function computeElementMetrics(
   const normalizedJacobian = computeNormalizedJacobian(p0, p1, p2, p3);
   const aspectRatio = computeAspectRatio(p0, p1, p2, p3);
   const dih = computeDihedralAngles(p0, p1, p2, p3);
-  const severity = assessSeverity(normalizedJacobian, aspectRatio, dih.min, dih.max, false);
 
   const centroid: [number, number, number] = [
     (p0[0] + p1[0] + p2[0] + p3[0]) / 4,
     (p0[1] + p1[1] + p2[1] + p3[1]) / 4,
     (p0[2] + p1[2] + p2[2] + p3[2]) / 4,
   ];
+
+  // C3D10 (quadratic) elements: also screen the CURVED mapping (issue #162). A
+  // midside node displaced enough to fold the mapping is invisible to the
+  // corner-tet metrics above, so evaluate detJ at the 4 Gauss points and the
+  // midside offsets. C3D4 (linear) elements skip this — there is no curvature.
+  let curvedFolded: boolean | undefined;
+  let minGaussDetJ: number | undefined;
+  let maxMidsideOffset: number | undefined;
+  if (nodesPerElem === 10) {
+    const coords10 = new Float64Array(30);
+    for (let i = 0; i < 10; i++) {
+      const ni = elements[startIdx + i]!;
+      coords10[i * 3]     = nodes[ni * 3]!;
+      coords10[i * 3 + 1] = nodes[ni * 3 + 1]!;
+      coords10[i * 3 + 2] = nodes[ni * 3 + 2]!;
+    }
+    const cm = computeCurvedMetrics(coords10);
+    curvedFolded = cm.curvedFolded;
+    minGaussDetJ = cm.minGaussDetJ;
+    maxMidsideOffset = cm.maxMidsideOffset;
+  }
+
+  const severity = assessSeverity(
+    normalizedJacobian, aspectRatio, dih.min, dih.max, curvedFolded === true, maxMidsideOffset,
+  );
 
   return {
     elementIdx,
@@ -330,6 +428,9 @@ function computeElementMetrics(
     minDihedralDeg: dih.min,
     maxDihedralDeg: dih.max,
     severity,
+    curvedFolded,
+    minGaussDetJ,
+    maxMidsideOffset,
     centroid,
   };
 }
