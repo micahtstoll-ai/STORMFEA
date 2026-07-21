@@ -419,7 +419,21 @@ export interface ModeResult {
   readonly frequencyHz:          number;        // Hz = sqrt(omega2) / (2π)
   readonly omega2:               number;        // rad²/s² (eigenvalue of K·φ = ω²·M·φ)
   readonly modeShape:            Float64Array;  // length = nodeCount * 3
-  readonly participationFactor:  number;        // φᵀ·M·r, r = X-direction unit excitation
+  /** Legacy alias of participationX (φᵀ·M·rx). Kept for backward compatibility. */
+  readonly participationFactor:  number;
+  // ── Issue #161: three-direction participation & effective modal mass ─────────
+  /** Γx = φᵀ·M·rx  (rx = unit rigid-body translation in +X). */
+  readonly participationX:       number;
+  readonly participationY:       number;
+  readonly participationZ:       number;
+  /** meffX = Γx²/(φᵀMφ)  [tonne] — effective modal mass in X for this mode. */
+  readonly effectiveMassX:       number;
+  readonly effectiveMassY:       number;
+  readonly effectiveMassZ:       number;
+  /** Running Σ effectiveMassX (this mode and all lower) / total X translational mass. */
+  readonly cumulativeMassFracX:  number;
+  readonly cumulativeMassFracY:  number;
+  readonly cumulativeMassFracZ:  number;
   // ── Issue #160: per-mode robustness diagnostics ──────────────────────────────
   /** Relative eigen-residual ‖Kφ − ω²Mφ‖ / ‖ω²Mφ‖ (0 for near-zero/rigid modes). */
   readonly residual:             number;
@@ -455,6 +469,10 @@ export interface ModalAnalysisResult {
   /** Non-fatal advisories surfaced to the caller (partial rigid modes, un-certified
    *  band, non-convergence). Empty/absent when the solve is clean. */
   readonly warnings?:           readonly string[];
+  // ── Issue #161: total translational mass per direction (rᵀ·M·r) ──────────────
+  readonly totalMassX:          number;
+  readonly totalMassY:          number;
+  readonly totalMassZ:          number;
 }
 
 // ─── Mesh Quality Types ───────────────────────────────────────────────────────

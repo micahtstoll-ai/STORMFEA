@@ -6598,17 +6598,43 @@ function showResults(s) {
     })() : ''}
 
     ${S.modal && S.modal.modes && S.modal.modes.length ? (() => {
+      // Effective-mass fraction per direction: meff_d / total translational mass_d.
+      // Three influence directions (X/Y/Z) — a Y/Z-bending mode of an X-cantilever
+      // reads dominant Y or Z and ~0 X (issue #161).
+      const tmX = S.modal.totalMassX || 0, tmY = S.modal.totalMassY || 0, tmZ = S.modal.totalMassZ || 0;
+      const havePart = (tmX > 0 || tmY > 0 || tmZ > 0)
+        && S.modal.modes.some(m => m.effectiveMassX != null);
+      const pct = v => (v * 100 >= 9.95 ? (v * 100).toFixed(0) : (v * 100).toFixed(1));
       const rows = S.modal.modes.map((m, k) => {
-        // Prefer the solver's rigid flag (#160.4); fall back to the freq heuristic.
         const rigid = (m.rigid != null) ? m.rigid : (m.frequencyHz < 1.0);
         const hz = m.frequencyHz < 10 ? m.frequencyHz.toFixed(2) : m.frequencyHz.toFixed(1);
         const canView = !!(S.modeShapes && S.modeShapes[k]);
-        return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px solid var(--border)">
-          <span style="font-family:'DM Mono',monospace;font-size:9px;letter-spacing:.06em;color:var(--text-lo)">MODE ${k + 1}${rigid ? ' <span style="color:var(--warn)">· rigid body</span>' : ''}</span>
-          <span style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text-hi)">${hz} <span style="font-size:8px;color:var(--text-label)">Hz</span></span>
-          <button class="btn" id="mode-btn-${k}" onclick="viewModeShape(${k})" style="font-size:9px;padding:2px 8px"${canView ? '' : ' disabled'}>View</button>
+        let partLine = '';
+        if (havePart && !rigid) {
+          const fx = tmX > 0 ? (m.effectiveMassX || 0) / tmX : 0;
+          const fy = tmY > 0 ? (m.effectiveMassY || 0) / tmY : 0;
+          const fz = tmZ > 0 ? (m.effectiveMassZ || 0) / tmZ : 0;
+          const mx = Math.max(fx, fy, fz);
+          const cell = (lbl, f) => `<span style="color:${f >= mx && mx > 0 ? 'var(--text-hi)' : 'var(--text-lo)'}">${lbl} ${pct(f)}%</span>`;
+          partLine = `<div style="font-family:'DM Mono',monospace;font-size:8.5px;letter-spacing:.04em;color:var(--text-lo);padding:0 0 4px 0">
+            eff. mass&nbsp; ${cell('X', fx)} · ${cell('Y', fy)} · ${cell('Z', fz)}</div>`;
+        }
+        return `<div style="padding:5px 0;border-bottom:1px solid var(--border)">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+            <span style="font-family:'DM Mono',monospace;font-size:9px;letter-spacing:.06em;color:var(--text-lo)">MODE ${k + 1}${rigid ? ' <span style="color:var(--warn)">· rigid body</span>' : ''}</span>
+            <span style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text-hi)">${hz} <span style="font-size:8px;color:var(--text-label)">Hz</span></span>
+            <button class="btn" id="mode-btn-${k}" onclick="viewModeShape(${k})" style="font-size:9px;padding:2px 8px"${canView ? '' : ' disabled'}>View</button>
+          </div>
+          ${partLine}
         </div>`;
       }).join('');
+      // Cumulative effective-mass capture from the last reported mode (grows → 1).
+      let cumLine = '';
+      if (havePart) {
+        const last = S.modal.modes[S.modal.modes.length - 1] || {};
+        cumLine = `<div style="font-family:'DM Mono',monospace;font-size:8.5px;letter-spacing:.04em;color:var(--text-lo);margin-top:6px">
+          cumulative (${S.modal.modes.length} modes): X ${pct(last.cumulativeMassFracX || 0)}% · Y ${pct(last.cumulativeMassFracY || 0)}% · Z ${pct(last.cumulativeMassFracZ || 0)}%</div>`;
+      }
       const warnLine = (S.modal.warnings && S.modal.warnings.length)
         ? `<div style="font-size:9px;color:var(--warn);margin-top:6px;line-height:1.5">${S.modal.warnings.map(w => '⚠ ' + w).join('<br>')}</div>`
         : '';
@@ -6619,9 +6645,10 @@ function showResults(s) {
       <div style="border-left:2px solid var(--gold);background:var(--bg-input);padding:10px 14px;margin-bottom:12px">
         <div style="font-family:'Rajdhani',sans-serif;font-size:13px;letter-spacing:.08em;color:var(--text-mid);margin-bottom:6px">NATURAL FREQUENCIES</div>
         ${rows}
+        ${cumLine}
         ${warnLine}
         ${certLine}
-        <div style="font-size:9px;color:var(--text-lo);margin-top:6px;line-height:1.5">Mode shapes show relative amplitude (unit-normalized eigenvectors), not physical deflection. Click View to animate a mode in the viewer.</div>
+        <div style="font-size:9px;color:var(--text-lo);margin-top:6px;line-height:1.5">Mode shapes show relative amplitude (unit-normalized eigenvectors), not physical deflection. Effective-mass % is each mode's share of the total translational mass along X/Y/Z. Click View to animate a mode in the viewer.</div>
       </div>`;
     })() : ''}
 

@@ -438,10 +438,22 @@ app.post("/api/analyse", async (req, res) => {
         rigidBodyModeCount: result.modalResult.rigidBodyModeCount,
         certified:          result.modalResult.certified,          // #160
         warnings:           result.modalResult.warnings ?? [],     // #160
+        totalMassX:         result.modalResult.totalMassX,         // #161
+        totalMassY:         result.modalResult.totalMassY,
+        totalMassZ:         result.modalResult.totalMassZ,
         modes: result.modalResult.modes.map(m => ({
           frequencyHz:         m.frequencyHz,
           omega2:              m.omega2,
-          participationFactor: m.participationFactor,
+          participationFactor: m.participationFactor,               // legacy (= X)
+          participationX:      m.participationX,                    // #161
+          participationY:      m.participationY,
+          participationZ:      m.participationZ,
+          effectiveMassX:      m.effectiveMassX,
+          effectiveMassY:      m.effectiveMassY,
+          effectiveMassZ:      m.effectiveMassZ,
+          cumulativeMassFracX: m.cumulativeMassFracX,
+          cumulativeMassFracY: m.cumulativeMassFracY,
+          cumulativeMassFracZ: m.cumulativeMassFracZ,
           rigid:               m.rigid,                             // #160.4
           residual:            m.residual,                         // #160.2
           // modeShape excluded — transmitted via vertexModeShapesB64
