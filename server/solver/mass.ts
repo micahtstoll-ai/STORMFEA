@@ -14,9 +14,6 @@ import { buildSparsityPattern, type SparsityPattern } from "./assembly.js";
 import { findEntry } from "./csr.js";
 import { isAffineC3D10, c3d10IsoparametricMass, c3d10Volume } from "./element.js";
 
-// Default mass density for PLA in kg/m³
-const DEFAULT_MASS_RHO_KG_M3 = 1240;
-
 // Conversion: 1 kg/m³ = 1e-12 t/mm³  (in N·mm system where 1 N = 1 t·mm/s²)
 const KG_M3_TO_T_MM3 = 1e-12;
 
@@ -295,12 +292,23 @@ function hrzLumpedC3D10(
 /**
  * High-level mass assembly entry point.
  *
- * @param mesh     - tetrahedral mesh (C3D4 or C3D10)
- * @param material - any solver material; massRho (kg/m³) is read if present, else 1240 kg/m³
- * @param type     - 'consistent' → full CSR matrix; 'lumped' → diagonal Float64Array
- *                   (row-sum for C3D4, HRZ diagonal scaling for C3D10 — row-sum
- *                   produces NEGATIVE corner masses for C3D10)
- * @param pattern  - optional prebuilt sparsity pattern (share K's — issue #100)
+ * @param mesh       - tetrahedral mesh (C3D4 or C3D10)
+ * @param material   - any solver material; its massRho (kg/m³) is used when present
+ * @param type       - 'consistent' → full CSR matrix; 'lumped' → diagonal Float64Array
+ *                     (row-sum for C3D4, HRZ diagonal scaling for C3D10 — row-sum
+ *                     produces NEGATIVE corner masses for C3D10)
+ * @param pattern    - optional prebuilt sparsity pattern (share K's — issue #100)
+ * @param field      - optional two-region material field (per-bin densities)
+ * @param defaultRho - explicit density fallback (kg/m³) the CALLER supplies when
+ *                     the material carries no massRho. The kernel no longer
+ *                     invents one — see issue #159.
+ *
+ * Density resolution (issue #159): the mass kernel must not silently invent a
+ * density — a caller solving a dense-metal part would otherwise get PLA's
+ * 1240 kg/m³ and ~2.5× wrong frequencies with no warning. The density comes,
+ * in order, from material.massRho, then the caller's `defaultRho`, then (when a
+ * two-region field is present) the field's own per-bin densities. If none of
+ * those resolve a density, assembleMass THROWS with an actionable message.
  *
  * Density conversion: rho_solver = massRho × 1e-12  (kg/m³ → t/mm³)
  * This gives ω² in rad²/s² directly in the N·mm·tonne unit system.
@@ -313,8 +321,24 @@ export function assembleMass(
   /** Optional two-region material field: per-bin densities expanded to a
    *  per-element ρ array so mass tracks the shell/core split. */
   field?:   ElementMaterialField,
+  /** Caller-owned density fallback (kg/m³) when the material has no massRho. */
+  defaultRho?: number,
 ): { M: CSRMatrix; diagIdx: Int32Array } | Float64Array {
-  const massRhoKg = (material as { massRho?: number }).massRho ?? DEFAULT_MASS_RHO_KG_M3;
+  // Resolve the scalar density HONESTLY — no hidden PLA constant (issue #159).
+  let massRhoKg = (material as { massRho?: number }).massRho ?? defaultRho;
+  if (massRhoKg === undefined) {
+    // A two-region field carries its own per-bin densities; use bin 0 as the
+    // scalar stand-in (per-element assembly reads field.massRho directly below,
+    // so this scalar is only a fallback for any bin left unset).
+    if (field) massRhoKg = field.massRho[0];
+    if (massRhoKg === undefined) {
+      throw new Error(
+        `assembleMass: material "${material.label}" has no massRho and no ` +
+        `defaultRho was supplied. Pass massRho (kg/m³) on the material, or an ` +
+        `explicit defaultRho — the mass kernel no longer assumes PLA (1240 kg/m³).`,
+      );
+    }
+  }
   const rho = massRhoKg * KG_M3_TO_T_MM3;
 
   let rhoOfElement: Float64Array | null = null;
