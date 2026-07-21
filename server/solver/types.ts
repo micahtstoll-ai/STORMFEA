@@ -409,19 +409,52 @@ export interface ModalAnalysisResult {
 // ─── Mesh Quality Types ───────────────────────────────────────────────────────
 
 /**
- * Quality severity: degenerate (J < 0), poor (J < 0.01 or AR > 20 or dihedral < 5°), normal.
+ * Quality severity (issue #165/#166):
+ *   degenerate — unusable: near-zero-volume sliver (|normalizedJacobian| below
+ *                the hard floor), a folded C3D10 curved mapping, or a non-finite
+ *                metric.  A MIRRORED element (negative raw Jacobian but well
+ *                shaped) is NOT degenerate — the assembler auto-orients it.
+ *   poor       — low-accuracy shape: |normalizedJacobian| < poor floor, aspect
+ *                ratio above the poor cap, or a dihedral angle out of band.
+ *   normal     — acceptable.
  */
 export type ElementQualitySeverity = "degenerate" | "poor" | "normal";
 
 /**
  * Per-element quality metrics.
+ *
+ * The classification metrics are SCALE-INVARIANT (issue #165): `normalizedJacobian`,
+ * `aspectRatio` and the dihedral angles are dimensionless, so the same physical
+ * element gives the same verdict at any model scale. `jacobianMin` (raw signed
+ * 6·V in mm³) is kept for sign/back-compat reporting only — never threshold on it.
  */
 export interface ElementQualityMetrics {
   readonly elementIdx:       number;
-  readonly jacobianMin:      number;        // minimum determinant (J_min)
-  readonly aspectRatio:      number;        // longest edge / shortest altitude
-  readonly minDihedralDeg:   number;        // minimum dihedral angle in degrees
+  readonly jacobianMin:      number;        // raw signed 6·V (mm³) — sign only, scale-dependent
+  /**
+   * Scale-invariant "mean-ratio" normalized Jacobian: √2·(6V) / l_rms³, where
+   * l_rms is the RMS of the 6 edge lengths. Exactly 1.0 for a regular tet,
+   * (0,1] for well-shaped, → 0 for slivers, < 0 for inverted. Dimensionless.
+   */
+  readonly normalizedJacobian: number;
+  readonly aspectRatio:      number;        // longest edge / shortest altitude (dimensionless)
+  readonly minDihedralDeg:   number;        // minimum dihedral angle in degrees, over [0,180]
+  readonly maxDihedralDeg:   number;        // maximum dihedral angle in degrees, over [0,180]
   readonly severity:         ElementQualitySeverity;
+  // ── C3D10 curved-element metrics (issue #162; undefined for C3D4) ──
+  /** True when the quadratic mapping is folded (a Gauss-point Jacobian sign
+   *  disagrees with the corner orientation, or a midside node is grossly
+   *  displaced). Such an element must never be integrated with Math.abs(detJ). */
+  readonly curvedFolded?:    boolean;
+  /** Worst corner-orientation-relative Gauss-point detJ (cornerSign·detJ). ≤ 0
+   *  ⇒ folded. undefined for C3D4. */
+  readonly minGaussDetJ?:    number;
+  /** Max over the 6 edges of ‖midsideNode − edgeMidpoint‖ / edgeLength. 0 for a
+   *  straight-sided element; a cheap fold screen. undefined for C3D4. */
+  readonly maxMidsideOffset?: number;
+  /** Element centroid (mm) — surfaced so the gate can name/highlight the worst
+   *  element (issue #166). */
+  readonly centroid?:        readonly [number, number, number];
 }
 
 /**
@@ -430,12 +463,23 @@ export interface ElementQualityMetrics {
  */
 export interface MeshQualityReport {
   readonly totalElements:           number;
-  readonly degenerateCount:         number;   // J_min < 0 (inverted)
-  readonly poorQualityCount:        number;   // J_min < 0.01 or AR > 20 or dihedral < 5°
+  readonly degenerateCount:         number;   // unusable elements (sliver / folded / non-finite)
+  readonly poorQualityCount:        number;   // low-accuracy shape (see ElementQualitySeverity)
   readonly normalCount:             number;
   readonly qualityScore:            number;   // [0, 1] where 1 = all elements perfect
-  readonly worstJacobianMin:        number;
+  readonly worstJacobianMin:        number;   // raw signed 6·V (mm³) — sign only
+  /** Worst (closest-to-zero) |normalizedJacobian| over the mesh — scale-invariant. */
+  readonly worstNormalizedJacobian: number;
   readonly worstAspectRatio:        number;
   readonly worstMinDihedralDeg:     number;
+  readonly worstMaxDihedralDeg:     number;
+  /** Count of C3D10 elements whose curved mapping is folded (issue #162). */
+  readonly curvedFoldedCount:       number;
+  /** Count of elements exceeding a HARD shape threshold — these block the solve
+   *  (issue #166). */
+  readonly hardViolationCount:      number;
+  /** The worst hard-threshold violators (capped list) for actionable gate
+   *  messages; empty when the mesh passes the hard gate. */
+  readonly hardViolators:           readonly ElementQualityMetrics[];
   readonly worstElement:            ElementQualityMetrics | null;
 }
