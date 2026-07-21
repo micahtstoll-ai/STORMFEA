@@ -436,10 +436,14 @@ app.post("/api/analyse", async (req, res) => {
         converged:          result.modalResult.converged,
         iterations:         result.modalResult.iterations,
         rigidBodyModeCount: result.modalResult.rigidBodyModeCount,
+        certified:          result.modalResult.certified,          // #160
+        warnings:           result.modalResult.warnings ?? [],     // #160
         modes: result.modalResult.modes.map(m => ({
           frequencyHz:         m.frequencyHz,
           omega2:              m.omega2,
           participationFactor: m.participationFactor,
+          rigid:               m.rigid,                             // #160.4
+          residual:            m.residual,                         // #160.2
           // modeShape excluded — transmitted via vertexModeShapesB64
         })),
       } : null,
