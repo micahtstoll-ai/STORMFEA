@@ -883,6 +883,55 @@ console.log("\n[15] Mesh quality metrics and degenerate element detection");
   test("[15.9] Obtuse sliver reports true dihedral > 90°",
     obtuse.worstMaxDihedralDeg > 90 && obtuse.worstMaxDihedralDeg <= 180,
     `maxDihedral=${obtuse.worstMaxDihedralDeg.toFixed(1)}°`);
+
+  // ── Issue #166: gate re-keyed on shape, not Jacobian sign ──
+  const gateMat = { E: 3500, nu: 0.36, yieldStrength: 50, label: "pla" };
+
+  // A few extreme slivers (< 5%) must BLOCK the solve, not be warned past. Build
+  // a good box mesh and collapse a handful of elements to zero volume.
+  const sliverMesh = generateBoxMesh(0, 0, 0, 10, 10, 10, 3, 3, 3); // 135 elements
+  const nSlivers = 3; // 2.2 % < 5 %
+  for (let e = 0; e < nSlivers; e++) sliverMesh.elements[e * 4 + 3] = sliverMesh.elements[e * 4]!;
+  const sliverQ = computeMeshQuality(sliverMesh);
+  test("[15.10] A few extreme slivers (<5%) register as hard violations",
+    sliverQ.hardViolationCount === nSlivers && sliverQ.hardViolationCount / sliverQ.totalElements < 0.05,
+    `hard=${sliverQ.hardViolationCount}/${sliverQ.totalElements}`);
+
+  const sBottom: number[] = [], sTop: number[] = [];
+  for (let n = 0; n < sliverMesh.nodeCount; n++) {
+    const z = sliverMesh.nodes[n * 3 + 2] ?? 0;
+    if (z < 0.01) sBottom.push(n);
+    if (z > 9.99) sTop.push(n);
+  }
+  let sliverThrew = false, sliverMsg = "";
+  try {
+    await runLinearStatic({ mesh: sliverMesh, material: gateMat,
+      constraints: [{ nodeIndices: sBottom }],
+      forces: sTop.map(n => ({ nodeIndex: n, forceN: [0, 0, 1] as [number, number, number] })) });
+  } catch (e) { sliverThrew = true; sliverMsg = (e as Error).message || String(e); }
+  test("[15.11] Solver blocks a mesh with a few extreme slivers",
+    sliverThrew && sliverMsg.includes("Mesh quality error"),
+    `threw=${sliverThrew}, msg='${sliverMsg.slice(0, 60)}'`);
+  test("[15.12] Gate message names worst-element coordinates (mm)",
+    sliverThrew && /\(-?\d+\.\d+, -?\d+\.\d+, -?\d+\.\d+\) mm/.test(sliverMsg),
+    `msg='${sliverMsg.replace(/\n/g, " ").slice(0, 120)}'`);
+
+  // The mirror-oriented well-shaped mesh must SOLVE without tripping the gate.
+  const mBottom: number[] = [], mTop: number[] = [];
+  for (let n = 0; n < mirrorMesh.nodeCount; n++) {
+    const z = mirrorMesh.nodes[n * 3 + 2] ?? 0;
+    if (z < 0.01) mBottom.push(n);
+    if (z > 9.99) mTop.push(n);
+  }
+  let mirrorSolved = false, mirrorErr = "";
+  try {
+    await runLinearStatic({ mesh: mirrorMesh, material: gateMat,
+      constraints: [{ nodeIndices: mBottom }],
+      forces: mTop.map(n => ({ nodeIndex: n, forceN: [0, 0, 1] as [number, number, number] })) });
+    mirrorSolved = true;
+  } catch (e) { mirrorErr = (e as Error).message || String(e); }
+  test("[15.13] Mirror-oriented mesh solves without a mesh-quality error",
+    mirrorSolved, `err='${mirrorErr.slice(0, 60)}'`);
 }
 
 // ── Test group 16: Linear buckling — Euler column (clamped-free) ─────────────

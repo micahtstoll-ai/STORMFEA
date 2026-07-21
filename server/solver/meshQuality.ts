@@ -518,3 +518,46 @@ export function computeMeshQuality(mesh: TetMesh): MeshQualityReport {
     worstElement,
   };
 }
+
+// ─── Actionable gate message (issue #166) ─────────────────────────────────────
+
+/**
+ * Reason one element failed the hard gate, worst-cause first.
+ */
+function hardViolationReason(m: ElementQualityMetrics): string {
+  if (m.curvedFolded === true) {
+    const off = m.maxMidsideOffset !== undefined
+      ? `, midside offset ${(m.maxMidsideOffset * 100).toFixed(0)}% of edge` : "";
+    return `folded C3D10 curved mapping (min Gauss detJ ` +
+      `${Number.isFinite(m.minGaussDetJ ?? NaN) ? (m.minGaussDetJ ?? 0).toExponential(2) : "n/a"}${off})`;
+  }
+  if (!Number.isFinite(m.normalizedJacobian) || Math.abs(m.normalizedJacobian) < HARD_SLIVER_NJ) {
+    return `near-zero-volume sliver (normalized Jacobian ` +
+      `${m.normalizedJacobian.toFixed(4)}, ideal 1.0 — stiffness ill-conditioned)`;
+  }
+  return `extreme aspect ratio ${m.aspectRatio.toFixed(0)} (> ${HARD_AR})`;
+}
+
+/**
+ * Build an actionable failure message for a mesh that fails the hard gate,
+ * naming the worst elements' coordinates so the client can highlight them.
+ */
+export function formatHardViolations(report: MeshQualityReport): string {
+  const n = report.hardViolationCount;
+  const pct = report.totalElements > 0 ? (n / report.totalElements) * 100 : 0;
+  // Worst-first: smallest |normalizedJacobian| (most damaging) leads.
+  const worst = [...report.hardViolators].sort(
+    (a, b) => Math.abs(a.normalizedJacobian) - Math.abs(b.normalizedJacobian),
+  );
+  const SHOWN = 3;
+  const lines = worst.slice(0, SHOWN).map((m) => {
+    const c = m.centroid ?? [NaN, NaN, NaN];
+    const at = `(${c[0]!.toFixed(2)}, ${c[1]!.toFixed(2)}, ${c[2]!.toFixed(2)}) mm`;
+    return `  • element ${m.elementIdx} at ${at}: ${hardViolationReason(m)}`;
+  });
+  const more = worst.length > SHOWN ? `\n  … and ${n - SHOWN} more` : "";
+  return `Mesh quality error: ${n} element${n === 1 ? "" : "s"} (${pct.toFixed(1)}%) ` +
+    `exceed the hard shape threshold and would corrupt the solution ` +
+    `(ill-conditioned element stiffness or a folded element mapping). ` +
+    `Re-mesh these regions with higher-quality settings:\n${lines.join("\n")}${more}`;
+}
