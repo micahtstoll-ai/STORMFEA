@@ -190,6 +190,49 @@ export function latticeStiffnessScale(
   return Math.max(LATTICE_STIFFNESS_FLOOR, gibsonAshbyModulus(p.stiffPrefactor, r, n, p.stiffCorrXY));
 }
 
+/**
+ * Geometry-free solid-perimeter volume-fraction proxy for the LUMPED
+ * single-material paths (issue #176). The non-two-region analysis has no mesh
+ * classification, so the perimeter contribution is estimated from wall count
+ * alone: ~10% of a small part's cross-section per perimeter loop, capped well
+ * below solid. This is the SAME +0.10-per-wall heuristic the mass model uses
+ * (effectiveVolumeFraction) — LOW confidence, and superseded by the two-region
+ * model's exact per-element wall fraction whenever geometry is available.
+ */
+export function wallCreditFraction(wallCount: number): number {
+  return Math.min(0.9, Math.max(0, wallCount) * 0.10);
+}
+
+/**
+ * Unified LUMPED in-plane stiffness knockdown for the single-material paths
+ * (issue #176): a Voigt (iso-strain) volume average of solid perimeter walls
+ * and a Gibson-Ashby infill core,
+ *
+ *     knockdown = wallCredit + (1 − wallCredit) · g_GA(ρ)
+ *
+ * i.e. the lumped limit of the two-region model's E_eff = Vf·E_solid +
+ * (1−Vf)·E_solid·g(ρ). Both the CLT and the non-CLT single-material paths route
+ * their density knockdown through THIS one law (the CLT path passes it as the
+ * A-matrix scale, the non-CLT path as the E_xy scale), replacing the three
+ * inconsistent laws (linear-ρ, 0.30+0.70ρ, bare Gibson-Ashby) that swung a 20%
+ * part 2–5× across toggles.
+ *
+ * Anchor (invariant #8): g_GA(1) = 1 exactly for structural patterns, so
+ * knockdown(ρ=1) = wallCredit + (1−wallCredit) = 1 EXACTLY regardless of wall
+ * credit — 100% infill reproduces the solid across every path. Floored
+ * implicitly by g_GA's own LATTICE_STIFFNESS_FLOOR and the wall credit.
+ */
+export function lumpedInPlaneStiffnessScale(
+  pattern: string,
+  rho: number,
+  wallCredit: number,
+  overrideExp?: number | null,
+): number {
+  const g = latticeStiffnessScale(pattern, rho, overrideExp);
+  const w = Math.min(1, Math.max(0, wallCredit));
+  return Math.min(1, w + (1 - w) * g);
+}
+
 /** Per-axis stiffness scale factors in the NATURAL material frame
  *  (local Z = layer normal = build axis). */
 export interface LatticeAxisScales {

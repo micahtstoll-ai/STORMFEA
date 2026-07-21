@@ -69,6 +69,8 @@ import {
   latticeStiffnessScale,
   latticeStiffnessScales,
   latticeStrengthFraction,
+  lumpedInPlaneStiffnessScale,
+  wallCreditFraction,
   patternFamilyOf,
 } from "./solver/lattice.js";
 import { isOrthotropic, isOrthotropicLike } from "./solver/types.js";
@@ -925,6 +927,16 @@ function buildOrthotropicMaterialCLT(
   weakAxis?:       readonly [number, number, number] | null,
   /** Bead-penetration bond multipliers (process settings present); see bond.ts. */
   bondRel?:        BondPrediction | null,
+  /**
+   * Unified in-plane DENSITY knockdown (issue #176): the A-matrix scale for the
+   * CLT laminate. When provided (single-material path), it is the shared
+   * wall-credit + Gibson-Ashby law (lumpedInPlaneStiffnessScale), replacing the
+   * legacy linear-ρ A-scaling so all paths share ONE ρ-law. When omitted (the
+   * buildCoreMaterial base, called at infillPct = 100), it falls back to the
+   * legacy `infillPct/100` — 1.0, a no-op, since the Gibson-Ashby knockdown is
+   * applied per-axis OUTSIDE this call.
+   */
+  inPlaneDensityScale?: number,
 ): OrthotropicMaterial {
   const base = MATERIALS[baseMatId] ?? MATERIALS["pla"]!;
   const lhf  = layerHeightFactor(layerHeightMm);
@@ -970,7 +982,7 @@ function buildOrthotropicMaterialCLT(
     bead,
     plyStack.angles,
     plyStack.fracs,
-    infillPct / 100,
+    inPlaneDensityScale ?? infillPct / 100,
     E_z,
     nu_xz,
     G_xz,
@@ -1012,6 +1024,15 @@ export function buildOrthotropicMaterial(
   weakAxis?:       readonly [number, number, number] | null,
   /** Bead-penetration bond multipliers (process settings present); see bond.ts. */
   bondRel?:        BondPrediction | null,
+  /**
+   * Unified in-plane stiffness knockdown (issue #176): overrides the legacy
+   * `min(1, strengthMul)` E_xy scale with the shared wall-credit + Gibson-Ashby
+   * law (lumpedInPlaneStiffnessScale), so the single-material path uses the SAME
+   * ρ-law as CLT and the two-region core. When omitted (shell build, core base,
+   * tests — all at strengthMul = 1.0 ⇒ min(1,1) = 1), the legacy behavior is
+   * bit-identical, decoupling stiffness density from the strength multiplier.
+   */
+  inPlaneStiffScale?: number,
 ): OrthotropicMaterial {
   const base = MATERIALS[baseMatId] ?? MATERIALS["pla"]!;
   const lhf  = layerHeightFactor(layerHeightMm);
@@ -1032,7 +1053,10 @@ export function buildOrthotropicMaterial(
   const bondS = bondRel?.relStrength  ?? 1.0;
   const bondE = bondRel?.relStiffness ?? 1.0;
 
-  const E_xy    = E_xy_base    * Math.min(1.0, strengthMul);
+  // Stiffness density knockdown (issue #176): the unified wall-credit +
+  // Gibson-Ashby law when supplied by the single-material path; else the legacy
+  // min(1, strengthMul) (bit-identical for the strengthMul = 1.0 callers).
+  const E_xy    = E_xy_base    * (inPlaneStiffScale ?? Math.min(1.0, strengthMul));
   const E_z     = E_xy         * E_z_ratio * lhf * bondE;
   const G_xy    = E_xy         / (2 * (1 + base.nu));
   const G_xz    = G_xy         * Gxz_ratio * lhf * bondE;
@@ -3482,6 +3506,21 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // For flat prints: E_z ≈ 0.65 × E_xy, yieldZ ≈ 0.58 × yieldXY.
   // For upright prints: axes are swapped — the strong direction faces the load.
 
+  // Unified in-plane density knockdown (issue #176): ONE ρ-law for the lumped
+  // single-material paths — a wall-credit + Gibson-Ashby volume average
+  // (lumpedInPlaneStiffnessScale), the lumped limit of the two-region core.
+  // The CLT path passes it as the laminate A-matrix scale; the non-CLT path as
+  // the E_xy scale. This replaces the previous three inconsistent laws
+  // (CLT linear-ρ, non-CLT 0.30+0.70ρ·patternMul, core bare Gibson-Ashby) that
+  // swung a 20% part 2–5× across the CLT/two-region toggles. At 100% infill the
+  // knockdown is exactly 1.0, so every path reproduces the solid (anchor).
+  const inPlaneDensityKnockdown = lumpedInPlaneStiffnessScale(
+    req.print.pattern ?? "grid",
+    req.print.infillPct / 100,
+    wallCreditFraction(req.print.wallCount),
+    req.calibration?.latticeStiffExp,
+  );
+
   const builtMaterial: AnyMaterial = req.analysis.useCLT
     ? buildOrthotropicMaterialCLT(
         req.print.materialId,
@@ -3494,6 +3533,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         req.analysis.beadProps,
         weakAxis,
         bondRel,
+        inPlaneDensityKnockdown,
       )
     : buildOrthotropicMaterial(
         req.print.materialId,
@@ -3503,6 +3543,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         req.calibration ?? null,
         weakAxis,
         bondRel,
+        inPlaneDensityKnockdown,
       );
 
   // Effective mass density (issue #99): solid density × first-order solid

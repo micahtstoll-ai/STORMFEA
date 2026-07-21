@@ -67,9 +67,25 @@ fitted from a printer process sweep (`POST /api/calibration/bond-sweep`). The
 `POST /api/bond-sensitivity` route evaluates the same model for the process
 dashboard and a nozzle×speed bond-quality surface without running a solve.
 
-**Infill & pattern.** Effective properties are scaled by infill fraction and
-pattern (gyroid degrades less than rectilinear at equal infill). Wall/bead
-contributions can be added via Classical Laminate Theory (`solver/laminate.ts`).
+**Infill & pattern.** The single-material (default) model scales in-plane
+stiffness by ONE density law shared across every toggle (issue #176):
+`knockdown(ρ) = wallCredit + (1 − wallCredit)·g_GA(ρ)`
+(`lumpedInPlaneStiffnessScale`, `solver/lattice.ts`) — a Voigt volume average of
+solid perimeter walls and a Gibson-Ashby infill core `g_GA(ρ) = ρⁿ·(1 − c(1−ρ))`,
+i.e. the lumped limit of the two-region model's `E_eff = Vf·E_solid +
+(1−Vf)·E_solid·g(ρ)`. The `wallCredit` is a geometry-free `min(0.9, 0.10·wallCount)`
+perimeter-fraction proxy (LOW confidence; the two-region model supersedes it with
+the exact per-element wall fraction when geometry is available). Both single-material
+paths route through this one law — the **Classical Laminate Theory** path
+(`solver/laminate.ts`) passes it as the A-matrix scale (replacing the legacy
+linear-ρ scaling), the isotropic-base path as the `E_xy` scale (replacing the
+legacy `min(1, 0.30 + 0.70ρ + wallBonus)·patternMul`) — so a 20% part no longer
+swings 2–5× between the CLT and two-region toggles. Pattern enters stiffness only
+through the Gibson-Ashby family exponent (pattern *strength* multipliers stay a
+strength concept, no longer folded into stiffness). At 100% infill `g_GA(1) = 1`
+exactly, so `knockdown = 1` and every path reproduces the solid (anchor). Density
+knockdown is now decoupled from the strength multiplier, which keeps driving
+`yieldXY` on its own linear infill curve.
 
 **Two-region model (walls vs infill, opt-in).** The default model above smears
 perimeter walls and infill into ONE homogenized material (walls enter only as a
