@@ -119,21 +119,32 @@ geometrically:
   Gibson-Ashby power laws in relative density (`solver/lattice.ts`), applied as
   PER-AXIS scale factors on the solid's natural-frame constants
   (`buildCoreMaterial` in `analysis.ts`): stiffness `g(ρ) = ρⁿ·(1 − c(1−ρ))`
-  per axis and strength `s(ρ) = min(1, patternMul·ρᵐ)` — near zero at 0%
-  infill (floored at 10⁻³×solid; the legacy curve's 0.30 intercept represents
-  the walls and is not reused). Exponents are per pattern family, confidence
-  LOW, regression-locked, calibration-overridable (an override routes to a
-  single scalar law — one fitted exponent can't say which axis it belongs to):
+  per axis and strength `s(ρ) = min(1, patternMul·ρᵐ)` **also per axis**
+  (yieldXY / yieldZ / yieldZShear each carry their own exponent — issue #177) —
+  near zero at 0% infill (floored at 10⁻³×solid; the legacy curve's 0.30
+  intercept represents the walls and is not reused). Exponents are per pattern
+  family, confidence LOW, regression-locked, calibration-overridable (an
+  override routes both stiffness and strength to a single scalar law — one
+  fitted exponent can't say which axis it belongs to):
 
-  | Family | Patterns | n in-plane (c) | n through-layer (c) | n G_xz (c) | n G_xy | Strength m |
+  | Family | Patterns | n in-plane (c) | n through-layer (c) | n G_xz (c) | n G_xy | Strength m (xy / z / zs) |
   |---|---|---|---|---|---|---|
-  | TPMS-like 3-D | gyroid, cubic, adaptive | 1.75 (0.12) | 2.1 (0.18) | 2.3 (0.22) | derived | 1.25 (stretch-dominated) |
-  | extruded walls | grid, lines, honeycomb, trihexagon, concentric | 2.0 (0.10) | 1.0 (rule of mixtures) | 1.5 (0.10) | 3.0 (honeycomb bending) | 1.5 (bending-dominated) |
-  | sparse | lightning | 2.0 ×0.3 prefactor | 2.0 | 2.0 | derived | 1.5 |
+  | TPMS-like 3-D | gyroid, cubic, adaptive | 1.75 (0.12) | 2.1 (0.18) | 2.3 (0.22) | derived | 1.25 / 1.5 / 1.6 (stretch-dominated) |
+  | extruded walls | grid, lines, honeycomb, trihexagon, concentric | 2.0 (0.10) | 1.0 (rule of mixtures) | 1.5 (0.10) | 3.0 (honeycomb bending) | 1.5 / 1.0 / 1.5 (bending-dominated) |
+  | sparse | lightning | 2.0 ×0.3 prefactor | 2.0 | 2.0 | derived | 1.5 / 1.5 / 1.5 |
 
-  Extruded-wall infill is continuous along the build axis, so its through-layer
-  law is the mildest and the core's anisotropy INVERTS at low density (E_z >
-  E_xy). Because ν_zx = ν_xz·E_z/E_xy would then exceed the thermodynamic
+  Extruded-wall infill is continuous along the build axis, so BOTH its
+  through-layer stiffness (n = 1, rule of mixtures) and its through-layer
+  strength (m = 1) are the mildest, and the core's anisotropy INVERTS at low
+  density: `E_z > E_xy` AND `yieldZ > yieldXY` in the core. The per-axis
+  strength exponents mirror the stiffness-exponent ordering per family, so
+  `sign(E_z − E_xy)` now agrees with `sign(yieldZ − yieldXY)` in the core
+  (previously the single scalar strength law kept the solid's yieldZ/yieldXY =
+  0.58 ratio, claiming a Z-stiffer-yet-Z-weaker core at once — issue #177).
+  Because ν_zx = ν_xz·E_z/E_xy would then exceed the thermodynamic
+  stability limit, ν_xz is scaled by `min(1, gXY/gZ, gZ/gXY)` — symmetric so
+  the bound holds in the natural frame and after the upright scalar swap
+  alike. Because ν_zx = ν_xz·E_z/E_xy would then exceed the thermodynamic
   stability limit, ν_xz is scaled by `min(1, gXY/gZ, gZ/gXY)` — symmetric so
   the bound holds in the natural frame and after the upright scalar swap
   alike. Per-bin constitutive matrices are true Voigt blends of the two

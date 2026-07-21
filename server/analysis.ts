@@ -69,6 +69,7 @@ import {
   latticeStiffnessScale,
   latticeStiffnessScales,
   latticeStrengthFraction,
+  latticeStrengthFractions,
   lumpedInPlaneStiffnessScale,
   wallCreditFraction,
   patternFamilyOf,
@@ -1219,7 +1220,12 @@ export function buildCoreMaterial(
 ): OrthotropicMaterial {
   const baseMat = MATERIALS[materialId] ?? MATERIALS["pla"]!;
   const rho = infillPct / 100;
-  const sStr = latticeStrengthFraction(pattern, rho, calibration?.latticeStrengthExp);
+  // Per-axis strength knockdown (issue #177): yieldXY, yieldZ, and yieldZShear
+  // each follow their own Gibson-Ashby strength exponent so the strength
+  // anisotropy tracks the per-axis stiffness anisotropy (a calibration
+  // strengthExp collapses all three to one isotropic law). Applied in the
+  // NATURAL frame below, before any upright swap.
+  const { sXY, sZ, sZS } = latticeStrengthFractions(pattern, rho, calibration?.latticeStrengthExp);
 
   const uprightNoBed = !weakAxis && orientation === "upright";
   const solidAxis: readonly [number, number, number] | null =
@@ -1272,9 +1278,21 @@ export function buildCoreMaterial(
     };
   }
 
-  let framed: OrthotropicMaterial = scaled;
+  // Apply the per-axis strength knockdown in the NATURAL frame (issue #177),
+  // BEFORE the upright scalar swap: the swap relabels yieldXY↔yieldZ, so each
+  // scaled yield must already carry its own physical-axis strength law when the
+  // swap runs (interlaminar shear rides through the swap unchanged, matching the
+  // stiffness treatment where per-axis gXY/gZ scale before framing).
+  const scaledStr: OrthotropicMaterial = {
+    ...scaled,
+    yieldXY: scaled.yieldXY * sXY,
+    yieldZ:  scaled.yieldZ  * sZ,
+    yieldZShear: interlaminarShearOf(scaled) * sZS,
+  };
+
+  let framed: OrthotropicMaterial = scaledStr;
   if (uprightNoBed) {
-    const { weakAxis: _identityAxis, ...swapped } = applyUprightScalarSwap(scaled);
+    const { weakAxis: _identityAxis, ...swapped } = applyUprightScalarSwap(scaledStr);
     framed = swapped;
   }
 
@@ -1297,11 +1315,6 @@ export function buildCoreMaterial(
 
   return {
     ...framed,
-    yieldXY: framed.yieldXY * sStr,
-    yieldZ:  framed.yieldZ  * sStr,
-    // Interlaminar shear follows the same lattice strength fraction as the
-    // other strengths (the bond area thins with density like the walls do).
-    yieldZShear: interlaminarShearOf(framed) * sStr,
     label: `${solid.label} · GA ${pattern} lattice ρ=${infillPct}%`,
     massRho: baseMat.densityKgM3 * rho,
   };
@@ -3615,7 +3628,9 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
           model: "gibson-ashby",
           patternFamily: family,
           stiffnessExponent: req.calibration?.latticeStiffExp ?? LATTICE_PARAMS[family].stiffExpXY,
-          strengthExponent:  req.calibration?.latticeStrengthExp ?? LATTICE_PARAMS[family].strengthExp,
+          // Representative (in-plane) strength exponent; the through-layer and
+          // interlaminar-shear axes now follow their own exponents (issue #177).
+          strengthExponent:  req.calibration?.latticeStrengthExp ?? LATTICE_PARAMS[family].strengthExpXY,
           stiffnessScale: gStiff,
           strengthScale:  sStr,
           floored: gStiff <= LATTICE_STIFFNESS_FLOOR,

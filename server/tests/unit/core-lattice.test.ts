@@ -25,6 +25,7 @@ import {
   latticeStiffnessScale,
   latticeStiffnessScales,
   latticeStrengthFraction,
+  latticeStrengthFractions,
   lumpedInPlaneStiffnessScale,
   wallCreditFraction,
   patternFamilyOf,
@@ -319,6 +320,82 @@ describe("buildCoreMaterial frame handling + stability", () => {
     expect(core.E_xy).toBeCloseTo(solid.E_xy * g, 8);
     expect(core.E_z).toBeCloseTo(solid.E_z * g, 8);   // ratios preserved
     expect(core.nu_xz).toBe(solid.nu_xz);             // no Poisson guard needed
+  });
+});
+
+// ─── Issue #177: per-axis core strength knockdown ────────────────────────────
+
+describe("per-axis lattice strength fractions (issue #177)", () => {
+  it("every axis is EXACTLY min(1, patternMul) at ρ=1 (materialsEqual anchor holds)", () => {
+    for (const p of ALL_PATTERNS) {
+      const s = latticeStrengthFractions(p, 1);
+      const anchor = Math.min(1, PATTERN_MULTIPLIERS[p]!);
+      expect(s.sXY).toBe(anchor);
+      expect(s.sZ).toBe(anchor);
+      expect(s.sZS).toBe(anchor);
+    }
+  });
+
+  it("locked per-axis strength exponents at ρ=0.2 (change = deliberate re-estimation)", () => {
+    const grid = latticeStrengthFractions("grid", 0.2);       // walls25d
+    expect(grid.sXY).toBeCloseTo(0.089443, 5);   // 0.2^1.5 (bending collapse)
+    expect(grid.sZ).toBeCloseTo(0.2, 10);        // 0.2^1.0 (continuous walls, rule of mixtures)
+    expect(grid.sZS).toBeCloseTo(0.089443, 5);   // 0.2^1.5
+    const gyroid = latticeStrengthFractions("gyroid", 0.2);   // tpms3d
+    expect(gyroid.sXY).toBeCloseTo(0.144452, 5); // 1.08·0.2^1.25
+    expect(gyroid.sZ).toBeCloseTo(0.096598, 5);  // 1.08·0.2^1.5
+    expect(gyroid.sZS).toBeCloseTo(0.082238, 5); // 1.08·0.2^1.6
+  });
+
+  it("walls25d through-layer strength degrades SLOWER than in-plane (m_z < m_xy)", () => {
+    // Mirrors the stiffness law (gZ exp 1.0 < gXY exp 2.0): at low ρ the
+    // continuous vertical walls keep Z proportionally stronger.
+    const s = latticeStrengthFractions("grid", 0.2);
+    expect(s.sZ).toBeGreaterThan(s.sXY);
+  });
+
+  it("tpms3d through-layer strength degrades FASTER than in-plane (mirrors gZ>gXY)", () => {
+    const s = latticeStrengthFractions("gyroid", 0.2);
+    expect(s.sZ).toBeLessThan(s.sXY);
+  });
+
+  it("scalar latticeStrengthFraction equals the in-plane axis (legacy value unchanged)", () => {
+    for (const p of ALL_PATTERNS) {
+      for (const rho of [0.1, 0.2, 0.5, 0.8]) {
+        expect(latticeStrengthFraction(p, rho)).toBe(latticeStrengthFractions(p, rho).sXY);
+      }
+    }
+  });
+
+  it("a calibration strength-exponent override collapses all axes to one isotropic law", () => {
+    const s = latticeStrengthFractions("grid", 0.5, 1.0); // override m=1 on every axis
+    expect(s.sXY).toBeCloseTo(0.5, 12);
+    expect(s.sZ).toBe(s.sXY);
+    expect(s.sZS).toBe(s.sXY);
+  });
+
+  it("core sign(E_z − E_xy) agrees with sign(yieldZ − yieldXY) — walls25d inverts BOTH", () => {
+    // The whole point of #177: extruded-wall cores are Z-stiffer AND now
+    // Z-stronger than in-plane at low ρ (previously Z-stiffer yet Z-weaker).
+    for (const rho of [0.15, 0.2, 0.3]) {
+      const core = makeCore(rho * 100, "grid");  // flat, natural frame
+      const dE = core.E_z - core.E_xy;
+      const dY = core.yieldZ - core.yieldXY;
+      expect(dE).toBeGreaterThan(0);
+      expect(dY).toBeGreaterThan(0);
+      expect(Math.sign(dE)).toBe(Math.sign(dY));
+    }
+  });
+
+  it("core sign consistency holds for tpms3d too (Z softer AND weaker)", () => {
+    for (const rho of [0.15, 0.2, 0.3]) {
+      const core = makeCore(rho * 100, "gyroid");
+      const dE = core.E_z - core.E_xy;
+      const dY = core.yieldZ - core.yieldXY;
+      expect(dE).toBeLessThan(0);
+      expect(dY).toBeLessThan(0);
+      expect(Math.sign(dE)).toBe(Math.sign(dY));
+    }
   });
 });
 
