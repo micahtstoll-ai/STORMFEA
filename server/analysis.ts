@@ -81,7 +81,7 @@ import {
 } from "./solver/stress.js";
 import { flagMergedHoleWarnings }           from "./holes.js";
 import type { HoleFeature }                 from "./holes.js";
-import { meshWithTetGen, TetGenNotFoundError } from "./tetgen.js";
+import { meshWithTetGen, TetGenNotFoundError, tetMaxVolumeForTier } from "./tetgen.js";
 import { meshStepWithGmsh }                 from "./gmsh_mesh.js";
 
 // ─── Standard bolt database ───────────────────────────────────────────────────
@@ -2430,6 +2430,16 @@ export interface AnalysisResult {
    * the result must be treated as a rough sanity check only.
    */
   meshFallback:           boolean;
+  /**
+   * Non-null when the model's bounding-box diagonal falls outside the plausible
+   * millimetre range (<1 mm or >2000 mm) — a strong hint the STL/STEP was
+   * exported in the wrong units (metres, inches, microns). STORMFEA does NOT
+   * auto-rescale (that would silently invent a scale); it analyses the numbers
+   * as given and surfaces this actionable warning so the user can re-export in
+   * millimetres. All physical outputs (mm, MPa, N) are only meaningful if the
+   * geometry really is in millimetres (issue #168).
+   */
+  unitsWarning:           string | null;
   solverMs:               number;
   nodeCount:              number;
   elementCount:           number;
@@ -3311,6 +3321,26 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   let gmshResult: import("./gmsh_mesh.js").GmshMeshResult | null = null;
   let meshFallback = false;
 
+  // ── Units sanity check (issue #168) ────────────────────────────────────────
+  // A physically-plausible FDM part has a bounding-box diagonal between ~1 mm
+  // and ~2000 mm. Outside that, the file was almost certainly exported in the
+  // wrong units (metres/inches/microns), which would make every mm/MPa/N output
+  // meaningless. We do NOT auto-rescale — we flag it, additively, so the client
+  // can warn and the user can re-export. The geometry is analysed exactly as
+  // supplied either way.
+  const _bbDiag = Math.sqrt(
+    (req.bounds.maxX - req.bounds.minX) ** 2 +
+    (req.bounds.maxY - req.bounds.minY) ** 2 +
+    (req.bounds.maxZ - req.bounds.minZ) ** 2,
+  );
+  const unitsWarning: string | null =
+    (Number.isFinite(_bbDiag) && (_bbDiag < 1 || _bbDiag > 2000))
+      ? `This model's bounding-box diagonal is ${_bbDiag.toPrecision(4)} units — outside the ` +
+        `typical millimetre range (1–2000 mm). If it was exported in metres, inches, or microns, ` +
+        `the analysis units (mm, MPa, N) are misinterpreted and every result below is off by the ` +
+        `unit scale. STORMFEA does not auto-rescale — re-export the geometry in millimetres and re-run.`
+      : null;
+
   if (req.fileType === "step" && req.stepBuffer) {
     // ── STEP path: Gmsh with curvature-based refinement ──────────────────────
     const clOpts = {
@@ -3337,12 +3367,20 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       _snapAnalysis("before TetGen mesh");
       const tetOrder = (req.analysis.meshOrder ?? 2) as 1 | 2;
       // Map the coarse/standard/fine selector to TetGen's max-volume (-a) switch
-      // so the control actually affects STL mesh density. 'standard' keeps the
-      // historical 10 mm³. (Previously the selector only affected the STEP path.)
-      const tetMaxVol = req.analysis.meshQuality === "fine" ? 3
-                      : req.analysis.meshQuality === "coarse" ? 30
-                      : 10;
-      console.log(`[analysis] meshing with TetGen (order=${tetOrder}, maxVol=${tetMaxVol}mm³, quality=${req.analysis.meshQuality})...`);
+      // so the control actually affects STL mesh density. Derived from the part's
+      // OWN bounding-box volume / a per-tier target element count, so mesh density
+      // is scale-invariant (issue #168): a metre- or cm-scale STL meshes to the
+      // same element count as the equivalent mm part, instead of the old fixed
+      // mm³ values producing ~0 elements off-scale. A typical mm part reproduces
+      // the historical 30/10/3 mm³ (see tetMaxVolumeForTier).
+      const tetTier = (req.analysis.meshQuality === "fine" ? "fine"
+                     : req.analysis.meshQuality === "coarse" ? "coarse"
+                     : "standard") as import("./tetgen.js").MeshTier;
+      const bboxVol = (req.bounds.maxX - req.bounds.minX)
+                    * (req.bounds.maxY - req.bounds.minY)
+                    * (req.bounds.maxZ - req.bounds.minZ);
+      const tetMaxVol = tetMaxVolumeForTier(bboxVol, tetTier);
+      console.log(`[analysis] meshing with TetGen (order=${tetOrder}, maxVol=${tetMaxVol.toPrecision(4)} units³, quality=${req.analysis.meshQuality})...`);
       const tetResult = await meshWithTetGen(req.positions, req.triangleCount, tetOrder, tetMaxVol);
       mesh          = tetResult.mesh;
       surfaceToNode = tetResult.surfaceToNode;
@@ -5100,6 +5138,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     cgIterations:       result.cgIterations,
     converged:          result.converged,
     meshFallback,
+    unitsWarning,
     safetyFactorAvailable: !meshFallback,
     solverMs,
     nodeCount:          mesh.nodeCount,
