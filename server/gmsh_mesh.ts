@@ -241,12 +241,49 @@ function clusterByDistance(
   return Array.from(clusters.values());
 }
 
+/**
+ * Classify a surface's flatness and top/bottom role RELATIVE to the mesh's own
+ * z-extent (issue #169) — no absolute-mm z constants. The old code used
+ * `zMin > 3.5` (top) and `zMax < 0.5` (bottom), which misclassified origin-
+ * centred parts and anything under ~3.5 mm tall. Here a surface is "flat"
+ * (horizontal) when its own z-variation is under 2 % of the part height, and a
+ * flat face sitting at the global zMax is the top, at the global zMin the bottom.
+ * 2 % is scale-invariant; it needs no absolute floor because CAD flat faces are
+ * exactly planar in the mesh (their own z-variation is ~0), and the degenerate
+ * zero-height part is handled explicitly.
+ */
+export function classifyFaceByZ(
+  faceZMin: number,
+  faceZMax: number,
+  globalZMin: number,
+  globalZMax: number,
+): { isFlat: boolean; type: SurfaceInfo["type"] } {
+  const globalZSpan = globalZMax - globalZMin;
+  if (!(globalZSpan > 0)) return { isFlat: true, type: "unknown" }; // no height → no top/bottom
+  const zTol = globalZSpan * 0.02; // 2 % of part height — relative, scale-invariant
+  if (faceZMax - faceZMin >= zTol) return { isFlat: false, type: "unknown" }; // not horizontal
+  if (globalZMax - faceZMax <= zTol) return { isFlat: true, type: "top_face" };
+  if (faceZMin - globalZMin <= zTol) return { isFlat: true, type: "bottom_face" };
+  return { isFlat: true, type: "unknown" }; // a flat ledge/step somewhere in the middle
+}
+
 export function identifySurfaces(
   nodes:       Float64Array,
   surfaceTris: Map<number, Array<[number,number,number]>>,
 ): SurfaceInfo[] {
   const results: SurfaceInfo[] = [];
   const debugSurfaces = process.env["STORMFEA_DEBUG_SURFACES"] === "1";
+
+  // Global z-extent of the whole part (issue #169): top/bottom classification is
+  // relative to it. Computed from every node (the z-extremes lie on the surface
+  // anyway), so it is the true part height in production.
+  let globalZMin = Infinity, globalZMax = -Infinity;
+  const totalNodes = nodes.length / 3;
+  for (let i = 0; i < totalNodes; i++) {
+    const z = nodes[i * 3 + 2] ?? 0;
+    if (z < globalZMin) globalZMin = z; if (z > globalZMax) globalZMax = z;
+  }
+  if (!Number.isFinite(globalZMin)) { globalZMin = globalZMax = 0; }
 
   for (const [surfId, tris] of surfaceTris.entries()) {
     const nodeSet = new Set<number>();
@@ -279,13 +316,12 @@ export function identifySurfaces(
     let bestType: SurfaceInfo["type"] = "unknown";
     let bestHoleInfo: SurfaceInfo["holeInfo"] | undefined;
 
-    // If z spans full thickness — could be cylindrical side or outer edge
-    const zSpan = zMax - zMin;
-    if (zSpan < 0.1) {
-      // Nearly flat — top or bottom face
-      if (zMin > 3.5) bestType = "top_face";
-      else if (zMax < 0.5) bestType = "bottom_face";
-      else bestType = "unknown";
+    // Flatness + top/bottom are decided RELATIVE to the part's own z-extent
+    // (issue #169) — no absolute zMin>3.5 / zMax<0.5 / zSpan<0.1 constants.
+    const zClass = classifyFaceByZ(zMin, zMax, globalZMin, globalZMax);
+    if (zClass.isFlat) {
+      // Horizontal face — top, bottom, or a mid-height ledge (unknown).
+      bestType = zClass.type;
     } else {
       // Has z extent — check if it's cylindrical (hole wall) or flat (outer edge)
       // Fit a circle in XY: for a cylinder, all points are at constant radius from axis

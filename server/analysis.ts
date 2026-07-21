@@ -3693,6 +3693,21 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       } else if (isBottomForce && gmshResult.bottomFaceNodes.length > 0) {
         faceNodes = gmshResult.bottomFaceNodes;
       } else {
+        // A ±Z-directed force was requested but Gmsh classified NO matching
+        // top/bottom face (issue #169). This used to fall through silently; make
+        // it loud so a misclassification (e.g. an origin-centred or very thin
+        // STEP part whose flat faces were not recognised) is visible instead of
+        // the load quietly landing on a geometric best-guess face.
+        if (isTopForce || isBottomForce) {
+          console.warn(
+            `[analysis] ${isTopForce ? 'top' : 'bottom'}-directed force ${f.magnitude}N ` +
+            `(dir ${dx},${dy},${dz}) requested, but Gmsh classified no ` +
+            `${isTopForce ? 'top_face' : 'bottom_face'} (top=${gmshResult.topFaceNodes.length} ` +
+            `bottom=${gmshResult.bottomFaceNodes.length} nodes). Falling back to the geometric ` +
+            `extreme face. If the load lands wrong, the STEP part is likely origin-centred or ` +
+            `thinner than expected — check the flat-face classification.`
+          );
+        }
         // Find extreme face in force direction
         let maxProj = -Infinity;
         for (let n = 0; n < mesh.nodeCount; n++) {
