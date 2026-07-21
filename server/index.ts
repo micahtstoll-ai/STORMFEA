@@ -394,6 +394,7 @@ app.post("/api/analyse", async (req, res) => {
         cgIterations:         result.cgIterations,
         converged:            result.converged,
         meshFallback:         result.meshFallback,
+        unitsWarning:         result.unitsWarning,
         materialModel:        result.materialModel,
         solverMs:             result.solverMs,
         nodeCount:            result.nodeCount,
