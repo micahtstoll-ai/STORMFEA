@@ -1,13 +1,15 @@
 /**
  * modal-robustness.test.ts
  * ------------------------
- * Acceptance tests for the modal eigensolver robustness rework (#160):
- * missed-mode certification (guard-block + residual), per-mode residual gating,
- * problem-scaled shift, and partial-rigid labeling + warning.
+ * Acceptance tests for the modal eigensolver rework:
+ *   #160 — missed-mode certification (guard-block + residual), per-mode residual
+ *          gating, problem-scaled shift, partial-rigid labeling + warning.
+ *   #161 — three-direction participation Γx/Γy/Γz and effective modal mass with
+ *          cumulative fractions.
  *
- * All meshes are deliberately coarse — these assert BEHAVIOUR (degeneracy
- * capture, gating, scaling, labeling), not fine-grained accuracy, so they stay
- * fast.
+ * All meshes are deliberately coarse — these assert BEHAVIOUR (directionality,
+ * degeneracy capture, gating, scaling, labeling), not fine-grained accuracy, so
+ * they stay fast.
  */
 
 import { describe, it, expect } from "vitest";
@@ -34,6 +36,54 @@ function firstFlexibleIndex(modes: Array<{ frequencyHz: number }>): number {
   for (let i = 0; i < modes.length; i++) if (modes[i]!.frequencyHz > 1) return i;
   throw new Error("no flexible mode found");
 }
+
+// ─── #161: three-direction participation & effective mass ─────────────────────
+
+describe("#161 participation is three-directional", () => {
+  it("X-cantilever fundamental bends transversely: dominant Y or Z, ~0 X", async () => {
+    const { mesh, fixedNodes } = squareCantilever();
+    const res = await runModalAnalysis({ mesh, material: STEEL, fixedNodes, nModes: 8 });
+    const i = firstFlexibleIndex(res.modes);
+    const m = res.modes[i]!;
+
+    const effTransverse = Math.max(m.effectiveMassY, m.effectiveMassZ);
+    console.log(
+      `\n  [#161] fundamental f=${m.frequencyHz.toFixed(1)}Hz  ` +
+      `meff X=${m.effectiveMassX.toExponential(2)} Y=${m.effectiveMassY.toExponential(2)} Z=${m.effectiveMassZ.toExponential(2)}`
+    );
+    // Transverse bending: X (axial) participation must be negligible vs transverse.
+    expect(effTransverse).toBeGreaterThan(0);
+    expect(m.effectiveMassX).toBeLessThan(0.05 * effTransverse);
+    // Legacy alias must equal the X participation exactly (backward compat).
+    expect(m.participationFactor).toBe(m.participationX);
+  }, 120_000);
+
+  it("cumulative effective-mass fraction grows toward 1 with mode count", async () => {
+    const { mesh, fixedNodes } = squareCantilever();
+    const res = await runModalAnalysis({ mesh, material: STEEL, fixedNodes, nModes: 10 });
+
+    // Pick the direction the structure participates in most (a transverse one).
+    const last = res.modes[res.modes.length - 1]!;
+    const dir = last.cumulativeMassFracY >= last.cumulativeMassFracZ ? "Y" : "Z";
+    const cumOf = (m: (typeof res.modes)[number]) =>
+      dir === "Y" ? m.cumulativeMassFracY : m.cumulativeMassFracZ;
+
+    // Monotonic non-decreasing (effective masses are non-negative).
+    for (let k = 1; k < res.modes.length; k++) {
+      expect(cumOf(res.modes[k]!)).toBeGreaterThanOrEqual(cumOf(res.modes[k - 1]!) - 1e-9);
+    }
+    const firstCum = cumOf(res.modes[firstFlexibleIndex(res.modes)]!);
+    const finalCum = cumOf(last);
+    console.log(`\n  [#161] cumulative ${dir}-mass: first flexible=${(firstCum*100).toFixed(1)}%  final(${res.modes.length})=${(finalCum*100).toFixed(1)}%`);
+    expect(finalCum).toBeGreaterThan(firstCum);
+    expect(finalCum).toBeGreaterThan(0.5);   // captures a substantial mass fraction
+    expect(finalCum).toBeLessThanOrEqual(1.0 + 1e-6);
+    // Totals are positive in every direction.
+    expect(res.totalMassX).toBeGreaterThan(0);
+    expect(res.totalMassY).toBeGreaterThan(0);
+    expect(res.totalMassZ).toBeGreaterThan(0);
+  }, 120_000);
+});
 
 // ─── #160.1: clustered / degenerate pair capture + certification ──────────────
 

@@ -629,15 +629,62 @@ function subspaceIterate(
   };
 }
 
-// ─── Participation factor ─────────────────────────────────────────────────────
+// ─── Participation factors & effective modal mass (#161) ──────────────────────
 
-function computeParticipationFactor(modeShape: Float64Array, M: CSRMatrix, n: number): number {
-  // X-direction participation: φᵀ·M·r where r[i] = 1 if i%3===0, else 0
-  const r = new Float64Array(n);
-  for (let i = 0; i < n; i += 3) r[i] = 1.0;
-  const Mr = new Float64Array(n);
-  matvec(M, r, Mr);
-  return dot(modeShape, Mr);
+/**
+ * Three-direction modal participation and effective mass for one mode.
+ *
+ *   Γd    = φᵀ·M·r_d          (r_d = unit rigid-body translation in direction d)
+ *   meffd = Γd² / (φᵀ·M·φ)    (effective modal mass in direction d, tonne)
+ *
+ * The influence vectors r_x/r_y/r_z select the x/y/z DOFs (stride 3), so
+ * Γd = Σ_{i: i%3==d} (M·φ)_i — a single M·φ (supplied as `Mphi`) yields all three
+ * directions with no extra matvec. φᵀMφ likewise comes from Mphi.
+ */
+function computeParticipation(
+  modeShape: Float64Array,
+  Mphi:      Float64Array,   // M·modeShape (precomputed, shared with the residual check)
+  n:         number,
+): { gammaX: number; gammaY: number; gammaZ: number;
+     meffX: number; meffY: number; meffZ: number; mNorm2: number } {
+  let gammaX = 0, gammaY = 0, gammaZ = 0, mNorm2 = 0;
+  for (let i = 0; i < n; i++) {
+    const mi = Mphi[i] ?? 0;
+    const d = i % 3;
+    if (d === 0) gammaX += mi;
+    else if (d === 1) gammaY += mi;
+    else gammaZ += mi;
+    mNorm2 += (modeShape[i] ?? 0) * mi;   // φᵀ·M·φ
+  }
+  const inv = mNorm2 > 1e-30 ? 1 / mNorm2 : 0;
+  return {
+    gammaX, gammaY, gammaZ,
+    meffX: gammaX * gammaX * inv,
+    meffY: gammaY * gammaY * inv,
+    meffZ: gammaZ * gammaZ * inv,
+    mNorm2,
+  };
+}
+
+/**
+ * Total translational mass per direction: rᵀd·M·rd = Σ over the direction-d rows
+ * of the row-sums of M. Used as the denominator for cumulative effective-mass
+ * fractions (they approach 1 as the modal basis becomes complete in direction d).
+ */
+function directionalTotalMass(M: CSRMatrix, n: number): { x: number; y: number; z: number } {
+  // r_d[i] = 1 for i%3==d. rᵀd·M·rd = Σ_{i%3==d} Σ_{j%3==d} M[i,j] — three cheap
+  // masked matvecs (once per solve).
+  let x = 0, y = 0, z = 0;
+  const rd = new Float64Array(n);
+  const Mrd = new Float64Array(n);
+  for (let d = 0; d < 3; d++) {
+    rd.fill(0);
+    for (let i = d; i < n; i += 3) rd[i] = 1.0;
+    matvec(M, rd, Mrd);
+    const m = dot(rd, Mrd);
+    if (d === 0) x = m; else if (d === 1) y = m; else z = m;
+  }
+  return { x, y, z };
 }
 
 /**
@@ -821,6 +868,9 @@ export async function runModalAnalysis(input: ModalInput): Promise<ModalAnalysis
     Ksigma, K, M, diagIdxKs, n, p, nModes, sigma, maxIter, tol, cgTol
   );
 
+  // ── Total translational mass per direction (rᵀd·M·rd) — #161 denominators. ──
+  const totalMass = directionalTotalMass(M, n);
+
   // ── Per-Ritz-pair diagnostics for all p vectors: residual + rigid flag. ─────
   // Reused twice: reported modes (0..nModes) and guard block (nModes..p) for
   // #160 certification. K·φ needs a matvec; M·φ is already MX (no extra matvec).
@@ -838,25 +888,37 @@ export async function runModalAnalysis(input: ModalInput): Promise<ModalAnalysis
     residualsAll[j] = modeResidual(Kphi, Mphij, omega2, n);
   }
 
-  // ── Pack the reported modes (lowest nModes). ────────────────────────────────
+  // ── Pack the reported modes (lowest nModes), accumulating cumulative mass. ──
   let rigidBodyModeCount = 0;
   const modes: ModeResult[] = [];
+  let cumX = 0, cumY = 0, cumZ = 0;
   let maxReportedResidual = 0;
 
   for (let j = 0; j < nModes; j++) {
     const omega2 = eigenvalues[j] ?? 0;
     const modeShape = new Float64Array(n);
     modeShape.set(eigenvectors.subarray(j * n, (j + 1) * n));
+    const Mphi = MX.subarray(j * n, (j + 1) * n);
 
     const frequencyHz = omega2 > 0 ? Math.sqrt(omega2) / (2 * Math.PI) : 0;
     const rigid = omega2 < RIGID_BODY_THRESHOLD;
     if (rigid) rigidBodyModeCount++;
 
-    const participationFactor = computeParticipationFactor(modeShape, M, n);
+    const part = computeParticipation(modeShape, Mphi, n);
+    cumX += part.meffX; cumY += part.meffY; cumZ += part.meffZ;
     const residual = residualsAll[j] ?? 0;
     if (!rigid) maxReportedResidual = Math.max(maxReportedResidual, residual);
 
-    modes.push({ frequencyHz, omega2, modeShape, participationFactor, residual, rigid });
+    modes.push({
+      frequencyHz, omega2, modeShape,
+      participationFactor: part.gammaX,   // legacy alias
+      participationX: part.gammaX, participationY: part.gammaY, participationZ: part.gammaZ,
+      effectiveMassX: part.meffX, effectiveMassY: part.meffY, effectiveMassZ: part.meffZ,
+      cumulativeMassFracX: totalMass.x > 1e-30 ? cumX / totalMass.x : 0,
+      cumulativeMassFracY: totalMass.y > 1e-30 ? cumY / totalMass.y : 0,
+      cumulativeMassFracZ: totalMass.z > 1e-30 ? cumZ / totalMass.z : 0,
+      residual, rigid,
+    });
   }
 
   // ── Missed-mode certification (#160.1): guard-block + residual. ──────────────
@@ -942,5 +1004,6 @@ export async function runModalAnalysis(input: ModalInput): Promise<ModalAnalysis
     modes, converged, iterations, rigidBodyModeCount, modalMs,
     certified,
     ...(warnings.length ? { warnings } : {}),
+    totalMassX: totalMass.x, totalMassY: totalMass.y, totalMassZ: totalMass.z,
   };
 }
