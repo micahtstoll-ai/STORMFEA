@@ -716,6 +716,12 @@ export function buildB_c3d10(
   }
 
   const detJ = J00*(J11*J22-J12*J21) - J01*(J10*J22-J12*J20) + J02*(J10*J21-J11*J20);
+  // Only a numerically SINGULAR Jacobian is fatal here (1/detJ below would be
+  // Inf). A NEGATIVE detJ is NOT thrown on — a folded curved mapping is surfaced
+  // as a per-element flag by the mesh-quality pipeline instead of aborting
+  // mid-assembly (issue #162; see c3d10GaussDetJ). The gate (#166) then blocks
+  // or repairs before assembly, so a flagged element is never integrated with
+  // Math.abs(detJ).
   if (Math.abs(detJ) < 1e-15) throw new Error(`C3D10: degenerate Jacobian det=${detJ}`);
 
   // Inverse Jacobian
@@ -752,6 +758,32 @@ export function buildB_c3d10(
   }
 
   return { B, detJ };
+}
+
+/**
+ * Per-Gauss-point Jacobian determinants for a C3D10 element (issue #162).
+ *
+ * Reuses buildB_c3d10's (tested) Jacobian at each of the 4 integration points,
+ * returned in C3D10_GAUSS order. A curved element folded by bad midside-node
+ * placement has a detJ whose SIGN disagrees with the element's corner
+ * orientation at one or more Gauss points — the mesh-quality pipeline flags such
+ * an element as degenerate so it is never integrated with Math.abs(detJ).
+ *
+ * A numerically singular Gauss point (buildB_c3d10 throws) is reported as 0 so
+ * the caller treats it as a zero-volume fold rather than crashing mid-scan.
+ */
+export function c3d10GaussDetJ(nodes: Float64Array): Float64Array {
+  const out = new Float64Array(C3D10_GAUSS.length);
+  let g = 0;
+  for (const gp of C3D10_GAUSS) {
+    try {
+      out[g] = buildB_c3d10(nodes, gp.xi, gp.eta, gp.zeta).detJ;
+    } catch {
+      out[g] = 0; // near-singular Jacobian → treat as zero-volume fold
+    }
+    g++;
+  }
+  return out;
 }
 
 /**
