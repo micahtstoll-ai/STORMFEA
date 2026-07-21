@@ -188,9 +188,12 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
   // (issue #100: reused by modal/buckling, which apply their own BC flavors).
   const K0data = input.keepPristineK ? K.data.slice() : undefined;
 
-  // applyDirichletBC modifies K and f in-place (penalty method); returns the
-  // penalty scalar so reaction recovery can back it out of the modified diagonal.
-  const K_PENALTY = applyDirichletBC(K, f, diagIdx, constraints);
+  // applyDirichletBC modifies K and f in-place. The static path uses EXACT
+  // ELIMINATION (issue #154): constrained rows/cols are zeroed and the known
+  // values moved to the RHS, so constraints are satisfied exactly and no penalty
+  // conditioning is injected for the PCG to fight. The returned pristine rows let
+  // computeBoltReactions recover true reactions R = K0·u − f_ext (issue #136).
+  const bc = applyDirichletBC(K, f, diagIdx, constraints, 'elimination');
   _snap("after applyDirichletBC");
 
   // Use the cooperative (event-loop-yielding) solver on the streaming analysis
@@ -222,7 +225,7 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
   _snap("after buildSolverResult");
   validateResult(result, mesh);
 
-  const boltReactions = computeBoltReactions(K, cg.u, f_ext, constraints, K_PENALTY);
+  const boltReactions = computeBoltReactions(K, cg.u, f_ext, constraints, bc.pristineRows);
 
   return {
     result: { ...result, boltReactions, meshQualityReport },
@@ -233,28 +236,28 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
 }
 
 /**
- * Per-constraint reaction forces via the residual method:
- *   f_reaction = K₀ × u − f_ext
- * where K₀ is the PRISTINE (pre-penalty) stiffness. At constrained DOFs this is
- * the force the boundary exerts on the structure. K₀ × u is computed as a sparse
- * row dot-product over the constrained DOF rows only — O(nnz_at_constrained_rows).
+ * Per-constraint reaction forces via the residual method against the PRISTINE
+ * stiffness (issue #136 intent, made scheme-independent by issue #154):
+ *   R_i = (K0 × u)_i − f_ext_i
+ * where K0 is the pre-boundary-condition matrix. This is the force the support
+ * exerts on the structure — exact for the given u regardless of CG residual, and
+ * independent of how the constraint was imposed (elimination or penalty).
  *
- * Penalty back-out (issue #136): applyDirichletBC only mutated the DIAGONAL of
- * each penalized DOF, adding K_PENALTY. So (K_modified × u)_i = (K₀ × u)_i +
- * K_PENALTY·u_i, and subtracting K_PENALTY·u_i at those rows recovers the true
- * (K₀ × u)_i. Using the modified K directly (the old code) gave (K₀ × u)_i +
- * K_PENALTY·u_i − f_ext_i ≈ K_PENALTY·g_i, which collapses to ~0 for fixed
- * supports (g = 0) and to a spurious K_PENALTY·g for prescribed displacements.
+ * With ELIMINATION the constrained rows of the SOLVED K are zeroed, so the
+ * modified matrix carries no usable reaction; instead we dot the PRISTINE rows
+ * (snapshotted by applyDirichletBC) with u. `pristineRows` is keyed by global
+ * DOF and aligned to K.rowPtr/colIdx (elimination preserves the sparsity
+ * structure, only zeroing values). O(nnz_at_constrained_rows).
  */
 function computeBoltReactions(
   K: CSRMatrix,
   u: Float64Array,
   f_ext: Float64Array,
   constraints: readonly import("./boundary.js").FixedNodeSet[],
-  K_PENALTY: number,
+  pristineRows: Map<number, Float64Array>,
 ): { nodeCount: number; Fx: number; Fy: number; Fz: number }[] {
   const boltReactions: { nodeCount: number; Fx: number; Fy: number; Fz: number }[] = [];
-  const { data, colIdx, rowPtr } = K;
+  const { colIdx, rowPtr } = K;
 
   for (const cs of constraints) {
     let Fx = 0, Fy = 0, Fz = 0;
@@ -262,18 +265,16 @@ function computeBoltReactions(
       for (let dof = 0; dof < 3; dof++) {
         const globalDof = nodeIdx * 3 + dof;
         if (globalDof >= K.n) continue;
+        // Pristine (pre-BC) row for this DOF; if somehow absent, no reaction.
+        const row = pristineRows.get(globalDof);
+        if (row === undefined) continue;
+        const rStart = rowPtr[globalDof] ?? 0;
         let Ku_i = 0;
-        const rStart = rowPtr[globalDof]   ?? 0;
-        const rEnd   = rowPtr[globalDof+1] ?? 0;
-        for (let k = rStart; k < rEnd; k++) {
-          const col = colIdx[k];
+        for (let off = 0; off < row.length; off++) {
+          const col = colIdx[rStart + off];
           if (col === undefined) continue;
-          Ku_i += (data[k] ?? 0) * (u[col] ?? 0);
+          Ku_i += (row[off] ?? 0) * (u[col] ?? 0);
         }
-        // Back out the penalty only where applyDirichletBC actually added it:
-        // a DOF is penalized unless fixedAxes explicitly releases it.
-        const penalized = !cs.fixedAxes || cs.fixedAxes[dof];
-        if (penalized) Ku_i -= K_PENALTY * (u[globalDof] ?? 0);
         const reaction = Ku_i - (f_ext[globalDof] ?? 0);
         if (dof === 0) Fx += reaction;
         else if (dof === 1) Fy += reaction;
