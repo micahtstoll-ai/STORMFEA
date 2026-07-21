@@ -159,11 +159,20 @@ geometrically:
   scalar swap does, applied AFTER the natural-frame scaling); it still scales
   strength. Both regions keep the full orientation anisotropy (layer bonds
   exist in walls and infill alike).
-- Fractions are quantized into 9 bins of Voigt-blended constitutive matrices,
+- Fractions are quantized into Voigt-blended bins of constitutive matrices,
   yields, and densities (`twoRegion.ts` → `ElementMaterialField`), consumed
-  per element by assembly, stress recovery, mass, and self-weight. The scalar
-  `material` becomes the volume-weighted average and keeps feeding
-  whole-part consumers (error estimate, analytic hole checks).
+  per element by assembly, stress recovery, mass, and self-weight. The bin
+  **spacing is adaptive to the shell:core contrast** (issue #178): low/medium
+  contrast keeps the legacy 9 LINEARLY spaced bins bit-for-bit, but above a
+  ~9:1 contrast the fractions are LOG-spaced and the count grows (capped at 33)
+  so no adjacent-bin stiffness step exceeds ~2×. Without this, at the ~10³:1
+  contrast of a near-zero-infill core a 0.01 change in wallFrac could flip an
+  element's stiffness ~100× (0.06→bin0≈1× vs 0.07→bin1≈126×). The bin ENDPOINTS
+  stay f=0 and f=1 exactly, so pure-phase elements map to the endpoint matrices
+  bit-for-bit and the field SHAPE is unchanged (binCount is read as C.length/36,
+  so the assembly-worker payload is untouched). The scalar `material` becomes
+  the volume-weighted average and keeps feeding whole-part consumers (error
+  estimate, analytic hole checks).
 - **Anchoring:** endpoints agree with the legacy model by construction (100%
   infill → solid; thin part → all walls). In between the summary reports both
   the implied average multiplier and the legacy global one — deliberately not
