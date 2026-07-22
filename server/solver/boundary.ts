@@ -234,3 +234,100 @@ function applyElimination(
     f[i] = di * gi;                                // u_i = g_i exactly
   }
 }
+
+// ─── Exact elimination on a generalized eigenproblem (shared, issue #155) ──────
+//
+// `applyElimination` above owns the STATIC path K·u = f: it moves the known
+// columns of a possibly non-zero constraint g_i to the RHS and restores the
+// PRISTINE diagonal, giving exact reactions. The modal generalized eigenproblem
+// K·φ = ω²·M·φ is homogeneous (g_i ≡ 0) but must NOT restore the physical
+// diagonal — a physical K_ii/M_ii ratio would place the constrained DOF as a
+// REGULAR (in-band) mode. It instead decouples the DOF in K with a large
+// ABSOLUTE stiffness so the DOF lands at the TOP of the spectrum, and leaves M
+// positive-definite. It uses the two lower-level primitives below.
+//
+// The old modal path instead inflated each constrained diagonal (K_ii → K_ii·1e8)
+// — a per-diagonal MULTIPLY, so a poorly-connected constrained DOF (tiny K_ii)
+// stayed weakly constrained and could surface as a spurious low mode. Decoupling
+// with an absolute stiffness fixes that; see runModalAnalysis for why M is left
+// untouched (a semidefinite M breaks the shift-invert subspace iteration).
+//
+// (`applyElimination`'s static row-move could be re-expressed on top of these
+// primitives later; it is left as-is here to avoid churning the #154 path.)
+
+/**
+ * Collect the set of constrained global DOFs implied by a list of Dirichlet
+ * constraints, as a boolean mask over the n DOFs. Respects per-set `fixedAxes`
+ * (roller supports constrain a subset of the three translational DOF).
+ *
+ * This is the single source of truth for "which DOFs are constrained", shared
+ * by the static and modal constraint handling so they never diverge.
+ */
+export function constrainedDOFMask(
+  n:           number,
+  constraints: readonly FixedNodeSet[],
+): Uint8Array {
+  const mask = new Uint8Array(n);
+  for (const constraint of constraints) {
+    for (const nodeIdx of constraint.nodeIndices) {
+      if (nodeIdx === undefined) continue;
+      for (let dof = 0; dof < 3; dof++) {
+        if (constraint.fixedAxes && !constraint.fixedAxes[dof]) continue;
+        const globalDOF = nodeIdx * 3 + dof;
+        if (globalDOF >= 0 && globalDOF < n) mask[globalDOF] = 1;
+      }
+    }
+  }
+  return mask;
+}
+
+/**
+ * Exactly eliminate the masked DOFs from a symmetric CSR matrix, in-place:
+ * zero every off-diagonal entry in the constrained rows AND columns, then set
+ * each constrained diagonal to `diagValue`. Runs in a single O(nnz) sweep.
+ *
+ * For a homogeneous (zero-displacement) constraint this decouples every
+ * constrained DOF into an independent 1×1 block `diagValue · uᵢ = …`.
+ *
+ * On the modal generalized eigenproblem K·φ = ω²·M·φ this is applied to K ONLY,
+ * with `diagValue` a large ABSOLUTE stiffness κ = max|K_ii|·1e8. The constrained
+ * DOF then sits at ω² ≈ κ/M_ii — the TOP of the spectrum, never in the reported
+ * low band — while M is left positive-DEFINITE (untouched) so the shift-invert
+ * subspace iteration stays well-posed. (Zeroing M's constrained mass would make M
+ * only positive-SEMI-definite and, with rigid-body modes present, pollute the low
+ * spectrum with spurious near-zero eigenvalues.) See runModalAnalysis.
+ *
+ * @param A         symmetric CSR matrix (K or M), modified in-place
+ * @param diagIdx   CSR data index of each diagonal entry (A and K/M share it
+ *                  when they share the sparsity pattern)
+ * @param mask      constrained-DOF mask from {@link constrainedDOFMask}
+ * @param diagValue value written to each constrained diagonal
+ */
+export function eliminateConstrainedRowsCols(
+  A:         CSRMatrix,
+  diagIdx:   Int32Array,
+  mask:      Uint8Array,
+  diagValue: number,
+): void {
+  if (mask.length !== A.n) {
+    throw new RangeError(`eliminateConstrainedRowsCols: mask length ${mask.length} != matrix n ${A.n}`);
+  }
+  const data = A.data as Float64Array;
+  // Single sweep: zero any entry whose row OR column is constrained.
+  for (let row = 0; row < A.n; row++) {
+    const rowConstrained = mask[row] === 1;
+    const start = A.rowPtr[row] ?? 0;
+    const end   = A.rowPtr[row + 1] ?? A.data.length;
+    for (let k = start; k < end; k++) {
+      if (rowConstrained || mask[A.colIdx[k] ?? 0] === 1) data[k] = 0;
+    }
+  }
+  // Set the (now isolated) diagonal of each constrained DOF.
+  for (let i = 0; i < A.n; i++) {
+    if (mask[i] === 1) {
+      const dp = diagIdx[i];
+      if (dp === undefined) throw new RangeError(`eliminateConstrainedRowsCols: diagIdx[${i}] undefined`);
+      data[dp] = diagValue;
+    }
+  }
+}
