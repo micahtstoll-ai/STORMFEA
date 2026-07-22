@@ -1805,7 +1805,10 @@ export interface FatigueEstimate {
  *     fully reversed (σ_m=0, σ_a=σ_max); R>0 is a tension-biased cycle. A
  *     compressive mean stress (σ_m<0) is clamped to 0 in Goodman to stay
  *     conservative (its life benefit is not credited).
- *   - Endurance limit Se ≈ 0.40 × UTS for FDM PLA (flat print)
+ *   - Endurance limit Se is orientation-dependent: Se ≈ 0.37 × UTS for flat
+ *     prints (load ⊥ layers — the inter-layer bond is the fatigue-weak link)
+ *     and Se ≈ 0.43 × UTS for upright prints. A calibrated cyclic coupon
+ *     overrides both with a measured ratio.
  *     Conservative estimate: Juvinall & Marshek, and limited FDM fatigue data
  *     from Wang et al. 2020 (PLA fatigue life study)
  *   - Basquin exponent b ≈ -0.1 (typical for semi-ductile polymers)

@@ -9818,6 +9818,44 @@ const SOURCES_DB = [
       },
     ]
   },
+  {
+    category: "FATIGUE (S-N LIFE ESTIMATE)",
+    color: "#8B6914",
+    entries: [
+      {
+        id: "wang2020_fatigue",
+        citation: "Wang Y, Zhou Y, Lin L, et al. Fatigue behavior of FDM 3D-printed PLA under cyclic loading. 2020.",
+        url: "",
+        usedFor: "Endurance limit ratio Se/UTS = 0.37 (flat prints, load ⊥ layers) / 0.43 (upright), applied to the base-material UTS (server/analysis.ts estimateFatigue)",
+        confidence: "low",
+        note: "FDM fatigue data is sparse. The flat value is the lower (inter-layer bond is the fatigue-weak link); upright is stronger. Both are conservative literature estimates cross-checked against Juvinall & Marshek §7. Confidence LOW until a cyclic coupon is fitted — treat cycle counts as order-of-magnitude.",
+      },
+      {
+        id: "juvinall_basquin",
+        citation: "Juvinall RC, Marshek KM. Fundamentals of Machine Component Design, §7 (endurance limit); Shigley's Mechanical Engineering Design §6 (S-N / Basquin).",
+        url: "",
+        usedFor: "Basquin high-cycle law N = (σ_a / σ_f′)^(1/b) with exponent b = −0.1 and fatigue-strength coefficient σ_f′ ≈ 1.5 × UTS",
+        confidence: "low",
+        note: "b = −0.1 is a typical value for semi-ductile polymers; σ_f′ ≈ 1.5·UTS is the classical Juvinall approximation. Neither is FDM-specific — they set the slope and intercept of the S-N line the fatigue estimate walks down. Confidence LOW; a cyclic coupon sweep refits b directly.",
+      },
+      {
+        id: "goodman_meanstress",
+        citation: "Modified Goodman mean-stress correction (Shigley §6; Juvinall §8).",
+        url: "",
+        usedFor: "Combining alternating and mean stress: σ_a/Se + σ_m/Su = 1/SF_fatigue, with σ_a,σ_m from the load ratio R = σ_min/σ_max (default R = 0, pulsating)",
+        confidence: "low",
+        note: "Goodman is a standard, well-established mean-stress rule; the LOW flag reflects the FDM inputs it consumes (Se, Su), not the method. A compressive mean stress is clamped to 0 (its life benefit is not credited) to stay conservative.",
+      },
+      {
+        id: "fatigue_calibration_path",
+        citation: "STORMFEA cyclic-coupon calibration path (CALIBRATE tab; server/analysis.ts fitFatigueProfile).",
+        url: "",
+        usedFor: "Upgrading the fatigue estimate from literature LOW to calibrated MEDIUM when a fitted cyclic profile is present",
+        confidence: "medium",
+        note: "When a cyclic coupon is run, the measured Se/UTS ratio and Basquin b replace the literature endpoints and the fatigue estimate's confidence rises LOW→MEDIUM — mirroring how a bearing coupon lifts the bearing mode. Calibrated analyses show the measured Se and MEDIUM badge in the Fatigue Estimate panel and report.",
+      },
+    ]
+  },
 ];
 
 function renderSourcesTab() {
