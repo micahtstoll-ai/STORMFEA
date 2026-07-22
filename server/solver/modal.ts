@@ -31,6 +31,7 @@
 import type { CSRMatrix, TetMesh, AnyMaterial, ElementMaterialField, ModalAnalysisResult, ModeResult } from "./types.js";
 import { assembleK, matvec, type SparsityPattern } from "./assembly.js";
 import { assembleM, assembleMass } from "./mass.js";
+import { constrainedDOFMask, eliminateConstrainedRowsCols } from "./boundary.js";
 import { solvePCG, buildIC0, type IC0Factor } from "./cg.js";
 
 // ─── Density lookup table (tonne/mm³) — FALLBACK ONLY ─────────────────────────
@@ -79,10 +80,11 @@ function getDensityFromLabel(label: string): number {
 /**
  * Pristine (NO boundary conditions applied) prebuilt stiffness matrix pieces
  * for reuse across solves on the same mesh (issue #100). The static pipeline
- * applies Dirichlet penalties to ITS copy of the value array; modal applies
- * its own diagonal-scaling penalty to a fresh copy of Kdata, so the two BC
- * flavors never collide. rowPtr/colIdx/diagIdx depend only on connectivity
- * and are shared read-only (they double as the sparsity pattern for M).
+ * applies Dirichlet penalties to ITS copy of the value array; modal exactly
+ * eliminates the constrained DOFs (issue #155) from a fresh copy of Kdata, so
+ * the two BC flavors never collide. rowPtr/colIdx/diagIdx depend only on
+ * connectivity and are shared read-only (they double as the sparsity pattern
+ * for M).
  */
 export interface ModalPrebuiltK {
   /** Pristine K value array — runModalAnalysis copies it before penalizing. */
@@ -365,7 +367,9 @@ function solveDenseGeneralizedEig(
   Mtilde: Float64Array,
   p:      number,
 ): { eigenvalues: Float64Array; eigenvectors: Float64Array } {
-  // 1. Cholesky: Mtilde = L·Lᵀ  (L stored in Mtilde)
+  // 1. Cholesky: Mtilde = L·Lᵀ  (L stored in Mtilde). M is kept positive-definite
+  // by the constraint scheme (constrained DOFs retain their physical mass — see
+  // runModalAnalysis), so the reduced YᵀMY is SPD and this never throws.
   const L = Mtilde.slice();  // copy so we don't destroy input
   denseCholesky(L, p);
 
@@ -781,7 +785,9 @@ function autoScaledShift(
 
 /**
  * Solve K·φ = ω²·M·φ for the lowest nModes natural frequencies.
- * Assembles K and M internally; applies Dirichlet BCs via penalty method.
+ * Assembles K and M internally; applies Dirichlet BCs by EXACT ELIMINATION of
+ * the constrained DOFs from both K and M (the shared constraint scheme in
+ * boundary.ts — issue #155), not a per-diagonal penalty.
  */
 export async function runModalAnalysis(input: ModalInput): Promise<ModalAnalysisResult> {
   const t0 = Date.now();
@@ -804,9 +810,9 @@ export async function runModalAnalysis(input: ModalInput): Promise<ModalAnalysis
 
   // Obtain K (pristine) and M.
   // K path (issue #100): when the caller already assembled K for the static
-  // solve, reuse its pristine value array (copied — the penalty below must not
-  // leak into the caller's copy) and its sparsity pattern instead of running a
-  // full re-assembly + pattern rebuild.
+  // solve, reuse its pristine value array (copied — the constraint elimination
+  // below must not leak into the caller's copy) and its sparsity pattern instead
+  // of running a full re-assembly + pattern rebuild.
   // Mass path (issue #99): use the material's massRho via assembleMass — set by
   // analysis.ts to solid density × effective volume fraction (infill + walls),
   // so mass tracks infill the same way stiffness does. The label-based lookup
@@ -841,18 +847,34 @@ export async function runModalAnalysis(input: ModalInput): Promise<ModalAnalysis
     M = assembleM(mesh, rho, pattern).M;
   }
 
-  // Apply penalty to constrained DOFs in K only.
-  // For constrained DOF: ω²_constrained = K_penalty/M_diag = PENALTY*K_orig/M_orig >> structural modes.
-  // Do NOT penalize M — that would keep ω² = PENALTY*K/PENALTY*M = K/M (unchanged).
-  const PENALTY = 1e8;
-  for (const ni of fixedNodes) {
-    for (let d = 0; d < 3; d++) {
-      const dof = ni * 3 + d;
-      if (dof >= n) continue;
-      const kPos = kDiagIdx[dof];
-      if (kPos !== undefined) K.data[kPos] = (K.data[kPos] ?? 0) * PENALTY;
-    }
+  // Apply the constraints (issue #155). The OLD modal path multiplied each
+  // constrained diagonal by 1e8 — a per-diagonal MULTIPLY, so a poorly-connected
+  // DOF (tiny K_ii) stayed weakly constrained and could surface as a spurious low
+  // mode. Instead DECOUPLE each constrained DOF in K (zero its row and column via
+  // the shared boundary.ts primitive) and give it a large ABSOLUTE stiffness κ =
+  // max|K_ii|·1e8. Being absolute (not a multiple of the physical diagonal) it
+  // constrains the DOF robustly however weakly connected it was.
+  //
+  // M is left UNCHANGED. The generalized eigenproblem K·φ = ω²·M·φ needs a
+  // positive-DEFINITE M for the shift-invert subspace iteration, and the physical
+  // mass matrix already is one. Zeroing the constrained mass would make M only
+  // positive-SEMI-definite and, when the body still carries rigid-body modes
+  // (e.g. a single pinned node with 3 rotational RBMs), collapse the subspace and
+  // pollute the LOW spectrum with spurious near-zero eigenvalues. With this scheme
+  // each constrained DOF instead sits at ω² ≈ κ/M_ii — the TOP of the spectrum,
+  // far above and never inside the reported low band — and every physical mode has
+  // φ ≈ 0 there (asserted by the localization guard below). Because M is untouched,
+  // the directional total mass driving #161 participation stays exact.
+  const constrainedMask = constrainedDOFMask(n, [{ nodeIndices: fixedNodes }]);
+  let kDiagMax = 0;
+  for (let i = 0; i < n; i++) {
+    const dp = kDiagIdx[i];
+    if (dp === undefined) continue;
+    const kd = Math.abs(K.data[dp] ?? 0);
+    if (kd > kDiagMax) kDiagMax = kd;
   }
+  if (kDiagMax < 1e-300) kDiagMax = 1;
+  eliminateConstrainedRowsCols(K, kDiagIdx, constrainedMask, kDiagMax * 1e8);
 
   // Spectral shift σ (#160.3): problem-scaled by default, explicit override honored.
   const sigma = input.sigma ?? autoScaledShift(K, M, kDiagIdx, fixedNodes, n);
@@ -919,6 +941,33 @@ export async function runModalAnalysis(input: ModalInput): Promise<ModalAnalysis
       cumulativeMassFracZ: totalMass.z > 1e-30 ? cumZ / totalMass.z : 0,
       residual, rigid,
     });
+  }
+
+  // Certification guard (issue #155): decoupling each constrained DOF with a
+  // large absolute stiffness drives φ → 0 there, so no returned (low) mode may
+  // localize its displacement at a constrained DOF. A non-trivial constrained-DOF
+  // energy fraction would betray a leaked constraint (e.g. the old ×1e8 multiply
+  // leaving a weakly-connected DOF free) — fail loudly rather than report a
+  // spurious low mode. This is complementary to the #160 missed-mode
+  // certification below: #160 certifies no eigenvalue was skipped, this certifies
+  // the constraints held. (The constrained DOFs themselves sit at ω² ≈ κ/M_ii,
+  // the TOP of the spectrum, so they never appear among the reported low modes.)
+  for (const mode of modes) {
+    let constrainedNorm2 = 0;
+    let totalNorm2 = 0;
+    for (let i = 0; i < n; i++) {
+      const v = mode.modeShape[i] ?? 0;
+      const v2 = v * v;
+      totalNorm2 += v2;
+      if (constrainedMask[i] === 1) constrainedNorm2 += v2;
+    }
+    if (totalNorm2 > 0 && constrainedNorm2 / totalNorm2 > 1e-8) {
+      throw new Error(
+        `Modal analysis: mode at ${mode.frequencyHz.toFixed(2)} Hz localizes ` +
+        `${(100 * constrainedNorm2 / totalNorm2).toFixed(3)}% of its displacement ` +
+        `energy at constrained DOFs — constraint elimination leaked.`,
+      );
+    }
   }
 
   // ── Missed-mode certification (#160.1): guard-block + residual. ──────────────
