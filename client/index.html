@@ -9856,6 +9856,20 @@ const SOURCES_DB = [
       },
     ]
   },
+  {
+    category: "IN-PLANE RASTER ANISOTROPY",
+    color: "#7a6a3a",
+    entries: [
+      {
+        id: "cross_bead_ratio",
+        citation: "In-plane cross-bead tensile ratio — STORMFEA engineering default (0.85), anchored in the ~0.7–0.9 band that unidirectional-raster / raster-angle FDM tensile studies report for strength across beads vs along them. No single primary source pins the exact value.",
+        url: "",
+        usedFor: "Cross-bead strength knockdown (CROSS_BEAD_RATIO_LITERATURE = 0.85, server/analysis.ts) on the opt-in in-plane (bead-to-bead) anisotropy path",
+        confidence: "low",
+        note: "Honestly an engineering default, not a measured constant — flagged LOW like the lattice exponents rather than dressed as a citation. It engages ONLY when in-plane anisotropy is enabled (AnalysisSettings.inPlaneAnisotropy, default OFF), the raster is declared unidirectional, AND no measured ratio exists; with the flag off the path is bit-identical to isotropic-in-plane. Calibration alternative: a cross-raster coupon sets CalibrationProfile.crossBeadRatio, which overrides 0.85 — a measured-ratio analysis then reports that value's provenance in place of this default. The neighboring Mohr–Coulomb μ = 0.3 is sourced (brewer_lagace1988); this entry closes the gap so every strength-reducing constant traces to a basis and a confidence level.",
+      },
+    ]
+  },
 ];
 
 function renderSourcesTab() {
