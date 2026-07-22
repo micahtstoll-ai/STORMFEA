@@ -21,6 +21,7 @@ import { spawn }         from "child_process";
 import { parseSTL }      from "./stl.js";
 import { detectHoles, flagMergedHoleWarnings }   from "./holes.js";
 import { runAnalysis, AnalysisAbortError }   from "./analysis.js";
+import { MATERIALS, FDM_ORTHO_RATIOS, layerHeightFactor } from "./analysis.js";
 import type { ForceSpec, PrintSettings, AnalysisSettings, AnalysisResult } from "./analysis.js";
 import { expect as expectShape, ValidationError } from "./validate.js";
 import type { Spec } from "./validate.js";
@@ -1244,6 +1245,33 @@ app.post("/api/calibration/kt", async (req, res) => {
 // No analysis result required — documents the solver methodology statically.
 
 app.get("/api/methodology", (_req, res) => {
+  // Material table + layer-height figures are GENERATED from the live solver
+  // constants (issue #199) so they can never drift from the code: adding a
+  // material to MATERIALS or re-tuning layerHeightFactor updates this document
+  // with no hand edit.
+  const materialRows = Object.values(MATERIALS).map(m => {
+    const yieldZ = m.yieldMPa * FDM_ORTHO_RATIOS.yieldZ_over_yieldXY;
+    return `  <tr><td>${m.label}</td><td>${m.E}</td><td>${m.nu.toFixed(2)}</td>` +
+           `<td>${m.yieldMPa}</td><td>${yieldZ.toFixed(1)}</td></tr>`;
+  }).join("\n");
+
+  // Layer-height correction, derived by evaluating layerHeightFactor at known
+  // points: slope from two in-range samples, clamp bounds from samples past the
+  // clamp, and worked examples at 0.28 / 0.12 mm.
+  const asPct = (f: number) => `${f >= 1 ? "+" : "−"}${Math.abs(Math.round((f - 1) * 100))}%`;
+  const lhSlope = (layerHeightFactor(0.15) - layerHeightFactor(0.25)) / (0.25 - 0.15);
+  const lhFloor = layerHeightFactor(0.50);   // past the low clamp
+  const lhCeil  = layerHeightFactor(0.05);   // past the high clamp
+  const lhAt028 = layerHeightFactor(0.28);
+  const lhAt012 = layerHeightFactor(0.12);
+  const layerHeightNote =
+    `Layer-height correction to yield_Z (0.2 mm baseline): the multiplier follows a slope of ` +
+    `−${lhSlope.toFixed(1)} per mm about the reference — thicker layers weaken inter-layer bonds, ` +
+    `thinner layers strengthen them (Farashi &amp; Vafaee 2022 meta-analysis) — clamped to ` +
+    `[${lhFloor.toFixed(2)}, ${lhCeil.toFixed(2)}] (${asPct(lhFloor)} / ${asPct(lhCeil)}). ` +
+    `Worked examples: a 0.28 mm layer gives ${lhAt028.toFixed(2)}× (${asPct(lhAt028)}); ` +
+    `a 0.12 mm layer gives ${lhAt012.toFixed(2)}× (${asPct(lhAt012)}).`;
+
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1458,14 +1486,10 @@ SF = min(SF_bulk, SF_int)</div>
 <h2>Material Database</h2>
 <table>
   <tr><th>Material</th><th>E_xy (MPa)</th><th>ν</th><th>Yield XY (MPa)</th><th>Yield Z (MPa)</th></tr>
-  <tr><td>PLA</td><td>3500</td><td>0.36</td><td>50</td><td>29</td></tr>
-  <tr><td>PETG</td><td>2100</td><td>0.38</td><td>45</td><td>26</td></tr>
-  <tr><td>ABS</td><td>2300</td><td>0.35</td><td>40</td><td>23</td></tr>
+${materialRows}
 </table>
 <p class="muted">
-  Layer-height correction applied: 0.2 mm baseline. Thicker layers (≥0.28 mm) reduce yield_Z
-  by up to 12% per Farashi &amp; Vafaee 2022 meta-analysis. Thinner layers (≤0.12 mm) increase
-  yield_Z by up to 8%.
+  ${layerHeightNote}
 </p>
 </div>
 <div>

@@ -802,7 +802,7 @@ export function backCalculateProfile(params: {
 // ─── Base properties (solid, 100% infill, isotropic approximation) ─────────
 // densityKgM3: solid (100% dense) mass density in kg/m³ — used with
 // effectiveVolumeFraction() to set massRho for modal analysis (issue #99).
-const MATERIALS: Record<string, { E: number; nu: number; yieldMPa: number; densityKgM3: number; label: string }> = {
+export const MATERIALS: Record<string, { E: number; nu: number; yieldMPa: number; densityKgM3: number; label: string }> = {
   pla:   { E: 3500,  nu: 0.36, yieldMPa: 50,  densityKgM3: 1240, label: "PLA"   },
   petg:  { E: 2100,  nu: 0.38, yieldMPa: 45,  densityKgM3: 1270, label: "PETG"  },
   abs:   { E: 2300,  nu: 0.35, yieldMPa: 40,  densityKgM3: 1050, label: "ABS"   },
@@ -857,7 +857,7 @@ export function literatureYieldZRatio(): number {
  * nu_xz unchanged at 0.30: limited direct measurement data.
  *   Source: Casavola et al. 2016.
  */
-const FDM_ORTHO_RATIOS = {
+export const FDM_ORTHO_RATIOS = {
   E_z_over_E_xy:       0.65,   // raised from 0.45 — stiffness more isotropic than strength
   G_xz_over_G_xy:      0.40,   // unchanged — limited data
   nu_xz:               0.30,   // unchanged — limited data
@@ -1569,11 +1569,11 @@ export interface AnalysisSettings {
  * One study found optimal at 0.3mm (not 0.1mm) for gyroid+80% infill
  * (Hikmat et al. 2023, ETJ). The relationship depends on infill interaction.
  *
- * Revised calibration — capped at ±15% (down from ±20%):
- *   0.1mm → ~1.10× baseline (was 1.15×)
+ * Revised calibration — clamped asymmetrically to −15% / +10% (down from ±20%):
+ *   0.1mm → ~1.10× baseline (was 1.15×)   [+10% ceiling]
  *   0.2mm → ~1.00× reference
  *   0.3mm → ~0.90× baseline (was 0.87×)
- *   0.35mm → ~0.85× baseline (was 0.82×)
+ *   0.35mm → ~0.85× baseline (was 0.82×)  [−15% floor]
  *
  * Slope = (0.90 - 1.10) / (0.3 - 0.1) = -1.0 per mm (reduced from -1.4)
  * Clamped to [0.85, 1.10] — more conservative range.
