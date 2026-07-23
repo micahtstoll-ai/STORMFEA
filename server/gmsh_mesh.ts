@@ -181,12 +181,17 @@ function parseMsh2(text: string): {
  * under a single surface tag — within one real hole the nodes are close
  * together (bounded by its diameter), while separate holes are far apart.
  *
- * The threshold is derived adaptively from each surface's own median
- * nearest-neighbor spacing (5x) rather than a fixed constant. A fixed
- * constant tuned for small holes would incorrectly split a single genuinely
- * large hole's own wall nodes into multiple fake clusters; deriving it from
- * the local point density scales correctly for both small and large real
- * holes while still separating distinct holes that are merged together.
+ * The threshold is derived adaptively from each surface's own median 3-D edge
+ * length (5×) rather than a fixed constant (issue #170). Separate holes end up
+ * in separate clusters because their XY gap far exceeds a few edge lengths,
+ * while one hole's own wall nodes stay linked. The previous code measured
+ * nearest-neighbor spacing in the XY PROJECTION and floored it at an absolute
+ * 0.5 mm — but a cylindrical wall's nodes stack at (nearly) the same XY over
+ * multiple z levels, collapsing the XY spacing toward zero, so that 0.5 mm
+ * constant was actually the load-bearing threshold. Measuring the spacing in
+ * full 3-D (the true local edge length) removes the collapse AND the absolute
+ * constant: the scale is now genuinely relative to the mesh and correct at any
+ * unit scale.
  */
 function clusterByDistance(
   nodeArr:   number[],
@@ -198,22 +203,30 @@ function clusterByDistance(
   const xy: Array<[number, number]> = nodeArr.map(idx =>
     [nodes[idx * 3] ?? 0, nodes[idx * 3 + 1] ?? 0]);
 
-  // Median nearest-neighbor distance, used to set an adaptive threshold
-  // Pre-allocate typed array to avoid push overhead for large surface node sets
+  // Median 3-D nearest-neighbor distance = the local edge length. Measured in
+  // full 3-D so vertically-stacked wall nodes (same XY, different z) don't drive
+  // the spacing to zero. Pre-allocated typed array avoids push overhead.
   const nnDists = new Float64Array(n);
   for (let i = 0; i < n; i++) {
+    const ix = nodes[nodeArr[i]! * 3] ?? 0, iy = nodes[nodeArr[i]! * 3 + 1] ?? 0, iz = nodes[nodeArr[i]! * 3 + 2] ?? 0;
     let minD = Infinity;
     for (let j = 0; j < n; j++) {
       if (i === j) continue;
-      const dx = xy[i]![0] - xy[j]![0], dy = xy[i]![1] - xy[j]![1];
-      const d = Math.sqrt(dx * dx + dy * dy);
+      const dx = ix - (nodes[nodeArr[j]! * 3] ?? 0);
+      const dy = iy - (nodes[nodeArr[j]! * 3 + 1] ?? 0);
+      const dz = iz - (nodes[nodeArr[j]! * 3 + 2] ?? 0);
+      const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
       if (d < minD) minD = d;
     }
     nnDists[i] = minD;
   }
   nnDists.sort();
-  const medianNN = nnDists[Math.floor(nnDists.length / 2)] ?? 1.0;
-  const threshold = Math.max(0.5, medianNN * 5);
+  const medianNN = nnDists[Math.floor(nnDists.length / 2)] ?? 0;
+  // 5× the median edge length links a hole's own wall nodes while separating
+  // distinct holes. Floor at MIN_VALUE only so a fully-degenerate (all-
+  // coincident) set still yields a positive threshold — for any real mesh
+  // medianNN·5 dominates. Union below is by XY distance (holes are apart in XY).
+  const threshold = Math.max(medianNN * 5, Number.MIN_VALUE);
 
   const parent = Array.from({ length: n }, (_, i) => i);
   function find(x: number): number {
@@ -241,12 +254,120 @@ function clusterByDistance(
   return Array.from(clusters.values());
 }
 
+// ─── Scale-relative classification thresholds (issues #169, #170) ──────────────
+//
+// Every threshold below is RELATIVE to the mesh's own extent — no absolute-mm
+// magic numbers survive in the touched classification paths. Each carries a
+// rationale for the fraction chosen and how it preserves the existing fixtures.
+
+/**
+ * Relative circularity tolerance for a cylindrical (hole-wall) fit: a surface is
+ * "circular" when its radial standard deviation is at most `HOLE_CIRCULARITY_EPS`
+ * of its mean radius (issue #170). The old test was an absolute `rStd < 0.08 mm`,
+ * which was ~16 % relative at r = 0.5 mm but only ~0.5 % at r = 15 mm — stricter
+ * on big holes purely because of scale. 6 % is close to the old tolerance at the
+ * wall-band scale (0.08 mm ≈ 6 % of ~1.35 mm) where holes actually sit, still
+ * comfortably passes a well-meshed cylinder (radial variation < ~2 % at the
+ * clcurv densities used) and rejects flat/curved non-cylindrical faces (radial
+ * variation ≫ 10 %). The clustering fixtures use exact circles (rStd = 0), so
+ * any positive ε preserves them.
+ */
+export const HOLE_CIRCULARITY_EPS = 0.06;
+
+/**
+ * Plausible hole-radius window as a fraction of the model's bounding-box
+ * diagonal (issue #170) — replaces the absolute `0.5 mm < rMean < 15 mm`. A hole
+ * is a small-to-moderate fraction of the part it lives in; `[diag·0.001,
+ * diag·0.6]` spans mesh-noise-sized specks up to a hole taking most of the part.
+ * The 0.6 upper bound tolerates the unit-test fixtures where `identifySurfaces`
+ * receives only a single hole's own nodes (so the "bbox" is that hole's bbox and
+ * r ≈ 0.29–0.35·diag), while in production (all part nodes) it rejects a
+ * "radius" larger than the part (a mis-fit outer edge). Reported, not silently
+ * relabelled: an out-of-window fit falls through to `outer_edge`.
+ */
+export function holeRadiusWindow(bboxDiag: number): { rMin: number; rMax: number } {
+  return { rMin: bboxDiag * 0.001, rMax: bboxDiag * 0.6 };
+}
+
+/**
+ * Classify a surface's flatness and top/bottom role RELATIVE to the mesh's own
+ * z-extent (issue #169) — no absolute-mm z constants. The old code used
+ * `zMin > 3.5` (top) and `zMax < 0.5` (bottom), which misclassified origin-
+ * centred parts and anything under ~3.5 mm tall. Here a surface is "flat"
+ * (horizontal) when its own z-variation is under 2 % of the part height, and a
+ * flat face sitting at the global zMax is the top, at the global zMin the bottom.
+ * 2 % is scale-invariant; it needs no absolute floor because CAD flat faces are
+ * exactly planar in the mesh (their own z-variation is ~0), and the degenerate
+ * zero-height part is handled explicitly.
+ */
+export function classifyFaceByZ(
+  faceZMin: number,
+  faceZMax: number,
+  globalZMin: number,
+  globalZMax: number,
+): { isFlat: boolean; type: SurfaceInfo["type"] } {
+  const globalZSpan = globalZMax - globalZMin;
+  if (!(globalZSpan > 0)) return { isFlat: true, type: "unknown" }; // no height → no top/bottom
+  const zTol = globalZSpan * 0.02; // 2 % of part height — relative, scale-invariant
+  if (faceZMax - faceZMin >= zTol) return { isFlat: false, type: "unknown" }; // not horizontal
+  if (globalZMax - faceZMax <= zTol) return { isFlat: true, type: "top_face" };
+  if (faceZMin - globalZMin <= zTol) return { isFlat: true, type: "bottom_face" };
+  return { isFlat: true, type: "unknown" }; // a flat ledge/step somewhere in the middle
+}
+
+/** Least-variance circle fit in XY for a node subset: centroid centre plus the
+ *  mean and standard deviation of the radial distances. Pure helper shared by
+ *  the whole-surface fit and the per-cluster re-fits (issue #170). */
+export function fitCircleXY(
+  clusterNodes: number[],
+  nodes:        Float64Array,
+): { cx: number; cy: number; rMean: number; rStd: number } {
+  let cx = 0, cy = 0;
+  for (const nIdx of clusterNodes) { cx += nodes[nIdx * 3] ?? 0; cy += nodes[nIdx * 3 + 1] ?? 0; }
+  const k = clusterNodes.length || 1;
+  cx /= k; cy /= k;
+  const radii = clusterNodes.map(nIdx =>
+    Math.sqrt(((nodes[nIdx * 3] ?? 0) - cx) ** 2 + ((nodes[nIdx * 3 + 1] ?? 0) - cy) ** 2));
+  const rMean = radii.reduce((a, b) => a + b, 0) / (radii.length || 1);
+  const rStd = Math.sqrt(radii.reduce((a, b) => a + (b - rMean) ** 2, 0) / (radii.length || 1));
+  return { cx, cy, rMean, rStd };
+}
+
+/** True when a circle fit is tight (relative circularity) AND its radius lies
+ *  inside the bbox-relative plausible window — the scale-relative replacement
+ *  for `rStd < 0.08 && 0.5 < rMean < 15` (issue #170). */
+export function isHoleFit(
+  fit:     { rMean: number; rStd: number },
+  bboxDiag: number,
+): boolean {
+  const { rMin, rMax } = holeRadiusWindow(bboxDiag);
+  return fit.rMean > 0 && fit.rStd / fit.rMean < HOLE_CIRCULARITY_EPS
+      && fit.rMean > rMin && fit.rMean < rMax;
+}
+
 export function identifySurfaces(
   nodes:       Float64Array,
   surfaceTris: Map<number, Array<[number,number,number]>>,
 ): SurfaceInfo[] {
   const results: SurfaceInfo[] = [];
   const debugSurfaces = process.env["STORMFEA_DEBUG_SURFACES"] === "1";
+
+  // Global extent of the whole part (issues #169, #170): top/bottom classification
+  // and the hole-radius window are both relative to it. Computed from every node
+  // (extremes lie on the surface anyway), so it is the true part bbox in
+  // production; in unit tests that pass a single feature's nodes it is that
+  // feature's bbox, which the generous relative windows still tolerate.
+  let gMinX = Infinity, gMaxX = -Infinity, gMinY = Infinity, gMaxY = -Infinity, gMinZ = Infinity, gMaxZ = -Infinity;
+  const totalNodes = nodes.length / 3;
+  for (let i = 0; i < totalNodes; i++) {
+    const x = nodes[i * 3] ?? 0, y = nodes[i * 3 + 1] ?? 0, z = nodes[i * 3 + 2] ?? 0;
+    if (x < gMinX) gMinX = x; if (x > gMaxX) gMaxX = x;
+    if (y < gMinY) gMinY = y; if (y > gMaxY) gMaxY = y;
+    if (z < gMinZ) gMinZ = z; if (z > gMaxZ) gMaxZ = z;
+  }
+  if (!Number.isFinite(gMinX)) { gMinX = gMaxX = gMinY = gMaxY = gMinZ = gMaxZ = 0; }
+  const globalZMin = gMinZ, globalZMax = gMaxZ;
+  const bboxDiag = Math.sqrt((gMaxX - gMinX) ** 2 + (gMaxY - gMinY) ** 2 + (gMaxZ - gMinZ) ** 2);
 
   for (const [surfId, tris] of surfaceTris.entries()) {
     const nodeSet = new Set<number>();
@@ -265,56 +386,48 @@ export function identifySurfaces(
         `bbox x=[${dminX.toFixed(2)},${dmaxX.toFixed(2)}] y=[${dminY.toFixed(2)},${dmaxY.toFixed(2)}] z=[${dminZ.toFixed(2)},${dmaxZ.toFixed(2)}]`);
     }
 
-    // Compute centroid and z range
-    let cx=0, cy=0, cz=0, zMin=Infinity, zMax=-Infinity;
+    // z range of this surface (its centre in XY is fitted per-branch via
+    // fitCircleXY, so only the z span is needed here).
+    let zMin=Infinity, zMax=-Infinity;
     for (const n of nodeArr) {
-      const x=nodes[n*3]??0, y=nodes[n*3+1]??0, z=nodes[n*3+2]??0;
-      cx+=x; cy+=y; cz+=z;
+      const z=nodes[n*3+2]??0;
       if(z<zMin) zMin=z; if(z>zMax) zMax=z;
     }
-    cx/=nodeArr.length; cy/=nodeArr.length; cz/=nodeArr.length;
 
     // Check if this is a cylindrical surface by fitting a circle in XY
     // A cylindrical hole wall has nearly constant radial distance from its axis
     let bestType: SurfaceInfo["type"] = "unknown";
     let bestHoleInfo: SurfaceInfo["holeInfo"] | undefined;
 
-    // If z spans full thickness — could be cylindrical side or outer edge
-    const zSpan = zMax - zMin;
-    if (zSpan < 0.1) {
-      // Nearly flat — top or bottom face
-      if (zMin > 3.5) bestType = "top_face";
-      else if (zMax < 0.5) bestType = "bottom_face";
-      else bestType = "unknown";
+    // Flatness + top/bottom are decided RELATIVE to the part's own z-extent
+    // (issue #169) — no absolute zMin>3.5 / zMax<0.5 / zSpan<0.1 constants.
+    const zClass = classifyFaceByZ(zMin, zMax, globalZMin, globalZMax);
+    if (zClass.isFlat) {
+      // Horizontal face — top, bottom, or a mid-height ledge (unknown).
+      bestType = zClass.type;
     } else {
-      // Has z extent — check if it's cylindrical (hole wall) or flat (outer edge)
-      // Fit a circle in XY: for a cylinder, all points are at constant radius from axis
-      // Compute centroid in XY and check radial std dev
-      const radiiFromCentroid = nodeArr.map(n =>
-        Math.sqrt(((nodes[n*3]??0) - cx)**2 + ((nodes[n*3+1]??0) - cy)**2));
-      const rMean = radiiFromCentroid.reduce((a,b)=>a+b,0)/radiiFromCentroid.length;
-      const rStd  = Math.sqrt(radiiFromCentroid.reduce((a,b)=>a+(b-rMean)**2,0)/radiiFromCentroid.length);
+      // Has z extent — cylindrical hole wall or a flat (vertical) outer edge.
+      // Fit a circle in XY: a cylinder's points sit at near-constant radius from
+      // the centroid axis. Circularity is now RELATIVE (rStd/rMean) and the
+      // radius window is scaled from the model bbox (issue #170).
+      const fit = fitCircleXY(nodeArr, nodes);
+      const rMean = fit.rMean, rStd = fit.rStd;
 
       if (debugSurfaces) {
         console.log(`[gmsh-debug] surface ${surfId}: cylindrical-fit check — ` +
-          `centroid=(${cx.toFixed(2)},${cy.toFixed(2)}) rMean=${rMean.toFixed(3)} rStd=${rStd.toFixed(3)} ` +
-          `(passes rStd<0.08? ${rStd < 0.08})`);
+          `centroid=(${fit.cx.toFixed(2)},${fit.cy.toFixed(2)}) rMean=${rMean.toFixed(3)} rStd=${rStd.toFixed(3)} ` +
+          `(rStd/rMean=${(rMean > 0 ? rStd / rMean : Infinity).toFixed(4)} < ${HOLE_CIRCULARITY_EPS}? ${rMean > 0 && rStd / rMean < HOLE_CIRCULARITY_EPS})`);
       }
 
       // Angular coverage check: a genuine single cylindrical wall has points
-      // distributed roughly evenly all the way around its centroid. If Gmsh
-      // has merged two separate holes' wall nodes under one surface tag
-      // (which can happen when two holes are close together and the STEP
-      // export/Gmsh doesn't assign them distinct physical groups), the
-      // computed centroid sits between the two real holes, and the points
-      // cluster into two tight arcs on opposite sides rather than
-      // surrounding it — producing a large gap with no points at all. A
-      // real single-hole wall with reasonable node density should never
-      // have a gap anywhere near this large.
+      // distributed roughly evenly all the way around its centroid. A large gap
+      // means EITHER a partially-occluded single wall (still one hole — e.g. a
+      // counterbore or an intersecting feature removed part of the wall) OR two
+      // separate holes merged under one surface tag. We must not confuse the two.
       let maxAngularGapDeg = 0;
       if (nodeArr.length >= 3) {
         const angles = nodeArr
-          .map(n => Math.atan2((nodes[n*3+1]??0) - cy, (nodes[n*3]??0) - cx))
+          .map(n => Math.atan2((nodes[n*3+1]??0) - fit.cy, (nodes[n*3]??0) - fit.cx))
           .sort((a, b) => a - b);
         for (let k = 0; k < angles.length; k++) {
           const next = angles[(k + 1) % angles.length]!;
@@ -330,47 +443,57 @@ export function identifySurfaces(
         console.log(`[gmsh-debug] surface ${surfId}: angular gap=${maxAngularGapDeg.toFixed(1)}deg fullyCovered=${fullyCovered}`);
       }
 
-      if (rStd < 0.08 && rMean > 0.5 && rMean < 15 && fullyCovered) {
-        // Low radial variance around centroid AND points surround it → genuine
-        // cylindrical surface
+      const circular = isHoleFit(fit, bboxDiag);
+      if (circular && fullyCovered) {
+        // Tight radial fit AND points surround the centroid → genuine cylinder.
         bestType     = "hole_wall";
-        bestHoleInfo = { cx, cy, r: rMean };
-      } else if (rStd < 0.08 && rMean > 0.5 && rMean < 15 && !fullyCovered) {
-        // Tight radial fit but points don't surround the centroid — likely
-        // two (or more) separate holes merged under one surface tag. Don't
-        // just discard this surface (that would silently drop real holes
-        // from detection) — split the nodes into spatial clusters and
-        // re-fit each one independently as its own candidate hole_wall.
+        bestHoleInfo = { cx: fit.cx, cy: fit.cy, r: rMean };
+      } else if (circular && !fullyCovered) {
+        // Tight fit but a >90° gap. BEFORE fabricating multiple holes, require
+        // CORROBORATION that these are really separate holes (issue #170): the
+        // nodes must split into ≥2 spatial clusters that EACH individually fit a
+        // circle. A single connected cluster is one partially-occluded wall;
+        // splitting it would invent phantom holes.
         const clusters = clusterByDistance(nodeArr, nodes);
-        console.warn(
-          `[gmsh] surface near (${cx.toFixed(2)},${cy.toFixed(2)}) passed the radius/std check ` +
-          `(r=${rMean.toFixed(2)}mm) but points only cover ${(360 - maxAngularGapDeg).toFixed(0)}° ` +
-          `around the centroid (max gap ${maxAngularGapDeg.toFixed(0)}°) — likely ${clusters.length} ` +
-          `holes merged under one surface tag. Splitting into separate clusters and re-fitting each.`
-        );
-        for (const clusterNodes of clusters) {
-          if (clusterNodes.length < 3) continue; // too few points to fit a circle
-          let scx = 0, scy = 0;
-          for (const n of clusterNodes) { scx += nodes[n*3] ?? 0; scy += nodes[n*3+1] ?? 0; }
-          scx /= clusterNodes.length; scy /= clusterNodes.length;
-          const subRadii = clusterNodes.map(n =>
-            Math.sqrt(((nodes[n*3]??0) - scx)**2 + ((nodes[n*3+1]??0) - scy)**2));
-          const subRMean = subRadii.reduce((a,b)=>a+b,0) / subRadii.length;
-          const subRStd = Math.sqrt(subRadii.reduce((a,b)=>a+(b-subRMean)**2,0) / subRadii.length);
-          if (subRStd < 0.08 && subRMean > 0.5 && subRMean < 15) {
+        const circularClusters = clusters
+          .filter(c => c.length >= 3)
+          .map(c => ({ nodes: c, fit: fitCircleXY(c, nodes) }))
+          .filter(c => isHoleFit(c.fit, bboxDiag));
+
+        if (circularClusters.length >= 2) {
+          // Corroborated: two (or more) genuinely-circular, spatially-distinct
+          // clusters merged under one surface tag → split and re-fit each.
+          console.warn(
+            `[gmsh] surface near (${fit.cx.toFixed(2)},${fit.cy.toFixed(2)}) fits a circle ` +
+            `(r=${rMean.toFixed(2)}) but covers only ${(360 - maxAngularGapDeg).toFixed(0)}° ` +
+            `(max gap ${maxAngularGapDeg.toFixed(0)}°) AND splits into ${circularClusters.length} ` +
+            `individually-circular clusters — treating as separate merged holes.`
+          );
+          for (const c of circularClusters) {
             results.push({
               surfaceId:   surfId,
-              nodeIndices: clusterNodes,
+              nodeIndices: c.nodes,
               type:        "hole_wall",
-              holeInfo:    { cx: scx, cy: scy, r: subRMean },
+              holeInfo:    { cx: c.fit.cx, cy: c.fit.cy, r: c.fit.rMean },
             });
           }
+          // The split clusters already cover this surface's real content.
+          continue;
         }
-        // Don't fall through to the normal single-entry push below — the
-        // split clusters above already cover this surface's real content.
-        continue;
+
+        // NOT corroborated — one partially-occluded wall, not many holes. Keep it
+        // as a single hole_wall (whole-surface fit) rather than splitting, so a
+        // counterbore / intersecting feature never produces phantom holes.
+        console.warn(
+          `[gmsh] surface near (${fit.cx.toFixed(2)},${fit.cy.toFixed(2)}) has a ` +
+          `${maxAngularGapDeg.toFixed(0)}° gap but no corroborating second circular cluster — ` +
+          `treating as a single partially-covered hole, not splitting into phantom holes.`
+        );
+        bestType     = "hole_wall";
+        bestHoleInfo = { cx: fit.cx, cy: fit.cy, r: rMean };
       } else {
-        // High radial variance → flat outer edge
+        // High relative radial variance or radius out of the plausible window →
+        // flat (vertical) outer edge (reported, not silently dropped).
         bestType = "outer_edge";
       }
     }
@@ -469,7 +592,14 @@ export async function meshStepWithGmsh(
   for (const s of holeSurfaces) {
     if (!s.holeInfo || !s.nodeIndices) continue;
     const { cx, cy, r } = s.holeInfo;
-    const existing = holeCentres.find(h => Math.sqrt((h.cx-cx)**2+(h.cy-cy)**2) < 1.0);
+    // Two hole-wall surfaces belong to the SAME physical cylinder when their
+    // fitted centres nearly coincide (e.g. a top/bottom rim Gmsh split into
+    // separate surface tags). "Nearly" is relative to the smaller fitted radius
+    // (issue #170) — 0.5·r matches the old 1.0 mm constant at r = 2 mm but scales
+    // with the hole. Distinct holes are separated by ≳ their own radii, so this
+    // never over-merges them.
+    const existing = holeCentres.find(h =>
+      Math.sqrt((h.cx-cx)**2+(h.cy-cy)**2) < 0.5 * Math.min(h.r, r));
     if (existing) {
       const nodes = holeWallNodes.get(existing.id) ?? [];
       nodes.push(...s.nodeIndices);

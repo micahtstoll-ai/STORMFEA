@@ -45,7 +45,7 @@ import type { TetMesh }                       from "./solver/types.js";
 const execFileAsync = promisify(execFile);
 
 // ─── Vertex welding ───────────────────────────────────────────────────────────
-interface WeldResult {
+export interface WeldResult {
   positions: Float64Array;   // welded vertex positions [x0,y0,z0, ...]
   faces:     Int32Array;     // triangle indices [a0,b0,c0, ...]
   vertCount: number;
@@ -54,11 +54,57 @@ interface WeldResult {
   slotToWeld: Int32Array;
 }
 
-function weldVertices(stlPositions: Float32Array, triangleCount: number): WeldResult {
-  // Weld tolerance: 1e6 = 1 micron. Previously 1e4 (0.1mm) which was too coarse
-  // — circle vertices from the quad-ring generator differ at the 4th decimal place,
-  // causing adjacent triangles to have unmatched vertices → open edges → TetGen rejection.
-  const PREC = 1e6;
+/** Axis-aligned bounding box of the first `vertexCount` vertices of a flat
+ *  [x,y,z,…] position buffer, plus its diagonal length. Used to derive
+ *  scale-relative tolerances (issue #168). A degenerate/empty buffer collapses
+ *  to a zero-size box at the origin. */
+export function boundingBoxOf(
+  positions: Float32Array,
+  vertexCount: number,
+): { min: [number, number, number]; max: [number, number, number]; diag: number } {
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let v = 0; v < vertexCount; v++) {
+    const x = positions[v * 3] ?? 0, y = positions[v * 3 + 1] ?? 0, z = positions[v * 3 + 2] ?? 0;
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+  }
+  if (!Number.isFinite(minX)) { minX = minY = minZ = 0; maxX = maxY = maxZ = 0; }
+  const dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
+  return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ], diag: Math.sqrt(dx * dx + dy * dy + dz * dz) };
+}
+
+/**
+ * Weld tolerance for a mesh whose bounding-box diagonal is `diag`.
+ *
+ * SCALE-RELATIVE (issue #168): the previous fixed 1e-6-unit grid (`PREC = 1e6`)
+ * only merged coincident vertices when the model happened to be in millimetres.
+ * On a metre-scale STL the same physical part is numerically ~1000× larger, so
+ * float32 round-off between two "coincident" ring vertices (~diag·1e-7) exceeded
+ * the fixed 1e-6 grid → vertices left unwelded → open edges → TetGen leaks/failures.
+ *
+ * `diag · 1e-6` tracks float32 precision at the model's own magnitude (a float32
+ * carries ~7 significant digits, so coincident vertices agree to ~diag·1e-7; a
+ * 1e-6 grid is one decade looser, tight enough to keep distinct features apart).
+ * The floor keeps a strictly-positive tolerance for a degenerate zero-size input
+ * so the reciprocal used for quantisation never divides by zero.
+ */
+export function weldToleranceForDiag(diag: number): number {
+  return Math.max(diag * 1e-6, 1e-12);
+}
+
+export function weldVertices(stlPositions: Float32Array, triangleCount: number): WeldResult {
+  const vertexCount = triangleCount * 3;
+  // Derive the weld grid from the model's own size so welding is identical at
+  // any unit scale (issue #168). Quantise relative to the bbox minimum (like the
+  // server spatial grid's floor((x-min)/cell) convention) so cell indices stay
+  // in [0, ~1e6] regardless of where the part sits — which also keeps the packed
+  // hash key below collision-free for the offsets/multiplier used here.
+  const bb = boundingBoxOf(stlPositions, vertexCount);
+  const [minX, minY, minZ] = bb.min;
+  const invTol = 1 / weldToleranceForDiag(bb.diag);
+
   const outer = new Map<number, Map<number, number>>();
   const slotToWeld = new Int32Array(triangleCount * 3);
   let vertCount = 0;
@@ -70,9 +116,9 @@ function weldVertices(stlPositions: Float32Array, triangleCount: number): WeldRe
     const x = stlPositions[slot * 3]     ?? 0;
     const y = stlPositions[slot * 3 + 1] ?? 0;
     const z = stlPositions[slot * 3 + 2] ?? 0;
-    const qx = Math.round(x * PREC);
-    const qy = Math.round(y * PREC);
-    const qz = Math.round(z * PREC);
+    const qx = Math.round((x - minX) * invTol);
+    const qy = Math.round((y - minY) * invTol);
+    const qz = Math.round((z - minZ) * invTol);
     const outerKey = (qz + 1_048_577) * 2_097_155 + (qy + 1_048_577);
     let inner = outer.get(outerKey);
     if (!inner) { inner = new Map(); outer.set(outerKey, inner); }
@@ -97,6 +143,38 @@ function weldVertices(stlPositions: Float32Array, triangleCount: number): WeldRe
     triCount: triangleCount,
     slotToWeld,
   };
+}
+
+// ─── TetGen max-element-volume tier sizing ─────────────────────────────────────
+/**
+ * Per-tier target element counts. The historical mesher used FIXED TetGen -a
+ * volumes (coarse 30, standard 10, fine 3 mm³), which silently assumed the STL
+ * was in millimetres: a metre-scale part (numerically ~1e9× larger volume) got
+ * ~0 elements, a cm-scale part 1000× too coarse (issue #168).
+ *
+ * Instead we target an element COUNT per tier and back out the volume bound as
+ * `bboxVolume / targetCount`, so the mesh density is scale-invariant: the same
+ * geometry at 0.1×/1×/10× scale meshes to the same element count.
+ *
+ * Calibration: a typical mm-scale FDM part (~120,000 mm³ bbox, i.e. a ≈49 mm
+ * cube) reproduces the old fixed volumes and hence the old element counts —
+ * standard 120000/12000 = 10 mm³, coarse /4000 = 30 mm³, fine /40000 = 3 mm³.
+ * The tier RATIOS (30:10:3) are preserved for any reference size.
+ */
+const TET_TARGET_ELEMENTS = { coarse: 4_000, standard: 12_000, fine: 40_000 } as const;
+
+export type MeshTier = keyof typeof TET_TARGET_ELEMENTS;
+
+/**
+ * Scale-relative TetGen max-element volume (-a switch) for a bounding-box volume
+ * (in the model's own units³) and a quality tier. Returns bboxVolume/targetCount,
+ * floored at a tiny positive value so a degenerate (flat) bbox still yields a
+ * usable positive bound. No millimetre assumption — the result is in the model's
+ * own units³, exactly what TetGen's -a expects (issue #168).
+ */
+export function tetMaxVolumeForTier(bboxVolume: number, tier: MeshTier): number {
+  const target = TET_TARGET_ELEMENTS[tier] ?? TET_TARGET_ELEMENTS.standard;
+  return Math.max(bboxVolume / target, 1e-12);
 }
 
 // ─── Write OFF file ───────────────────────────────────────────────────────────
@@ -233,11 +311,12 @@ export async function meshWithTetGen(
   triangleCount: number,
   elementOrder:  1 | 2 = 2,
   /**
-   * Maximum tetrahedron volume in mm³ (TetGen -a switch). Lower = denser mesh.
-   * Default 10 preserves the historical behaviour; analysis.ts maps the user's
-   * coarse/standard/fine selector to this so the control actually affects STL
-   * mesh density (previously it was hardcoded and only the STEP/Gmsh path
-   * honoured the selector).
+   * Maximum tetrahedron volume (TetGen -a switch) in the STL's OWN units³.
+   * Lower = denser mesh. The default 10 is a mm-scale convenience for direct
+   * callers/tests with known-scale geometry; the production path (analysis.ts)
+   * passes `tetMaxVolumeForTier(bboxVolume, tier)` so density is scale-invariant
+   * and the coarse/standard/fine selector actually affects STL mesh density
+   * without assuming millimetres (issue #168).
    */
   maxVolume:     number = 10,
 ): Promise<TetGenResult> {
@@ -276,7 +355,12 @@ export async function meshWithTetGen(
   const nodePath = tmpBase + ".1.node";
   const elePath  = tmpBase + ".1.ele";
 
-  const a  = Math.max(0.01, maxVolume);
+  // Guard only against a non-positive volume bound. The previous 0.01 floor was
+  // itself a millimetre assumption — on a metre-scale STL a legitimate maxVolume
+  // of ~1e-8 units³ would have been clamped up to 0.01, re-coarsening the mesh to
+  // ~0 elements (issue #168). Callers now supply an already scale-appropriate
+  // value (tetMaxVolumeForTier), so this need only avoid 0/negative.
+  const a  = maxVolume > 0 ? maxVolume : 1e-12;
   const aR = (a * 5).toPrecision(4);   // relaxed volume for the third attempt
   const av = a.toPrecision(4);
   const o2 = elementOrder === 2 ? ["-o2"] : [];

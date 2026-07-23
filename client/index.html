@@ -6293,6 +6293,12 @@ function showResults(s) {
   // not converge. Rendered above the verdict card so a green "Safe" header can
   // never stand alone without the caveat.
   let reliabilityBanner = '';
+  if (s.unitsWarning) {
+    reliabilityBanner += `<div style="padding:12px 14px;background:#3a1a00;border:2px solid var(--warn);border-radius:6px;margin-bottom:12px">
+      <div style="font-size:12px;font-weight:600;color:var(--warn);margin-bottom:4px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Check your units</div>
+      <div style="font-size:11px;color:var(--text-mid);line-height:1.5">${s.unitsWarning}</div>
+    </div>`;
+  }
   if (s.meshFallback) {
     reliabilityBanner += `<div style="padding:12px 14px;background:#3a1a00;border:2px solid var(--warn);border-radius:6px;margin-bottom:12px">
       <div style="font-size:12px;font-weight:600;color:var(--warn);margin-bottom:4px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Approximate result — mesh fallback</div>
