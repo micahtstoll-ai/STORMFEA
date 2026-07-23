@@ -1378,7 +1378,7 @@ console.log("\n[22] Surface pressure — consistent traction resultant + patch t
     const a=faces[t*3]!, b=faces[t*3+1]!, c=faces[t*3+2]!;
     isLoaded[t] = (mesh.nodes[a*3+2]!>L-1e-6)&&(mesh.nodes[b*3+2]!>L-1e-6)&&(mesh.nodes[c*3+2]!>L-1e-6);
   }
-  const pf = assembleSurfaceTraction(mesh.nodes, faces, isLoaded, [0,0,P]);
+  const pf = assembleSurfaceTraction(mesh, faces, isLoaded, [0,0,P]);
   let sz=0; for(let n=0;n<mesh.nodeCount;n++) sz+=pf[n*3+2]??0;
   test("[22.1] traction resultant = P·A", Math.abs(sz - P*L*L) < 1e-6*(P*L*L),
     `Σfz=${sz.toFixed(4)} expected=${(P*L*L).toFixed(4)}`);
@@ -1398,6 +1398,98 @@ console.log("\n[22] Surface pressure — consistent traction resultant + patch t
     console.log(`    resultant=${sz.toFixed(2)}N, mean σ_zz=${meanSzz.toFixed(4)} MPa`);
   } catch (err) {
     test("[22.2] patch test did not throw", false, String(err));
+  }
+
+  // ── C3D10 (quadratic) — consistent T6 surface load (issue #137) ─────────────
+  // Corner-only lumping is the exact INVERSE of the correct quadratic face load:
+  // the T6 corner integral ∫N_corner dA = 0 and the mid-side integral = A/3, so a
+  // uniform traction must land on the three mid-side nodes, not the corners.
+  {
+    const Lq=10, Pq=2.0;
+    const meshQ = generateBoxMeshC3D10(0,0,0, Lq,Lq,Lq, 3,3,3);
+    const facesQ = boundaryFaces(meshQ);
+    const triCountQ = facesQ.length/3;
+    const loadedQ:boolean[] = new Array(triCountQ);
+    for (let t=0;t<triCountQ;t++){
+      const a=facesQ[t*3]!, b=facesQ[t*3+1]!, c=facesQ[t*3+2]!;
+      loadedQ[t] = (meshQ.nodes[a*3+2]!>Lq-1e-6)&&(meshQ.nodes[b*3+2]!>Lq-1e-6)&&(meshQ.nodes[c*3+2]!>Lq-1e-6);
+    }
+    const pfQ = assembleSurfaceTraction(meshQ, facesQ, loadedQ, [0,0,Pq]);
+
+    // (a) Resultant still exact.
+    let szQ=0; for(let n=0;n<meshQ.nodeCount;n++) szQ+=pfQ[n*3+2]??0;
+    test("[22.3] C3D10 traction resultant = P·A", Math.abs(szQ - Pq*Lq*Lq) < 1e-6*(Pq*Lq*Lq),
+      `Σfz=${szQ.toFixed(4)} expected=${(Pq*Lq*Lq).toFixed(4)}`);
+
+    // (b) Distribution: build the reference T6 load INDEPENDENTLY of the solver
+    // (locate each mid-side node by its midpoint coordinates) and require corners
+    // ≈ 0 and every loaded node = Σ (A/3)·t over the faces it belongs to.
+    const midOf = (p:number,q:number):number => {
+      const mx=(meshQ.nodes[p*3]!+meshQ.nodes[q*3]!)/2;
+      const my=(meshQ.nodes[p*3+1]!+meshQ.nodes[q*3+1]!)/2;
+      const mz=(meshQ.nodes[p*3+2]!+meshQ.nodes[q*3+2]!)/2;
+      for (let n=0;n<meshQ.nodeCount;n++)
+        if (Math.abs(meshQ.nodes[n*3]!-mx)<1e-9 && Math.abs(meshQ.nodes[n*3+1]!-my)<1e-9 && Math.abs(meshQ.nodes[n*3+2]!-mz)<1e-9) return n;
+      return -1;
+    };
+    const expect = new Float64Array(meshQ.nodeCount*3);
+    const cornerSet = new Set<number>();
+    for (let t=0;t<triCountQ;t++){
+      if(!loadedQ[t]) continue;
+      const a=facesQ[t*3]!, b=facesQ[t*3+1]!, c=facesQ[t*3+2]!;
+      cornerSet.add(a); cornerSet.add(b); cornerSet.add(c);
+      const ax=meshQ.nodes[a*3]!,ay=meshQ.nodes[a*3+1]!,az=meshQ.nodes[a*3+2]!;
+      const bx=meshQ.nodes[b*3]!,by=meshQ.nodes[b*3+1]!,bz=meshQ.nodes[b*3+2]!;
+      const cx=meshQ.nodes[c*3]!,cy=meshQ.nodes[c*3+1]!,cz=meshQ.nodes[c*3+2]!;
+      const area=0.5*Math.hypot((by-ay)*(cz-az)-(bz-az)*(cy-ay),(bz-az)*(cx-ax)-(bx-ax)*(cz-az),(bx-ax)*(cy-ay)-(by-ay)*(cx-ax));
+      for (const m of [midOf(a,b),midOf(b,c),midOf(c,a)]) expect[m*3+2]! += Pq*area/3;
+    }
+    let maxCorner=0; for (const cN of cornerSet) maxCorner=Math.max(maxCorner, Math.abs(pfQ[cN*3+2]??0));
+    test("[22.4] C3D10 corner nodes carry ≈ 0 (bug was A/3 on corners)", maxCorner < 1e-9*(Pq*Lq*Lq),
+      `max|f_corner|=${maxCorner.toExponential(3)}`);
+    let maxErr=0; for (let i=0;i<expect.length;i++) maxErr=Math.max(maxErr, Math.abs((pfQ[i]??0)-(expect[i]??0)));
+    test("[22.5] C3D10 mid-side loads = ΣA/3·t (T6 consistent)", maxErr < 1e-9*(Pq*Lq*Lq),
+      `max|f−f_ref|=${maxErr.toExponential(3)}`);
+
+    // (c) Symmetry-plane patch test → constant σ_zz = P to near machine precision.
+    // x=0,y=0,z=0 are symmetry planes of the uniaxial field
+    // u = (−νP/E·x, −νP/E·y, P/E·z), so constraining the normal DOF on each
+    // reproduces the exact constant-stress state. Corner lumping (the #137 bug)
+    // is NOT the consistent quadratic load and perturbs σ near the loaded face.
+    const matQ = { E:3500, nu:0.36, yieldStrength:50, label:"pla" };
+    const fx0:number[]=[], fy0:number[]=[], fz0:number[]=[];
+    for(let n=0;n<meshQ.nodeCount;n++){
+      if((meshQ.nodes[n*3]??0)<1e-6) fx0.push(n);
+      if((meshQ.nodes[n*3+1]??0)<1e-6) fy0.push(n);
+      if((meshQ.nodes[n*3+2]??0)<1e-6) fz0.push(n);
+    }
+    const forcesQ:{nodeIndex:number;forceN:[number,number,number]}[]=[];
+    for(let n=0;n<meshQ.nodeCount;n++){ const fz=pfQ[n*3+2]??0; if(fz!==0) forcesQ.push({nodeIndex:n,forceN:[0,0,fz]}); }
+    try {
+      const interQ = await runLinearStaticWithK({
+        mesh:meshQ, material:matQ, cgTolerance:1e-12,
+        constraints:[
+          {nodeIndices:fx0, fixedAxes:[true,false,false] as const},
+          {nodeIndices:fy0, fixedAxes:[false,true,false] as const},
+          {nodeIndices:fz0, fixedAxes:[false,false,true] as const},
+        ],
+        forces:forcesQ,
+      });
+      const es6=interQ.result.elemStress6!;
+      let maxRelZZ=0, maxOff=0;
+      for(let e=0;e<meshQ.elementCount;e++){
+        maxRelZZ=Math.max(maxRelZZ, Math.abs((es6[e*6+2]??0)-Pq)/Pq);
+        maxOff=Math.max(maxOff, Math.abs(es6[e*6]??0), Math.abs(es6[e*6+1]??0),
+          Math.abs(es6[e*6+3]??0), Math.abs(es6[e*6+4]??0), Math.abs(es6[e*6+5]??0));
+      }
+      test("[22.6] C3D10 patch: σ_zz = P at every element (near machine precision)",
+        maxRelZZ < 1e-6, `maxRel σ_zz err=${maxRelZZ.toExponential(3)}`);
+      test("[22.7] C3D10 patch: off-axis stresses ≈ 0", maxOff < 1e-5*Pq,
+        `max|σ_off|=${maxOff.toExponential(3)} MPa`);
+      console.log(`    C3D10 patch: maxRelZZ=${maxRelZZ.toExponential(2)}, maxOff=${maxOff.toExponential(2)} MPa`);
+    } catch (err) {
+      test("[22.6] C3D10 patch test did not throw", false, String(err));
+    }
   }
 }
 
