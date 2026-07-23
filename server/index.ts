@@ -273,6 +273,19 @@ app.post("/api/analyse", async (req, res) => {
   try {
     if (!validateBody(req, res, ANALYSE_SPEC)) return;
 
+    // ANALYSE_SPEC only asserts materialId is a string — enforce the supported
+    // SET here (issue #186) so an unknown id is refused up front rather than
+    // silently falling back to PLA base/bond physics deep in the solver.
+    const materialId = (req.body as { print?: { materialId?: unknown } })?.print?.materialId;
+    if (typeof materialId !== "string" || !isKnownMaterial(materialId)) {
+      res.status(400).json({
+        error: `Unknown material "${String(materialId)}"`,
+        field: "print.materialId",
+        hint:  `must be one of: ${MATERIAL_IDS.join(", ")}`,
+      });
+      return;
+    }
+
     const body = req.body as {
       positionsB64: string;
       stepB64?:     string;
@@ -600,6 +613,8 @@ import {
   backCalculateProfile,
   fitFatigueProfile,
   COUPON_DIMS,
+  isKnownMaterial,
+  MATERIAL_IDS,
 } from "./analysis.js";
 import type { CalibrationProfile, FatigueCouponPoint } from "./analysis.js";
 import fs   from "fs";
@@ -723,12 +738,22 @@ app.post("/api/calibration/bond-sweep", async (req, res) => {
     })) return;
     const { fitBondCoeffs, layerHeightFactor, literatureYieldMPa, literatureYieldZRatio, COUPON_DIMS: CD } =
       await import("./analysis.js");
+    const { isKnownBondMaterial } = await import("./solver/bond.js");
     const body = req.body as {
       materialId: string;
       yieldXY_MPa?: number;
       yieldZ_over_yieldXY?: number;
       points: Array<Record<string, number | undefined>>;
     };
+    // Refuse unknown materials (issue #186): fitting against PLA's reference
+    // physics would return coefficients calibrated to the wrong material.
+    if (!isKnownBondMaterial(body.materialId)) {
+      res.status(400).json({
+        error: `Unknown material "${body.materialId}" — no bond property table entry`,
+        field: "materialId",
+      });
+      return;
+    }
     // Accept either a directly measured strength or the raw coupon failure
     // load (converted with the Z-tension gauge area, same as backCalculate).
     const areaZ = CD.zTensile.gaugeWidthMm * CD.zTensile.gaugeThickMm;
@@ -773,7 +798,17 @@ app.post("/api/bond-sensitivity", async (req, res) => {
       process?: { nozzleTempC?: number; printSpeedMmS?: number; coolingFanPct?: number; bedTempC?: number; ambientTempC?: number };
       bondCoeffs?: { hConv?: number; activationEnergyKJmol?: number; strengthPrefactor?: number } | null;
     };
-    const matKey = body.materialId in BOND_MATERIALS ? body.materialId : "pla";
+    // Refuse unknown materials (issue #186) rather than silently graph PLA bond
+    // physics under another material's name.
+    if (!(body.materialId in BOND_MATERIALS)) {
+      res.status(400).json({
+        error: `Unknown material "${body.materialId}" — no bond property table entry`,
+        field: "materialId",
+        hint:  `must be one of: ${Object.keys(BOND_MATERIALS).join(", ")}`,
+      });
+      return;
+    }
+    const matKey = body.materialId;
     const matRef = BOND_MATERIALS[matKey]!;
     const lh = body.layerHeightMm > 1e-6 ? body.layerHeightMm : 0.2;
     const coeffs = body.bondCoeffs ?? null;

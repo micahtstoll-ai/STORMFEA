@@ -15,6 +15,7 @@ import {
   predictBondMultipliers,
   fitBondCoeffs,
   hasProcessSettings,
+  isKnownBondMaterial,
   BOND_REFERENCE,
   BOND_MATERIALS,
   type BondSweepPoint,
@@ -111,9 +112,24 @@ describe("robustness: clamps and degenerate inputs", () => {
     }
   });
 
-  it("unknown material falls back to PLA constants", () => {
+  it("unknown material refuses the bond path — no silent PLA fallback (issue #186)", () => {
     const p = predictBondMultipliers("unobtainium", 0.2, REF_PROC);
-    expect(Number.isFinite(p.relStrength)).toBe(true);
+    expect(p.supported).toBe(false);
+    // Reference no-op multipliers (= legacy no-process behavior), NOT PLA physics.
+    expect(p.relStrength).toBe(1);
+    expect(p.relStiffness).toBe(1);
+    expect(p.confidence).toBe("low");
+    expect(p.note).toMatch(/no entry in the bond property table/i);
+    expect(isKnownBondMaterial("unobtainium")).toBe(false);
+    expect(isKnownBondMaterial("pla")).toBe(true);
+  });
+
+  it("fitBondCoeffs refuses an unknown material (issue #186)", () => {
+    expect(() => fitBondCoeffs("unobtainium", [
+      { layerHeightMm: 0.2, measuredSztMPa: 20 },
+      { layerHeightMm: 0.2, measuredSztMPa: 21 },
+      { layerHeightMm: 0.3, measuredSztMPa: 18 },
+    ], 50, 0.58, layerHeightFactor)).toThrow(/bond property table/i);
   });
 
   it("hasProcessSettings gates on any meaningful field", () => {

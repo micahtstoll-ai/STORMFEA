@@ -217,7 +217,9 @@ export function generateHtmlReport(
           }) over a homogenized ${materialModel.core ? materialModel.core.patternFamily + " Gibson-Ashby" : ""} infill core; shell yield ${materialModel.shellYieldXYMPa?.toFixed(1)} MPa vs core ${materialModel.coreYieldXYMPa?.toFixed(1)} MPa.`
         : ``}
       ${materialModel.bond
-        ? `<br><b>Bead-penetration bond model (${materialModel.bond.confidence.toUpperCase()} confidence):</b> interlayer strength ×${materialModel.bond.relStrength.toFixed(2)}, stiffness ×${materialModel.bond.relStiffness.toFixed(2)} vs typical settings — interface ${materialModel.bond.interfaceTempC.toFixed(0)}°C on a ${materialModel.bond.substrateTempC.toFixed(0)}°C substrate, τ_cool ${materialModel.bond.coolTimeConstS.toFixed(1)} s${materialModel.bond.clamped ? " (clamped)" : ""}.`
+        ? materialModel.bond.applied === false
+          ? `<br><b>Bead-penetration bond model:</b> not applied — ${materialModel.bond.note}`
+          : `<br><b>Bead-penetration bond model (${materialModel.bond.confidence.toUpperCase()} confidence):</b> interlayer strength ×${materialModel.bond.relStrength.toFixed(2)}, stiffness ×${materialModel.bond.relStiffness.toFixed(2)} vs typical settings — interface ${(materialModel.bond.interfaceTempC ?? 0).toFixed(0)}°C on a ${(materialModel.bond.substrateTempC ?? 0).toFixed(0)}°C substrate, τ_cool ${(materialModel.bond.coolTimeConstS ?? 0).toFixed(1)} s${materialModel.bond.clamped ? " (clamped)" : ""}.`
         : ``}
       ${isotropicComparison
         ? `<br><b>vs conventional isotropic FEA:</b> ${isotropicComparison.explanation}`
