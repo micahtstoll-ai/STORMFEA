@@ -694,11 +694,17 @@ export function backCalculateProfile(params: {
     yieldZ_MPa = zTensileFailN / areaZ;
   }
 
-  // Lap-shear: the single-lap joint concentrates shear at the overlap ends, so
-  // nominal F/A_overlap underestimates the true peak. Multiply by Kt (from the
-  // solver) to get the peak-based interlaminar shear strength S_zs. It stays
-  // an INDEPENDENT allowable (audit A5); only when no Z-tension coupon was
-  // run is it also converted into yieldZ via the legacy Hill τ_z = Z/√3
+  // Lap-shear: the allowable is the APPARENT (average) interlaminar shear
+  // strength F/A_overlap. Kt is ≡ 1.0 BY POLICY (issue #140), not measured: the
+  // end-of-overlap shear peak in a single-lap joint is a geometric singularity
+  // (re-entrant corner) whose FEA "Kt" never converges under mesh refinement,
+  // and STORMFEA evaluates part interlaminar shear on element-AVERAGED stress
+  // (fdmDualCriterion S_zs) — so average-based is the CONSISTENT measure, not a
+  // shortcut. The `ktLapShear` parameter (default 1.0) is retained only as a
+  // manual override escape hatch for a caller with an externally-calibrated
+  // correction; the /api/calibration/kt probe never sets it above 1.0.
+  // It stays an INDEPENDENT allowable (audit A5); only when no Z-tension coupon
+  // was run is it also converted into yieldZ via the legacy Hill τ_z = Z/√3
   // relation (τ/0.58) — flagged so consumers know yieldZ is derived.
   let shearStr_MPa:  number | null = null;
   let interShear_MPa: number | null = null;
@@ -713,7 +719,11 @@ export function backCalculateProfile(params: {
   }
 
   // Bearing: contact at the hole wall concentrates stress at the bore. Nominal
-  // bearing stress F/(d·t) is corrected to peak by Kt.
+  // bearing stress F/(d·t) is lifted to a peak-based allowable by Kt. That Kt
+  // comes from the plate-with-hole FEA probe (buildBearingKtProbe) as the
+  // net-section OPEN-HOLE tension SCF — a first-order proxy for the true bearing
+  // concentration, since the fixture can only apply far-field tension, not a
+  // bolt bearing on the wall (issue #139). Default 1.0 ⇒ plain nominal F/(d·t).
   let bearingStr_MPa: number | null = null;
   if (bearingFailN !== null) {
     bearingStr_MPa = ktBearing * (bearingFailN /
