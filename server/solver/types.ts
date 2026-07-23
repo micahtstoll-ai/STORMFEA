@@ -323,7 +323,9 @@ export interface SolverResult {
   /**
    * Per-constraint reaction force vector [Fx, Fy, Fz] in Newtons.
    * constraints[i] corresponds to constraints array passed to runLinearStatic.
-   * Length = number of FixedNodeSets. Computed from f_reaction = K×u - f_ext at constrained DOFs.
+   * Length = number of FixedNodeSets. Computed from f_reaction = K₀×u - f_ext at
+   * constrained DOFs, where K₀ is the pristine stiffness (the Dirichlet penalty is
+   * backed out of the modified diagonal — see computeBoltReactions, issue #136).
    */
   readonly boltReactions?: readonly { nodeCount: number; Fx: number; Fy: number; Fz: number }[];
 
@@ -345,6 +347,32 @@ export interface SolverResult {
    * Array of { iteration, relativeResidual } points.
    */
   readonly residualCheckpoints?: readonly { iteration: number; relativeResidual: number }[];
+
+  /**
+   * TRUE relative residual ‖f − K·u‖₂/‖f‖₂ measured by one final SpMV after the
+   * CG loop exits (issue #153). This is the residual `converged` is keyed to.
+   */
+  readonly trueRelativeResidual?: number;
+
+  /**
+   * The CG RECURRENCE residual at exit (the quantity the loop iterated against).
+   * A large gap vs trueRelativeResidual flags finite-precision drift from a
+   * penalty-inflated / ill-conditioned operator (issue #153).
+   */
+  readonly recurrenceRelativeResidual?: number;
+
+  /**
+   * Condition-number estimate κ ≈ λmax/λmin of the PRECONDITIONED operator,
+   * from the CG-implied Lanczos tridiagonal (issue #153). NOTE it is the
+   * preconditioned conditioning CG actually sees, not κ(K).
+   */
+  readonly conditionEstimate?: number;
+
+  /**
+   * Honest order-of-magnitude estimate of the relative displacement error,
+   * κ_preconditioned × trueRelativeResidual (issue #153).
+   */
+  readonly displacementErrorEstimate?: number;
 
   /**
    * Zienkiewicz-Zhu error estimates η_e at each element centroid (0–1 fraction).
@@ -391,7 +419,26 @@ export interface ModeResult {
   readonly frequencyHz:          number;        // Hz = sqrt(omega2) / (2π)
   readonly omega2:               number;        // rad²/s² (eigenvalue of K·φ = ω²·M·φ)
   readonly modeShape:            Float64Array;  // length = nodeCount * 3
-  readonly participationFactor:  number;        // φᵀ·M·r, r = X-direction unit excitation
+  /** Legacy alias of participationX (φᵀ·M·rx). Kept for backward compatibility. */
+  readonly participationFactor:  number;
+  // ── Issue #161: three-direction participation & effective modal mass ─────────
+  /** Γx = φᵀ·M·rx  (rx = unit rigid-body translation in +X). */
+  readonly participationX:       number;
+  readonly participationY:       number;
+  readonly participationZ:       number;
+  /** meffX = Γx²/(φᵀMφ)  [tonne] — effective modal mass in X for this mode. */
+  readonly effectiveMassX:       number;
+  readonly effectiveMassY:       number;
+  readonly effectiveMassZ:       number;
+  /** Running Σ effectiveMassX (this mode and all lower) / total X translational mass. */
+  readonly cumulativeMassFracX:  number;
+  readonly cumulativeMassFracY:  number;
+  readonly cumulativeMassFracZ:  number;
+  // ── Issue #160: per-mode robustness diagnostics ──────────────────────────────
+  /** Relative eigen-residual ‖Kφ − ω²Mφ‖ / ‖ω²Mφ‖ (0 for near-zero/rigid modes). */
+  readonly residual:             number;
+  /** True when ω² is below the rigid-body threshold (near-zero / mechanism mode). */
+  readonly rigid:                boolean;
 }
 
 /**
@@ -404,6 +451,28 @@ export interface ModalAnalysisResult {
   readonly iterations:          number;
   readonly rigidBodyModeCount:  number;
   readonly modalMs:             number;          // wall-clock ms for eigensolver only
+  // ── Issue #160: missed-mode certification ────────────────────────────────────
+  /**
+   * How completeness of the reported band was verified:
+   *   'guard-block' — the enlarged working subspace (p > nModes guard vectors)
+   *                   converged with small residuals AND a spectral gap separates
+   *                   the last reported mode from the first guard mode, so no
+   *                   eigenvalue below the highest reported ω² was skipped
+   *                   (clustered/degenerate pairs inside the band are resolved).
+   *   'sturm'       — reserved: full sparse Sturm (LDLᵀ inertia) count. NOT
+   *                   implemented; a true negative-eigenvalue count via sparse
+   *                   factorization is out of scope for this PCG-based solver.
+   *   'none'        — could not certify (residuals too large, or a cluster
+   *                   straddles the top boundary — see warnings).
+   */
+  readonly certified:           'guard-block' | 'sturm' | 'none';
+  /** Non-fatal advisories surfaced to the caller (partial rigid modes, un-certified
+   *  band, non-convergence). Empty/absent when the solve is clean. */
+  readonly warnings?:           readonly string[];
+  // ── Issue #161: total translational mass per direction (rᵀ·M·r) ──────────────
+  readonly totalMassX:          number;
+  readonly totalMassY:          number;
+  readonly totalMassZ:          number;
 }
 
 // ─── Mesh Quality Types ───────────────────────────────────────────────────────
