@@ -980,7 +980,9 @@ console.log("\n[16] Linear buckling — Euler column (clamped-free cantilever)")
     const { K: KbuckQ, diagIdx: diagIdxQ } = await assembleK(meshQ, mat);
     const fDummyQ = assembleForceVector(meshQ.nodeCount, forces16Q);
     applyDirichletBC(KbuckQ, fDummyQ, diagIdxQ, [{ nodeIndices: fixedQ }]);
-    const KsigmaQ = assembleKsigma(meshQ, elemStress6Q, KbuckQ.rowPtr, KbuckQ.colIdx);
+    // Per-Gauss-point Kσ (issue #164) + block subspace eigensolver (issue #138).
+    const KsigmaQ = assembleKsigma(meshQ, elemStress6Q, KbuckQ.rowPtr, KbuckQ.colIdx,
+      { displacement: interQ.result.displacement, material: mat });
     const bResultQ = await runLinearBuckling(KbuckQ, KsigmaQ, diagIdxQ);
     const relErrQ = Math.abs(bResultQ.blf - 1.0);
     test("[16.5] C3D10 buckling converged",       bResultQ.converged,        `iters=${bResultQ.iterations}`);
@@ -989,12 +991,90 @@ console.log("\n[16] Linear buckling — Euler column (clamped-free cantilever)")
       `BLF=${bResultQ.blf.toFixed(4)} relErr=${(relErrQ*100).toFixed(2)}%`);
     test("[16.8] C3D10 mode shape returned",      bResultQ.modeShape.length === meshQ.nodeCount * 3,
       `len=${bResultQ.modeShape.length} expected=${meshQ.nodeCount*3}`);
-    console.log(`    C3D10 nx=12: BLF=${bResultQ.blf.toFixed(4)}, error=${(relErrQ*100).toFixed(2)}%`);
+    test("[16.8b] C3D10 smallest-positive certified", bResultQ.certified,
+      `certified=${bResultQ.certified} modes=[${bResultQ.positiveBLFs.map(v=>v.toFixed(3)).join(', ')}]`);
+    console.log(`    C3D10 nx=12: BLF=${bResultQ.blf.toFixed(4)}, error=${(relErrQ*100).toFixed(2)}%, certified=${bResultQ.certified}`);
   } catch (err) {
     test("[16.5] C3D10 buckling did not throw", false, String(err));
     test("[16.6] C3D10 BLF positive", false);
     test("[16.7] C3D10 BLF within 3% of Euler", false);
     test("[16.8] C3D10 mode shape returned", false);
+    test("[16.8b] C3D10 smallest-positive certified", false);
+  }
+
+  // ── Bending-dominated buckling: per-Gauss-point Kσ vs element-averaged ──────
+  // Deep thin cantilever (h≫b) loaded by a pure end MOMENT (a tip couple), so
+  // the pre-stress is bending: σxx = M·(z−z_c)/I, linear through the depth and
+  // ZERO-MEAN about the neutral axis. A C3D10 element that straddles that axis
+  // has its ± bending stress averaged toward zero (issue #164), so element-
+  // averaged Kσ is under-built and OVER-predicts the buckling factor (non-
+  // conservative). Per-Gauss-point Kσ integrates the true gradient.
+  //
+  // Reference = refined (nz=4 through-depth) per-Gauss BLF: with the depth well
+  // resolved the wash-out vanishes and the two Kσ schemes converge together, so
+  // the refined per-Gauss value is the physical target. On the coarse (nz=1)
+  // mesh the two schemes straddle it: per-Gauss stays on the safe (lower) side,
+  // element-averaged overshoots it (non-conservative). This is the regression
+  // that would silently pass a part that buckles.
+  {
+    const Lb = 48, bb = 4, hb = 12, Fcouple = 4000, zc = hb / 2;
+    const buildCantileverBending = (nx: number, ny: number, nz: number) => {
+      const m = generateBoxMeshC3D10(0, 0, 0, Lb, bb, hb, nx, ny, nz);
+      const fixedB: number[] = [], hiB: number[] = [], loB: number[] = [];
+      for (let nn = 0; nn < m.nodeCount; nn++) {
+        const x = m.nodes[nn*3] ?? 0, z = m.nodes[nn*3+2] ?? 0;
+        if (x < 0.01) fixedB.push(nn);
+        if (x > Lb - 0.01) { if (z > zc + 0.01) hiB.push(nn); else if (z < zc - 0.01) loB.push(nn); }
+      }
+      const forcesB = [
+        ...hiB.map(nn => ({ nodeIndex: nn, forceN: [ Fcouple / hiB.length, 0, 0] as [number,number,number] })),
+        ...loB.map(nn => ({ nodeIndex: nn, forceN: [-Fcouple / loB.length, 0, 0] as [number,number,number] })),
+      ];
+      return { m, fixedB, forcesB };
+    };
+    const blfOf = async (nx: number, ny: number, nz: number, perGP: boolean) => {
+      const { m, fixedB, forcesB } = buildCantileverBending(nx, ny, nz);
+      const inter = await runLinearStaticWithK({ mesh: m, material: mat, constraints: [{ nodeIndices: fixedB }], forces: forcesB });
+      const es = inter.result.elemStress6;
+      if (!es) throw new Error("elemStress6 not returned (bending)");
+      const { K: Kb2, diagIdx: di2 } = await assembleK(m, mat);
+      const fd2 = assembleForceVector(m.nodeCount, forcesB);
+      applyDirichletBC(Kb2, fd2, di2, [{ nodeIndices: fixedB }]);
+      const Ks2 = assembleKsigma(m, es, Kb2.rowPtr, Kb2.colIdx,
+        perGP ? { displacement: inter.result.displacement, material: mat } : undefined);
+      return runLinearBuckling(Kb2, Ks2, di2);
+    };
+    try {
+      const coarseAvg = await blfOf(8, 2, 1, false);
+      const coarseGP  = await blfOf(8, 2, 1, true);
+      const refGP     = await blfOf(12, 2, 4, true);   // reference (depth-resolved)
+
+      const allGood = coarseAvg.converged && coarseGP.converged && refGP.converged
+        && coarseAvg.certified && coarseGP.certified && refGP.certified;
+      test("[16.9] bending buckling converged+certified (all 3 meshes)", allGood,
+        `avg=${coarseAvg.blf.toFixed(4)} gp=${coarseGP.blf.toFixed(4)} ref=${refGP.blf.toFixed(4)}`);
+      test("[16.10] all BLFs positive",
+        coarseAvg.blf > 0 && coarseGP.blf > 0 && refGP.blf > 0);
+      // The fix is active: per-Gauss and averaged differ materially for bending.
+      const washGap = (coarseAvg.blf - coarseGP.blf) / coarseGP.blf;
+      test("[16.11] per-Gauss ≠ element-averaged for bending (>15%)", washGap > 0.15,
+        `washGap=${(washGap*100).toFixed(1)}%`);
+      // Element-averaged OVER-predicts the reference → non-conservative (the bug).
+      test("[16.12] element-averaged over-predicts reference (non-conservative)",
+        coarseAvg.blf > refGP.blf,
+        `avg=${coarseAvg.blf.toFixed(4)} > ref=${refGP.blf.toFixed(4)}`);
+      // Per-Gauss stays on the safe side of the reference (does not over-predict).
+      test("[16.13] per-Gauss does not over-predict reference (conservative)",
+        coarseGP.blf <= refGP.blf * 1.02,
+        `gp=${coarseGP.blf.toFixed(4)} ≤ ref=${refGP.blf.toFixed(4)}`);
+      console.log(`    bending: coarse avg=${coarseAvg.blf.toFixed(4)} (non-cons), coarse perGP=${coarseGP.blf.toFixed(4)}, refined perGP=${refGP.blf.toFixed(4)} [reference]`);
+    } catch (err) {
+      test("[16.9] bending buckling converged+certified (all 3 meshes)", false, String(err));
+      test("[16.10] all BLFs positive", false);
+      test("[16.11] per-Gauss ≠ element-averaged for bending (>15%)", false);
+      test("[16.12] element-averaged over-predicts reference (non-conservative)", false);
+      test("[16.13] per-Gauss does not over-predict reference (conservative)", false);
+    }
   }
 }
 

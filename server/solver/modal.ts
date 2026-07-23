@@ -286,7 +286,7 @@ function denseUpperSolve(L: Float64Array, B: Float64Array, p: number, nrhs: numb
  * Symmetric Jacobi on A (p×p, column-major).
  * Returns Q (eigenvectors as columns); A is overwritten with eigenvalues on diagonal.
  */
-function symmetricJacobi(A: Float64Array, p: number): Float64Array {
+export function symmetricJacobi(A: Float64Array, p: number): Float64Array {
   const Q = new Float64Array(p * p);
   // Initialize Q = I
   for (let i = 0; i < p; i++) Q[i + i*p] = 1.0;
