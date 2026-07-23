@@ -323,10 +323,37 @@ export interface BondSweepPoint {
   measuredSztMPa:  number;
 }
 
+/**
+ * Fit-quality gate for the process sweep (issue #179). `rmsePct` is the RMS of
+ * (predicted − measured) Z-tension strength as a percentage of the mean
+ * measured strength. A clean sweep — even the coarse 6-point one in
+ * bond.test.ts — fits to < ~2%; a sweep whose scatter or outliers the physical
+ * bond model structurally cannot reproduce runs far higher. Above this bound
+ * the fitted coefficients are not a trustworthy relative correction, so the
+ * calibration endpoint REFUSES them (400) rather than letting them silently
+ * override the literature defaults — and lift bond confidence LOW→MEDIUM — in
+ * every subsequent process-aware analysis. 15% leaves generous headroom over a
+ * clean fit while still catching gross noise or a single mislabeled datum.
+ */
+export const BOND_FIT_RMSE_MAX_PCT = 15;
+
+/** One fitted sweep datum with its residual, in input order. */
+export interface BondFitPoint {
+  index:        number;
+  measuredMPa:  number;
+  predictedMPa: number;
+  /** (predicted − measured) / measured × 100, signed. */
+  deviationPct: number;
+}
+
 export interface BondFitResult {
   coeffs:   Required<Pick<BondModelCoeffs, "hConv" | "activationEnergyKJmol" | "strengthPrefactor" | "voidSensitivity">>;
   rmsePct:  number;
-  points:   Array<{ measuredMPa: number; predictedMPa: number }>;
+  /** "good" when rmsePct ≤ BOND_FIT_RMSE_MAX_PCT, else "poor" (issue #179). */
+  fitQuality: "good" | "poor";
+  points:   BondFitPoint[];
+  /** The single worst-fit datum (largest |deviationPct|) — reject diagnostics. */
+  worstPoint: BondFitPoint;
 }
 
 /**
@@ -387,18 +414,28 @@ export function fitBondCoeffs(
   const fitted: BondModelCoeffs = {
     hConv: best.h, activationEnergyKJmol: best.ea, strengthPrefactor: best.pre, voidSensitivity: best.vs,
   };
-  const outPoints = points.map(p => {
+  const outPoints: BondFitPoint[] = points.map((p, index) => {
     const rel = predictBondMultipliers(materialId, p.layerHeightMm, p, fitted).relStrength;
+    const predictedMPa = yieldXYMPa * yZRatio * layerHeightFactorFn(p.layerHeightMm) * rel;
     return {
+      index,
       measuredMPa: p.measuredSztMPa,
-      predictedMPa: yieldXYMPa * yZRatio * layerHeightFactorFn(p.layerHeightMm) * rel,
+      predictedMPa,
+      deviationPct: p.measuredSztMPa > 0 ? ((predictedMPa - p.measuredSztMPa) / p.measuredSztMPa) * 100 : 0,
     };
   });
   const meanMeasured = points.reduce((s, p) => s + p.measuredSztMPa, 0) / points.length;
   const rmse = Math.sqrt(bestSse / points.length);
+  const rmsePct = meanMeasured > 0 ? (rmse / meanMeasured) * 100 : 0;
+  // Worst datum by absolute deviation — named in the reject diagnostics so the
+  // user knows which sweep point to re-check (bad thermocouple, mixed filament).
+  const worstPoint = outPoints.reduce((w, p) =>
+    Math.abs(p.deviationPct) > Math.abs(w.deviationPct) ? p : w, outPoints[0]!);
   return {
     coeffs: { hConv: best.h, activationEnergyKJmol: best.ea, strengthPrefactor: best.pre, voidSensitivity: best.vs },
-    rmsePct: meanMeasured > 0 ? (rmse / meanMeasured) * 100 : 0,
+    rmsePct,
+    fitQuality: rmsePct <= BOND_FIT_RMSE_MAX_PCT ? "good" : "poor",
     points: outPoints,
+    worstPoint,
   };
 }
