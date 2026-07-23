@@ -67,9 +67,25 @@ fitted from a printer process sweep (`POST /api/calibration/bond-sweep`). The
 `POST /api/bond-sensitivity` route evaluates the same model for the process
 dashboard and a nozzle×speed bond-quality surface without running a solve.
 
-**Infill & pattern.** Effective properties are scaled by infill fraction and
-pattern (gyroid degrades less than rectilinear at equal infill). Wall/bead
-contributions can be added via Classical Laminate Theory (`solver/laminate.ts`).
+**Infill & pattern.** The single-material (default) model scales in-plane
+stiffness by ONE density law shared across every toggle (issue #176):
+`knockdown(ρ) = wallCredit + (1 − wallCredit)·g_GA(ρ)`
+(`lumpedInPlaneStiffnessScale`, `solver/lattice.ts`) — a Voigt volume average of
+solid perimeter walls and a Gibson-Ashby infill core `g_GA(ρ) = ρⁿ·(1 − c(1−ρ))`,
+i.e. the lumped limit of the two-region model's `E_eff = Vf·E_solid +
+(1−Vf)·E_solid·g(ρ)`. The `wallCredit` is a geometry-free `min(0.9, 0.10·wallCount)`
+perimeter-fraction proxy (LOW confidence; the two-region model supersedes it with
+the exact per-element wall fraction when geometry is available). Both single-material
+paths route through this one law — the **Classical Laminate Theory** path
+(`solver/laminate.ts`) passes it as the A-matrix scale (replacing the legacy
+linear-ρ scaling), the isotropic-base path as the `E_xy` scale (replacing the
+legacy `min(1, 0.30 + 0.70ρ + wallBonus)·patternMul`) — so a 20% part no longer
+swings 2–5× between the CLT and two-region toggles. Pattern enters stiffness only
+through the Gibson-Ashby family exponent (pattern *strength* multipliers stay a
+strength concept, no longer folded into stiffness). At 100% infill `g_GA(1) = 1`
+exactly, so `knockdown = 1` and every path reproduces the solid (anchor). Density
+knockdown is now decoupled from the strength multiplier, which keeps driving
+`yieldXY` on its own linear infill curve.
 
 **Two-region model (walls vs infill, opt-in).** The default model above smears
 perimeter walls and infill into ONE homogenized material (walls enter only as a
@@ -103,21 +119,32 @@ geometrically:
   Gibson-Ashby power laws in relative density (`solver/lattice.ts`), applied as
   PER-AXIS scale factors on the solid's natural-frame constants
   (`buildCoreMaterial` in `analysis.ts`): stiffness `g(ρ) = ρⁿ·(1 − c(1−ρ))`
-  per axis and strength `s(ρ) = min(1, patternMul·ρᵐ)` — near zero at 0%
-  infill (floored at 10⁻³×solid; the legacy curve's 0.30 intercept represents
-  the walls and is not reused). Exponents are per pattern family, confidence
-  LOW, regression-locked, calibration-overridable (an override routes to a
-  single scalar law — one fitted exponent can't say which axis it belongs to):
+  per axis and strength `s(ρ) = min(1, patternMul·ρᵐ)` **also per axis**
+  (yieldXY / yieldZ / yieldZShear each carry their own exponent — issue #177) —
+  near zero at 0% infill (floored at 10⁻³×solid; the legacy curve's 0.30
+  intercept represents the walls and is not reused). Exponents are per pattern
+  family, confidence LOW, regression-locked, calibration-overridable (an
+  override routes both stiffness and strength to a single scalar law — one
+  fitted exponent can't say which axis it belongs to):
 
-  | Family | Patterns | n in-plane (c) | n through-layer (c) | n G_xz (c) | n G_xy | Strength m |
+  | Family | Patterns | n in-plane (c) | n through-layer (c) | n G_xz (c) | n G_xy | Strength m (xy / z / zs) |
   |---|---|---|---|---|---|---|
-  | TPMS-like 3-D | gyroid, cubic, adaptive | 1.75 (0.12) | 2.1 (0.18) | 2.3 (0.22) | derived | 1.25 (stretch-dominated) |
-  | extruded walls | grid, lines, honeycomb, trihexagon, concentric | 2.0 (0.10) | 1.0 (rule of mixtures) | 1.5 (0.10) | 3.0 (honeycomb bending) | 1.5 (bending-dominated) |
-  | sparse | lightning | 2.0 ×0.3 prefactor | 2.0 | 2.0 | derived | 1.5 |
+  | TPMS-like 3-D | gyroid, cubic, adaptive | 1.75 (0.12) | 2.1 (0.18) | 2.3 (0.22) | derived | 1.25 / 1.5 / 1.6 (stretch-dominated) |
+  | extruded walls | grid, lines, honeycomb, trihexagon, concentric | 2.0 (0.10) | 1.0 (rule of mixtures) | 1.5 (0.10) | 3.0 (honeycomb bending) | 1.5 / 1.0 / 1.5 (bending-dominated) |
+  | sparse | lightning | 2.0 ×0.3 prefactor | 2.0 | 2.0 | derived | 1.5 / 1.5 / 1.5 |
 
-  Extruded-wall infill is continuous along the build axis, so its through-layer
-  law is the mildest and the core's anisotropy INVERTS at low density (E_z >
-  E_xy). Because ν_zx = ν_xz·E_z/E_xy would then exceed the thermodynamic
+  Extruded-wall infill is continuous along the build axis, so BOTH its
+  through-layer stiffness (n = 1, rule of mixtures) and its through-layer
+  strength (m = 1) are the mildest, and the core's anisotropy INVERTS at low
+  density: `E_z > E_xy` AND `yieldZ > yieldXY` in the core. The per-axis
+  strength exponents mirror the stiffness-exponent ordering per family, so
+  `sign(E_z − E_xy)` now agrees with `sign(yieldZ − yieldXY)` in the core
+  (previously the single scalar strength law kept the solid's yieldZ/yieldXY =
+  0.58 ratio, claiming a Z-stiffer-yet-Z-weaker core at once — issue #177).
+  Because ν_zx = ν_xz·E_z/E_xy would then exceed the thermodynamic
+  stability limit, ν_xz is scaled by `min(1, gXY/gZ, gZ/gXY)` — symmetric so
+  the bound holds in the natural frame and after the upright scalar swap
+  alike. Because ν_zx = ν_xz·E_z/E_xy would then exceed the thermodynamic
   stability limit, ν_xz is scaled by `min(1, gXY/gZ, gZ/gXY)` — symmetric so
   the bound holds in the natural frame and after the upright scalar swap
   alike. Per-bin constitutive matrices are true Voigt blends of the two
@@ -132,11 +159,20 @@ geometrically:
   scalar swap does, applied AFTER the natural-frame scaling); it still scales
   strength. Both regions keep the full orientation anisotropy (layer bonds
   exist in walls and infill alike).
-- Fractions are quantized into 9 bins of Voigt-blended constitutive matrices,
+- Fractions are quantized into Voigt-blended bins of constitutive matrices,
   yields, and densities (`twoRegion.ts` → `ElementMaterialField`), consumed
-  per element by assembly, stress recovery, mass, and self-weight. The scalar
-  `material` becomes the volume-weighted average and keeps feeding
-  whole-part consumers (error estimate, analytic hole checks).
+  per element by assembly, stress recovery, mass, and self-weight. The bin
+  **spacing is adaptive to the shell:core contrast** (issue #178): low/medium
+  contrast keeps the legacy 9 LINEARLY spaced bins bit-for-bit, but above a
+  ~9:1 contrast the fractions are LOG-spaced and the count grows (capped at 33)
+  so no adjacent-bin stiffness step exceeds ~2×. Without this, at the ~10³:1
+  contrast of a near-zero-infill core a 0.01 change in wallFrac could flip an
+  element's stiffness ~100× (0.06→bin0≈1× vs 0.07→bin1≈126×). The bin ENDPOINTS
+  stay f=0 and f=1 exactly, so pure-phase elements map to the endpoint matrices
+  bit-for-bit and the field SHAPE is unchanged (binCount is read as C.length/36,
+  so the assembly-worker payload is untouched). The scalar `material` becomes
+  the volume-weighted average and keeps feeding whole-part consumers (error
+  estimate, analytic hole checks).
 - **Anchoring:** endpoints agree with the legacy model by construction (100%
   infill → solid; thin part → all walls). In between the summary reports both
   the implied average multiplier and the legacy global one — deliberately not

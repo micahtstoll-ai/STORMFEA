@@ -24,30 +24,33 @@ import type { ElementMaterialField, TetMesh } from "../solver/types.js";
 const mat = { E: 3500, nu: 0.36, yieldStrength: 50, label: "test" };
 
 /**
- * Mixed 3-bin material field (soft / reference / stiff, elements striped by
- * e % 3). Exercises the per-element bin lookup crossing the worker
- * postMessage boundary — the two-region model's parallel-path plumbing.
+ * Mixed N-bin material field (per-bin stiffness scaled 0.5→2.0, elements striped
+ * by e % N). Exercises the per-element bin lookup crossing the worker postMessage
+ * boundary — the two-region model's parallel-path plumbing. N defaults to 3;
+ * a higher N mirrors issue #178's adaptive log-spaced bins (same field SHAPE,
+ * more bins) to confirm larger bin counts survive the worker boundary too.
  */
-function makeMixedField(mesh: TetMesh): ElementMaterialField {
+function makeMixedField(mesh: TetMesh, binCount = 3): ElementMaterialField {
+  const N = binCount;
   const C0 = buildAnyConstitutiveMatrix(mat);
-  const Cs = new Float64Array(3 * 36);
-  for (let i = 0; i < 36; i++) {
-    Cs[i]      = 0.5 * (C0[i] ?? 0);
-    Cs[36 + i] = C0[i] ?? 0;
-    Cs[72 + i] = 2.0 * (C0[i] ?? 0);
+  const Cs = new Float64Array(N * 36);
+  const yieldXY = new Float64Array(N);
+  const yieldZ = new Float64Array(N);
+  const yieldZShear = new Float64Array(N);
+  const massRho = new Float64Array(N);
+  const shellFrac = new Float64Array(N);
+  for (let b = 0; b < N; b++) {
+    const scale = N === 1 ? 1 : 0.5 + 1.5 * (b / (N - 1)); // 0.5 … 2.0
+    for (let i = 0; i < 36; i++) Cs[b * 36 + i] = scale * (C0[i] ?? 0);
+    yieldXY[b] = 50 * Math.min(1, scale);
+    yieldZ[b]  = 30 * Math.min(1, scale);
+    yieldZShear[b] = yieldZ[b]! / Math.sqrt(3);
+    massRho[b] = 1240 * Math.min(1, scale);
+    shellFrac[b] = N === 1 ? 0 : b / (N - 1);
   }
   const binOfElement = new Int32Array(mesh.elementCount);
-  for (let e = 0; e < mesh.elementCount; e++) binOfElement[e] = e % 3;
-  return {
-    binCount: 3,
-    binOfElement,
-    C: Cs,
-    yieldXY: Float64Array.of(25, 50, 50),
-    yieldZ:  Float64Array.of(15, 30, 30),
-    yieldZShear: Float64Array.of(15 / Math.sqrt(3), 30 / Math.sqrt(3), 30 / Math.sqrt(3)),
-    massRho: Float64Array.of(620, 1240, 1240),
-    shellFrac: Float64Array.of(0, 0.5, 1),
-  };
+  for (let e = 0; e < mesh.elementCount; e++) binOfElement[e] = e % N;
+  return { binCount: N, binOfElement, C: Cs, yieldXY, yieldZ, yieldZShear, massRho, shellFrac };
 }
 
 let failed = 0;
@@ -133,6 +136,12 @@ async function compareSerialVsParallel(
     // boundary identically to serial (per-element bin lookup, multi-bin C).
     await compareSerialVsParallel("C3D4+field", meshC3D4, makeMixedField(meshC3D4));
     await compareSerialVsParallel("C3D10+field", meshC3D10, makeMixedField(meshC3D10));
+
+    // Adaptive high-bin field (issue #178): the same payload SHAPE with more
+    // bins (11) — the adaptive log-spaced binning grows binCount, so confirm a
+    // higher bin count still crosses the worker boundary bit-for-1e-12.
+    await compareSerialVsParallel("C3D4+field(11-bin)", meshC3D4, makeMixedField(meshC3D4, 11));
+    await compareSerialVsParallel("C3D10+field(11-bin)", meshC3D10, makeMixedField(meshC3D10, 11));
 
     // Pool reuse (issue #98): two consecutive parallel assemblies must both
     // take the parallel path (the second reuses the persistent workers) and —

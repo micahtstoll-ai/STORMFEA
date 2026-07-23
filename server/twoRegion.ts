@@ -48,8 +48,25 @@ import {
 } from "./solver/wallfrac.js";
 import { interlaminarShearOf } from "./solver/stress.js";
 
-/** Quantization level count for the wall-fraction bins (f_b = b/(N−1)). */
+/**
+ * BASE / FLOOR wall-fraction bin count. Low- and medium-contrast fields use
+ * exactly this many LINEARLY spaced bins (f_b = b/(N−1)) — bit-identical to the
+ * legacy path. High-contrast fields grow the count and switch to log-spacing so
+ * the adjacent-bin stiffness ratio stays bounded (see planBins, issue #178).
+ */
 export const TWO_REGION_BIN_COUNT = 9;
+
+/** Hard cap on the adaptive bin count (memory bound; 33×36 doubles ≈ 9 KB). */
+export const TWO_REGION_MAX_BINS = 33;
+
+/**
+ * Target upper bound on the stiffness ratio between ADJACENT bins (issue #178).
+ * Linear 9-bin spacing already respects this up to a shell:core contrast ≈ 9;
+ * above that a 0.01 change in wallFrac could otherwise flip an element's
+ * stiffness ~100× (0.06→bin0 vs 0.07→bin1 at 10³:1), so we log-space and add
+ * bins until every adjacent pair is within this factor.
+ */
+export const TWO_REGION_BIN_RATIO_TARGET = 2;
 
 /** Sanity cap: skip the field on absurdly large meshes (memory/latency). */
 export const TWO_REGION_MAX_ELEMENTS = 400_000;
@@ -223,6 +240,65 @@ function maxCornerEdge(mesh: TetMesh): number {
   return Math.sqrt(maxE2);
 }
 
+// ─── Adaptive wall-fraction binning (issue #178) ─────────────────────────────
+//
+// The per-bin constitutive matrix is C(f) = f·C_shell + (1−f)·C_core, linear in
+// the shell fraction f. For a diagonal entry with shell:core ratio k the
+// magnitude C(f) = C_core·(1 + f·(k−1)) grows fastest near f = 0, so uniformly
+// spaced bins put a huge stiffness step on the first interval at high contrast.
+// We (a) measure the worst diagonal contrast K, (b) keep the legacy LINEAR
+// N=9 spacing while it already bounds the adjacent-bin ratio (K ⪅ 9), and
+// (c) otherwise LOG-space the fractions so C grows geometrically — every
+// adjacent-bin ratio ≤ TWO_REGION_BIN_RATIO_TARGET. Because C(f) is steepest
+// for the max-contrast entry, bounding ITS ratio bounds every entry's ratio.
+// Endpoints stay f=0 (pure core) and f=1 (pure shell) EXACTLY in both modes,
+// so pure-phase elements map to the endpoint matrices bit-for-bit.
+
+/** Worst shell:core diagonal stiffness ratio across the two endpoint matrices. */
+function stiffnessContrast(Cshell: Float64Array, Ccore: Float64Array): number {
+  const DIAG = [0, 7, 14, 21, 28, 35]; // 6×6 flattened row-major diagonal
+  let k = 1;
+  for (const i of DIAG) {
+    const s = Math.abs(Cshell[i] ?? 0);
+    const c = Math.abs(Ccore[i] ?? 0);
+    if (s > 1e-30 && c > 1e-30) k = Math.max(k, s / c);
+  }
+  return k;
+}
+
+/**
+ * Choose the bin count and spacing mode for a given contrast. Linear N=9 is
+ * kept while its worst adjacent ratio 1 + (K−1)/(N−1) ≤ target (so low/medium
+ * contrast stays bit-identical to the legacy path); otherwise log-space with
+ * N−1 = ⌈log(K)/log(target)⌉ bins (capped), giving adjacent ratio K^(1/(N−1)) ≤
+ * target.
+ */
+function planBins(K: number): { N: number; logSpaced: boolean } {
+  const Nlin = TWO_REGION_BIN_COUNT;
+  const linWorst = 1 + (K - 1) / (Nlin - 1);
+  if (linWorst <= TWO_REGION_BIN_RATIO_TARGET + 1e-12) return { N: Nlin, logSpaced: false };
+  const need = 1 + Math.ceil(Math.log(K) / Math.log(TWO_REGION_BIN_RATIO_TARGET));
+  return { N: Math.min(TWO_REGION_MAX_BINS, Math.max(Nlin, need)), logSpaced: true };
+}
+
+/** Shell fraction for bin b (endpoints exact; log-spaced ⇒ geometric stiffness). */
+function binFraction(b: number, N: number, K: number, logSpaced: boolean): number {
+  if (b <= 0) return 0;
+  if (b >= N - 1) return 1;
+  if (!logSpaced) return b / (N - 1);
+  return (Math.pow(K, b / (N - 1)) - 1) / (K - 1);
+}
+
+/** Nearest bin (in the spacing's warped index space) for an element's wallFrac. */
+function binForWallFrac(w: number, N: number, K: number, logSpaced: boolean): number {
+  const wc = Math.min(1, Math.max(0, w));
+  const idx = logSpaced
+    ? (N - 1) * Math.log1p(wc * (K - 1)) / Math.log(K) // inverse of binFraction
+    : wc * (N - 1);
+  const b = Math.round(idx);
+  return b < 0 ? 0 : b > N - 1 ? N - 1 : b;
+}
+
 /**
  * Classify the mesh into wall/core volume fractions and build the quantized
  * material field.
@@ -343,19 +419,27 @@ export function buildTwoRegionField(
   // ratio; the per-axis core laws broke that proportionality. Endpoint bins
   // (f = 0, 1) are the endpoint matrices bit-for-bit. Yields and density
   // stay linear scalar blends (consistent with Voigt).
-  const N = TWO_REGION_BIN_COUNT;
+  //
+  // ADAPTIVE spacing (issue #178): the bin FRACTIONS f_b are linear (legacy,
+  // bit-identical) for low/medium contrast and log-spaced (with more bins) for
+  // high contrast, so no adjacent-bin stiffness step exceeds ~2× even at the
+  // ~10³:1 shell:core contrast of a near-zero-infill core. The field SHAPE is
+  // unchanged (binOfElement + binCount×36 C), so the assembly-worker payload
+  // (invariant #7) is untouched — binCount is already read as C.length/36.
+  const Cshell = buildAnyConstitutiveMatrix(shellMat as AnyMaterial);
+  const Ccore  = buildAnyConstitutiveMatrix(coreMat as AnyMaterial);
+  const K = stiffnessContrast(Cshell, Ccore);
+  const { N, logSpaced } = planBins(K);
   const C = new Float64Array(N * 36);
   const yieldXY = new Float64Array(N);
   const yieldZ = new Float64Array(N);
   const yieldZShear = new Float64Array(N);
   const massRho = new Float64Array(N);
   const shellFrac = new Float64Array(N);
-  const Cshell = buildAnyConstitutiveMatrix(shellMat as AnyMaterial);
-  const Ccore  = buildAnyConstitutiveMatrix(coreMat as AnyMaterial);
   const zsShell = interlaminarShearOf(shellMat);
   const zsCore  = interlaminarShearOf(coreMat);
   for (let b = 0; b < N; b++) {
-    const f = b / (N - 1);
+    const f = binFraction(b, N, K, logSpaced);
     for (let i = 0; i < 36; i++) {
       C[b * 36 + i] = f * (Cshell[i] ?? 0) + (1 - f) * (Ccore[i] ?? 0);
     }
@@ -368,7 +452,7 @@ export function buildTwoRegionField(
 
   const binOfElement = new Int32Array(mesh.elementCount);
   for (let e = 0; e < mesh.elementCount; e++) {
-    binOfElement[e] = Math.round((wallFrac[e] ?? 0) * (N - 1));
+    binOfElement[e] = binForWallFrac(wallFrac[e] ?? 0, N, K, logSpaced);
   }
 
   return {
