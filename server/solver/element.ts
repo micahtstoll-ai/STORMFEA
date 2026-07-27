@@ -1,10 +1,38 @@
 /**
  * element.ts
  * ----------
- * C3D4 linear tetrahedral element stiffness matrix.
+ * Element-level kernels for the solver: constitutive matrices, tensor
+ * rotation, and the per-element stiffness / geometric-stiffness / B-matrix
+ * builders for BOTH tetrahedral element types. The file is named for the
+ * original C3D4 machinery but the DEFAULT element type (C3D10) and the
+ * constitutive + rotation core shared by the rest of the solver both live
+ * here too — see the inventory below before navigating.
  *
- * MATHEMATICAL DERIVATION
- * =======================
+ * SECTION INVENTORY (major exports by section)
+ * ============================================
+ *   Constitutive matrices (6×6 Voigt C):
+ *     - buildConstitutiveMatrix          — isotropic
+ *     - buildOrthotropicConstitutiveMatrix — transversely isotropic (FDM),
+ *       incl. the weak-axis (Bond) rotation into the part frame
+ *     - buildGyroidConstitutiveMatrix    — density-scaled gyroid infill
+ *     - buildAnyConstitutiveMatrix       — kind router
+ *   Tensor rotation utilities (Bond transform for an arbitrary weak axis):
+ *     - rotationAligningZTo, rotateC6 (6×6 C rotation),
+ *       rotateStress6ToLocal (6-vector stress → local frame)
+ *   C3D4 — 4-node linear tetrahedron (speed option):
+ *     - computeGeometry, buildB, elementStiffness,
+ *       elementGeometricStiffness (Kσ for linear buckling)
+ *   C3D10 — 10-node quadratic tetrahedron (DEFAULT element):
+ *     - C3D10_GAUSS, c3d10ShapeFunctions, c3d10ShapeDerivatives,
+ *       buildB_c3d10, c3d10ElementStiffness,
+ *       c3d10ElementGeometricStiffness (per-Gauss Kσ)
+ *
+ * The two accuracy-critical pieces are the C3D10 stiffness kernels and the
+ * Bond rotation (rotateC6 / buildOrthotropicConstitutiveMatrix), NOT the
+ * C3D4 path the filename implies.
+ *
+ * C3D4 MATHEMATICAL DERIVATION
+ * ============================
  * C3D4: 4-node, 12-DOF, constant-strain tetrahedral element.
  * Shape functions are linear → B matrix is constant → no numerical integration.
  * Element stiffness: k_e = V · Bᵀ · C · B  (single evaluation at centroid).
