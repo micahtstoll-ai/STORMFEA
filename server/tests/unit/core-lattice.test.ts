@@ -25,6 +25,8 @@ import {
   latticeStiffnessScale,
   latticeStiffnessScales,
   latticeStrengthFraction,
+  taperedPatternMul,
+  STRENGTH_TAPER_START,
   patternFamilyOf,
 } from "../../solver/lattice.js";
 import { buildAnyConstitutiveMatrix } from "../../solver/element.js";
@@ -155,6 +157,92 @@ describe("law structure", () => {
   it("unknown pattern ids fall back to the walls25d family", () => {
     expect(patternFamilyOf("mystery-pattern")).toBe("walls25d");
     expect(latticeStiffnessScale("mystery-pattern", 0.2)).toBeCloseTo(0.0368, 6);
+  });
+});
+
+// ─── Strength-multiplier taper (issue #182: no plateau, no slope kink) ────────
+
+describe("strength taper replaces the hard clip (issue #182)", () => {
+  // Patterns whose patternMul > 1 are the ones the old min(1,·) clip plateaued.
+  const CLIPPED = ALL_PATTERNS.filter(p => (PATTERN_MULTIPLIERS[p] ?? 1) > 1);
+  const UNCLIPPED = ALL_PATTERNS.filter(p => (PATTERN_MULTIPLIERS[p] ?? 1) <= 1);
+
+  it("taperedPatternMul is untouched below the window and exactly 1.0 at ρ=1", () => {
+    for (const p of CLIPPED) {
+      const pm = PATTERN_MULTIPLIERS[p]!;
+      // Below the window: raw multiplier, bit-for-bit.
+      expect(taperedPatternMul(pm, STRENGTH_TAPER_START)).toBe(pm);
+      expect(taperedPatternMul(pm, 0.5)).toBe(pm);
+      // At ρ=1: exactly 1.0 (IEEE — the ρ=1 collapse anchor depends on it).
+      expect(taperedPatternMul(pm, 1)).toBe(1.0);
+    }
+    // patternMul ≤ 1 never tapers (would otherwise strengthen a weak pattern).
+    for (const p of UNCLIPPED) {
+      const pm = PATTERN_MULTIPLIERS[p]!;
+      expect(taperedPatternMul(pm, 0.95)).toBe(pm);
+      expect(taperedPatternMul(pm, 1)).toBe(pm);
+    }
+  });
+
+  it("s(ρ) is bit-identical to the raw power law below the taper window", () => {
+    for (const p of ALL_PATTERNS) {
+      const fam = LATTICE_PARAMS[patternFamilyOf(p)];
+      const pm = PATTERN_MULTIPLIERS[p] ?? 1;
+      for (const rho of [0.1, 0.3, 0.5, 0.7, 0.85, STRENGTH_TAPER_START]) {
+        const raw = Math.max(LATTICE_STRENGTH_FLOOR,
+          Math.min(1, pm * Math.pow(rho, fam.strengthExp)));
+        expect(latticeStrengthFraction(p, rho)).toBe(raw);
+      }
+    }
+  });
+
+  it("no plateau: strictly increasing right up to ρ=1 for previously-clipped patterns", () => {
+    for (const p of CLIPPED) {
+      // The old clip pinned these at 1.0 from ρ≈0.94; assert strict growth.
+      let prev = latticeStrengthFraction(p, 0.90);
+      for (let rho = 0.905; rho < 1.0; rho += 0.005) {
+        const s = latticeStrengthFraction(p, rho);
+        expect(s).toBeGreaterThan(prev);
+        expect(s).toBeLessThan(1);          // no early saturation
+        prev = s;
+      }
+      expect(latticeStrengthFraction(p, 1)).toBe(1.0);  // reaches solid exactly
+    }
+  });
+
+  it("strictly monotone on a fine grid for every pattern (below saturation)", () => {
+    for (const p of ALL_PATTERNS) {
+      let prev = -Infinity;
+      for (let rho = 0.001; rho <= 1.0 + 1e-12; rho += 0.001) {
+        const s = latticeStrengthFraction(p, Math.min(1, rho));
+        if (prev > LATTICE_STRENGTH_FLOOR && prev < 1) {
+          expect(s).toBeGreaterThanOrEqual(prev - 1e-15);
+        }
+        prev = s;
+      }
+    }
+  });
+
+  it("slope is continuous (no kink): finite-difference slope jump shrinks under refinement", () => {
+    // A hard clip leaves a derivative discontinuity, so the max jump between
+    // adjacent finite-difference slopes stays O(1) no matter how fine the grid.
+    // A C¹ taper's max slope-jump → 0 as the step shrinks. Assert it roughly
+    // halves when the step halves, for the tightest-margin pattern (gyroid).
+    const maxSlopeJump = (h: number): number => {
+      let prevS = latticeStrengthFraction("gyroid", 0.85), prevSlope: number | null = null, mx = 0;
+      for (let rho = 0.85 + h; rho <= 1.0 + 1e-12; rho += h) {
+        const s = latticeStrengthFraction("gyroid", Math.min(1, rho));
+        const slope = (s - prevS) / h;
+        if (prevSlope !== null) mx = Math.max(mx, Math.abs(slope - prevSlope));
+        prevS = s; prevSlope = slope;
+      }
+      return mx;
+    };
+    const j1 = maxSlopeJump(0.01);
+    const j2 = maxSlopeJump(0.005);
+    // Old clip would give j1 ≈ j2 ≈ 1.3 (the slope drop at the clip point).
+    expect(j1).toBeLessThan(0.6);
+    expect(j2).toBeLessThan(j1 * 0.75);   // shrinks with refinement ⇒ C¹, not a kink
   });
 });
 

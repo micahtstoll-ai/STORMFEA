@@ -6,7 +6,11 @@
  *
  * Model: cellular-solid power laws (Gibson & Ashby 1997):
  *   stiffness  g(ρ) = pf · ρ^n · (1 − c(1−ρ))       E_core = E_solid · g(ρ)
- *   strength   s(ρ) = min(1, patternMul · ρ^m)       σ_core = σ_solid · s(ρ)
+ *   strength   s(ρ) = μ(ρ) · ρ^m                     σ_core = σ_solid · s(ρ)
+ * where μ(ρ) is the pattern multiplier eased from patternMul to exactly 1.0
+ * across the top ~10 % of ρ (taperedPatternMul, issue #182 — replaces the old
+ * hard `min(1, patternMul·ρ^m)` clip that plateaued strength and kinked its
+ * slope near ρ≈0.94).
  * with n ∈ [1.5, 2.5] for open-cell (bending-dominated) solids and lower for
  * stretch-dominated topologies; m ≈ 1.5 for bending-dominated plastic
  * collapse, ~1.2–1.3 for stretch-dominated TPMS lattices.
@@ -168,6 +172,49 @@ function clampRho(rho: number): number {
   return Math.min(1, Math.max(0, rho));
 }
 
+// ─── Pattern-multiplier taper (issue #182) ───────────────────────────────────
+/**
+ * Density at which the pattern multiplier begins easing toward 1.0 — the last
+ * ~10 % of the density range. Above this the effective multiplier is faded from
+ * its raw value to exactly 1.0 at ρ=1.
+ */
+export const STRENGTH_TAPER_START = 0.9;
+
+/** Hermite smoothstep 3u²−2u³ on [0,1] (C¹: zero slope at both endpoints). */
+function smoothstep01(u: number): number {
+  const t = Math.min(1, Math.max(0, u));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * Effective pattern strength multiplier at density r.
+ *
+ * The legacy law capped strength with a hard `min(1, patternMul·ρ^m)`. For
+ * patterns whose patternMul > 1 (gyroid 1.08, cubic 1.05, honeycomb, …) that
+ * clip bit at ρ = (1/patternMul)^(1/m) ≈ 0.94 and produced (issue #182):
+ *   - a STRENGTH PLATEAU — strength pinned flat at 1.0 from the clip to ρ=1,
+ *   - a SLOPE KINK — the derivative jumps to 0 at the clip point.
+ *
+ * This replaces the clip with a C¹ taper: below STRENGTH_TAPER_START the raw
+ * multiplier is untouched (so the low-ρ anchor patternMul·ρ^m is preserved
+ * bit-for-bit), and across [STRENGTH_TAPER_START, 1] it is eased to EXACTLY 1.0
+ * with a continuous slope. The taper weight w uses a smoothstep with zero slope
+ * at both ends, so the join at STRENGTH_TAPER_START has no kink and w(1)=0
+ * EXACTLY ⇒ `1 + (patternMul−1)·0 === 1` in IEEE-754, keeping s(1)=1 exact
+ * (ρ=1 collapse invariant #8, CLAUDE.md).
+ *
+ * Patterns with patternMul ≤ 1 (lines, concentric, lightning) never clipped —
+ * their curve is already smooth and s(1)=patternMul<1 — so they keep the raw
+ * multiplier unchanged, preserving `s(1) = min(1, patternMul)` for every
+ * pattern.
+ */
+export function taperedPatternMul(patternMul: number, r: number): number {
+  if (patternMul <= 1 || r <= STRENGTH_TAPER_START) return patternMul;
+  const u = (r - STRENGTH_TAPER_START) / (1 - STRENGTH_TAPER_START);
+  const w = 1 - smoothstep01(u);   // 1 at the window start → 0 at ρ=1 (exact)
+  return 1 + (patternMul - 1) * w;
+}
+
 /**
  * Stage-1 scalar stiffness knockdown g(ρ) for a wall-free homogenized lattice:
  * every modulus of the solid is multiplied by this factor (isotropic-in-ratio;
@@ -228,7 +275,9 @@ export function latticeStiffnessScales(pattern: string, rho: number): LatticeAxi
 }
 
 /**
- * Wall-free lattice strength fraction s(ρ) = max(floor, min(1, patternMul·ρ^m)).
+ * Wall-free lattice strength fraction s(ρ) = max(floor, min(1, μ(ρ)·ρ^m))
+ * where μ(ρ) is the {@link taperedPatternMul} — the raw patternMul below
+ * STRENGTH_TAPER_START, smoothly eased to 1.0 across the last ~10 % of ρ.
  *
  * Excludes orientation — the single source for BOTH coreStrengthMultiplier
  * (which multiplies by orientationMultiplier) and the impliedAvgStrengthMul
@@ -237,7 +286,11 @@ export function latticeStiffnessScales(pattern: string, rho: number): LatticeAxi
  * s(1) = min(1, patternMul) exactly — identical to the legacy linear curve's
  * ρ=1 value pattern-for-pattern, preserving the 100%-infill degenerate
  * collapse behavior (fires for patternMul ≥ 1, doesn't for lines/concentric/
- * lightning).
+ * lightning). Unlike the legacy hard `min(1, …)` clip, the approach to that
+ * value is now C¹ — no plateau, no slope kink at ρ≈0.94 (issue #182). The
+ * outer `min(1, …)` is retained only as a backstop for pathological
+ * calibration exponent overrides; on the untouched family exponents μ(ρ)·ρ^m
+ * is strictly monotone and stays ≤ 1 on [0,1], so it never bites.
  */
 export function latticeStrengthFraction(
   pattern: string,
@@ -248,5 +301,6 @@ export function latticeStrengthFraction(
   const m = overrideExp ?? p.strengthExp;
   const patternMul = PATTERN_MULTIPLIERS[pattern] ?? 1.0;
   const r = clampRho(rho);
-  return Math.max(LATTICE_STRENGTH_FLOOR, Math.min(1, patternMul * Math.pow(r, m)));
+  const mul = taperedPatternMul(patternMul, r);
+  return Math.max(LATTICE_STRENGTH_FLOOR, Math.min(1, mul * Math.pow(r, m)));
 }
