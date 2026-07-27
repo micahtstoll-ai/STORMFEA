@@ -186,6 +186,32 @@ const VOID_FLOOR     = 0.6;  // floor on the consolidation factor
 const REL_S_CLAMP: readonly [number, number] = [0.4, 1.5];
 const REL_E_CLAMP: readonly [number, number] = [0.6, 1.25];
 
+// Thermal-depth clamp bands (mm) for the road cooling time constant τc. The
+// "thermal depth" is the road dimension perpendicular to the weld plane that
+// governs convective cooling. Its physical value — and hence its plausible
+// range — depends on the weld GEOMETRY, so the clamp is a parameter, not a
+// hardcoded constant (issue #185):
+//   - interlayer (Z) welds: the depth is the LAYER HEIGHT, ~0.04–1.0 mm;
+//   - wall-to-wall (vertical) welds: the depth is the bead WIDTH, which slicers
+//     set anywhere from ~0.1 to ~2.0 mm (typically 1.0–1.5× nozzle diameter).
+// Reusing the layer-height band [0.04, 1.0] for a bead width silently clipped
+// wide beads to 1.0 mm — the defect this fixes.
+const LAYER_HEIGHT_DEPTH_CLAMP: readonly [number, number] = [0.04, 1.0];
+export const WALL_THERMAL_DEPTH_CLAMP: readonly [number, number] = [0.04, 2.0];
+
+/**
+ * Explicit thermal-depth override for {@link predictBondMultipliers}. Supply it
+ * for weld geometries whose cooling depth is NOT the layer height (e.g. a
+ * vertical wall-to-wall weld, whose depth is the bead width). Carries its own
+ * clamp because different geometries have different plausible ranges.
+ */
+export interface ThermalDepthOverride {
+  /** Road thermal depth in mm (dimension ⟂ to the weld plane). */
+  valueMm: number;
+  /** Clamp band [lo, hi] in mm for valueMm — geometry-specific. */
+  clamp: readonly [number, number];
+}
+
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
 // ─── Core physics ────────────────────────────────────────────────────────────
@@ -199,13 +225,14 @@ interface ThermalResult {
 
 function thermalBondPotential(
   mat: BondMaterialParams,
-  layerHeightMm: number,
+  thermalDepthMm: number,
+  depthClamp: readonly [number, number],
   proc: Required<Pick<ProcessSettings, "printSpeedMmS" | "coolingFanPct" | "bedTempC" | "ambientTempC">> & { nozzleTempC: number },
   h0: number,
   EaKJmol: number,
   passLengthMmOverride?: number,
 ): ThermalResult {
-  const hL_m  = clamp(layerHeightMm, 0.04, 1.0) / 1000;
+  const hL_m  = clamp(thermalDepthMm, depthClamp[0], depthClamp[1]) / 1000;
   const fan   = clamp(proc.coolingFanPct, 0, 100) / 100;
   const speed = clamp(proc.printSpeedMmS, 1, 1000);
   const Tn    = clamp(proc.nozzleTempC, mat.TgC + 20, 500);
