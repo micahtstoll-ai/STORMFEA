@@ -625,12 +625,110 @@ export function recoverElementStress(
  * Reference: Zienkiewicz OC, Zhu JZ. The superconvergent patch recovery
  * and a posteriori error estimates. Int J Numer Methods Eng. 1992;33(7).
  */
+
+// ─── SPR boundary-patch robustness (issue #157) ──────────────────────────────
+// Least-squares patch fits degrade exactly where FDM stress peaks live — at
+// surface nodes, whose native patches are small or have rank-deficient centroid
+// scatter (all element centroids nearly coplanar). The naive path fell back to
+// a plain average there, throwing away the recovery entirely. Two remedies,
+// both observable via SprRecoveryStats:
+//   1. ENLARGE an ill-posed boundary patch by borrowing the second ring of
+//      neighbour elements (an interior neighbour's patch), which restores a
+//      well-posed 3D fit → boundary recovery becomes exact on a linear field.
+//   2. If even the enlarged patch is rank-deficient, fall back to DISTANCE-
+//      WEIGHTED averaging (closer elements dominate — better at a boundary peak
+//      than a flat mean) and FLAG it.
+// Interior superconvergence is untouched: a natively well-posed patch takes the
+// same global-coordinate linear fit as before (solver_validation group 20 pins
+// linear-field exactness), so the fix only ever ADDS accuracy at the boundary.
+
+/** Div-guard for the inverse-distance² weighting (distances are never zero). */
+const SPR_WEIGHT_EPS = 1e-12;
+
+/**
+ * Observability for SPR recovery (issue #157): how many nodes took the direct
+ * polynomial fit, how many needed patch enlargement, and how many fell back to
+ * weighted averaging — split by why the native patch was ill-posed. Surfaced in
+ * analysis metadata so fallback engagement is never silent.
+ */
+export interface SprRecoveryStats {
+  /** Nodes with a non-empty patch (denominator for the fractions below). */
+  totalNodes:          number;
+  /** Native patch well-posed → direct linear polynomial fit (interior norm). */
+  polyFitNodes:        number;
+  /** Native patch ill-posed → enlarged with the 2-ring → well-posed fit. */
+  enlargedFitNodes:    number;
+  /** Neither native nor enlarged patch well-posed → distance-weighted average. */
+  averagedNodes:       number;
+  /** Native patch had < 4 elements (structurally a boundary/edge node). */
+  smallPatchNodes:     number;
+  /** Native patch had ≥ 4 elements but rank-deficient centroid scatter. */
+  illConditionedNodes: number;
+}
+
+/** Allocate a zeroed stats accumulator. */
+export function newSprRecoveryStats(): SprRecoveryStats {
+  return {
+    totalNodes: 0, polyFitNodes: 0, enlargedFitNodes: 0,
+    averagedNodes: 0, smallPatchNodes: 0, illConditionedNodes: 0,
+  };
+}
+
+/**
+ * Well-posedness of a nodal patch for the linear SPR fit: ≥ 4 elements AND a
+ * full-rank (3D-spanning) centroid scatter. Uses the normalized determinant of
+ * the centered second-moment matrix with the SAME 1e-9 threshold as the
+ * solver_validation group-20 exactness gate, so every node that test certifies
+ * well-posed still takes the direct polynomial fit here (interior invariance).
+ */
+function patchScatterWellPosed(
+  patch: readonly number[],
+  centX: Float64Array, centY: Float64Array, centZ: Float64Array,
+): boolean {
+  const m = patch.length;
+  if (m < 4) return false;
+  let mx = 0, my = 0, mz = 0;
+  for (const e of patch) { mx += centX[e]!; my += centY[e]!; mz += centZ[e]!; }
+  mx /= m; my /= m; mz /= m;
+  let sxx = 0, sxy = 0, sxz = 0, syy = 0, syz = 0, szz = 0;
+  for (const e of patch) {
+    const dx = centX[e]! - mx, dy = centY[e]! - my, dz = centZ[e]! - mz;
+    sxx += dx*dx; sxy += dx*dy; sxz += dx*dz; syy += dy*dy; syz += dy*dz; szz += dz*dz;
+  }
+  const det = sxx*(syy*szz - syz*syz) - sxy*(sxy*szz - syz*sxz) + sxz*(sxy*syz - syy*sxz);
+  const scale = Math.pow((sxx + syy + szz) / 3, 3);
+  return det > 1e-9 * scale;
+}
+
+/**
+ * Enlarge a nodal patch by one topological ring: every element that shares ANY
+ * node with an element already in the patch. For a boundary node this pulls in
+ * interior neighbours whose centroids restore a 3D-spanning scatter. Returns a
+ * de-duplicated element list (superset of `patch`).
+ */
+function enlargeNodePatch(
+  patch: readonly number[],
+  mesh: TetMesh,
+  nodeElements: readonly (readonly number[])[],
+  npe: number,
+): number[] {
+  const set = new Set<number>(patch);
+  for (const e of patch) {
+    const base = e * npe;
+    for (let k = 0; k < npe; k++) {
+      const nn = mesh.elements[base + k] ?? 0;
+      for (const e2 of nodeElements[nn]!) set.add(e2);
+    }
+  }
+  return [...set];
+}
+
 export function sprSmoothedStress(
   mesh:     TetMesh,
   vonMises: Float64Array,
+  stats?:   SprRecoveryStats,
 ): Float64Array {
   const nodeStress = new Float64Array(mesh.nodeCount);
-  const nodeCount  = new Int32Array(mesh.nodeCount);
 
   // Build node → element connectivity (shared helper — issue #104).
   // Uses all nodes (corner + midside) — SPR handles small patches via fallback.
@@ -669,29 +767,50 @@ export function sprSmoothedStress(
   ];
   const _sprA = new Float64Array(4);  // back-substitution result
 
-  // For each node: SPR fit or fallback to averaging
+  // Distance-weighted average of the field over a patch (inverse-distance²
+  // from element centroid to the node — closer elements dominate).
+  const weightedAverage = (patch: readonly number[], nx: number, ny: number, nz: number): number => {
+    let wsum = 0, vsum = 0;
+    for (const e of patch) {
+      const dx = (elemCentX[e] ?? 0) - nx, dy = (elemCentY[e] ?? 0) - ny, dz = (elemCentZ[e] ?? 0) - nz;
+      const w = 1 / (dx*dx + dy*dy + dz*dz + SPR_WEIGHT_EPS);
+      wsum += w; vsum += w * (vonMises[e] ?? 0);
+    }
+    return wsum > 0 ? vsum / wsum : 0;
+  };
+
+  // For each node: SPR fit (native or enlarged patch) or weighted-average fallback
   for (let n = 0; n < mesh.nodeCount; n++) {
-    const patch = nodeElements[n]!;
-    if (patch.length === 0) continue;
+    const nativePatch = nodeElements[n]!;
+    if (nativePatch.length === 0) continue;
+    if (stats) stats.totalNodes++;
 
     const nx = mesh.nodes[n * 3]     ?? 0;
     const ny = mesh.nodes[n * 3 + 1] ?? 0;
     const nz = mesh.nodes[n * 3 + 2] ?? 0;
 
-    if (patch.length < 4) {
-      // Insufficient patch — direct average
-      let sum = 0;
-      for (const e of patch) sum += vonMises[e] ?? 0;
-      nodeStress[n] = sum / patch.length;
-      nodeCount[n]  = patch.length;
-      continue;
+    // Choose the fitting patch (issue #157): native if well-posed, else borrow
+    // the 2-ring; if even that is rank-deficient, weighted-average with a flag.
+    let patch: readonly number[] = nativePatch;
+    let usedEnlarged = false;
+    if (!patchScatterWellPosed(nativePatch, elemCentX, elemCentY, elemCentZ)) {
+      if (stats) { if (nativePatch.length < 4) stats.smallPatchNodes++; else stats.illConditionedNodes++; }
+      const enlarged = enlargeNodePatch(nativePatch, mesh, nodeElements, npe);
+      if (patchScatterWellPosed(enlarged, elemCentX, elemCentY, elemCentZ)) {
+        patch = enlarged;
+        usedEnlarged = true;
+        if (stats) stats.enlargedFitNodes++;
+      } else {
+        nodeStress[n] = Math.max(0, weightedAverage(nativePatch, nx, ny, nz));
+        if (stats) stats.averagedNodes++;
+        continue;
+      }
+    } else if (stats) {
+      stats.polyFitNodes++;
     }
 
-    // Build least-squares system A·a = b
-    // A is (patchSize × 4), b is (patchSize × 1)
-    // Polynomial basis: [1, x, y, z]
-    // Normal equations: (Aᵀ A) a = Aᵀ b  →  4×4 system
-
+    // Build least-squares system A·a = b over the chosen patch.
+    // Polynomial basis: [1, x, y, z]; normal equations (Aᵀ A) a = Aᵀ b → 4×4.
     let AtA00=0, AtA01=0, AtA02=0, AtA03=0;
     let AtA11=0, AtA12=0, AtA13=0;
     let AtA22=0, AtA23=0, AtA33=0;
@@ -742,11 +861,10 @@ export function sprSmoothedStress(
     }
 
     if (solveFailed) {
-      // Fallback to average
-      let sum = 0;
-      for (const e of patch) sum += vonMises[e] ?? 0;
-      nodeStress[n] = sum / patch.length;
-      nodeCount[n]  = patch.length;
+      // Numeric safety: the scatter gate should preclude this, but never emit a
+      // NaN — weighted-average and reclassify the node as a fallback.
+      nodeStress[n] = Math.max(0, weightedAverage(patch, nx, ny, nz));
+      if (stats) { if (usedEnlarged) stats.enlargedFitNodes--; else stats.polyFitNodes--; stats.averagedNodes++; }
       continue;
     }
 
@@ -764,7 +882,6 @@ export function sprSmoothedStress(
     const smoothed = a[0]! + a[1]! * nx + a[2]! * ny + a[3]! * nz;
     // Clamp to non-negative (stress can't be negative in von Mises sense)
     nodeStress[n] = Math.max(0, smoothed);
-    nodeCount[n]  = patch.length;
   }
 
   return nodeStress;

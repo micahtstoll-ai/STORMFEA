@@ -203,17 +203,182 @@ export function assembleSurfaceTraction(
 }
 
 /**
- * Select which surface triangles a pressure load acts on.
+ * Result of {@link selectPressureRegionDetailed}: the per-triangle mask plus the
+ * verifiable metadata a caller needs to sanity-check a pressure load — the
+ * number of loaded triangles and their total area, so `|resultant| = P·area`
+ * (a uniform or normal traction over the selection) can be checked directly.
+ */
+export interface PressureRegionSelection {
+  /** isLoaded[t] = true → triangle t receives the traction. */
+  loaded:              boolean[];
+  /** Count of selected triangles. */
+  loadedTriangleCount: number;
+  /** Total surface area of the selected triangles, in mm². */
+  areaMm2:             number;
+}
+
+/**
+ * Select which surface triangles a pressure load acts on, returning the mask
+ * plus verifiable area metadata.
  *
- *   'face'   — the extreme face toward `direction`: triangles whose centroid is
- *              within 0.5 mm of the furthest node projected onto `direction`.
+ *   'face'   — the extreme face toward `direction`. SCALE-AWARE: seeded at the
+ *              triangle furthest along `direction` (whose outward normal faces
+ *              it) and grown by connectivity flood-fill to every edge-connected,
+ *              near-coplanar triangle. This selects the whole planar face
+ *              exactly, independent of element size — fixing the old fixed
+ *              0.5 mm projection band, which selected ZERO triangles on a coarse
+ *              or angled face (a silent no-load solve) and extra fringe layers
+ *              on a fine one (issue #156).
  *   'facing' — every triangle whose OUTWARD normal faces `direction`
  *              (normal·direction > 0), i.e. the whole windward side.
  *   'all'    — the entire exterior surface (hydrostatic / external pressure).
  *
- * Returns a boolean[] aligned with the triangles in `faces`. A zero-length
- * `direction` selects nothing for 'face'/'facing' (undefined side) but still
- * selects everything for 'all'.
+ * A zero-length `direction` selects nothing for 'face'/'facing' (undefined side)
+ * but still selects everything for 'all'. When a direction IS given, an EMPTY
+ * 'face'/'facing' selection THROWS rather than returning a silent no-load mask.
+ */
+export function selectPressureRegionDetailed(
+  nodes:     Float64Array,
+  faces:     Int32Array,
+  direction: readonly [number, number, number],
+  region:    "face" | "facing" | "all",
+): PressureRegionSelection {
+  const triCount = Math.floor(faces.length / 3);
+  const loaded: boolean[] = new Array(triCount).fill(false);
+
+  // Per-triangle area (½‖(b−a)×(c−a)‖). Cheap helper reused below.
+  const triArea = (t: number): number => {
+    const a = faces[t*3]??0, b = faces[t*3+1]??0, c = faces[t*3+2]??0;
+    const ax = nodes[a*3]??0, ay = nodes[a*3+1]??0, az = nodes[a*3+2]??0;
+    const bx = nodes[b*3]??0, by = nodes[b*3+1]??0, bz = nodes[b*3+2]??0;
+    const cx = nodes[c*3]??0, cy = nodes[c*3+1]??0, cz = nodes[c*3+2]??0;
+    const nx = (by-ay)*(cz-az)-(bz-az)*(cy-ay);
+    const ny = (bz-az)*(cx-ax)-(bx-ax)*(cz-az);
+    const nz = (bx-ax)*(cy-ay)-(by-ay)*(cx-ax);
+    return 0.5 * Math.hypot(nx, ny, nz);
+  };
+  const sumArea = (): number => {
+    let s = 0;
+    for (let t = 0; t < triCount; t++) if (loaded[t]) s += triArea(t);
+    return s;
+  };
+  const finish = (): PressureRegionSelection => {
+    let count = 0;
+    for (let t = 0; t < triCount; t++) if (loaded[t]) count++;
+    return { loaded, loadedTriangleCount: count, areaMm2: sumArea() };
+  };
+
+  if (region === "all") {
+    loaded.fill(true);
+    return finish();
+  }
+
+  const [dx, dy, dz] = direction;
+  const dl = Math.hypot(dx, dy, dz);
+  if (!(dl > 0)) return finish();   // undefined side without a direction (empty)
+  const ux = dx/dl, uy = dy/dl, uz = dz/dl;
+
+  // Unit outward normal of triangle t (or null for a degenerate triangle).
+  const triUnitNormal = (t: number): [number, number, number] | null => {
+    const a = faces[t*3]??0, b = faces[t*3+1]??0, c = faces[t*3+2]??0;
+    const ax = nodes[a*3]??0, ay = nodes[a*3+1]??0, az = nodes[a*3+2]??0;
+    const bx = nodes[b*3]??0, by = nodes[b*3+1]??0, bz = nodes[b*3+2]??0;
+    const cx = nodes[c*3]??0, cy = nodes[c*3+1]??0, cz = nodes[c*3+2]??0;
+    const nx = (by-ay)*(cz-az)-(bz-az)*(cy-ay);
+    const ny = (bz-az)*(cx-ax)-(bx-ax)*(cz-az);
+    const nz = (bx-ax)*(cy-ay)-(by-ay)*(cx-ax);
+    const m = Math.hypot(nx, ny, nz);
+    return m > 0 ? [nx/m, ny/m, nz/m] : null;
+  };
+
+  if (region === "facing") {
+    for (let t = 0; t < triCount; t++) {
+      const n = triUnitNormal(t);
+      if (n && (n[0]*ux + n[1]*uy + n[2]*uz) > 1e-9) loaded[t] = true;
+    }
+    const res = finish();
+    if (res.loadedTriangleCount === 0) {
+      throw new Error(
+        `selectPressureRegion 'facing': no surface triangle faces direction ` +
+        `(${ux.toFixed(3)}, ${uy.toFixed(3)}, ${uz.toFixed(3)}). The mesh may be ` +
+        `degenerate or the direction ill-defined — refusing a silent no-load solve.`,
+      );
+    }
+    return res;
+  }
+
+  // ── region === "face": connectivity flood-fill of the extreme coplanar face ──
+  // Seed = the forward-facing triangle furthest along `direction`.
+  let seed = -1, seedProj = -Infinity;
+  for (let t = 0; t < triCount; t++) {
+    const n = triUnitNormal(t);
+    if (!n || (n[0]*ux + n[1]*uy + n[2]*uz) <= 1e-9) continue;   // skip degenerate / back faces
+    const a = faces[t*3]??0, b = faces[t*3+1]??0, c = faces[t*3+2]??0;
+    const proj =
+      (((nodes[a*3]??0)+(nodes[b*3]??0)+(nodes[c*3]??0))/3)*ux +
+      (((nodes[a*3+1]??0)+(nodes[b*3+1]??0)+(nodes[c*3+1]??0))/3)*uy +
+      (((nodes[a*3+2]??0)+(nodes[b*3+2]??0)+(nodes[c*3+2]??0))/3)*uz;
+    if (proj > seedProj) { seedProj = proj; seed = t; }
+  }
+  if (seed < 0) {
+    throw new Error(
+      `selectPressureRegion 'face': no surface triangle faces direction ` +
+      `(${ux.toFixed(3)}, ${uy.toFixed(3)}, ${uz.toFixed(3)}) — cannot locate an ` +
+      `extreme face. The mesh may be empty or degenerate; refusing a silent no-load solve.`,
+    );
+  }
+
+  // Edge → adjacent-triangle map (shared undirected edge = two shared corners).
+  const N = nodes.length / 3;
+  const edgeKey = (p: number, q: number): number => (p < q ? p * N + q : q * N + p);
+  const edgeToTris = new Map<number, number[]>();
+  for (let t = 0; t < triCount; t++) {
+    const a = faces[t*3]??0, b = faces[t*3+1]??0, c = faces[t*3+2]??0;
+    for (const [p, q] of [[a, b], [b, c], [c, a]] as const) {
+      const k = edgeKey(p, q);
+      const lst = edgeToTris.get(k);
+      if (lst) lst.push(t); else edgeToTris.set(k, [t]);
+    }
+  }
+
+  // Grow the coplanar patch: include an edge-neighbour whose unit normal is
+  // within ~25° of the seed normal (same planar face; sides/curvature stop it).
+  const COS_TOL = 0.9;
+  const seedN = triUnitNormal(seed)!;
+  const stack = [seed];
+  loaded[seed] = true;
+  while (stack.length > 0) {
+    const t = stack.pop()!;
+    const a = faces[t*3]??0, b = faces[t*3+1]??0, c = faces[t*3+2]??0;
+    for (const [p, q] of [[a, b], [b, c], [c, a]] as const) {
+      const neigh = edgeToTris.get(edgeKey(p, q));
+      if (!neigh) continue;
+      for (const nt of neigh) {
+        if (nt === t || loaded[nt]) continue;
+        const nn = triUnitNormal(nt);
+        if (nn && (nn[0]*seedN[0] + nn[1]*seedN[1] + nn[2]*seedN[2]) >= COS_TOL) {
+          loaded[nt] = true;
+          stack.push(nt);
+        }
+      }
+    }
+  }
+
+  const res = finish();
+  if (res.loadedTriangleCount === 0) {
+    // Unreachable in practice (the seed is always selected), but assert anyway
+    // so an empty 'face' selection can never become a silent no-load solve.
+    throw new Error(
+      `selectPressureRegion 'face': selection is empty for direction ` +
+      `(${ux.toFixed(3)}, ${uy.toFixed(3)}, ${uz.toFixed(3)}).`,
+    );
+  }
+  return res;
+}
+
+/**
+ * Backwards-compatible mask-only wrapper around {@link selectPressureRegionDetailed}.
+ * Returns a boolean[] aligned with the triangles in `faces`.
  */
 export function selectPressureRegion(
   nodes:     Float64Array,
@@ -221,38 +386,7 @@ export function selectPressureRegion(
   direction: readonly [number, number, number],
   region:    "face" | "facing" | "all",
 ): boolean[] {
-  const triCount = Math.floor(faces.length / 3);
-  const out: boolean[] = new Array(triCount).fill(false);
-  if (region === "all") return out.fill(true);
-
-  const [dx, dy, dz] = direction;
-  const dl = Math.hypot(dx, dy, dz);
-  if (!(dl > 0)) return out;   // undefined side without a direction
-  const ux = dx/dl, uy = dy/dl, uz = dz/dl;
-
-  let maxProj = -Infinity;
-  if (region === "face") {
-    for (let n = 0; n < nodes.length / 3; n++) {
-      const proj = (nodes[n*3]??0)*ux + (nodes[n*3+1]??0)*uy + (nodes[n*3+2]??0)*uz;
-      if (proj > maxProj) maxProj = proj;
-    }
-  }
-  for (let t = 0; t < triCount; t++) {
-    const a = faces[t*3]??0, b = faces[t*3+1]??0, c = faces[t*3+2]??0;
-    const ax = nodes[a*3]??0, ay = nodes[a*3+1]??0, az = nodes[a*3+2]??0;
-    const bx = nodes[b*3]??0, by = nodes[b*3+1]??0, bz = nodes[b*3+2]??0;
-    const cx = nodes[c*3]??0, cy = nodes[c*3+1]??0, cz = nodes[c*3+2]??0;
-    if (region === "facing") {
-      const nx = (by-ay)*(cz-az)-(bz-az)*(cy-ay);
-      const ny = (bz-az)*(cx-ax)-(bx-ax)*(cz-az);
-      const nz = (bx-ax)*(cy-ay)-(by-ay)*(cx-ax);
-      out[t] = (nx*ux + ny*uy + nz*uz) > 1e-9;
-    } else { // face
-      const proj = ((ax+bx+cx)/3)*ux + ((ay+by+cy)/3)*uy + ((az+bz+cz)/3)*uz;
-      out[t] = (maxProj - proj) < 0.5;
-    }
-  }
-  return out;
+  return selectPressureRegionDetailed(nodes, faces, direction, region).loaded;
 }
 
 /**

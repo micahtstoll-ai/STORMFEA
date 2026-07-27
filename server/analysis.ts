@@ -22,7 +22,7 @@ import { runLinearBuckling }              from "./solver/buckling.js";
 import { assembleK, assembleKsigma, buildSparsityPattern } from "./solver/assembly.js";
 import { buildNodeElementAdjacency }       from "./solver/adjacency.js";
 import { applyDirichletBC }    from "./solver/boundary.js";
-import { assembleForceVector, assembleBodyForce, assembleSurfaceTraction, assembleSurfaceTractionNormal, selectPressureRegion } from "./solver/load.js";
+import { assembleForceVector, assembleBodyForce, assembleSurfaceTraction, assembleSurfaceTractionNormal, selectPressureRegionDetailed } from "./solver/load.js";
 import type { ModalAnalysisResult }        from "./solver/types.js";
 import {
   buildLaminateCMatrix,
@@ -3824,8 +3824,9 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         // uniform (non-normal) traction direction. 'all' + normal needs none.
         if ((region !== "all" || !p.normal) && !hasDir) continue;
 
-        const isLoaded = selectPressureRegion(mesh.nodes, surfaceFaces, [ux, uy, uz], region);
-        const nLoaded = isLoaded.reduce((s, on) => s + (on ? 1 : 0), 0);
+        const sel = selectPressureRegionDetailed(mesh.nodes, surfaceFaces, [ux, uy, uz], region);
+        const isLoaded = sel.loaded;
+        const nLoaded = sel.loadedTriangleCount;
         // A positive pressure pushes INWARD on the selected face (compression) —
         // the intuitive "pressure on this face" and the compressive pre-stress
         // buckling needs. Negative magnitude → outward (tension).

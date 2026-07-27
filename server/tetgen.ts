@@ -41,6 +41,7 @@ import { tmpdir }                             from "os";
 import * as path                              from "path";
 import { fileURLToPath as ftu }               from "url";
 import type { TetMesh }                       from "./solver/types.js";
+import { verifyC3D10Ordering }                from "./solver/c3d10check.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -322,6 +323,16 @@ export async function meshWithTetGen(
 
   const nodeCount    = nodes.length / 3;
   const elementCount = elements.length / nodesPerElem;
+
+  // ── 3b. C3D10 midside-ordering self-check (issue #167) ─────────────────────
+  // TetGen output is affine (it meshes a faceted STL — every edge is straight),
+  // so after C3D10_REORDER every midside node must sit EXACTLY on its mapped
+  // corner-pair midpoint. A permutation regression in C3D10_REORDER (or a
+  // TetGen build that changes its midside order) is caught here at runtime and
+  // rejected, instead of silently producing wrong stiffness for every element.
+  if (nodesPerElem === 10) {
+    verifyC3D10Ordering(nodes, elements, { source: "TetGen" });
+  }
 
   // ── 4. Build surface→node map ──────────────────────────────────────────────
   // TetGen always outputs input vertices as the first N nodes in the same order,

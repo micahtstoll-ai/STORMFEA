@@ -25,6 +25,7 @@ import { tmpdir }                from "os";
 import * as path                 from "path";
 import { fileURLToPath as ftu }  from "url";
 import type { TetMesh }          from "./solver/types.js";
+import { verifyC3D10Ordering }   from "./solver/c3d10check.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -95,7 +96,7 @@ export interface GmshMeshResult {
  * Second-order triangles (type 9) are also handled for surface display —
  * only corner nodes are used for the heatmap triangulation.
  */
-function parseMsh2(text: string): {
+export function parseMsh2(text: string): {
   nodes:        Float64Array;
   nodeCount:    number;
   elements:     Int32Array;
@@ -454,6 +455,22 @@ export async function meshStepWithGmsh(
   }
 
   console.log(`[gmsh] mesh: ${parsed.nodeCount} nodes, ${parsed.elementCount} elements (${parsed.nodesPerElem}-node tets)`);
+
+  // ── C3D10 midside-ordering self-check (issue #167) ─────────────────────────
+  // The type-11 parse above assumes Gmsh's midside order already matches
+  // STORMFEA's element.ts convention (no reorder is applied). Verify that at
+  // runtime: a mesher (or Gmsh version) that emits a different midside order
+  // would otherwise make every C3D10 element silently wrong. Gmsh snaps
+  // boundary-edge midside nodes onto the curved CAD surface, so the strict
+  // midpoint test runs only on INTERIOR (affine) elements — corners not on any
+  // surface triangle — while the curvature-robust nearest-edge permutation
+  // guard runs on all of them.
+  if (parsed.nodesPerElem === 10) {
+    const boundaryNodes = new Set<number>();
+    for (const [, tris] of parsed.surfaceTris.entries())
+      for (const [a, b, c] of tris) { boundaryNodes.add(a); boundaryNodes.add(b); boundaryNodes.add(c); }
+    verifyC3D10Ordering(parsed.nodes, parsed.elements, { source: "Gmsh", boundaryNodes });
+  }
 
   // Identify surfaces
   const surfaces = identifySurfaces(parsed.nodes, parsed.surfaceTris);
