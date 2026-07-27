@@ -21,6 +21,7 @@ import { spawn }         from "child_process";
 import { parseSTL }      from "./stl.js";
 import { detectHoles, flagMergedHoleWarnings }   from "./holes.js";
 import { runAnalysis, AnalysisAbortError }   from "./analysis.js";
+import { MATERIALS, layerHeightFactor, literatureYieldZRatio } from "./analysis.js";
 import type { ForceSpec, PrintSettings, AnalysisSettings, AnalysisResult } from "./analysis.js";
 import { expect as expectShape, ValidationError } from "./validate.js";
 import type { Spec } from "./validate.js";
@@ -1358,14 +1359,17 @@ SF = min(SF_bulk, SF_int)</div>
 <h2>Material Database</h2>
 <table>
   <tr><th>Material</th><th>E_xy (MPa)</th><th>ν</th><th>Yield XY (MPa)</th><th>Yield Z (MPa)</th></tr>
-  <tr><td>PLA</td><td>3500</td><td>0.36</td><td>50</td><td>29</td></tr>
-  <tr><td>PETG</td><td>2100</td><td>0.38</td><td>45</td><td>26</td></tr>
-  <tr><td>ABS</td><td>2300</td><td>0.35</td><td>40</td><td>23</td></tr>
+  ${Object.values(MATERIALS).map(m => {
+    const yieldZ = m.yieldMPa * literatureYieldZRatio();
+    return `<tr><td>${m.label}</td><td>${m.E}</td><td>${m.nu}</td><td>${m.yieldMPa}</td><td>${yieldZ.toFixed(0)}</td></tr>`;
+  }).join('\n  ')}
 </table>
 <p class="muted">
-  Layer-height correction applied: 0.2 mm baseline. Thicker layers (≥0.28 mm) reduce yield_Z
-  by up to 12% per Farashi &amp; Vafaee 2022 meta-analysis. Thinner layers (≤0.12 mm) increase
-  yield_Z by up to 8%.
+  Layer-height correction applied: 0.2&nbsp;mm baseline, slope −1.0/mm, clamped to
+  ${((layerHeightFactor(10) - 1) * 100).toFixed(0)}%/+${((layerHeightFactor(0) - 1) * 100).toFixed(0)}%
+  per Farashi &amp; Vafaee 2022 meta-analysis. Example: at 0.28&nbsp;mm, yield_Z is reduced
+  ${((1 - layerHeightFactor(0.28)) * 100).toFixed(0)}% (factor ${layerHeightFactor(0.28).toFixed(2)}×); at 0.12&nbsp;mm it is
+  increased ${((layerHeightFactor(0.12) - 1) * 100).toFixed(0)}% (factor ${layerHeightFactor(0.12).toFixed(2)}×).
 </p>
 </div>
 <div>

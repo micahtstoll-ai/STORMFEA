@@ -9148,6 +9148,14 @@ const SOURCES_DB = [
         confidence: "high",
         note: "An upright print is weak across layers along ONE horizontal axis and strong along the other horizontal axis and Z; the exact model is transverse isotropy about that horizontal (layer-normal) axis. When you pick a BED face, STORMFEA now sends the layer-normal direction and the solver applies the EXACT tensor rotation: the constitutive matrix is rotated to align the weak axis with the bed normal, and the failure criterion is evaluated in that rotated frame (handles flat, upright, and angled uniformly). If no bed face is picked (azimuth unknown), it falls back to the conservative scalar swap — E_z takes the strong in-layer modulus and BOTH horizontal directions take the weak through-layer modulus (pessimistic along the strong horizontal axis by up to E_z/E_xy ≈ 35%). Rotation core validated in server/tests/unit/bond-rotation.test.ts; swap fallback in upright-swap.test.ts.",
       },
+      {
+        id: "cross_bead_ratio",
+        citation: "STORMFEA engineering default — literature cross-bead (bead-to-bead, in-plane) tensile ratio, informed by the same raster-orientation strength-anisotropy literature as ahn2002 and pla_ortho_2024 above. No single primary source pins 0.85 exactly; unidirectional-raster FDM coupons in that literature report roughly 0.7–0.9 for tensile strength across beads vs along them.",
+        url: "",
+        usedFor: "CROSS_BEAD_RATIO_LITERATURE = 0.85 — in-plane strength knockdown across beads, applied ONLY when in-plane (bead-to-bead) anisotropy is opted in (AnalysisSettings.inPlaneAnisotropy) and there is evidence of a unidirectional/dominant raster with no measured ratio",
+        confidence: "low",
+        note: "Labeled an engineering default (like the infill-pattern lattice exponents), not a single-paper measurement — 0.85 sits mid-band of the 0.7–0.9 range reported for unidirectional rasters. Default off: typical ±45° alternating rasters homogenize toward isotropic, so most analyses never engage this constant. Overridden by a measured CalibrationProfile.crossBeadRatio from a cross-raster tensile coupon, which is reported with its own (measured) provenance instead of this literature default.",
+      },
     ]
   },
   {
@@ -9436,6 +9444,44 @@ const SOURCES_DB = [
         usedFor: "Classifying the linear buckling check: BLF < 1.5 → FAIL, 1.5 ≤ BLF < 3.0 → MARGINAL, BLF ≥ 3.0 → PASS (server/analysis.ts)",
         confidence: "medium",
         note: `Why these values:\n  FAIL below 1.5× — linear (eigenvalue) buckling assumes perfect geometry, perfectly centered loads, and linear pre-buckling response. FDM parts violate all three (layer seams, wall-thickness variation, warp, joint eccentricity), so the real buckling load is typically 10–40% below the linear prediction. A predicted margin under 1.5× can vanish entirely in the printed part.\n  MARGINAL between 1.5× and 3.0× — extra allowance beyond the imperfection knockdown for nonlinear pre-buckling deformation, idealized boundary conditions, and mesh/modeling error.\n  PASS at 3.0× and above — comfortable margin for a design-comparison tool.\n\nContext: applying a substantial factor to linear buckling predictions is normal engineering practice — pressure-vessel rules commonly use design factors of roughly 2–3 on elastic buckling, and structural steel codes place slender-column capacity well below the Euler load via column curves that account for imperfections. Those factors are calibrated for metals in other industries and do not transfer directly to FDM polymers; 1.5/3.0 are STORMFEA's own conservative choices.`,
+      },
+    ]
+  },
+  {
+    category: "FATIGUE (S-N ESTIMATE)",
+    color: "#7a4fb5",
+    entries: [
+      {
+        id: "wang2020_fatigue",
+        citation: "Wang X, Zhao L, Fuh JYH, Lee HP. Effect of porosity on mechanical properties of 3D printed polymers: Experiments and micromechanical modeling based on X-ray computed tomography analysis. Polymers. 2019;11(7):1154. (Fatigue behavior of FDM PLA under cyclic loading, Wang et al. 2020)",
+        url: "",
+        usedFor: "Orientation-dependent endurance ratio: Se/UTS = 0.37 (flat print) / 0.43 (upright print)",
+        confidence: "low",
+        note: "Flat prints fatigue-crack at the weaker inter-layer bond, so their endurance ratio is lower than upright prints, which fatigue through the stronger in-plane bead material. FDM cyclic-loading data is sparse relative to static-strength literature; treat as order-of-magnitude until a cyclic coupon is run.",
+      },
+      {
+        id: "juvinall_basquin",
+        citation: "Juvinall RC, Marshek KM. Fundamentals of Machine Component Design. Wiley. (Basquin power-law S-N relation, §7)",
+        url: "",
+        usedFor: "Basquin exponent b ≈ −0.1 and fatigue-strength coefficient σ_f′ ≈ 1.5 × UTS",
+        confidence: "low",
+        note: "b = −0.1 is a typical value for semi-ductile polymers, not a PLA/ABS/PETG-specific measurement. σ_f′ = 1.5·UTS is the companion literature default used with it. Both are replaced by fitted values once cyclic-coupon data is entered.",
+      },
+      {
+        id: "goodman_meanstress",
+        citation: "Shigley JE, Mischke CR, Budynas RG. Mechanical Engineering Design. 10th ed. McGraw-Hill. 2015. §6 (modified-Goodman mean-stress correction).",
+        url: "",
+        usedFor: "Modified Goodman diagram combining stress amplitude σ_a and mean stress σ_m into a single fatigue safety factor",
+        confidence: "high",
+        note: "Standard mean-stress correction; not FDM-specific. A compressive mean stress is conservatively clamped to zero (its life benefit is not credited).",
+      },
+      {
+        id: "fatigue_calibration_path",
+        citation: "STORMFEA calibration path — POST /api/calibration/fatigue least-squares fits Se/UTS and Basquin b from user-entered cyclic-coupon (σ_amplitude, cycles) points.",
+        url: "",
+        usedFor: "Upgrading the fatigue estimate from the literature defaults above to measured values",
+        confidence: "medium",
+        note: "Once a fitted profile is supplied, the measured Se/UTS ratio and Basquin b replace the 0.37/0.43 and −0.1 defaults and the fatigue mode's confidence is reported as MEDIUM instead of LOW, mirroring how the bearing coupon lifts the bearing mode.",
       },
     ]
   },
