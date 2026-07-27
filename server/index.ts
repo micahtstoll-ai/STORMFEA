@@ -784,7 +784,7 @@ app.post("/api/bond-sensitivity", async (req, res) => {
     const base = {
       nozzleTempC:   proc.nozzleTempC   ?? matRef.nozzleRefC,
       printSpeedMmS: proc.printSpeedMmS ?? BOND_REFERENCE.printSpeedMmS,
-      coolingFanPct: proc.coolingFanPct ?? BOND_REFERENCE.coolingFanPct,
+      coolingFanPct: proc.coolingFanPct ?? matRef.coolingFanRefPct,
       bedTempC:      proc.bedTempC      ?? BOND_REFERENCE.bedTempC,
       ambientTempC:  proc.ambientTempC  ?? BOND_REFERENCE.ambientTempC,
     };

@@ -50,6 +50,45 @@ describe("reference anchoring", () => {
   });
 });
 
+describe("per-material reference fan (issue #184)", () => {
+  // The reference fan is per-material, like the reference nozzle temperature —
+  // a shared 100% anchor was unphysical for the no-fan styrenics/nylon.
+  it("reference fan values are locked (change = deliberate re-estimation)", () => {
+    const expected: Record<string, number> = {
+      pla: 100, petg: 50, abs: 0, tpu: 50, pa12: 0, asa: 20,
+    };
+    for (const [m, fan] of Object.entries(expected)) {
+      expect(BOND_MATERIALS[m]!.coolingFanRefPct).toBe(fan);
+    }
+    // BOND_REFERENCE no longer carries a shared fan.
+    expect("coolingFanPct" in BOND_REFERENCE).toBe(false);
+  });
+
+  it("each material's OWN reference fan gives exactly 1.0 (anchor moved with it)", () => {
+    for (const m of Object.keys(BOND_MATERIALS)) {
+      const p = predictBondMultipliers(m, 0.2, {
+        ...BOND_REFERENCE,
+        nozzleTempC:   BOND_MATERIALS[m]!.nozzleRefC,
+        coolingFanPct: BOND_MATERIALS[m]!.coolingFanRefPct,
+      });
+      expect(p.relStrength).toBeCloseTo(1.0, 9);
+      expect(p.relStiffness).toBeCloseTo(1.0, 9);
+    }
+  });
+
+  it("forcing a no-fan material to full fan is no longer the reference (bond weakens)", () => {
+    // ABS reference is fan-off; running it at full fan cools the interface
+    // faster → weaker bond, so it must fall below its own 1.0 anchor. Under the
+    // old shared 100% anchor this case was (wrongly) pinned at exactly 1.0.
+    for (const m of ["abs", "asa", "pa12"]) {
+      const atRef  = predictBondMultipliers(m, 0.2, {}); // fills the material's own ref fan
+      const fullFan = predictBondMultipliers(m, 0.2, { coolingFanPct: 100 });
+      expect(atRef.relStrength).toBeCloseTo(1.0, 9);
+      expect(fullFan.relStrength).toBeLessThan(atRef.relStrength);
+    }
+  });
+});
+
 describe("physical trends (direction locks)", () => {
   it("hotter nozzle → stronger bond; colder → weaker", () => {
     const hot  = predictBondMultipliers("pla", 0.2, { ...REF_PROC, nozzleTempC: 230 });
