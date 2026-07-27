@@ -146,6 +146,14 @@ export function generateHtmlReport(
       'coupon data</b> behind it (LOW confidence). Treat any wall-bond-governed margin as ' +
       'indicative only.'));
   }
+  // Linear-element (C3D4) bending-underprediction caveat (issue #189).
+  if (nodesPerElem === 4) {
+    caveatBlocks.push(caveatBox(
+      'Computed with linear elements (C3D4)',
+      'Linear tetrahedra underpredict bending stress by up to <b>~55%</b> (shear locking), so ' +
+      'the safety factor above may read up to ~2× too high for bending-dominated parts. ' +
+      'Re-run at C3D10 (quadratic elements) before trusting the margin.'));
+  }
   const reliabilityCaveats = caveatBlocks.join('');
 
   return `<!DOCTYPE html>
