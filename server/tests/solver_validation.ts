@@ -1688,6 +1688,166 @@ console.log("\n[26] Numerical homogenization — perforated-plate cell vs isolat
   }
 }
 
+// ── Test group 27: Lekhnitskii orthotropic open-hole Kt (ANISOTROPIC anchor) ──
+// The FIRST anisotropic known-answer anchor in this suite. Every other analytic
+// anchor here (Kirsch Kt≈3 [24], Euler buckling [16], isotropic beams, patch
+// tests) is ISOTROPIC, yet the whole product is an anisotropy tool — the
+// orthotropic constitutive build + weak-axis Bond rotation + anisotropic stress
+// recovery were validated only by isotropic-limit collapse and directional-
+// stiffness sanity checks, never against a known anisotropic STRESS FIELD.
+//
+// CLOSED FORM (Lekhnitskii, "Anisotropic Plates", 1968; also Daniel & Ishai,
+// "Engineering Mechanics of Composite Materials", 2nd ed., §4.6): an infinite
+// orthotropic plate with a circular hole under remote uniaxial tension σ applied
+// ALONG A MATERIAL PRINCIPAL AXIS has, at the hole edge on the axis PERPENDICULAR
+// to the load, tangential-stress concentration
+//
+//     Kt = σθ_max/σ = 1 + sqrt( 2·(sqrt(E_L/E_T) − ν_LT) + E_L/G_LT )
+//
+// where E_L = modulus in the load direction, E_T = transverse in-plane modulus,
+// G_LT = in-plane shear modulus, ν_LT = major Poisson ratio (−ε_T/ε_L under σ_L).
+// ISOTROPIC COLLAPSE (built-in self-check, consistency with group [24]):
+// E_L=E_T=E, G=E/(2(1+ν)) ⇒ 1 + sqrt(2(1−ν) + 2(1+ν)) = 1 + sqrt(4) = 3.0 exactly.
+//
+// PLATE FRAME: buildPlateWithHoleMesh lays the plate in the x–z plane (thickness
+// y, thin ⇒ plane stress), loads uniaxially along z, hole axis along y. So the
+// in-plane load direction is z and the in-plane transverse direction is x. For a
+// transversely-isotropic FDM material (isotropic plane x–y, weak axis z):
+//   • load ∥ WEAK axis  (default weakAxis ≈ +z): E_L=E_z, E_T=E_xy,
+//       ν_LT = ν_zx = ν_xz·E_z/E_xy (reciprocity), G_LT = G_xz.
+//   • load ∥ STRONG axis (weakAxis = +x, so z lies in the isotropic plane —
+//       this is the ROTATED-frame variant that exercises rotateC6):
+//       E_L=E_xy, E_T=E_z, ν_LT = ν_xz, G_LT = G_xz.
+// Both z and x are material principal axes in each case, so the orthotropic
+// closed form applies directly.
+//
+// ELEMENT TYPE: C3D10 (quadratic) only. This benchmark is gradient-dominated
+// (steep σθ decay from the hole edge); linear C3D4 shear-locks and its constant-
+// strain recovery badly under-reads the edge peak, so it is not a meaningful
+// anchor here — the same reason group [24] uses C3D10.
+//
+// TOLERANCE (5%, defensible, NOT fitted to the solver output):
+//   1. Discretization — a fixed-geometry (d/W=0.15) mesh-refinement study spans
+//      centroidal-peak Kt of {2.89, 3.00, 3.04} for the isotropic case across
+//      {1536, 3456, 6144} C3D10 elements; the benchmark mesh (nTheta=48, ns=12,
+//      3456 elems — identical density to group [24]) lands within ≈1% of the
+//      closed form for all three orientations, with the full refinement envelope
+//      bounded by ≈4.2%.
+//   2. Finite size — d/W=0.15; decreasing d/W to 0.10 did NOT reduce the error
+//      (mesh-quality-limited), so the infinite-plate/finite-width correction is
+//      demonstrably below the discretization floor (≲1–2%).
+//   3. Method noise floor — coupon_fea.ts documents ≈5% Kt noise floor for this
+//      centroidal-peak extraction (load-application + discretization).
+// 5% is the documented method floor: the measured benchmark-mesh errors (<0.71%)
+// sit inside it with >6× margin, while the anisotropic Kt values (3.38, 3.95)
+// sit 12.5% and 31.5% away from the isotropic 3.0 — so 5% genuinely discriminates
+// the anisotropic path rather than rubber-stamping ≈3.
+console.log("\n[27] Lekhnitskii orthotropic open-hole Kt — anisotropic known-answer anchor");
+{
+  // σθ_max/σ for remote uniaxial tension along a principal axis (see header).
+  const lekhnitskiiKt = (E_L: number, E_T: number, G_LT: number, nu_LT: number): number =>
+    1 + Math.sqrt(2 * (Math.sqrt(E_L / E_T) - nu_LT) + E_L / G_LT);
+
+  // Transversely-isotropic FDM set (E_xy/E_z ≈ 1.54, deliberately low G_xz so Kt
+  // lands well away from 3 in both orientations).
+  const E_xy = 3500, E_z = 2275, nu_xy = 0.36, nu_xz = 0.30;
+  const G_xy = E_xy / (2 * (1 + nu_xy));
+  const G_xz = 0.4 * G_xy;                 // low out-of-plane shear (typical FDM)
+  const nu_zx = nu_xz * E_z / E_xy;        // reciprocity
+
+  const ktWeak   = lekhnitskiiKt(E_z,  E_xy, G_xz, nu_zx); // load ∥ z = weak   ⇒ ≈3.375
+  const ktStrong = lekhnitskiiKt(E_xy, E_z,  G_xz, nu_xz); // load ∥ z = strong ⇒ ≈3.946
+  const ktIsoCF  = lekhnitskiiKt(E_xy, E_xy, G_xy, nu_xy); // isotropic self-check ⇒ 3.000
+
+  // [27.1] Formula self-check: isotropic parameters collapse to Kirsch Kt = 3
+  // (pure closed-form arithmetic — independent of the solver).
+  test("[27.1] Lekhnitskii formula collapses to Kt=3.0 in the isotropic limit",
+    Math.abs(ktIsoCF - 3.0) < 1e-12, `ktIsoCF=${ktIsoCF.toFixed(6)}`);
+
+  try {
+    const { buildPlateWithHoleMesh, solveCouponKt } = await import("../coupon_fea.js");
+
+    // Benchmark mesh: d/W = 0.15, nTheta=48, ns=12 (group [24]'s density).
+    const meshOf = (nTheta: number, ns: number) => buildPlateWithHoleMesh({
+      widthMm: 40, thickMm: 2, lengthMm: 100, holeR: 3,
+      nTheta, ns, nThick: 1, radialGrade: 2.0,
+    });
+    const solveKt = async (
+      nTheta: number, ns: number,
+      mat: Parameters<typeof solveCouponKt>[1],
+    ) => {
+      const mesh = meshOf(nTheta, ns);
+      const kt = await solveCouponKt(mesh, mat, {
+        totalForceN: 1000, axis: 2, nominalAreaMm2: 40 * 2, // gross section
+        gripFraction: 0.30, shear: false,
+      });
+      return { kt, elems: mesh.elementCount };
+    };
+    // At a traction-free hole edge only the tangential (hoop) stress is nonzero,
+    // so peak von Mises over the gauge = peak hoop stress; Kt = peak/σ∞ matches
+    // the Lekhnitskii σθ_max/σ directly (σ∞ = gross-section stress).
+    const TOL = 0.05;
+
+    const matWeak = {
+      kind: "orthotropic" as const, E_xy, E_z, nu_xy, nu_xz, G_xz,
+      yieldXY: 50, yieldZ: 29, label: "lek-weak",
+    };
+    const matStrong = { ...matWeak, weakAxis: [1, 0, 0] as const, label: "lek-strong" };
+    const matIso = { E: E_xy, nu: nu_xy, yieldStrength: 50, label: "lek-iso" };
+
+    // [27.2] Isotropic-parameter run of the SAME fixture reproduces Kirsch 3.0
+    // (consistency with group [24], and proof the fixture/recovery is unbiased).
+    {
+      const { kt, elems } = await solveKt(48, 12, matIso);
+      const relErr = Math.abs(kt.Kt - 3.0) / 3.0;
+      test("[27.2] isotropic fixture reproduces Kirsch Kt=3.0 (within 5%)",
+        kt.converged && relErr < TOL,
+        `Kt=${kt.Kt.toFixed(4)} relErr=${(relErr * 100).toFixed(2)}% elems=${elems}`);
+    }
+
+    // [27.3] Load ∥ weak axis (default frame): Kt ≈ 3.375.
+    {
+      const { kt, elems } = await solveKt(48, 12, matWeak);
+      const relErr = Math.abs(kt.Kt - ktWeak) / ktWeak;
+      test("[27.3] load∥weak: solver Kt matches Lekhnitskii (within 5%)",
+        kt.converged && relErr < TOL,
+        `Kt=${kt.Kt.toFixed(4)} vs ${ktWeak.toFixed(4)} relErr=${(relErr * 100).toFixed(2)}% elems=${elems}`);
+      console.log(`    weak-load: solver Kt=${kt.Kt.toFixed(4)} Lekhnitskii=${ktWeak.toFixed(4)} (E_L=E_z)`);
+    }
+
+    // [27.4] Load ∥ strong axis (weakAxis=+x ⇒ ROTATED material frame, exercises
+    // rotateC6): Kt ≈ 3.946. Pins the E-ratio dependence in the opposite sense.
+    {
+      const { kt, elems } = await solveKt(48, 12, matStrong);
+      const relErr = Math.abs(kt.Kt - ktStrong) / ktStrong;
+      test("[27.4] load∥strong (rotated frame, rotateC6): Kt matches Lekhnitskii (within 5%)",
+        kt.converged && relErr < TOL,
+        `Kt=${kt.Kt.toFixed(4)} vs ${ktStrong.toFixed(4)} relErr=${(relErr * 100).toFixed(2)}% elems=${elems}`);
+      console.log(`    strong-load: solver Kt=${kt.Kt.toFixed(4)} Lekhnitskii=${ktStrong.toFixed(4)} (E_L=E_xy, rotated)`);
+    }
+
+    // [27.5] Two-mesh-density convergence (weak orientation, geometry fixed):
+    // separates discretization from model error. The coarser 1536-element mesh
+    // under-reads (centroidal peak sits inside the edge); refining to 3456 elems
+    // pulls it onto the closed form — a monotone approach, confirming the residual
+    // is discretization, not a model/anisotropy error. Coarse asserted only within
+    // a looser band (it is a convergence demonstrator, not the anchor).
+    {
+      const coarse = await solveKt(32, 8,  matWeak);
+      const fine   = await solveKt(48, 12, matWeak);
+      const eCoarse = Math.abs(coarse.kt.Kt - ktWeak) / ktWeak;
+      const eFine   = Math.abs(fine.kt.Kt   - ktWeak) / ktWeak;
+      test("[27.5] weak-load refinement converges toward Lekhnitskii (fine ≤ coarse error, fine <5%)",
+        fine.kt.converged && eFine < TOL && eFine <= eCoarse + 1e-6 && eCoarse < 0.08,
+        `coarse Kt=${coarse.kt.Kt.toFixed(4)} (err ${(eCoarse*100).toFixed(2)}%, ${coarse.elems} el) → ` +
+        `fine Kt=${fine.kt.Kt.toFixed(4)} (err ${(eFine*100).toFixed(2)}%, ${fine.elems} el)`);
+      console.log(`    convergence: ${coarse.elems}el err=${(eCoarse*100).toFixed(2)}% → ${fine.elems}el err=${(eFine*100).toFixed(2)}%`);
+    }
+  } catch (err) {
+    test("[27] Lekhnitskii orthotropic benchmark did not throw", false, String(err));
+  }
+}
+
 // ── Summary ───────────────────────────────────────────────────────────────────
 // Runs at the END of the async IIFE, after every test group above has
 // completed. (A previous setTimeout(0) variant fired as soon as the event
