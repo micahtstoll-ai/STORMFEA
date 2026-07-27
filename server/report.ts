@@ -36,9 +36,23 @@ export function generateHtmlReport(
     sfCriterion, safetyfactorLow, safetyFactorHigh,
     isotropicComparison, materialModel,
     nodeCount, elementCount, nodesPerElem, globalRelativeError,
+    bucklingResult,
   } = result;
 
   const elementTypeLabel = nodesPerElem === 4 ? "C3D4 linear tet" : "C3D10 quadratic tet";
+
+  // Buckling-aware failure load (issue #204). estimatedFailForce is a linear
+  // first-yield extrapolation; when a positive BLF is lower than the first-yield
+  // SF, buckling governs and the failure load drops to the buckling-limited
+  // value (estimatedFailForce × BLF/SF). Otherwise the first-yield estimate stands.
+  const failLoad = (() => {
+    const blf = (bucklingResult && typeof bucklingResult.blf === "number"
+      && isFinite(bucklingResult.blf) && bucklingResult.blf > 0) ? bucklingResult.blf : null;
+    if (blf != null && safetyFactor != null && safetyFactor > 0 && blf < safetyFactor) {
+      return { failN: estimatedFailForce * blf / safetyFactor, governedBy: "buckling" as const, blf };
+    }
+    return { failN: estimatedFailForce, governedBy: "yield" as const, blf };
+  })();
 
   const criterionLabel =
     sfCriterion === "fdm-interface" ? "FDM dual criterion (bulk von Mises + interlayer interface)"
@@ -215,9 +229,14 @@ export function generateHtmlReport(
       <div class="card-value">${maxVonMisesMPa.toFixed(1)}<span class="card-unit"> MPa</span></div>
     </div>
     <div class="card">
-      <div class="card-label">Fail Force</div>
-      <div class="card-value">${estimatedFailForce.toFixed(0)}<span class="card-unit"> N</span></div>
-      <div class="card-unit">(${(estimatedFailForce/4.448).toFixed(0)} lbf)</div>
+      <div class="card-label">Est. Failure Load${failLoad.governedBy === "buckling" ? " (buckling-limited)" : ""}</div>
+      <div class="card-value">${failLoad.failN.toFixed(0)}<span class="card-unit"> N</span></div>
+      <div class="card-unit">(${(failLoad.failN/4.448).toFixed(0)} lbf)</div>
+      <div style="font-size:8px;color:#777;line-height:1.35;margin-top:3px">${
+        failLoad.governedBy === "buckling"
+          ? `Buckling governs — BLF ${failLoad.blf!.toFixed(2)}× &lt; SF ${safetyFactor!.toFixed(2)}×; first-yield estimate ${estimatedFailForce.toFixed(0)} N.`
+          : `Linear first-yield estimate: assumes stress ∝ load and failure at first yield. Actual capacity is typically higher for ductile bending, lower if buckling governs.`
+      }</div>
     </div>
     <div class="card">
       <div class="card-label">Max Displacement</div>

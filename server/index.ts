@@ -417,6 +417,13 @@ app.post("/api/analyse", async (req, res) => {
       vertexErrorEstimateB64:   result.vertexErrorEstimateB64 ?? null,
       globalRelativeError:      result.globalRelativeError ?? null,
       topErrorElements:         result.topErrorElements ?? null,
+      // Buckling summary + mode shape (issue #204): the client already consumed
+      // these (storeBucklingResult, S.buckling), but buildPayload had never put
+      // them on the wire — so the buckling display and the buckling-limited
+      // failure-load selection were both dead. Serialize them (mirrors
+      // modalResult); absent when buckling wasn't requested.
+      bucklingResult:           result.bucklingResult ?? null,
+      vertexBucklingModeB64:    result.vertexBucklingModeB64 ?? null,
       vertexModeShapesB64:      result.vertexModeShapesB64 ?? null,
       modalResult:              result.modalResult ? {
         modalMs:            result.modalResult.modalMs,

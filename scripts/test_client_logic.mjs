@@ -564,8 +564,8 @@ console.log('\n[J] bed frame — bedDirToWorld maps bed Z to world +Y');
     `got (${rt.x.toFixed(3)},${rt.y.toFixed(3)},${rt.z.toFixed(3)})`);
 }
 
-// ── Test group H: discretization-error surfacing (issue #202) ────────────────
-console.log('\n[H] Discretization error + worst-resolved regions are rendered');
+// ── Test group K: discretization-error surfacing (issue #202) ────────────────
+console.log('\n[K] Discretization error + worst-resolved regions are rendered');
 {
   // These fields are computed on the server and put on the wire but were
   // previously consumed by nothing in the client. Lock in that showResults
@@ -581,6 +581,53 @@ console.log('\n[H] Discretization error + worst-resolved regions are rendered');
   test('H4 worst-region rows show centroid coordinates and per-element error',
     /t\.errorEstimate\s*\*\s*100/.test(html)
     && /U\.lenStr\(t\.x/.test(html));
+}
+
+// ── Test group L: buckling-governed failure-load selection (issue #204) ──────
+console.log('\n[L] selectFailLoad — buckling-limited failure load');
+{
+  const m = html.match(/function selectFailLoad\(estimatedFailForce, safetyFactor, buckling\) \{[\s\S]*?\n\}/);
+  if (!m) throw new Error('Could not extract selectFailLoad');
+  const mod = { exports: {} };
+  new Function('module', 'exports', m[0] + '\nmodule.exports = { selectFailLoad };')(mod, mod.exports);
+  const { selectFailLoad } = mod.exports;
+
+  // No buckling data → first-yield estimate stands.
+  const noBk = selectFailLoad(800, 2.0, null);
+  test('I1 no buckling data → first-yield estimate, yield-governed',
+    noBk.failN === 800 && noBk.governedBy === 'yield');
+
+  // BLF above SF → buckling does not govern (part yields first).
+  const highBlf = selectFailLoad(800, 2.0, { blf: 5.0 });
+  test('I2 BLF > SF → first-yield governs',
+    highBlf.failN === 800 && highBlf.governedBy === 'yield',
+    `got ${JSON.stringify(highBlf)}`);
+
+  // BLF below SF → buckling governs, load scales to estimatedFailForce×BLF/SF.
+  const lowBlf = selectFailLoad(800, 2.0, { blf: 1.2 });
+  test('I3 BLF < SF → buckling governs and load drops to est×BLF/SF',
+    lowBlf.governedBy === 'buckling' && Math.abs(lowBlf.failN - 800 * 1.2 / 2.0) < 1e-9,
+    `got ${JSON.stringify(lowBlf)} (expected ${800 * 1.2 / 2.0})`);
+
+  // Buckling-limited load is strictly below the first-yield estimate.
+  test('I4 buckling-limited load is lower than the first-yield estimate',
+    lowBlf.failN < 800);
+
+  // Non-physical / absent BLF values are ignored.
+  test('I5 null blf ignored', selectFailLoad(800, 2.0, { blf: null }).governedBy === 'yield');
+  test('I6 zero/negative blf ignored',
+    selectFailLoad(800, 2.0, { blf: 0 }).governedBy === 'yield'
+    && selectFailLoad(800, 2.0, { blf: -3 }).governedBy === 'yield');
+  test('I7 null safetyFactor (mesh fallback) → first-yield estimate',
+    selectFailLoad(800, null, { blf: 1.2 }).governedBy === 'yield');
+
+  // The card + verdict text consume the selection and the honesty caveat.
+  test('I8 fail-force card uses the selected (buckling-aware) load',
+    /U\.force\(failSel\.failN\)/.test(html));
+  test('I9 "Will fail at" softened to "Estimated failure load"',
+    /Estimated failure load:/.test(html) && !/> Will fail at /.test(html));
+  test('I10 first-yield caveat present on the fail-force figure',
+    /Linear first-yield estimate/.test(html));
 }
 
 console.log('\n' + '─'.repeat(52));

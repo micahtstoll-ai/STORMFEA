@@ -6238,6 +6238,27 @@ function updateStickyResults(s) {
   bar.style.display = 'flex';
 }
 
+// Fold buckling into the headline failure load (issue #204). estimatedFailForce
+// is a LINEAR first-yield extrapolation (totalAppliedForce × SF): it assumes
+// stress ∝ load and failure exactly at first yield. A compression-governed part
+// can buckle BELOW that. When a positive buckling load factor (BLF) is smaller
+// than the first-yield safety factor, buckling governs and the failure load
+// drops to estimatedFailForce × (BLF / SF) — the same totalAppliedForce scaled
+// by the lower multiplier. Returns which mode governs so the UI can label it.
+// Pure function — unit-tested in scripts/test_client_logic.mjs.
+function selectFailLoad(estimatedFailForce, safetyFactor, buckling) {
+  const blf = (buckling && typeof buckling.blf === 'number'
+    && isFinite(buckling.blf) && buckling.blf > 0) ? buckling.blf : null;
+  if (blf != null && typeof safetyFactor === 'number' && safetyFactor > 0 && blf < safetyFactor) {
+    return { failN: estimatedFailForce * blf / safetyFactor, governedBy: 'buckling', blf };
+  }
+  return { failN: estimatedFailForce, governedBy: 'yield', blf };
+}
+
+// Shared caveat line for the fail-force figure (issue #204) — mirrors the
+// fatigue "order-of-magnitude" honesty treatment.
+const FAIL_FORCE_CAVEAT = 'Linear first-yield estimate — assumes stress ∝ load and failure at first yield. Actual capacity is typically higher for ductile bending, lower if buckling governs.';
+
 function showResults(s) {
   updateStickyResults(s);
   document.getElementById('results-placeholder').style.display = 'none';
@@ -6320,6 +6341,10 @@ function showResults(s) {
     </div>`;
   }
 
+  // Buckling-aware failure load (issue #204): show the lower of the first-yield
+  // estimate and a buckling-limited load when a compressive BLF governs.
+  const failSel = selectFailLoad(s.estimatedFailForce, s.safetyFactor, S.buckling);
+
   let actionHTML = '';
   // Guard govSF comparisons on safetyFactorAvailable: null coerces to 0 in JS,
   // which would falsely trigger "Will fail" when SF data is simply unavailable.
@@ -6329,11 +6354,14 @@ function showResults(s) {
       <div style="font-size:11px;color:var(--text-lo)">Not enough material data to compute a safety factor for this configuration.</div>
     </div>`;
   } else if (govSF < 1.0) {
-    const failN = U.forceStr(s.estimatedFailForce);
-    const modeStr = govMode ? govMode.mode.toLowerCase() : 'bulk yield';
+    const failN = U.forceStr(failSel.failN);
+    const modeStr = failSel.governedBy === 'buckling'
+      ? `buckling (BLF ${failSel.blf.toFixed(2)}× — lower than first yield)`
+      : (govMode ? govMode.mode.toLowerCase() : 'bulk yield');
     actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--text-hi)66;border-radius:6px;margin-bottom:16px">
-      <div style="font-size:13px;font-weight:600;color:var(--text-hi);margin-bottom:6px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Will fail at ${failN}</div>
-      <div style="font-size:11px;color:var(--text-hi);margin-bottom:10px">Governed by ${modeStr}</div>
+      <div style="font-size:13px;font-weight:600;color:var(--text-hi);margin-bottom:6px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Estimated failure load: ${failN}</div>
+      <div style="font-size:11px;color:var(--text-hi);margin-bottom:6px">Governed by ${modeStr}</div>
+      <div style="font-size:10px;color:var(--text-lo);margin-bottom:10px;line-height:1.5">${FAIL_FORCE_CAVEAT}</div>
       ${bestRec ? `<div style="font-size:11px;color:var(--text-mid);border-top:1px solid var(--border);padding-top:8px;margin-top:4px">
         <span style="color:var(--success)">Fix: </span>Print ${bestRec.label} — estimated SF ${bestRec.estimatedSF.toFixed(2)}×, fails at ${U.forceStr(bestRec.estimatedFailN)}
       </div>` : ''}
@@ -6399,8 +6427,11 @@ function showResults(s) {
         <div style="font-size:18px;font-weight:500;color:var(--text-hi)">${s.maxDisplacementMm.toFixed(4)} <span style="font-size:10px;color:var(--text-label)">mm</span></div>
       </div>
       <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
-        <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">ESTIMATED FAIL FORCE</div>
-        <div style="font-size:18px;font-weight:500;color:var(--text-hi)">${U.force(s.estimatedFailForce).toFixed(S.units==='imperial'?1:0)} <span style="font-size:10px;color:var(--text-label)">${U.forceLabel()}</span></div>
+        <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">ESTIMATED FAIL FORCE${failSel.governedBy === 'buckling' ? ' <span style="color:var(--warn)">· buckling-limited</span>' : ''}</div>
+        <div style="font-size:18px;font-weight:500;color:var(--text-hi)" title="${FAIL_FORCE_CAVEAT}">${U.force(failSel.failN).toFixed(S.units==='imperial'?1:0)} <span style="font-size:10px;color:var(--text-label)">${U.forceLabel()}</span></div>
+        <div style="font-size:9px;color:var(--text-lo);margin-top:3px;line-height:1.4">${failSel.governedBy === 'buckling'
+          ? `Buckling governs (BLF ${failSel.blf.toFixed(2)}× &lt; SF ${s.safetyFactor.toFixed(2)}×) — shown below the ${U.forceStr(s.estimatedFailForce, 0)} first-yield estimate.`
+          : 'Linear first-yield estimate (stress ∝ load).'}</div>
       </div>
     </div>
 

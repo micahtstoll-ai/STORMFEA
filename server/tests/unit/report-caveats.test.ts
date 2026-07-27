@@ -151,3 +151,35 @@ describe("report mesh & discretization figure (#202)", () => {
     expect(html).toContain("nodes");
   });
 });
+
+describe("report fail-force honesty + buckling (#204)", () => {
+  it("softens the label and carries the first-yield caveat by default", () => {
+    const html = render();
+    expect(html).toContain("Est. Failure Load");
+    expect(html).not.toContain(">Fail Force<");
+    expect(html).toContain("Linear first-yield estimate");
+    expect(html).toContain("812"); // unchanged first-yield value
+  });
+
+  it("shows the buckling-limited load when a BLF governs (BLF < SF)", () => {
+    const html = render({
+      estimatedFailForce: 812,
+      safetyFactor: 2.44,
+      bucklingResult: { blf: 1.5, verdict: "MARGINAL" } as any,
+    });
+    expect(html).toContain("buckling-limited");
+    expect(html).toContain("Buckling governs");
+    // 812 * 1.5 / 2.44 ≈ 499 N
+    expect(html).toContain("499");
+  });
+
+  it("keeps the first-yield estimate when the BLF does not govern (BLF > SF)", () => {
+    const html = render({
+      estimatedFailForce: 812,
+      safetyFactor: 2.44,
+      bucklingResult: { blf: 5.0, verdict: "PASS" } as any,
+    });
+    expect(html).not.toContain("buckling-limited");
+    expect(html).toContain("812");
+  });
+});
