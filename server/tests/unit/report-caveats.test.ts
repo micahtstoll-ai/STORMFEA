@@ -133,3 +133,21 @@ describe("report reliability caveats (#196)", () => {
     expect(html).toContain("no bead-to-bead");
   });
 });
+
+describe("report mesh & discretization figure (#202)", () => {
+  it("shows node/element counts, element type and the overall discretization error", () => {
+    const html = render({ nodeCount: 41234, elementCount: 28012, nodesPerElem: 10, globalRelativeError: 0.062 });
+    expect(html).toContain("41,234 nodes");
+    expect(html).toContain("28,012 elements");
+    expect(html).toContain("C3D10 quadratic tet");
+    expect(html).toContain("Overall discretization error:");
+    expect(html).toContain("6.2%");
+  });
+
+  it("omits the discretization figure when it was not computed", () => {
+    const html = render({ globalRelativeError: undefined });
+    expect(html).not.toContain("Overall discretization error:");
+    // node/element counts still print
+    expect(html).toContain("nodes");
+  });
+});

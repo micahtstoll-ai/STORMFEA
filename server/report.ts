@@ -35,7 +35,10 @@ export function generateHtmlReport(
     converged, meshFallback, rigidBodyMode,
     sfCriterion, safetyfactorLow, safetyFactorHigh,
     isotropicComparison, materialModel,
+    nodeCount, elementCount, nodesPerElem, globalRelativeError,
   } = result;
+
+  const elementTypeLabel = nodesPerElem === 4 ? "C3D4 linear tet" : "C3D10 quadratic tet";
 
   const criterionLabel =
     sfCriterion === "fdm-interface" ? "FDM dual criterion (bulk von Mises + interlayer interface)"
@@ -277,6 +280,10 @@ export function generateHtmlReport(
       ${isotropicComparison
         ? `<br><b>vs conventional isotropic FEA:</b> ${isotropicComparison.explanation}`
         : ``}
+      <br><b>Mesh:</b> ${nodeCount.toLocaleString()} nodes · ${elementCount.toLocaleString()} elements · ${elementTypeLabel}${
+        globalRelativeError != null
+          ? ` &nbsp;·&nbsp; <b>Overall discretization error:</b> ${(globalRelativeError * 100).toFixed(1)}% (Zienkiewicz–Zhu energy-norm estimate — how much of the stress field is mesh resolution rather than physics; lower is better, refine where it is high).`
+          : `.`}
     </div>
   </div>
 

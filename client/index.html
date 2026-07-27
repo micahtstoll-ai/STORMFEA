@@ -6424,7 +6424,7 @@ function showResults(s) {
       ${s.materialModel && s.materialModel.bond ? `Bond model: interlayer strength <b style="color:${s.materialModel.bond.relStrength < 1 ? 'var(--warn)' : 'var(--text-hi)'}">×${s.materialModel.bond.relStrength.toFixed(2)}</b> · stiffness ×${s.materialModel.bond.relStiffness.toFixed(2)} vs typical settings (interface ${s.materialModel.bond.interfaceTempC.toFixed(0)}°C, substrate ${s.materialModel.bond.substrateTempC.toFixed(0)}°C, τ<sub>cool</sub> ${s.materialModel.bond.coolTimeConstS.toFixed(1)}s)${s.materialModel.bond.clamped ? ' <span style="color:var(--warn)">clamped</span>' : ''} · <span style="color:${s.materialModel.bond.confidence === 'medium' ? 'var(--warn)' : 'var(--danger)'};font-size:10px">${s.materialModel.bond.confidence.toUpperCase()} confidence</span><br>` : ''}
       ${s.materialModel && s.materialModel.wallBond ? `Wall-to-wall bond: allowable <b style="color:var(--text-hi)">${s.materialModel.wallBond.yieldWallMPa.toFixed(2)} MPa</b> tension / ${s.materialModel.wallBond.yieldWallShearMPa.toFixed(2)} MPa shear (×${s.materialModel.wallBond.relStrength.toFixed(2)} vs interlayer baseline, est. perimeter ${s.materialModel.wallBond.perimeterLengthMm.toFixed(0)} mm${s.materialModel.wallBond.perimeterFallback ? ' <span style="color:var(--warn)">fallback</span>' : ''}) · <span style="color:var(--danger);font-size:10px">LOW confidence — no bead-to-bead coupon data</span><br>` : ''}
       ${s.sfCriterion ? `Criterion: <b style="color:var(--text-hi)">${s.sfCriterion === 'fdm-interface' ? 'FDM dual (bulk + interlayer interface)' : s.sfCriterion === 'hill' ? 'Hill 1948 (legacy path)' : 'von Mises'}</b><br>` : ''}
-      Mesh: <b style="color:var(--text-hi)">${s.nodeCount.toLocaleString()} nodes</b> · <b style="color:var(--text-hi)">${s.elementCount.toLocaleString()} elements</b> · C3D10 quadratic tet<br>
+      Mesh: <b style="color:var(--text-hi)">${s.nodeCount.toLocaleString()} nodes</b> · <b style="color:var(--text-hi)">${s.elementCount.toLocaleString()} elements</b> · C3D10 quadratic tet${(S.results && S.results.globalRelativeError != null) ? ` · <span title="Zienkiewicz–Zhu energy-norm error estimate — the share of the stress field that is mesh discretization rather than physics. Lower is better; the worst-resolved regions are listed below. This is an estimate, not a guaranteed bound.">Overall discretization error: <b style="color:${S.results.globalRelativeError > 0.15 ? 'var(--warn)' : 'var(--text-hi)'}">${(S.results.globalRelativeError * 100).toFixed(1)}%</b></span>` : ''}<br>
       Solver: ${s.cgIterations} CG iterations · ${s.solverMs}ms · converged=${s.converged ? 'yes' : '<span style="color:var(--warn)">no</span>'}
       ${s.governingDirection != null ? `<br>Governing direction: <b style="color:var(--text-hi)">${s.governingDirection === 'xy' ? 'XY in-plane' : 'Z inter-layer'}</b> · U<sub>XY</sub>=${(s.peakUtilXY??0).toFixed(3)} · U<sub>Z</sub>=${(s.peakUtilZ??0).toFixed(3)} ${s.governingDirection === 'xy' ? '<span style="color:var(--text-lo);font-size:10px">→ increase infill to resist</span>' : '<span style="color:var(--text-lo);font-size:10px">→ reorient or add perimeters</span>'}` : ''}
     </div>
@@ -6446,6 +6446,31 @@ function showResults(s) {
           ${mqr.poorQualityCount > 0 ? `<b style="color:var(--warn)">${mqr.poorQualityCount}</b> poor · ` : ''}
           ${mqr.degenerateCount > 0 ? `<b style="color:var(--danger)">${mqr.degenerateCount}</b> degenerate` : 'none degenerate'}<br>
           Worst: J<sub>min</sub>=${mqr.worstJacobianMin.toFixed(6)} · AR=${mqr.worstAspectRatio.toFixed(1)}× · dihedral=${mqr.worstMinDihedralDeg.toFixed(1)}°
+        </div>
+      </details>`;
+    })() : ''}
+
+    ${(S.results && S.results.topErrorElements && S.results.topErrorElements.length) ? (() => {
+      // Worst-resolved regions (issue #202): the top elements by ZZ energy-norm
+      // error estimate, with their centroid coordinates. These are the regions
+      // that drive the overall discretization-error figure shown in the mesh
+      // line above — a concrete "refine here" list for the abstract estimate.
+      const tops = S.results.topErrorElements.slice(0, 6);
+      const rows = tops.map((t, i) => `
+        <div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid var(--border);font-size:10px">
+          <span style="color:var(--text-lo)">#${i + 1}</span>
+          <span style="font-family:'DM Mono',monospace;color:var(--text-mid)">(${U.lenStr(t.x, 1)}, ${U.lenStr(t.y, 1)}, ${U.lenStr(t.z, 1)})</span>
+          <span style="color:${t.errorEstimate > 0.15 ? 'var(--warn)' : 'var(--text-lo)'}">${(t.errorEstimate * 100).toFixed(1)}%</span>
+        </div>`).join('');
+      return `
+      <details style="margin-bottom:12px">
+        <summary style="cursor:pointer;font-size:11px;font-weight:600;color:var(--text-mid);padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;user-select:none">
+          ⌖ Worst-resolved regions <span style="color:var(--text-lo);font-weight:400">— highest discretization error; refine here to sharpen the stress field</span>
+        </summary>
+        <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px">
+          <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text-label);letter-spacing:.05em;margin-bottom:3px"><span>RANK</span><span>CENTROID</span><span>ERROR</span></div>
+          ${rows}
+          <div style="font-size:9px;color:var(--text-lo);margin-top:6px;line-height:1.5">Per-element ZZ error estimates, normalized to the global energy norm. These regions dominate the overall discretization error — a mesh refinement here does the most to make the stress field trustworthy.</div>
         </div>
       </details>`;
     })() : ''}

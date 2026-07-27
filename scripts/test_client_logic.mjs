@@ -564,6 +564,25 @@ console.log('\n[J] bed frame — bedDirToWorld maps bed Z to world +Y');
     `got (${rt.x.toFixed(3)},${rt.y.toFixed(3)},${rt.z.toFixed(3)})`);
 }
 
+// ── Test group H: discretization-error surfacing (issue #202) ────────────────
+console.log('\n[H] Discretization error + worst-resolved regions are rendered');
+{
+  // These fields are computed on the server and put on the wire but were
+  // previously consumed by nothing in the client. Lock in that showResults
+  // now references them so the payload no longer ships dead data.
+  test('H1 mesh line renders globalRelativeError from S.results',
+    /S\.results\.globalRelativeError\s*!=\s*null/.test(html)
+    && /Overall discretization error:/.test(html));
+  test('H2 discretization figure is expressed as a percentage',
+    /S\.results\.globalRelativeError\s*\*\s*100/.test(html));
+  test('H3 worst-resolved regions list consumes S.results.topErrorElements',
+    /S\.results\.topErrorElements/.test(html)
+    && /Worst-resolved regions/.test(html));
+  test('H4 worst-region rows show centroid coordinates and per-element error',
+    /t\.errorEstimate\s*\*\s*100/.test(html)
+    && /U\.lenStr\(t\.x/.test(html));
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 if (failed > 0) {
