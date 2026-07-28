@@ -835,9 +835,12 @@ console.log("\n[15] Mesh quality metrics and degenerate element detection");
     invertedQuality.degenerateCount > 0 || invertedQuality.worstJacobianMin < 0.01,
     `jacobian=${invertedQuality.worstJacobianMin.toFixed(6)}`);
 
-  // Solver should throw on >5% degenerate elements
+  // Gate policy (issue #166, corrected): an all-mirror-oriented but WELL-SHAPED
+  // mesh must SOLVE, not throw. The C3D4 assembler auto-orients via Math.abs, so
+  // a negative-Jacobian SIGN predicts no harm. (Previously this test asserted a
+  // throw — that encoded the exact misbehavior #166 fixes. The real accuracy
+  // killers — slivers/tangling — are exercised by validation group 27.)
   const allInvertedMesh = generateBoxMesh(0, 0, 0, 10, 10, 10, 2, 2, 2);
-  // Corrupt all elements to have inverted node order
   for (let e = 0; e < allInvertedMesh.elementCount; e++) {
     const idx = e * 4;
     const tmp = allInvertedMesh.elements[idx + 1];
@@ -856,8 +859,12 @@ console.log("\n[15] Mesh quality metrics and degenerate element detection");
     if (z > 9.99) top.push(n);
   }
 
+  const invQ = computeMeshQuality(allInvertedMesh);
+  test("[15.6a] all-mirror mesh: negative raw Jacobian but ZERO degenerate (well-shaped)",
+    invQ.worstJacobianMin < 0 && invQ.degenerateCount === 0,
+    `worstJ=${invQ.worstJacobianMin.toFixed(3)}, deg=${invQ.degenerateCount}`);
+
   let solverThrew = false;
-  let errorMsg = "";
   try {
     await runLinearStatic({
       mesh: allInvertedMesh,
@@ -865,13 +872,11 @@ console.log("\n[15] Mesh quality metrics and degenerate element detection");
       constraints: [{ nodeIndices: bottom }],
       forces: top.map(n => ({ nodeIndex: n, forceN: [0, 0, 1] })),
     });
-  } catch (e) {
+  } catch {
     solverThrew = true;
-    errorMsg = (e as Error).message || String(e);
   }
-
-  test("[15.6] Solver throws on >5% degenerate elements", solverThrew && errorMsg.includes("Mesh quality"),
-    `threw=${solverThrew}, msg='${errorMsg.slice(0, 50)}'`);
+  test("[15.6b] mirror-oriented well-shaped mesh SOLVES (gate does not block sign alone)",
+    !solverThrew);
 }
 
 // ── Test group 16: Linear buckling — Euler column (clamped-free) ─────────────
@@ -1686,6 +1691,87 @@ console.log("\n[26] Numerical homogenization — perforated-plate cell vs isolat
     test("[26.3] dilute drop/void-fraction ≈ isolated-hole theory", false);
     test("[26.4] power-law fit residual small", false);
   }
+}
+
+// ── Test group 27: mesh-quality gating re-keyed on damage (issues #165/#166) ──
+console.log("\n[27] Mesh-quality gate — slivers blocked, mirror-oriented meshes pass");
+{
+  const { runLinearStatic } = await import("../solver/pipeline.js");
+  const { computeMeshQuality } = await import("../solver/meshQuality.js");
+
+  // (a) A well-shaped box with EVERY element mirror-oriented (negative raw
+  //     Jacobian) must NOT be blocked — the C3D4 assembler auto-orients it.
+  const good = generateBoxMesh(0, 0, 0, 10, 10, 10, 3, 3, 3);
+  const mirrored: typeof good = {
+    ...good,
+    elements: good.elements.slice(),
+  };
+  for (let e = 0; e < mirrored.elementCount; e++) {
+    const b = e * 4;
+    const t = mirrored.elements[b + 1]!;      // swap nodes 1,2 → flip orientation
+    mirrored.elements[b + 1] = mirrored.elements[b + 2]!;
+    mirrored.elements[b + 2] = t;
+  }
+  const mq = computeMeshQuality(mirrored);
+  test("[27.1] mirror-oriented mesh has negative raw Jacobian (all flipped)",
+    mq.worstJacobianMin < 0, `worstJ=${mq.worstJacobianMin.toFixed(3)}`);
+  test("[27.2] mirror-oriented but well-shaped mesh is NOT degenerate",
+    mq.degenerateCount === 0, `deg=${mq.degenerateCount}`);
+  let mirrorSolved = false;
+  try {
+    await runLinearStatic({
+      mesh: mirrored, material: { E: 3500, nu: 0.36, yieldStrength: 50, label: "pla" },
+      constraints: [{ nodeIndices: (() => { const f:number[]=[]; for (let n=0;n<mirrored.nodeCount;n++) if ((mirrored.nodes[n*3]??0)<0.01) f.push(n); return f; })() }],
+      forces: (() => { const t:{nodeIndex:number;forceN:[number,number,number]}[]=[]; for (let n=0;n<mirrored.nodeCount;n++) if ((mirrored.nodes[n*3]??0)>9.99) t.push({nodeIndex:n,forceN:[0,0,-1]}); return t; })(),
+    });
+    mirrorSolved = true;
+  } catch (err) {
+    console.error(`    mirror solve threw: ${err}`);
+  }
+  test("[27.3] mirror-oriented mesh solves (gate does not block it)", mirrorSolved);
+
+  // (b) Inject a handful (<5%) of extreme slivers into an otherwise good mesh:
+  //     the gate must BLOCK, not warn-past. Collapse a few elements to slivers
+  //     by moving one of their corner nodes almost onto the opposite face.
+  const slivered: typeof good = {
+    ...good,
+    nodes: good.nodes.slice(),
+    elements: good.elements.slice(),
+  };
+  // Pick 3 elements (<5% of the mesh) and squash one node of each toward a
+  // neighbour, driving the volume → 0 (a sliver).
+  const nElems = slivered.elementCount;
+  const squashCount = 3;
+  test("[27.4] injected slivers are < 5% of elements", squashCount / nElems < 0.05,
+    `${squashCount}/${nElems}=${(squashCount/nElems*100).toFixed(1)}%`);
+  for (let k = 0; k < squashCount; k++) {
+    const e = k;
+    const b = e * 4;
+    const n0 = slivered.elements[b]!, n1 = slivered.elements[b + 1]!;
+    // Move n0 to sit ~1e-4 away from n1 → near-zero-volume sliver.
+    for (let d = 0; d < 3; d++) {
+      slivered.nodes[n0 * 3 + d] = (slivered.nodes[n1 * 3 + d] ?? 0) + (d === 0 ? 1e-4 : 0);
+    }
+  }
+  const sq = computeMeshQuality(slivered);
+  test("[27.5] injected slivers classified degenerate (scale-invariant sliver metric)",
+    sq.degenerateCount >= 1, `deg=${sq.degenerateCount}`);
+  let sliverBlocked = false;
+  let sliverMsg = "";
+  try {
+    await runLinearStatic({
+      mesh: slivered, material: { E: 3500, nu: 0.36, yieldStrength: 50, label: "pla" },
+      constraints: [{ nodeIndices: [0, 1, 2, 3] }],
+      forces: [{ nodeIndex: slivered.nodeCount - 1, forceN: [0, 0, -1] }],
+    });
+  } catch (err) {
+    sliverBlocked = true;
+    sliverMsg = String(err);
+  }
+  test("[27.6] a mesh with <5% extreme slivers is BLOCKED, not warned past", sliverBlocked);
+  test("[27.7] block message names a located worst element (client can highlight)",
+    /Worst element #\d+/.test(sliverMsg) && /mm/.test(sliverMsg), sliverMsg.slice(0, 120));
+  console.log(`    mirror mesh solved=${mirrorSolved}; sliver mesh blocked=${sliverBlocked}`);
 }
 
 // ── Summary ───────────────────────────────────────────────────────────────────

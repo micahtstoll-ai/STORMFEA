@@ -152,25 +152,60 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
 
   _snap("before mesh quality check");
 
-  // Compute mesh quality metrics before assembly
+  // Compute mesh quality metrics before assembly.
+  //
+  // Gating policy (issues #165/#162/#166): the hard gate keys on the elements
+  // that actually damage the solve — near-zero-volume SLIVERS (B ∝ 1/6V blows
+  // up local stiffness and conditioning), extreme aspect ratios, and (C3D10)
+  // TANGLED elements whose midside placement folds the isoparametric map (which
+  // Math.abs(detJ) would otherwise integrate as wrong-but-positive-definite).
+  // It deliberately does NOT key on a raw Jacobian SIGN: the C3D4 assembler
+  // auto-orients a mirror element via Math.abs(sixV), so sign alone predicts no
+  // harm. All shape metrics are scale-invariant, so classification is identical
+  // for a part exported in metres vs millimetres.
   const meshQualityReport = computeMeshQuality(mesh);
-  const degeneratePercent = (meshQualityReport.degenerateCount / mesh.elementCount) * 100;
   const poorQualityPercent = (meshQualityReport.poorQualityCount / mesh.elementCount) * 100;
 
-  if (degeneratePercent > 5) {
+  // Any hard-failing element blocks the solve with an actionable, located
+  // message (percentage tiers are reserved for the soft-warning tier below —
+  // even a single sliver makes its local stress field meaningless, so it is not
+  // "warned past"). The worst element is named with its centroid so the client
+  // can highlight it.
+  if (meshQualityReport.degenerateCount > 0) {
+    const w = meshQualityReport.worstElement;
+    let loc = "";
+    if (w) {
+      const base = w.elementIdx * mesh.nodesPerElem;
+      let cx = 0, cy = 0, cz = 0;
+      for (let c = 0; c < 4; c++) {
+        const nd = mesh.elements[base + c] ?? 0;
+        cx += mesh.nodes[nd*3] ?? 0; cy += mesh.nodes[nd*3+1] ?? 0; cz += mesh.nodes[nd*3+2] ?? 0;
+      }
+      const kind = (w.minGaussDetJ <= 0 || w.midsideMaxDev > 0.25) ? "tangled (folded midside)"
+                 : w.aspectRatio > 50 ? "extreme aspect ratio"
+                 : "near-zero-volume sliver";
+      loc = ` Worst element #${w.elementIdx} (${kind}) near ` +
+            `(${(cx/4).toFixed(2)}, ${(cy/4).toFixed(2)}, ${(cz/4).toFixed(2)}) mm ` +
+            `[scaledJ=${w.scaledJacobian.toFixed(4)}, AR=${w.aspectRatio.toFixed(1)}` +
+            `${mesh.nodesPerElem === 10 ? `, minGaussDetJ=${w.minGaussDetJ.toExponential(2)}` : ""}].`;
+    }
+    const tangledNote = meshQualityReport.tangledCount > 0
+      ? ` ${meshQualityReport.tangledCount} of them are TANGLED C3D10 elements (folded quadratic map).`
+      : "";
     throw new Error(
-      `Mesh quality error: ${meshQualityReport.degenerateCount} elements (${degeneratePercent.toFixed(1)}%) ` +
-      `are degenerate (inverted or zero-volume). ` +
-      `Worst Jacobian: ${meshQualityReport.worstJacobianMin.toFixed(6)}. ` +
-      `Please re-mesh with higher quality settings or verify element connectivity.`
+      `Mesh quality error: ${meshQualityReport.degenerateCount} element(s) are degenerate — ` +
+      `near-zero-volume slivers, extreme aspect ratios, or tangled elements that corrupt ` +
+      `local stress and conditioning.${tangledNote}${loc} ` +
+      `Re-mesh with higher quality settings (smaller size near thin features / fillets) ` +
+      `or verify element connectivity.`
     );
   }
 
   if (poorQualityPercent > 1) {
     console.warn(
       `[Mesh quality] ${meshQualityReport.poorQualityCount} elements (${poorQualityPercent.toFixed(1)}%) ` +
-      `have poor quality. Stress recovery may be less accurate. ` +
-      `Worst J_min: ${meshQualityReport.worstJacobianMin.toFixed(6)}, ` +
+      `have poor (but usable) shape. Stress recovery may be less accurate. ` +
+      `Worst scaledJ: ${meshQualityReport.worstScaledJacobian.toFixed(4)}, ` +
       `worst AR: ${meshQualityReport.worstAspectRatio.toFixed(1)}, ` +
       `worst dihedral: ${meshQualityReport.worstMinDihedralDeg.toFixed(1)}°.`
     );

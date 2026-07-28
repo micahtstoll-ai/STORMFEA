@@ -418,9 +418,18 @@ export type ElementQualitySeverity = "degenerate" | "poor" | "normal";
  */
 export interface ElementQualityMetrics {
   readonly elementIdx:       number;
-  readonly jacobianMin:      number;        // minimum determinant (J_min)
-  readonly aspectRatio:      number;        // longest edge / shortest altitude
-  readonly minDihedralDeg:   number;        // minimum dihedral angle in degrees
+  readonly jacobianMin:      number;        // raw signed triple product (6×signed volume, mm³) — dimensional, sign-carrying
+  /** Scale-INVARIANT normalized Jacobian: signed detJ / edgeRMS³ (issue #165).
+   *  Regular tet ≈ 0.707; → 0 for a sliver; < 0 for an inverted C3D4 element. */
+  readonly scaledJacobian:   number;
+  readonly aspectRatio:      number;        // longest edge / shortest altitude (dimensionless)
+  readonly minDihedralDeg:   number;        // minimum true dihedral angle, degrees, range [0,180]
+  /** C3D10: signed min detJ over the 4 Gauss points (≤0 ⇒ tangled/folded map);
+   *  C3D4: equals jacobianMin (constant Jacobian). Issue #162. */
+  readonly minGaussDetJ:     number;
+  /** C3D10: max mid-edge-node displacement from the true edge midpoint,
+   *  relative to that edge's length (cheap curved-element screen). 0 for C3D4. */
+  readonly midsideMaxDev:    number;
   readonly severity:         ElementQualitySeverity;
 }
 
@@ -430,12 +439,20 @@ export interface ElementQualityMetrics {
  */
 export interface MeshQualityReport {
   readonly totalElements:           number;
-  readonly degenerateCount:         number;   // J_min < 0 (inverted)
-  readonly poorQualityCount:        number;   // J_min < 0.01 or AR > 20 or dihedral < 5°
+  /** Hard-failing elements: near-zero-volume slivers, extreme aspect ratios, or
+   *  (C3D10) tangled elements — the accuracy killers (issues #165/#162/#166).
+   *  NOTE: a merely mirror-oriented (negative raw J) but well-shaped C3D4
+   *  element is NOT counted here — the assembler auto-orients it. */
+  readonly degenerateCount:         number;
+  readonly poorQualityCount:        number;   // scaledJacobian < 0.1, AR > 20, or dihedral < 5°
   readonly normalCount:             number;
   readonly qualityScore:            number;   // [0, 1] where 1 = all elements perfect
-  readonly worstJacobianMin:        number;
+  readonly worstJacobianMin:        number;   // raw signed (mm³) — kept for display/back-compat
+  /** Scale-invariant worst normalized Jacobian (min |scaledJacobian| carrier). */
+  readonly worstScaledJacobian:     number;
   readonly worstAspectRatio:        number;
   readonly worstMinDihedralDeg:     number;
+  /** C3D10 tangled-element count (min Gauss detJ ≤ 0); 0 for C3D4 meshes. */
+  readonly tangledCount:            number;
   readonly worstElement:            ElementQualityMetrics | null;
 }
