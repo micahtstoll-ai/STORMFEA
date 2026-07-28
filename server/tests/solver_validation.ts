@@ -1688,6 +1688,56 @@ console.log("\n[26] Numerical homogenization — perforated-plate cell vs isolat
   }
 }
 
+// ── Test group 27: C3D10 node-order self-check + quadrature limit (#167/#163) ─
+console.log("\n[27] C3D10 midside self-check + affine-exact / curved-under-integrated quadrature");
+{
+  const { analyzeC3D10MidsideOrdering, verifyC3D10MidsideOrdering, C3D10_MIDSIDE_EDGES } =
+    await import("../c3d10_ordering.js");
+  const { c3d10ElementStiffness, C3D10_GAUSS, C3D10_GAUSS_HIGH_ORDER, buildConstitutiveMatrix } =
+    await import("../solver/element.js");
+
+  // Correctly-ordered straight element (STORMFEA convention) → accepted.
+  const corners = [[2,0,0],[0,2,0],[0,0,2],[0,0,0]] as const;
+  const coords: number[] = [];
+  for (const c of corners) coords.push(c[0], c[1], c[2]);
+  for (const [a, b] of C3D10_MIDSIDE_EDGES)
+    coords.push((corners[a]![0]+corners[b]![0])/2, (corners[a]![1]+corners[b]![1])/2, (corners[a]![2]+corners[b]![2])/2);
+  const nodes = Float64Array.from(coords);
+  const elems = Int32Array.from([0,1,2,3,4,5,6,7,8,9]);
+  const good = analyzeC3D10MidsideOrdering(nodes, elems, 1);
+  test("[27.1] correct midside ordering accepted (affine witness)", good.ok && good.affineWitnesses === 1,
+    `ok=${good.ok} witnesses=${good.affineWitnesses}`);
+
+  // Scrambled ordering (rotate the 6 midside slots) → rejected loudly.
+  const scrambled = Int32Array.from(elems);
+  const mids = [4,5,6,7,8,9].map(k => elems[k]!);
+  for (let k = 0; k < 6; k++) scrambled[4 + k] = mids[(k + 1) % 6]!;
+  const bad = analyzeC3D10MidsideOrdering(nodes, scrambled, 1);
+  let threw = false;
+  try { verifyC3D10MidsideOrdering(nodes, scrambled, 1, 10, "test-mesher"); } catch { threw = true; }
+  test("[27.2] scrambled midside ordering rejected (no witnesses, throws)",
+    !bad.ok && bad.affineWitnesses === 0 && threw, `ok=${bad.ok} threw=${threw}`);
+
+  // Quadrature: 4-pt EXACT for affine, under-integrates curved.
+  const C = buildConstitutiveMatrix({ E: 3500, nu: 0.36, yieldStrength: 50, label: "pla" });
+  const relFro = (a: Float64Array, b: Float64Array) => {
+    let d = 0, n = 0; for (let i = 0; i < a.length; i++) { const e = a[i]!-b[i]!; d += e*e; n += b[i]!*b[i]!; }
+    return Math.sqrt(d) / Math.sqrt(n);
+  };
+  const k4a = c3d10ElementStiffness(nodes, C, C3D10_GAUSS);
+  const kHa = c3d10ElementStiffness(nodes, C, C3D10_GAUSS_HIGH_ORDER);
+  const affErr = relFro(k4a, kHa);
+  test("[27.3] affine C3D10: 4-pt == high-order (rule exact → validated results unaffected)",
+    affErr < 1e-12, `relErr=${affErr.toExponential(2)}`);
+
+  const curved = Float64Array.from(nodes);
+  curved[4*3] = (curved[4*3] ?? 0) + 0.4; curved[5*3+1] = (curved[5*3+1] ?? 0) + 0.4; curved[6*3+2] = (curved[6*3+2] ?? 0) + 0.4;
+  const curvedErr = relFro(c3d10ElementStiffness(curved, C, C3D10_GAUSS), c3d10ElementStiffness(curved, C, C3D10_GAUSS_HIGH_ORDER));
+  test("[27.4] curved C3D10: 4-pt under-integrates (measurable vs high-order)",
+    curvedErr > 0.005 && curvedErr < 0.1, `relErr=${(curvedErr*100).toFixed(2)}%`);
+  console.log(`    quadrature: affine relErr=${affErr.toExponential(1)} (exact); curved (~20% midside offset) relErr=${(curvedErr*100).toFixed(2)}%`);
+}
+
 // ── Summary ───────────────────────────────────────────────────────────────────
 // Runs at the END of the async IIFE, after every test group above has
 // completed. (A previous setTimeout(0) variant fired as soon as the event

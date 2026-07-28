@@ -632,10 +632,35 @@ export function elementGeometricStiffness(
  *
  * Exported so stress recovery (stress.ts) uses the identical point set —
  * do not duplicate these constants elsewhere.
+ *
+ * ┌── INTEGRATION-ORDER LIMITATION (issue #163) ─────────────────────────────┐
+ * │ This degree-2 rule integrates the C3D10 STIFFNESS integrand BᵀCB·detJ    │
+ * │ EXACTLY only for AFFINE (straight-edged, midside-at-midpoint) elements:  │
+ * │ there the Jacobian is constant, B is linear in the reference coords, and │
+ * │ BᵀCB is degree-2. TetGen output is entirely affine, and STORMFEA's own   │
+ * │ box/coupon meshers place midsides at exact midpoints — so every VALIDATED│
+ * │ result (including the Kirsch hole benchmark, group [24], whose curved     │
+ * │ boundary is approximated with straight-edged C3D10) is exact under this   │
+ * │ rule and is bit-identical to a higher-order rule.                        │
+ * │                                                                          │
+ * │ For a genuinely CURVED isoparametric element (Gmsh second-order output   │
+ * │ on a curved STEP face: fillets, cylindrical holes) detJ and J⁻¹ vary, so │
+ * │ the integrand is no longer degree ≤2 and the 4-point rule UNDER-         │
+ * │ integrates — softening the element and adding a silent, mesh-dependent   │
+ * │ error on exactly the boundary-layer elements where stress governs.       │
+ * │                                                                          │
+ * │ A higher-order opt-in rule (C3D10_GAUSS_HIGH_ORDER) is provided; pass it │
+ * │ to c3d10ElementStiffness to integrate curved elements more accurately.   │
+ * │ The DEFAULT stays the 4-point rule so all validated (affine) results are │
+ * │ unchanged bit-for-bit. See the measured curved-element error in          │
+ * │ tests/unit/c3d10-quadrature.test.ts and PR #(issue 163).                 │
+ * └──────────────────────────────────────────────────────────────────────────┘
  */
 const TET4_GP_A = (5 - Math.sqrt(5)) / 20;
 const TET4_GP_B = (5 + 3 * Math.sqrt(5)) / 20;
 const TET4_GP_W = 1 / 24;
+
+export interface TetGaussPoint { readonly xi: number; readonly eta: number; readonly zeta: number; readonly w: number; }
 
 export const C3D10_GAUSS = [
   { xi: TET4_GP_A, eta: TET4_GP_A, zeta: TET4_GP_A, w: TET4_GP_W },
@@ -643,6 +668,37 @@ export const C3D10_GAUSS = [
   { xi: TET4_GP_A, eta: TET4_GP_B, zeta: TET4_GP_A, w: TET4_GP_W },
   { xi: TET4_GP_A, eta: TET4_GP_A, zeta: TET4_GP_B, w: TET4_GP_W },
 ] as const;
+
+/**
+ * Higher-order (opt-in) tetrahedron quadrature for CURVED C3D10 elements
+ * (issue #163) — 64 points via a 4×4×4 Gauss–Legendre rule mapped onto the
+ * reference tet by the Duffy (collapsed-hex) transform:
+ *   ξ = a,  η = b(1−a),  ζ = c(1−a)(1−b),   |∂(ξ,η,ζ)/∂(a,b,c)| = (1−a)²(1−b)
+ * Each 1D 4-point rule is degree-7 exact, so this integrates the affine
+ * stiffness integrand exactly (matching C3D10_GAUSS to round-off — the
+ * regression anchor) and integrates curved elements with far smaller error.
+ * Σ weights = ∫(1−a)²(1−b) = 1/6 = reference-tet volume.
+ *
+ * Not wired into the default assembly path: it is a strictly opt-in argument to
+ * c3d10ElementStiffness, so the validated affine results remain bit-identical.
+ */
+const GL4_NODES_01   = [0.0694318442029737, 0.3300094782075719, 0.6699905217924281, 0.9305681557970263];
+const GL4_WEIGHTS_01 = [0.1739274225687269, 0.3260725774312730, 0.3260725774312730, 0.1739274225687269];
+
+export const C3D10_GAUSS_HIGH_ORDER: readonly TetGaussPoint[] = (() => {
+  const pts: TetGaussPoint[] = [];
+  for (let ia = 0; ia < 4; ia++) for (let ib = 0; ib < 4; ib++) for (let ic = 0; ic < 4; ic++) {
+    const a = GL4_NODES_01[ia]!, b = GL4_NODES_01[ib]!, c = GL4_NODES_01[ic]!;
+    const w = GL4_WEIGHTS_01[ia]! * GL4_WEIGHTS_01[ib]! * GL4_WEIGHTS_01[ic]!;
+    pts.push({
+      xi:   a,
+      eta:  b * (1 - a),
+      zeta: c * (1 - a) * (1 - b),
+      w:    w * (1 - a) * (1 - a) * (1 - b),
+    });
+  }
+  return pts;
+})();
 
 /**
  * Evaluate C3D10 shape functions at point (xi, eta, zeta).
@@ -756,18 +812,23 @@ export function buildB_c3d10(
 
 /**
  * Compute the 30×30 element stiffness matrix for C3D10.
- * Uses 4-point Gauss quadrature.
- *
  * Ke = ∫ Bᵀ C B dV ≈ Σ_g (Bᵀ C B × detJ × w_g)
+ *
+ * Quadrature: defaults to the 4-point rule (C3D10_GAUSS), which is EXACT for
+ * affine elements (see the limitation note at C3D10_GAUSS). Pass
+ * C3D10_GAUSS_HIGH_ORDER (or any TetGaussPoint[]) to integrate genuinely curved
+ * isoparametric elements more accurately (issue #163); the default is unchanged
+ * so validated affine results stay bit-identical.
  */
 export function c3d10ElementStiffness(
   nodes: Float64Array,  // 10×3 node coordinates
   C:     Float64Array,  // 6×6 constitutive matrix
+  gauss: readonly TetGaussPoint[] = C3D10_GAUSS,
 ): Float64Array {
   const Ke = new Float64Array(30*30);
   const CB = new Float64Array(6 * 30);
 
-  for (const gp of C3D10_GAUSS) {
+  for (const gp of gauss) {
     const { B, detJ } = buildB_c3d10(nodes, gp.xi, gp.eta, gp.zeta);
     const vol = Math.abs(detJ) * gp.w;
 

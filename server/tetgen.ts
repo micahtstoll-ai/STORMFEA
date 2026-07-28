@@ -41,6 +41,7 @@ import { tmpdir }                             from "os";
 import * as path                              from "path";
 import { fileURLToPath as ftu }               from "url";
 import type { TetMesh }                       from "./solver/types.js";
+import { verifyC3D10MidsideOrdering }         from "./c3d10_ordering.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -322,6 +323,13 @@ export async function meshWithTetGen(
 
   const nodeCount    = nodes.length / 3;
   const elementCount = elements.length / nodesPerElem;
+
+  // ── 3b. Runtime C3D10 midside-ordering self-check (issue #167) ─────────────
+  // C3D10_REORDER is pinned by a unit test, but only against CI's TetGen build.
+  // A locally-installed TetGen with a different midnode emission order would
+  // silently corrupt every element. Verify the remapped connectivity actually
+  // places midsides at their corner-pair midpoints before trusting it.
+  verifyC3D10MidsideOrdering(nodes, elements, elementCount, nodesPerElem, "TetGen (-o2, after C3D10_REORDER)");
 
   // ── 4. Build surface→node map ──────────────────────────────────────────────
   // TetGen always outputs input vertices as the first N nodes in the same order,

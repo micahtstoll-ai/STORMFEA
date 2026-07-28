@@ -25,6 +25,7 @@ import { tmpdir }                from "os";
 import * as path                 from "path";
 import { fileURLToPath as ftu }  from "url";
 import type { TetMesh }          from "./solver/types.js";
+import { verifyC3D10MidsideOrdering } from "./c3d10_ordering.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -452,6 +453,13 @@ export async function meshStepWithGmsh(
   if (!parsed.surfaceTris) {
     throw new Error("Gmsh mesh has no surface triangles — cannot build geometry from this STEP file.");
   }
+
+  // Runtime C3D10 midside-ordering self-check (issue #167). The type-11 read
+  // assumes "Gmsh ordering matches our element.ts" with no test/check; a Gmsh
+  // version whose ordering differs would silently corrupt every STEP analysis.
+  // Interior elements stay affine even on curved STEP boundaries, so they serve
+  // as witnesses without false-rejecting genuinely-curved boundary elements.
+  verifyC3D10MidsideOrdering(parsed.nodes, parsed.elements, parsed.elementCount, parsed.nodesPerElem, "Gmsh (.msh type-11)");
 
   console.log(`[gmsh] mesh: ${parsed.nodeCount} nodes, ${parsed.elementCount} elements (${parsed.nodesPerElem}-node tets)`);
 
