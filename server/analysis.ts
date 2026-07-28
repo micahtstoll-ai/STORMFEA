@@ -81,7 +81,7 @@ import {
 } from "./solver/stress.js";
 import { flagMergedHoleWarnings }           from "./holes.js";
 import type { HoleFeature }                 from "./holes.js";
-import { meshWithTetGen, TetGenNotFoundError } from "./tetgen.js";
+import { meshWithTetGen, TetGenNotFoundError, targetElementVolume } from "./tetgen.js";
 import { meshStepWithGmsh }                 from "./gmsh_mesh.js";
 
 // ─── Standard bolt database ───────────────────────────────────────────────────
@@ -3337,16 +3337,24 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       _snapAnalysis("before TetGen mesh");
       const tetOrder = (req.analysis.meshOrder ?? 2) as 1 | 2;
       // Map the coarse/standard/fine selector to TetGen's max-volume (-a) switch
-      // so the control actually affects STL mesh density. 'standard' keeps the
-      // historical 10 mm³. (Previously the selector only affected the STEP path.)
-      const tetMaxVol = req.analysis.meshQuality === "fine" ? 3
-                      : req.analysis.meshQuality === "coarse" ? 30
-                      : 10;
-      console.log(`[analysis] meshing with TetGen (order=${tetOrder}, maxVol=${tetMaxVol}mm³, quality=${req.analysis.meshQuality})...`);
+      // so the control actually affects STL mesh density. The volume is now
+      // derived from the model's own bounding box (issue #168) rather than a
+      // hard-coded mm³, so a non-mm STL meshes at a comparable ELEMENT COUNT
+      // instead of silently over/under-resolving. For the canonical ~50 mm part
+      // 'standard' still lands at ≈10 mm³ (the historical value).
+      const tetQuality = (req.analysis.meshQuality === "fine" || req.analysis.meshQuality === "coarse")
+        ? req.analysis.meshQuality : "standard";
+      const { minX, maxX, minY, maxY, minZ, maxZ } = req.bounds;
+      const tetMaxVol = targetElementVolume(maxX - minX, maxY - minY, maxZ - minZ, tetQuality);
+      console.log(`[analysis] meshing with TetGen (order=${tetOrder}, maxVol=${tetMaxVol.toPrecision(4)} units³, quality=${req.analysis.meshQuality})...`);
       const tetResult = await meshWithTetGen(req.positions, req.triangleCount, tetOrder, tetMaxVol);
       mesh          = tetResult.mesh;
       surfaceToNode = tetResult.surfaceToNode;
       surfaceFaces  = tetResult.surfaceFaces;
+      if (tetResult.unitWarning) {
+        console.warn(`[analysis] ${tetResult.unitWarning}`);
+        emit({ phase: "mesh", message: tetResult.unitWarning });
+      }
       console.log(`[analysis] TetGen mesh: ${mesh.nodeCount} nodes, ${mesh.elementCount} elements (${mesh.nodesPerElem}-node)`);
       _snapAnalysis("after TetGen mesh");
     } catch (err) {

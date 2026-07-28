@@ -54,11 +54,99 @@ interface WeldResult {
   slotToWeld: Int32Array;
 }
 
-function weldVertices(stlPositions: Float32Array, triangleCount: number): WeldResult {
-  // Weld tolerance: 1e6 = 1 micron. Previously 1e4 (0.1mm) which was too coarse
-  // — circle vertices from the quad-ring generator differ at the 4th decimal place,
-  // causing adjacent triangles to have unmatched vertices → open edges → TetGen rejection.
-  const PREC = 1e6;
+// ─── Scale-relative constants (issue #168) ────────────────────────────────────
+// STL files carry no units. The two constants below used to be hard-coded in
+// millimetres (weld at a fixed 1e-6 unit; default element volume 10 mm³), so a
+// metre- or inch-scale export silently meshed at the wrong effective resolution.
+// Both are now derived from the model's own bounding box, which makes them
+// unit-independent: scale the same geometry ×k and every threshold scales ×k
+// (weld tolerance) or ×k³ (element volume), so the resulting mesh topology and
+// element count are identical.
+
+/**
+ * Vertex-weld tolerance as a fraction of the model's bounding-box diagonal.
+ * float32 STL coordinates carry ~7 significant digits, so two vertices that are
+ * "the same point" differ by at most ~1e-6 · (coordinate magnitude) ≈ 1e-6 · diag.
+ * Welding at 1e-6 · diag therefore merges exactly the float32-coincident
+ * duplicates (the whole point of welding) and nothing that is a real feature —
+ * on any model, in any unit. On a canonical ~100 mm part this is 1e-4 mm, i.e.
+ * the same sub-micron scale the old absolute constant targeted for mm parts.
+ */
+const WELD_REL = 1e-6;
+/** Absolute floor so a degenerate/zero-extent input never yields a 0 tolerance. */
+const WELD_FLOOR = 1e-12;
+
+/** Bounding box of an STL position buffer (first triangleCount·3 vertices). */
+function bboxOfPositions(stlPositions: Float32Array, triangleCount: number): {
+  spanX: number; spanY: number; spanZ: number; diag: number;
+} {
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let slot = 0; slot < triangleCount * 3; slot++) {
+    const x = stlPositions[slot * 3]     ?? 0;
+    const y = stlPositions[slot * 3 + 1] ?? 0;
+    const z = stlPositions[slot * 3 + 2] ?? 0;
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+  }
+  if (!Number.isFinite(minX)) { minX = maxX = minY = maxY = minZ = maxZ = 0; }
+  const spanX = maxX - minX, spanY = maxY - minY, spanZ = maxZ - minZ;
+  return { spanX, spanY, spanZ, diag: Math.hypot(spanX, spanY, spanZ) };
+}
+
+/**
+ * Scale-relative default max tet volume for TetGen's `-a` switch (issue #168).
+ *
+ * The historical default was a fixed 10 mm³ — correct only for ~50 mm mm-scale
+ * parts and silently wrong at any other size/unit. Instead we target a
+ * characteristic element edge of diag / DIV, matching the SAME divisions the
+ * box-mesh fallback uses (coarse 12, standard 22, fine 32), and convert to a
+ * tet volume via the regular-tet-ish V ≈ h³/6. This reproduces the old default
+ * for the canonical geometry — a 50 mm cube has diag ≈ 86.6 mm, so the
+ * "standard" edge is 86.6/22 ≈ 3.94 mm → V ≈ 10.2 mm³ ≈ the old 10 — while
+ * scaling as ×k³ under a ×k geometry scaling, which keeps the element COUNT
+ * unit-independent for the same shape (the #168 acceptance criterion).
+ */
+export function targetElementVolume(
+  spanX: number, spanY: number, spanZ: number,
+  quality: "coarse" | "standard" | "fine" = "standard",
+): number {
+  const diag = Math.hypot(spanX, spanY, spanZ);
+  const DIV = { coarse: 12, standard: 22, fine: 32 } as const;
+  const h = diag / DIV[quality];
+  return Math.max((h * h * h) / 6, 1e-9);
+}
+
+/**
+ * Plausibility of the model scale under STORMFEA's mm assumption. Everything
+ * downstream (bolt diameters, singularity radii, wall thicknesses) is in mm, so
+ * a part whose bounding-box diagonal lands far outside a sane mm range is very
+ * likely a unit-mismatched export (metres, inches). Returns a human-readable
+ * warning to surface, or null when the scale looks like millimetres.
+ */
+export function unitScaleWarning(diag: number): string | null {
+  if (!(diag > 0)) return null;
+  if (diag < 1) {
+    return `Model is only ${diag.toPrecision(3)} units across — STORMFEA assumes millimetres. ` +
+      `If this part is really ${(diag).toPrecision(3)} m, re-export in millimetres (×1000) or scale it up.`;
+  }
+  if (diag > 2000) {
+    return `Model is ${diag.toPrecision(4)} units across — STORMFEA assumes millimetres. ` +
+      `If this was exported in a smaller unit (e.g. inches ×25.4), verify the scale before trusting results.`;
+  }
+  return null;
+}
+
+export function weldVertices(stlPositions: Float32Array, triangleCount: number): WeldResult {
+  // Weld tolerance is now scale-relative (issue #168): cell = WELD_REL · diag,
+  // so coincident vertices weld regardless of the file's units. Integer
+  // quantization keys stay in a ~±1e6 range by construction (coords ≤ diag and
+  // invCell = 1/(1e-6·diag)), which is exactly the range the hash offsets below
+  // were sized for — another reason to derive the cell from the diagonal.
+  const { diag } = bboxOfPositions(stlPositions, triangleCount);
+  const cell   = Math.max(diag * WELD_REL, WELD_FLOOR);
+  const invCell = 1 / cell;
   const outer = new Map<number, Map<number, number>>();
   const slotToWeld = new Int32Array(triangleCount * 3);
   let vertCount = 0;
@@ -70,9 +158,9 @@ function weldVertices(stlPositions: Float32Array, triangleCount: number): WeldRe
     const x = stlPositions[slot * 3]     ?? 0;
     const y = stlPositions[slot * 3 + 1] ?? 0;
     const z = stlPositions[slot * 3 + 2] ?? 0;
-    const qx = Math.round(x * PREC);
-    const qy = Math.round(y * PREC);
-    const qz = Math.round(z * PREC);
+    const qx = Math.round(x * invCell);
+    const qy = Math.round(y * invCell);
+    const qz = Math.round(z * invCell);
     const outerKey = (qz + 1_048_577) * 2_097_155 + (qy + 1_048_577);
     let inner = outer.get(outerKey);
     if (!inner) { inner = new Map(); outer.set(outerKey, inner); }
@@ -226,6 +314,14 @@ export interface TetGenResult {
   surfaceFaces: Int32Array;
   /** Number of Steiner points TetGen added (should be 0 with -Y) */
   steinerCount: number;
+  /**
+   * Non-null when the model's bounding-box diagonal is implausible under the
+   * mm assumption (issue #168) — a likely unit-mismatched STL. The mesh is
+   * still produced (weld/volume are scale-relative so it will not silently
+   * mis-mesh), but the caller should surface this so the user can confirm the
+   * scale before trusting mm-based physical interpretation.
+   */
+  unitWarning: string | null;
 }
 
 export async function meshWithTetGen(
@@ -233,13 +329,12 @@ export async function meshWithTetGen(
   triangleCount: number,
   elementOrder:  1 | 2 = 2,
   /**
-   * Maximum tetrahedron volume in mm³ (TetGen -a switch). Lower = denser mesh.
-   * Default 10 preserves the historical behaviour; analysis.ts maps the user's
-   * coarse/standard/fine selector to this so the control actually affects STL
-   * mesh density (previously it was hardcoded and only the STEP/Gmsh path
-   * honoured the selector).
+   * Maximum tetrahedron volume for TetGen's -a switch, in the STL's own units³.
+   * Lower = denser mesh. When omitted it is derived from the model bounding box
+   * via targetElementVolume() so it is unit-independent (issue #168);
+   * analysis.ts passes the tier-specific scale-relative value directly.
    */
-  maxVolume:     number = 10,
+  maxVolume?:    number,
 ): Promise<TetGenResult> {
 
   // ── 0. Known-missing fast path ────────────────────────────────────────────
@@ -253,6 +348,12 @@ export async function meshWithTetGen(
   const weld = weldVertices(stlPositions, triangleCount);
   const off  = buildOFF(weld);
 
+  // Scale-relative default element volume + unit-plausibility warning (#168).
+  const bbox = bboxOfPositions(stlPositions, triangleCount);
+  const effMaxVolume = maxVolume ?? targetElementVolume(bbox.spanX, bbox.spanY, bbox.spanZ, "standard");
+  const unitWarning = unitScaleWarning(bbox.diag);
+  if (unitWarning) console.warn(`[tetgen] ${unitWarning}`);
+
   const tmpBase = path.join(tmpdir(), `stressform_${Date.now()}`);
   const offPath = tmpBase + ".off";
 
@@ -261,7 +362,8 @@ export async function meshWithTetGen(
   // ── 2. Run TetGen ─────────────────────────────────────────────────────────
   // -p      tetrahedralise the PLC
   // -q1.4   quality constraint (radius-edge ratio ≤ 1.4)
-  // -a<v>   max element volume <v> mm³ (from maxVolume, driven by mesh quality)
+  // -a<v>   max element volume <v> in the STL's own units³ (scale-relative,
+  //         from effMaxVolume — see targetElementVolume, issue #168)
   // -Q      quiet
   // -o2     second-order elements (C3D10); only added when elementOrder=2
   //
@@ -276,7 +378,7 @@ export async function meshWithTetGen(
   const nodePath = tmpBase + ".1.node";
   const elePath  = tmpBase + ".1.ele";
 
-  const a  = Math.max(0.01, maxVolume);
+  const a  = Math.max(0.01, effMaxVolume);
   const aR = (a * 5).toPrecision(4);   // relaxed volume for the third attempt
   const av = a.toPrecision(4);
   const o2 = elementOrder === 2 ? ["-o2"] : [];
@@ -348,6 +450,7 @@ export async function meshWithTetGen(
     surfaceToNode,
     surfaceFaces: weld.faces,
     steinerCount: nodeCount - weld.vertCount,
+    unitWarning,
   };
 }
 
