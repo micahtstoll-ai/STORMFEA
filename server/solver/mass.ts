@@ -12,9 +12,7 @@
 import type { TetMesh, CSRMatrix, AnyMaterial, ElementMaterialField } from "./types.js";
 import { buildSparsityPattern, type SparsityPattern } from "./assembly.js";
 import { findEntry } from "./csr.js";
-
-// Default mass density for PLA in kg/m³
-const DEFAULT_MASS_RHO_KG_M3 = 1240;
+import { isC3D10Affine, c3d10ConsistentMassSubblock, c3d10Volume } from "./element.js";
 
 // Conversion: 1 kg/m³ = 1e-12 t/mm³  (in N·mm system where 1 N = 1 t·mm/s²)
 const KG_M3_TO_T_MM3 = 1e-12;
@@ -133,18 +131,53 @@ export function assembleM(
       [0,1], [1,2], [0,2], [0,3], [1,3], [2,3]
     ];
 
+    // Scratch for the isoparametric (curved-element) path — issue #158.
+    const nodeCoords = new Float64Array(30);
+
     for (let e = 0; e < mesh.elementCount; e++) {
       const base = e * 10;
       for (let ni = 0; ni < 10; ni++) {
         elemNodes[ni] = mesh.elements[base + ni] ?? 0;
       }
+      const rhoE = rhoOfElement ? (rhoOfElement[e] ?? rho) : rho;
 
+      // Gather 10×3 node coordinates and test whether the element is affine
+      // (all midsides at edge midpoints). Straight elements keep the exact
+      // analytical reference-matrix path (bit-identical to the legacy result);
+      // curved elements integrate ∫ρNᵀN with the true isoparametric Jacobian,
+      // consistent with the stiffness integration (issue #158).
+      for (let ni = 0; ni < 10; ni++) {
+        const nd = elemNodes[ni]!;
+        nodeCoords[ni*3]   = mesh.nodes[nd*3]   ?? 0;
+        nodeCoords[ni*3+1] = mesh.nodes[nd*3+1] ?? 0;
+        nodeCoords[ni*3+2] = mesh.nodes[nd*3+2] ?? 0;
+      }
+
+      if (!isC3D10Affine(nodeCoords)) {
+        // ── Curved element: isoparametric consistent mass ────────────────────
+        const { m } = c3d10ConsistentMassSubblock(nodeCoords);
+        for (let a = 0; a < 10; a++) {
+          for (let b = 0; b < 10; b++) {
+            const mval = rhoE * (m[a*10+b] ?? 0);
+            if (mval === 0) continue;
+            const na = elemNodes[a]!;
+            const nb = elemNodes[b]!;
+            for (let d = 0; d < 3; d++) {
+              const pos = findEntry(colIdx, rowPtr, na*3+d, nb*3+d);
+              data[pos] = (data[pos] ?? 0) + mval;
+            }
+          }
+        }
+        continue;
+      }
+
+      // ── Affine element: exact analytical reference matrix (legacy path) ─────
       // Compute element volume using corner nodes (indices 0-3)
       const n0 = elemNodes[0]!, n1 = elemNodes[1]!, n2 = elemNodes[2]!, n3 = elemNodes[3]!;
       const Ve = tetVolume(mesh.nodes, n0, n1, n2, n3);
 
       // Scale = ρ × 6 × Ve  (because M_ref is for unit tet with V_ref = 1/6)
-      const scale = (rhoOfElement ? (rhoOfElement[e] ?? rho) : rho) * 6.0 * Ve;
+      const scale = rhoE * 6.0 * Ve;
 
       // Scatter: for each pair (a, b) of local nodes and each DOF direction d
       for (let a = 0; a < 10; a++) {
@@ -227,13 +260,28 @@ function hrzLumpedC3D10(
   rhoOfElement?: Float64Array | null,
 ): Float64Array {
   const lumped = new Float64Array(mesh.nodeCount * 3);
+  const nodeCoords = new Float64Array(30);
   for (let e = 0; e < mesh.elementCount; e++) {
     const base = e * 10;
     const n0 = mesh.elements[base]   ?? 0;
     const n1 = mesh.elements[base+1] ?? 0;
     const n2 = mesh.elements[base+2] ?? 0;
     const n3 = mesh.elements[base+3] ?? 0;
-    const mVe = (rhoOfElement ? (rhoOfElement[e] ?? rho) : rho) * tetVolume(mesh.nodes, n0, n1, n2, n3);
+    const rhoE = rhoOfElement ? (rhoOfElement[e] ?? rho) : rho;
+
+    // Element volume: affine elements use the corner-node tet volume
+    // (bit-identical legacy path); curved elements use the true isoparametric
+    // volume so total lumped mass tracks the real geometry (issue #158).
+    for (let ni = 0; ni < 10; ni++) {
+      const nd = mesh.elements[base + ni] ?? 0;
+      nodeCoords[ni*3]   = mesh.nodes[nd*3]   ?? 0;
+      nodeCoords[ni*3+1] = mesh.nodes[nd*3+1] ?? 0;
+      nodeCoords[ni*3+2] = mesh.nodes[nd*3+2] ?? 0;
+    }
+    const Ve = isC3D10Affine(nodeCoords)
+      ? tetVolume(mesh.nodes, n0, n1, n2, n3)
+      : c3d10Volume(nodeCoords);
+    const mVe = rhoE * Ve;
     for (let a = 0; a < 10; a++) {
       const na = mesh.elements[base + a] ?? 0;
       const mval = mVe * (a < 4 ? HRZ_C3D10_CORNER : HRZ_C3D10_MIDSIDE);
@@ -248,12 +296,21 @@ function hrzLumpedC3D10(
 /**
  * High-level mass assembly entry point.
  *
- * @param mesh     - tetrahedral mesh (C3D4 or C3D10)
- * @param material - any solver material; massRho (kg/m³) is read if present, else 1240 kg/m³
- * @param type     - 'consistent' → full CSR matrix; 'lumped' → diagonal Float64Array
- *                   (row-sum for C3D4, HRZ diagonal scaling for C3D10 — row-sum
- *                   produces NEGATIVE corner masses for C3D10)
- * @param pattern  - optional prebuilt sparsity pattern (share K's — issue #100)
+ * @param mesh       - tetrahedral mesh (C3D4 or C3D10)
+ * @param material   - any solver material; its `massRho` (kg/m³) is used when
+ *                     present. When absent, `defaultRho` is used if supplied;
+ *                     otherwise (and with no material field) assembleMass THROWS
+ *                     rather than silently assuming PLA density (issue #159).
+ * @param type       - 'consistent' → full CSR matrix; 'lumped' → diagonal
+ *                     Float64Array (row-sum for C3D4, HRZ diagonal scaling for
+ *                     C3D10 — row-sum produces NEGATIVE corner masses for C3D10)
+ * @param pattern    - optional prebuilt sparsity pattern (share K's — issue #100)
+ * @param field      - optional two-region material field: per-bin densities are
+ *                     authoritative and override the scalar density per element.
+ * @param defaultRho - optional caller-supplied fallback density (kg/m³) used
+ *                     only when the material carries no `massRho`. The caller
+ *                     therefore owns the fallback decision — the kernel never
+ *                     bakes in a hidden constant.
  *
  * Density conversion: rho_solver = massRho × 1e-12  (kg/m³ → t/mm³)
  * This gives ω² in rad²/s² directly in the N·mm·tonne unit system.
@@ -266,8 +323,25 @@ export function assembleMass(
   /** Optional two-region material field: per-bin densities expanded to a
    *  per-element ρ array so mass tracks the shell/core split. */
   field?:   ElementMaterialField,
+  /** Optional caller-supplied fallback density (kg/m³) when massRho is absent. */
+  defaultRho?: number,
 ): { M: CSRMatrix; diagIdx: Int32Array } | Float64Array {
-  const massRhoKg = (material as { massRho?: number }).massRho ?? DEFAULT_MASS_RHO_KG_M3;
+  // Resolve the scalar density. NO silent internal constant (issue #159):
+  //   material.massRho  →  defaultRho  →  (error, unless a material field
+  //   carries authoritative per-bin densities).
+  const matRho = (material as { massRho?: number }).massRho;
+  const resolvedRho = matRho ?? defaultRho;
+  if (resolvedRho === undefined && !field) {
+    throw new Error(
+      `assembleMass: material "${material.label}" has no massRho and no ` +
+      `defaultRho was supplied. Provide massRho on the material or pass an ` +
+      `explicit defaultRho — refusing to silently assume a density (issue #159).`
+    );
+  }
+  // When a field is present its per-bin densities are authoritative; the scalar
+  // is only a defensive fallback for an out-of-range bin index, so NaN here
+  // surfaces loudly rather than fabricating a wrong density.
+  const massRhoKg = resolvedRho ?? NaN;
   const rho = massRhoKg * KG_M3_TO_T_MM3;
 
   let rhoOfElement: Float64Array | null = null;

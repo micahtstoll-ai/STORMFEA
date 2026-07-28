@@ -24,7 +24,7 @@
  */
 
 import type { TetMesh, AnyMaterial, CSRMatrix, ElementMaterialField } from "./types.js";
-import { elementStiffness, buildAnyConstitutiveMatrix, c3d10ElementStiffness, elementGeometricStiffness, c3d10ElementGeometricStiffness } from "./element.js";
+import { elementStiffness, buildAnyConstitutiveMatrix, c3d10ElementStiffness, elementGeometricStiffness, c3d10ElementGeometricStiffness, buildB_c3d10, C3D10_GAUSS } from "./element.js";
 import { scatterElemMatrixIntoCSR } from "./csr.js";
 import { runAssemblyJobs } from "./assembly-pool.js";
 import { fileURLToPath } from "url";
@@ -376,11 +376,25 @@ export async function assembleK(
  * Supports C3D4 (linear, 12 DOF) and C3D10 (quadratic, 30 DOF); the element type
  * is determined by mesh.nodesPerElem.
  *
+ * C3D10 STRESS GRADIENT (issue #164)
+ * ----------------------------------
+ * The C3D10 stress field is LINEAR across the element and it is exactly that
+ * gradient that drives bending-dominated buckling. When `opts` is supplied,
+ * the geometric stiffness for each C3D10 element is built from the stress
+ * evaluated at every Gauss point (σ = C·B·u), instead of a single
+ * element-constant value that washes a pure-bending state toward zero and
+ * under-builds Kσ. Omitting `opts` (or a C3D4 mesh) keeps the exact legacy
+ * behaviour bit-for-bit — a uniform-stress element is identical either way.
+ *
  * @param mesh         Tetrahedral mesh
  * @param elemStress   Flat array of element stresses, shape [elementCount × 6].
  *                     Each group of 6: [σxx, σyy, σzz, τxy, τyz, τxz] in MPa.
+ *                     Used directly for C3D4, and as the fallback for C3D10 when
+ *                     `opts` is not supplied.
  * @param rowPtr       CSR row pointer (from buildSparsityPattern)
  * @param colIdx       CSR column indices (from buildSparsityPattern)
+ * @param opts         Optional per-Gauss-point stress recomputation inputs for
+ *                     C3D10 (displacement + material / material field).
  * @returns            CSRMatrix with same sparsity as K but geometric stiffness values
  */
 export function assembleKsigma(
@@ -388,6 +402,11 @@ export function assembleKsigma(
   elemStress: Float64Array,  // elementCount × 6
   rowPtr:     Int32Array,
   colIdx:     Int32Array,
+  opts?: {
+    displacement: Float64Array;
+    material:     AnyMaterial;
+    field?:       ElementMaterialField | null;
+  },
 ): CSRMatrix {
   const n   = mesh.nodeCount * 3;
   const npe = mesh.nodesPerElem;
@@ -402,7 +421,22 @@ export function assembleKsigma(
     );
   }
 
+  // Per-Gauss-point stress recovery is only meaningful (and only wired) for
+  // the quadratic element; C3D4 is constant-strain so its element-constant
+  // stress is already exact.
+  const perGP = npe === 10 && opts !== undefined;
+  const disp  = opts?.displacement;
+  const field = opts?.field ?? null;
+  const Cviews: Float64Array[] = [];
+  if (perGP) {
+    const Cs = field ? field.C : buildAnyConstitutiveMatrix(opts!.material);
+    const binCount = Cs.length / 36;
+    for (let b = 0; b < binCount; b++) Cviews.push(Cs.subarray(b * 36, b * 36 + 36));
+  }
+
   const sig = new Float64Array(6);
+  const sigGP = new Float64Array(24);         // 4 Gauss points × 6 components
+  const ue30  = new Float64Array(30);         // C3D10 element displacements
   const elemNodes = new Int32Array(npe);
   const scratchCoords = new Float64Array(30);  // C3D10 local node coordinates
 
@@ -419,7 +453,40 @@ export function assembleKsigma(
         scratchCoords[ni*3+1] = mesh.nodes[nd*3+1] ?? 0;
         scratchCoords[ni*3+2] = mesh.nodes[nd*3+2] ?? 0;
       }
-      ksg = c3d10ElementGeometricStiffness(scratchCoords, sig);
+      if (perGP) {
+        // Recompute σ = C·B·u at each Gauss point (the linear stress field).
+        const C = Cviews[field ? (field.binOfElement[e] ?? 0) : 0]!;
+        for (let ni = 0; ni < 10; ni++) {
+          const nd = elemNodes[ni]!;
+          ue30[ni*3]   = disp![nd*3]   ?? 0;
+          ue30[ni*3+1] = disp![nd*3+1] ?? 0;
+          ue30[ni*3+2] = disp![nd*3+2] ?? 0;
+        }
+        let g = 0;
+        for (const gp of C3D10_GAUSS) {
+          const { B } = buildB_c3d10(scratchCoords, gp.xi, gp.eta, gp.zeta);
+          // ε = B·u, σ = C·ε
+          for (let r = 0; r < 6; r++) {
+            let eps = 0;
+            for (let c = 0; c < 30; c++) eps += (B[r*30+c] ?? 0) * (ue30[c] ?? 0);
+            // store ε temporarily in sigGP slot, converted below
+            sigGP[g*6+r] = eps;
+          }
+          // convert the 6 strains just written into stresses in place
+          const e0=sigGP[g*6]!, e1=sigGP[g*6+1]!, e2=sigGP[g*6+2]!,
+                e3=sigGP[g*6+3]!, e4=sigGP[g*6+4]!, e5=sigGP[g*6+5]!;
+          const eps6 = [e0,e1,e2,e3,e4,e5];
+          for (let r = 0; r < 6; r++) {
+            let s = 0;
+            for (let c = 0; c < 6; c++) s += (C[r*6+c] ?? 0) * (eps6[c] ?? 0);
+            sigGP[g*6+r] = s;
+          }
+          g++;
+        }
+        ksg = c3d10ElementGeometricStiffness(scratchCoords, sigGP);
+      } else {
+        ksg = c3d10ElementGeometricStiffness(scratchCoords, sig);
+      }
     } else {
       ksg = elementGeometricStiffness(
         mesh.nodes, elemNodes[0]!, elemNodes[1]!, elemNodes[2]!, elemNodes[3]!, sig,

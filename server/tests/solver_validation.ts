@@ -16,6 +16,12 @@ import {
   buildOrthotropicConstitutiveMatrix,
   c3d10ShapeFunctions,
   c3d10ElementStiffness,
+  c3d10ConsistentMassSubblock,
+  c3d10Volume,
+  isC3D10Affine,
+  c3d10ElementGeometricStiffness,
+  C3D10_GAUSS,
+  buildB_c3d10,
 } from "../solver/element.js";
 
 let passed = 0, failed = 0;
@@ -1686,6 +1692,129 @@ console.log("\n[26] Numerical homogenization — perforated-plate cell vs isolat
     test("[26.3] dilute drop/void-fraction ≈ isolated-hole theory", false);
     test("[26.4] power-law fit residual small", false);
   }
+}
+
+// ── Test group 27: C3D10 isoparametric consistent mass (issue #158) ──────────
+console.log("\n[27] C3D10 isoparametric mass — affine exact, curved corrected");
+{
+  // Reference-tet analytical mass entries (unit tet, ρ=1, V=1/6).
+  const MR = { CCd:1/420, CCo:1/2520, CMa:-1/630, CMo:-1/420, MMd:8/630, MMa:4/630, MMo:2/630 };
+  const EP: readonly [number, number][] = [[0,1],[1,2],[0,2],[0,3],[1,3],[2,3]];
+  const refEntry = (a:number,b:number):number => {
+    const aC=a<4, bC=b<4;
+    if (aC&&bC) return a===b?MR.CCd:MR.CCo;
+    if (aC&&!bC){ const [p,q]=EP[b-4]!; return (a===p||a===q)?MR.CMa:MR.CMo; }
+    if (!aC&&bC){ const [p,q]=EP[a-4]!; return (b===p||b===q)?MR.CMa:MR.CMo; }
+    if (a===b) return MR.MMd;
+    const [a0,a1]=EP[a-4]!, [b0,b1]=EP[b-4]!;
+    return (a0===b0||a0===b1||a1===b0||a1===b1)?MR.MMa:MR.MMo;
+  };
+  // Affine tet: |detJ| = 6·Ve = 8, Ve = 4/3.
+  const straight = new Float64Array([
+    2,0,0, 0,2,0, 0,0,2, 0,0,0, 1,1,0, 0,1,1, 1,0,1, 1,0,0, 0,1,0, 0,0,1,
+  ]);
+  const { m: mS, volume: vS } = c3d10ConsistentMassSubblock(straight);
+  let maxErr = 0;
+  for (let a=0;a<10;a++) for (let b=0;b<10;b++)
+    maxErr = Math.max(maxErr, Math.abs((mS[a*10+b]??0) - 8*refEntry(a,b)));
+  test("[27.1] affine element reproduces analytical reference mass matrix", maxErr < 1e-12,
+    `maxErr=${maxErr.toExponential(3)}`);
+  test("[27.2] affine isoparametric volume = corner volume (4/3)", Math.abs(vS - 4/3) < 1e-12,
+    `V=${vS}`);
+
+  // Curved tet: displace node-4 midside outward → volume grows, affine
+  // reference-matrix shortcut is wrong.
+  const curved = new Float64Array(straight); curved[4*3] = 1.4;
+  test("[27.3] curved element detected (not affine)", !isC3D10Affine(curved));
+  const vTrue = c3d10Volume(curved);
+  test("[27.4] curved true volume exceeds affine corner volume", vTrue > 4/3 + 1e-6,
+    `Vtrue=${vTrue.toFixed(5)} vs 1.33333`);
+  const { m: mC } = c3d10ConsistentMassSubblock(curved);
+  let sumC = 0; for (let i=0;i<100;i++) sumC += mC[i]??0;
+  test("[27.5] curved mass Σ entries = true volume (mass conserved)", Math.abs(sumC - vTrue) < 1e-8,
+    `Σ=${sumC.toFixed(6)} Vtrue=${vTrue.toFixed(6)}`);
+  console.log(`    affine V=${vS.toFixed(4)} (ref-exact), curved V=${vTrue.toFixed(4)} (affine shortcut would report ${(4/3).toFixed(4)})`);
+}
+
+// ── Test group 28: C3D10 per-Gauss-point geometric stiffness (issue #164) ────
+console.log("\n[28] C3D10 geometric stiffness — per-Gauss-point stress");
+{
+  // (a) Regression anchor: uniform stress → per-GP (length-24, 4 equal blocks)
+  //     reproduces the element-constant (length-6) Kσ bit-for-bit.
+  const nodes = new Float64Array([
+    2,0,0, 0,2,0, 0,0,2, 0,0,0, 1,1,0, 0,1,1, 1,0,1, 1,0,0, 0,1,0, 0,0,1,
+  ]);
+  const sig6 = new Float64Array([12,-3,5,2,-1,4]);
+  const sig24u = new Float64Array(24);
+  for (let g=0; g<4; g++) for (let k=0;k<6;k++) sig24u[g*6+k] = sig6[k]!;
+  const kConst = c3d10ElementGeometricStiffness(nodes, sig6);
+  const kUnif  = c3d10ElementGeometricStiffness(nodes, sig24u);
+  let bitDiff = 0; for (let i=0;i<900;i++) bitDiff = Math.max(bitDiff, Math.abs((kUnif[i]??0)-(kConst[i]??0)));
+  test("[28.1] uniform-stress per-GP == element-constant Kσ (bit-identical)", bitDiff === 0,
+    `maxDiff=${bitDiff}`);
+
+  // (b) Pure-bending linear field σxx = g·(y−ȳ), zero element mean. The
+  //     constant (element-mean) stress washes to ≈0 and builds no Kσ; the
+  //     per-Gauss-point field retains the gradient. Compare both against a
+  //     high-order (64-pt) integration of the exact linear field.
+  let ybar = 0;
+  for (const gp of C3D10_GAUSS) {
+    const N = c3d10ShapeFunctions(gp.xi, gp.eta, gp.zeta);
+    let y=0; for (let i=0;i<10;i++) y += N[i]!*(nodes[i*3+1]??0);
+    ybar += y;
+  }
+  ybar /= C3D10_GAUSS.length;
+  const gGrad = 3.0;
+  const sig24b = new Float64Array(24);
+  let gi=0;
+  for (const gp of C3D10_GAUSS) {
+    const N = c3d10ShapeFunctions(gp.xi, gp.eta, gp.zeta);
+    let y=0; for (let i=0;i<10;i++) y += N[i]!*(nodes[i*3+1]??0);
+    sig24b[gi*6] = gGrad*(y-ybar); gi++;
+  }
+  let meanSxx=0; for (let q=0;q<4;q++) meanSxx += sig24b[q*6]!; meanSxx/=4;
+  const kBendConst = c3d10ElementGeometricStiffness(nodes, new Float64Array([meanSxx,0,0,0,0,0]));
+  const kBendPerGP = c3d10ElementGeometricStiffness(nodes, sig24b);
+
+  // High-order reference: integrate Σ (∇Nᵢ·σ·∇Nⱼ) with the exact linear σxx(y)
+  // using the 64-pt Duffy rule (C3D10_MASS_GAUSS is that rule; reuse via a
+  // dense sampling with buildB_c3d10 gradients).
+  const kRef = new Float64Array(900);
+  // Use the same physical-gradient extraction as the production kernel, sampled
+  // at a fine rule. Reuse C3D10_GAUSS twice-refined is unavailable, so integrate
+  // with the 64-pt mass rule through buildB_c3d10 + shape functions.
+  {
+    const { C3D10_MASS_GAUSS } = await import("../solver/element.js");
+    for (const gp of C3D10_MASS_GAUSS as ReadonlyArray<{xi:number;eta:number;zeta:number;w:number}>) {
+      const { B, detJ } = buildB_c3d10(nodes, gp.xi, gp.eta, gp.zeta);
+      const N = c3d10ShapeFunctions(gp.xi, gp.eta, gp.zeta);
+      let y=0; for (let i=0;i<10;i++) y += N[i]!*(nodes[i*3+1]??0);
+      const sxx = gGrad*(y-ybar);
+      const vol = Math.abs(detJ)*gp.w;
+      for (let i=0;i<10;i++){
+        const bxi=B[0*30+i*3]??0;
+        const sGi_x = sxx*bxi; // only σxx non-zero
+        for (let j=0;j<10;j++){
+          const bxj=B[0*30+j*3]??0;
+          const s = vol*(bxj*sGi_x);
+          kRef[(3*i)*30+(3*j)]     = (kRef[(3*i)*30+(3*j)]??0)     + s;
+          kRef[(3*i+1)*30+(3*j+1)] = (kRef[(3*i+1)*30+(3*j+1)]??0) + s;
+          kRef[(3*i+2)*30+(3*j+2)] = (kRef[(3*i+2)*30+(3*j+2)]??0) + s;
+        }
+      }
+    }
+  }
+  const fro = (a:Float64Array)=>Math.sqrt(a.reduce((s,v)=>s+v*v,0));
+  const relErr = (a:Float64Array)=>{ let d=0; for(let i=0;i<900;i++){const e=(a[i]??0)-(kRef[i]??0); d+=e*e;} return Math.sqrt(d)/(fro(kRef)||1); };
+  const errConst = relErr(kBendConst);
+  const errPerGP = relErr(kBendPerGP);
+  test("[28.2] element-mean stress washes bending Kσ toward zero (the bias)", fro(kBendConst) < 1e-9,
+    `‖Kσ_const‖=${fro(kBendConst).toExponential(3)}`);
+  test("[28.3] per-GP Kσ retains the bending gradient (non-trivial)", fro(kBendPerGP) > 1e-3,
+    `‖Kσ_perGP‖=${fro(kBendPerGP).toFixed(4)}`);
+  test("[28.4] per-GP is far closer to the exact linear-field reference", errPerGP < errConst - 0.5,
+    `relErr per-GP=${(errPerGP*100).toFixed(1)}% vs const=${(errConst*100).toFixed(1)}%`);
+  console.log(`    bending Kσ vs exact: element-constant relErr=${(errConst*100).toFixed(1)}% (washed out), per-Gauss-point relErr=${(errPerGP*100).toFixed(1)}%`);
 }
 
 // ── Summary ───────────────────────────────────────────────────────────────────

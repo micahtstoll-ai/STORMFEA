@@ -806,22 +806,44 @@ export function c3d10ElementStiffness(
  * dNᵢ/dz] are read from the B matrix already assembled by buildB_c3d10, so the
  * (tested) Jacobian inversion is reused rather than duplicated.
  *
+ * STRESS FIELD (issue #164)
+ * -------------------------
+ * For C3D10 the stress field is LINEAR across the element (quadratic
+ * displacement), and it is exactly that gradient that drives bending-dominated
+ * buckling. `sig` therefore accepts two shapes:
+ *   - length 6  → one element-constant stress, evaluated identically at every
+ *                 Gauss point (legacy; exact only for uniform stress states).
+ *   - length 24 → per-Gauss-point stress, 4 blocks of 6 in C3D10_GAUSS order,
+ *                 i.e. sig[g*6 + k] is component k at Gauss point g. This
+ *                 captures the linear field so pure-bending pre-stress (zero
+ *                 element mean, ±peak at the fibers) no longer washes toward
+ *                 zero and under-builds Kσ.
+ * A length-24 argument whose four blocks are identical reproduces the length-6
+ * result bit-for-bit (uniform-stress regression anchor).
+ *
  * @param nodes 10×3 node coordinates for this element
- * @param sig   Element Cauchy stress [σxx, σyy, σzz, τxy, τyz, τxz] in MPa
+ * @param sig   Cauchy stress, either [σxx,σyy,σzz,τxy,τyz,τxz] (length 6,
+ *              element-constant) or 4×6 per-Gauss-point (length 24).
  */
 export function c3d10ElementGeometricStiffness(
   nodes: Float64Array,
   sig:   Float64Array,
 ): Float64Array {
-  const sxx = sig[0]??0, syy = sig[1]??0, szz = sig[2]??0;
-  const txy = sig[3]??0, tyz = sig[4]??0, txz = sig[5]??0;
+  // Per-Gauss-point stress when 4×6 values are supplied; otherwise reuse the
+  // single element-constant stress at every Gauss point.
+  const perGP = sig.length >= 24;
 
   const ksg  = new Float64Array(30 * 30);
   const grad = new Float64Array(10 * 3);  // per-node [dN/dx, dN/dy, dN/dz]
 
+  let gpIndex = 0;
   for (const gp of C3D10_GAUSS) {
     const { B, detJ } = buildB_c3d10(nodes, gp.xi, gp.eta, gp.zeta);
     const vol = Math.abs(detJ) * gp.w;
+
+    const off = perGP ? gpIndex * 6 : 0;
+    const sxx = sig[off]??0,   syy = sig[off+1]??0, szz = sig[off+2]??0;
+    const txy = sig[off+3]??0, tyz = sig[off+4]??0, txz = sig[off+5]??0;
 
     // Physical shape-function gradients live on the diagonal entries of B.
     for (let i = 0; i < 10; i++) {
@@ -845,7 +867,139 @@ export function c3d10ElementGeometricStiffness(
         ksg[(3*i+2)*30 + (3*j+2)] = (ksg[(3*i+2)*30 + (3*j+2)] ?? 0) + s;
       }
     }
+    gpIndex++;
   }
 
   return ksg;
+}
+
+// ─── C3D10 isoparametric mass helpers (issue #158) ────────────────────────────
+//
+// The consistent-mass integrand ρ·Nᵢ·Nⱼ is degree-4 in the barycentric
+// coordinates. The 4-point C3D10_GAUSS rule is only degree-2 exact (fine for
+// the degree-2 stiffness integrand BᵀCB but NOT for mass), so mass integration
+// needs a higher-order rule. We use a 4×4×4 Gauss–Legendre rule mapped onto the
+// reference tetrahedron by the Duffy (collapsed-hex) transform:
+//   ξ = a,  η = b(1−a),  ζ = c(1−a)(1−b),   |∂(ξ,η,ζ)/∂(a,b,c)| = (1−a)²(1−b)
+// With 4 points per direction (1D degree-7 exact) this integrates the affine
+// mass integrand — degree 4 plus the (1−a)²(1−b) Duffy Jacobian, at most degree
+// 6 in any one variable — exactly, and integrates the curved (non-polynomial
+// isoparametric) case to high accuracy. Σ weights = ∫(1−a)²(1−b) = 1/6, the
+// reference-tet volume.
+
+// 4-point Gauss–Legendre nodes/weights on [0,1] (mapped from the standard
+// [−1,1] rule): exact for 1D polynomials up to degree 7.
+const GL4_NODES_01   = [0.0694318442029737, 0.3300094782075719, 0.6699905217924281, 0.9305681557970263];
+const GL4_WEIGHTS_01 = [0.1739274225687269, 0.3260725774312730, 0.3260725774312730, 0.1739274225687269];
+
+interface TetQuadPoint { readonly xi: number; readonly eta: number; readonly zeta: number; readonly w: number; }
+
+/**
+ * High-order (affine mass integrand: exact) tetrahedron quadrature — 64 points.
+ * Exported so buckling validation / tests can integrate reference quantities
+ * with the identical rule instead of duplicating the constants.
+ */
+export const C3D10_MASS_GAUSS: readonly TetQuadPoint[] = (() => {
+  const pts: TetQuadPoint[] = [];
+  for (let ia = 0; ia < 4; ia++) {
+    for (let ib = 0; ib < 4; ib++) {
+      for (let ic = 0; ic < 4; ic++) {
+        const a = GL4_NODES_01[ia]!, b = GL4_NODES_01[ib]!, c = GL4_NODES_01[ic]!;
+        const wa = GL4_WEIGHTS_01[ia]!, wb = GL4_WEIGHTS_01[ib]!, wc = GL4_WEIGHTS_01[ic]!;
+        const xi   = a;
+        const eta  = b * (1 - a);
+        const zeta = c * (1 - a) * (1 - b);
+        const jac  = (1 - a) * (1 - a) * (1 - b);   // Duffy Jacobian
+        pts.push({ xi, eta, zeta, w: wa * wb * wc * jac });
+      }
+    }
+  }
+  return pts;
+})();
+
+/** Jacobian determinant of the C3D10 isoparametric map at (ξ,η,ζ). */
+export function c3d10JacobianDet(
+  nodeCoords: Float64Array,  // 10×3
+  xi: number, eta: number, zeta: number,
+): number {
+  const [dNdxi, dNdeta, dNdzeta] = c3d10ShapeDerivatives(xi, eta, zeta);
+  let J00=0,J01=0,J02=0, J10=0,J11=0,J12=0, J20=0,J21=0,J22=0;
+  for (let i = 0; i < 10; i++) {
+    const x = nodeCoords[i*3]??0, y = nodeCoords[i*3+1]??0, z = nodeCoords[i*3+2]??0;
+    J00+=dNdxi[i]!*x;   J01+=dNdxi[i]!*y;   J02+=dNdxi[i]!*z;
+    J10+=dNdeta[i]!*x;  J11+=dNdeta[i]!*y;  J12+=dNdeta[i]!*z;
+    J20+=dNdzeta[i]!*x; J21+=dNdzeta[i]!*y; J22+=dNdzeta[i]!*z;
+  }
+  return J00*(J11*J22-J12*J21) - J01*(J10*J22-J12*J20) + J02*(J10*J21-J11*J20);
+}
+
+/** True (isoparametric) volume of a C3D10 element: ∫|detJ| dξ over the ref tet. */
+export function c3d10Volume(nodeCoords: Float64Array): number {
+  let V = 0;
+  for (const gp of C3D10_MASS_GAUSS) {
+    V += gp.w * Math.abs(c3d10JacobianDet(nodeCoords, gp.xi, gp.eta, gp.zeta));
+  }
+  return V;
+}
+
+/**
+ * Consistent-mass 10×10 sub-block ∫ Nᵢ Nⱼ dV (per translational direction, ρ=1)
+ * integrated with the true isoparametric Jacobian — the geometry model the
+ * C3D10 STIFFNESS already uses. For a straight-edged (affine) element this
+ * reproduces the exact analytical reference mass matrix to round-off; for a
+ * curved (mid-edge-displaced) element it is the correct integral the fixed
+ * reference-matrix shortcut cannot represent (issue #158).
+ *
+ * Also returns the isoparametric volume (Σ Nᵢ Nⱼ over all i,j equals V because
+ * the shape functions form a partition of unity).
+ */
+export function c3d10ConsistentMassSubblock(
+  nodeCoords: Float64Array,  // 10×3
+): { m: Float64Array; volume: number } {
+  const m = new Float64Array(100);   // 10×10, ρ=1
+  let volume = 0;
+  for (const gp of C3D10_MASS_GAUSS) {
+    const N    = c3d10ShapeFunctions(gp.xi, gp.eta, gp.zeta);
+    const detJ = c3d10JacobianDet(nodeCoords, gp.xi, gp.eta, gp.zeta);
+    const w    = gp.w * Math.abs(detJ);
+    volume += w;
+    for (let a = 0; a < 10; a++) {
+      const wNa = w * N[a]!;
+      for (let b = 0; b < 10; b++) m[a*10+b] = (m[a*10+b]??0) + wNa * N[b]!;
+    }
+  }
+  return { m, volume };
+}
+
+const _AFFINE_EDGE_PAIRS: readonly [number, number][] = [[0,1],[1,2],[0,2],[0,3],[1,3],[2,3]];
+
+/**
+ * True when every C3D10 mid-edge node sits at the midpoint of its two corner
+ * nodes (within a relative tolerance of the largest edge length). Straight
+ * TetGen midpoints are affine; Gmsh second-order elements on curved STEP faces
+ * displace midsides onto the geometry and are NOT. Affine elements have a
+ * constant Jacobian, so the analytical reference mass matrix is exact for them.
+ */
+export function isC3D10Affine(nodeCoords: Float64Array, relTol = 1e-6): boolean {
+  let maxEdge2 = 0;
+  for (const [c0, c1] of _AFFINE_EDGE_PAIRS) {
+    const dx = (nodeCoords[c0*3]??0)-(nodeCoords[c1*3]??0);
+    const dy = (nodeCoords[c0*3+1]??0)-(nodeCoords[c1*3+1]??0);
+    const dz = (nodeCoords[c0*3+2]??0)-(nodeCoords[c1*3+2]??0);
+    const d2 = dx*dx+dy*dy+dz*dz;
+    if (d2 > maxEdge2) maxEdge2 = d2;
+  }
+  const tol2 = relTol * relTol * maxEdge2;
+  for (let ep = 0; ep < 6; ep++) {
+    const [c0, c1] = _AFFINE_EDGE_PAIRS[ep]!;
+    const mid = 4 + ep;
+    let diff2 = 0;
+    for (let d = 0; d < 3; d++) {
+      const expected = 0.5 * ((nodeCoords[c0*3+d]??0) + (nodeCoords[c1*3+d]??0));
+      const diff = (nodeCoords[mid*3+d]??0) - expected;
+      diff2 += diff*diff;
+    }
+    if (diff2 > tol2) return false;
+  }
+  return true;
 }

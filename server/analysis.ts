@@ -3976,7 +3976,15 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       const fDummy = assembleForceVector(mesh.nodeCount, effectiveForces);
       applyDirichletBC(Kbuck, fDummy, buckDiagIdx, constraints);
 
-      const Ksigma = assembleKsigma(mesh, result.elemStress6, Kbuck.rowPtr, Kbuck.colIdx);
+      // For C3D10, evaluate the geometric stiffness from the LINEAR stress field
+      // (σ at each Gauss point), not one element-constant stress — the gradient
+      // drives bending-dominated buckling (issue #164). C3D4 ignores opts (its
+      // constant-strain stress is already exact).
+      const Ksigma = assembleKsigma(mesh, result.elemStress6, Kbuck.rowPtr, Kbuck.colIdx, {
+        displacement: result.displacement,
+        material,
+        field: materialField ?? null,
+      });
       const bResult = await runLinearBuckling(Kbuck, Ksigma, buckDiagIdx);
       bucklingConverged     = bResult.converged;
       bucklingTensile       = bResult.tensileDominated;
