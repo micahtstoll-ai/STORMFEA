@@ -112,16 +112,35 @@ describe("selectPressureRegion", () => {
     expect(count(sel)).toBe(triCount);
   });
 
-  it("'face' selects a 0.5 mm band at the extreme +Z end", () => {
+  it("'face' captures the flat extreme +Z face and is a strict subset (scale-relative band, issue #157)", () => {
     const sel = selectPressureRegion(box.nodes, faces, [0, 0, 1], "face");
-    // Selected triangle centroids must lie within 0.5 mm of the top plane z = D.
+    // Every flat top-face triangle (all three corners at z = D) MUST be selected.
     for (let t = 0; t < triCount; t++) {
-      if (!sel[t]) continue;
-      const cz = (box.nodes[faces[t*3]!*3+2]! + box.nodes[faces[t*3+1]!*3+2]! + box.nodes[faces[t*3+2]!*3+2]!) / 3;
-      expect(D - cz).toBeLessThan(0.5 + 1e-9);
+      const allTop = [0,1,2].every(k => Math.abs(box.nodes[faces[t*3+k]!*3+2]! - D) < 1e-9);
+      if (allTop) expect(sel[t]).toBe(true);
     }
     expect(count(sel)).toBeGreaterThan(0);
-    expect(count(sel)).toBeLessThan(triCount);
+    expect(count(sel)).toBeLessThan(triCount); // not the whole surface
+  });
+
+  it("'face' selection is scale-invariant — a ×10 box selects the same triangle count (issue #157)", () => {
+    const big = generateBoxMeshC3D4(0, 0, 0, W*10, H*10, D*10, 3, 2, 4); // identical topology, ×10 size
+    const bigFaces = extractSurfaceFaces(big);
+    const selMm = selectPressureRegion(box.nodes, faces, [0, 0, 1], "face");
+    const selBig = selectPressureRegion(big.nodes, bigFaces, [0, 0, 1], "face");
+    // Same mesh topology at any scale → same face set (the band scales with the
+    // mesh, unlike the old absolute 0.5 mm which would drift with size).
+    expect(count(selBig)).toBe(count(selMm));
+  });
+
+  it("'face' never returns empty for a valid direction on a coarse mesh (issue #157)", () => {
+    // A deliberately coarse single-element-thick box: the old absolute 0.5 mm
+    // band could miss every large triangle. The extreme face must still be
+    // captured (non-empty), never a silent zero-load.
+    const coarse = generateBoxMeshC3D4(0, 0, 0, 40, 40, 40, 1, 1, 1);
+    const cf = extractSurfaceFaces(coarse);
+    const sel = selectPressureRegion(coarse.nodes, cf, [0, 0, 1], "face");
+    expect(count(sel)).toBeGreaterThan(0);
   });
 
   it("'facing +Z' selects exactly the top face (outward normal has +Z, all corners at z=D)", () => {

@@ -202,11 +202,39 @@ export function assembleSurfaceTraction(
   return f;
 }
 
+/** Median triangle edge length over a boundary-triangle list — the mesh's own
+ *  characteristic element size. Used to make the 'face' proximity band scale-
+ *  and unit-relative (issue #157) instead of a fixed 0.5 mm. Returns 0 for an
+ *  empty list. */
+function medianTriEdgeLength(nodes: Float64Array, faces: Int32Array): number {
+  const triCount = Math.floor(faces.length / 3);
+  if (triCount === 0) return 0;
+  const perTri = new Float64Array(triCount);
+  for (let t = 0; t < triCount; t++) {
+    const a = faces[t*3]??0, b = faces[t*3+1]??0, c = faces[t*3+2]??0;
+    const ax = nodes[a*3]??0, ay = nodes[a*3+1]??0, az = nodes[a*3+2]??0;
+    const bx = nodes[b*3]??0, by = nodes[b*3+1]??0, bz = nodes[b*3+2]??0;
+    const cx = nodes[c*3]??0, cy = nodes[c*3+1]??0, cz = nodes[c*3+2]??0;
+    const eAB = Math.hypot(bx-ax, by-ay, bz-az);
+    const eBC = Math.hypot(cx-bx, cy-by, cz-bz);
+    const eCA = Math.hypot(ax-cx, ay-cy, az-cz);
+    perTri[t] = (eAB + eBC + eCA) / 3;
+  }
+  perTri.sort();
+  return perTri[Math.floor(triCount / 2)] ?? 0;
+}
+
 /**
  * Select which surface triangles a pressure load acts on.
  *
- *   'face'   — the extreme face toward `direction`: triangles whose centroid is
- *              within 0.5 mm of the furthest node projected onto `direction`.
+ *   'face'   — the extreme face toward `direction`: triangles whose centroid
+ *              projects to within a SCALE-RELATIVE band (0.5 × the median
+ *              boundary-edge length) of the furthest node projected onto
+ *              `direction`. Deriving the band from the mesh's own element size
+ *              (issue #157) means a coarse mesh no longer selects zero
+ *              triangles and a fine/scaled mesh no longer captures extra rows.
+ *              The extreme triangle is always included, so a valid direction on
+ *              a non-empty surface can never yield an empty 'face' selection.
  *   'facing' — every triangle whose OUTWARD normal faces `direction`
  *              (normal·direction > 0), i.e. the whole windward side.
  *   'all'    — the entire exterior surface (hydrostatic / external pressure).
@@ -231,12 +259,21 @@ export function selectPressureRegion(
   const ux = dx/dl, uy = dy/dl, uz = dz/dl;
 
   let maxProj = -Infinity;
+  // Scale-relative proximity band (issue #157): 0.5 × the median boundary-edge
+  // length. On a canonical mm mesh this lands near the historical 0.5 mm; it
+  // scales with the mesh so coarse meshes still capture the extreme face and
+  // 10×-scaled geometry selects the same triangles.
+  let band = 0;
   if (region === "face") {
     for (let n = 0; n < nodes.length / 3; n++) {
       const proj = (nodes[n*3]??0)*ux + (nodes[n*3+1]??0)*uy + (nodes[n*3+2]??0)*uz;
       if (proj > maxProj) maxProj = proj;
     }
+    band = 0.5 * medianTriEdgeLength(nodes, faces);
   }
+  // Track the triangle nearest the extreme, so 'face' can never come back empty
+  // for a valid direction on a non-empty surface (the silent zero-load bug).
+  let bestTri = -1, bestProj = -Infinity;
   for (let t = 0; t < triCount; t++) {
     const a = faces[t*3]??0, b = faces[t*3+1]??0, c = faces[t*3+2]??0;
     const ax = nodes[a*3]??0, ay = nodes[a*3+1]??0, az = nodes[a*3+2]??0;
@@ -249,9 +286,14 @@ export function selectPressureRegion(
       out[t] = (nx*ux + ny*uy + nz*uz) > 1e-9;
     } else { // face
       const proj = ((ax+bx+cx)/3)*ux + ((ay+by+cy)/3)*uy + ((az+bz+cz)/3)*uz;
-      out[t] = (maxProj - proj) < 0.5;
+      if (proj > bestProj) { bestProj = proj; bestTri = t; }
+      out[t] = (maxProj - proj) <= band;
     }
   }
+  // Guarantee non-emptiness for 'face': if the band caught nothing (e.g. a very
+  // coarse, slightly angled face), fall back to the single extreme triangle
+  // rather than silently applying no load.
+  if (region === "face" && bestTri >= 0 && !out.some(Boolean)) out[bestTri] = true;
   return out;
 }
 

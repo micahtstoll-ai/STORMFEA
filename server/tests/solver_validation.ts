@@ -1688,6 +1688,61 @@ console.log("\n[26] Numerical homogenization — perforated-plate cell vs isolat
   }
 }
 
+// ── Test group 27: Face pressure selection — coarse mesh, no silent zero-load ─
+// Issue #157: 'face' pressure selection used an absolute 0.5 mm proximity band,
+// so a COARSE mesh (large triangles) could select zero triangles → zero load
+// applied → a silently unstressed model. The band is now 0.5 × median boundary
+// edge (scale-relative) with an extreme-triangle fallback, so selection is
+// non-empty and total applied force = pressure × selected area.
+console.log("\n[27] Face pressure selection — coarse mesh non-empty + force = P·A (issue #157)");
+{
+  const { generateBoxMeshC3D4, extractSurfaceFaces } = await import("../solver/meshgen.js");
+  const { selectPressureRegion, assembleSurfaceTraction } = await import("../solver/load.js");
+
+  // A deliberately COARSE, large box — the exact failure geometry: 60 mm cube,
+  // one element per side, so boundary triangles are ~60 mm across (≫ 0.5 mm).
+  const S = 60, P = 2.0;
+  const mesh = generateBoxMeshC3D4(0, 0, 0, S, S, S, 1, 1, 1);
+  const faces = extractSurfaceFaces(mesh);
+  const triCount = faces.length / 3;
+  const sel = selectPressureRegion(mesh.nodes, faces, [0, 0, 1], "face");
+  const nSel = sel.reduce((s, on) => s + (on ? 1 : 0), 0);
+  // Core fix: an old absolute 0.5 mm band would have selected ZERO triangles
+  // here (all centroids sit ≥10 mm below the top vertex) → a silent zero-load.
+  test("[27.1] coarse mesh selects a NON-empty face (old 0.5 mm band → 0)", nSel > 0, `nSel=${nSel}`);
+
+  // The flat top face (both triangles with all corners at z = S) must be caught.
+  let topTris = 0, topSelected = 0;
+  for (let t = 0; t < triCount; t++) {
+    const allTop = [0,1,2].every(k => Math.abs(mesh.nodes[faces[t*3+k]!*3+2]! - S) < 1e-9);
+    if (allTop) { topTris++; if (sel[t]) topSelected++; }
+  }
+  test("[27.2] the flat extreme face is fully captured", topTris > 0 && topSelected === topTris,
+    `topSelected=${topSelected}/${topTris}`);
+
+  // Reported selected area, and the consistency the client shows the user:
+  // total applied force = pressure × selected area (issue #157 metadata).
+  let area = 0;
+  for (let t = 0; t < triCount; t++) {
+    if (!sel[t]) continue;
+    const a = faces[t*3]!, b = faces[t*3+1]!, c = faces[t*3+2]!;
+    const ux = mesh.nodes[b*3]!-mesh.nodes[a*3]!, uy = mesh.nodes[b*3+1]!-mesh.nodes[a*3+1]!, uz = mesh.nodes[b*3+2]!-mesh.nodes[a*3+2]!;
+    const vx = mesh.nodes[c*3]!-mesh.nodes[a*3]!, vy = mesh.nodes[c*3+1]!-mesh.nodes[a*3+1]!, vz = mesh.nodes[c*3+2]!-mesh.nodes[a*3+2]!;
+    area += 0.5 * Math.hypot(uy*vz-uz*vy, uz*vx-ux*vz, ux*vy-uy*vx);
+  }
+  const pf = assembleSurfaceTraction(mesh.nodes, faces, sel, [0, 0, P]);
+  let fz = 0; for (let n = 0; n < mesh.nodeCount; n++) fz += pf[n*3+2] ?? 0;
+  test("[27.3] total force = P × selected area", Math.abs(fz - P*area) < 1e-6*(P*area),
+    `Σfz=${fz.toFixed(3)} P·A=${(P*area).toFixed(3)} (A=${area.toFixed(1)} mm²)`);
+
+  // Scale invariance: the same box ×0.1 selects the same triangle count.
+  const small = generateBoxMeshC3D4(0, 0, 0, S*0.1, S*0.1, S*0.1, 1, 1, 1);
+  const sf = extractSurfaceFaces(small);
+  const selS = selectPressureRegion(small.nodes, sf, [0, 0, 1], "face");
+  const nSmall = selS.reduce((s, on) => s + (on ? 1 : 0), 0);
+  test("[27.4] ×0.1-scale selects the same face-triangle count", nSmall === nSel, `${nSmall} vs ${nSel}`);
+}
+
 // ── Summary ───────────────────────────────────────────────────────────────────
 // Runs at the END of the async IIFE, after every test group above has
 // completed. (A previous setTimeout(0) variant fired as soon as the event
