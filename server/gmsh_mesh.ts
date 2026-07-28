@@ -90,6 +90,14 @@ export interface GmshMeshResult {
   surfaceTriangles: Int32Array;  // [n0,n1,n2, ...] indices into mesh.nodes
 }
 
+// Gmsh MSH type-11 (10-node tet) → STORMFEA element.ts midside slot remap.
+// Corners (0–3) and the first four midsides (4–7) agree; only slots 8 and 9 are
+// swapped between the two conventions (Gmsh 8=mid(2,3)/9=mid(1,3) vs STORMFEA
+// 8=mid(1,3)/9=mid(2,3)). Empirically decoded from an affine gmsh cube mesh and
+// locked by gmsh-c3d10.test.ts (issue #167). To read a Gmsh element into
+// STORMFEA order, take Gmsh node GMSH_C3D10_TO_STORM[k] for STORMFEA slot k.
+const GMSH_C3D10_TO_STORM: readonly number[] = [0, 1, 2, 3, 4, 5, 6, 7, 9, 8];
+
 // ─── Parse Gmsh .msh (version 2) — supports C3D4 and C3D10 ─────────────────────
 /**
  * Parses first-order (type 4 = C3D4) and second-order (type 11 = C3D10) meshes.
@@ -147,10 +155,17 @@ function parseMsh2(text: string): {
         tetsBuf[tetPos++] = nodeIdToIdx.get(parseInt(parts[base+k]!, 10)) ?? 0;
 
     } else if (etype === 11) {
-      // C3D10: 10-node quadratic tet — Gmsh ordering matches our element.ts
+      // C3D10: 10-node quadratic tet. Gmsh's MSH type-11 midside ordering does
+      // NOT match STORMFEA's element.ts convention: Gmsh emits slot 8 = mid(2,3)
+      // and slot 9 = mid(1,3), whereas element.ts (c3d10ShapeFunctions: N8=4ηδ,
+      // N9=4ζδ) requires slot 8 = mid(1,3) and slot 9 = mid(2,3). Slots 0–7 agree.
+      // Reading raw silently evaluated the wrong shape functions on those two
+      // midside DOFs of every element (issue #167, caught by
+      // verifyC3D10MidsideOrdering — confirmed empirically on an affine cube:
+      // raw read → 97.6% midside deviation / 0 affine witnesses). Remap on read.
       detectedNPE = 10;
       for (let k = 0; k < 10; k++)
-        tetsBuf[tetPos++] = nodeIdToIdx.get(parseInt(parts[base+k]!, 10)) ?? 0;
+        tetsBuf[tetPos++] = nodeIdToIdx.get(parseInt(parts[base + GMSH_C3D10_TO_STORM[k]!]!, 10)) ?? 0;
 
     } else if (etype === 2 || etype === 9) {
       // Linear or quadratic triangle — use corner nodes only for surface display
