@@ -1162,7 +1162,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <button class="btn vmode-btn"        id="btn-dmg"    onclick="setStressMode('dmg')"    style="display:flex" title="Damage ratio — stress as a fraction of material yield strength (1.0 = at yield)"><span class="vmode-abbr">DMG</span><span class="vmode-cap">Damage</span></button>
         <button class="btn vmode-btn"        id="btn-xyutil" onclick="setStressMode('xyutil')" style="display:flex" title="XY in-plane utilization — sqrt(σxx²+σyy²-σxx·σyy+3·σxy²) / yieldXY. Red at 1.0 = at in-plane yield. High → add infill."><span class="vmode-abbr">U<sub>XY</sub></span><span class="vmode-cap">In-plane use</span></button>
         <button class="btn vmode-btn"        id="btn-zutil"  onclick="setStressMode('zutil')"  style="display:flex" title="Interlayer interface utilization — tension-only ⟨σzz⟩₊/S_zt interacting with interlayer shear τ/S_zs (compression gets a friction credit instead). Red at 1.0 = delamination/shear onset. High → reorient or add walls."><span class="vmode-abbr">U<sub>Z</sub></span><span class="vmode-cap">Z-layer use</span></button>
-        <button class="btn vmode-btn"        id="btn-error"  onclick="setStressMode('error')"  style="display:flex" title="Error estimate η — Zienkiewicz-Zhu mesh quality metric (0–1), identifies under-resolved elements"><span class="vmode-abbr">η</span><span class="vmode-cap">Mesh quality</span></button>
+        <button class="btn vmode-btn"        id="btn-error"  onclick="setStressMode('error')"  style="display:flex" title="Error estimate η (Zienkiewicz-Zhu) — each element's SHARE of the mesh-wide discretization error, not an absolute % error on its stress. Ranks WHERE the mesh limits accuracy; red does not mean 'this stress is wrong by that much.' See the global % figure under the legend for overall accuracy."><span class="vmode-abbr">η</span><span class="vmode-cap">Mesh quality</span></button>
       </div>
     </div>
 
@@ -1193,6 +1193,15 @@ body:not(.has-results) #btn-stress { display: none !important; }
          conditions.) -->
     <div id="legend" style="display:none;flex-direction:column;position:absolute;bottom:12px;right:12px;gap:6px;align-items:flex-end;background:var(--bg-base);border:1px solid var(--border);border-radius:3px;padding:7px 10px">
       <div id="legend-title" style="font-size:9px;color:var(--text-lo);letter-spacing:.06em;text-align:right;pointer-events:none;text-transform:uppercase">von Mises (<span id="legend-stress-unit">MPa</span>)</div>
+      <!-- η ("Mesh quality") explainer — only shown while the error-estimate heatmap
+           is active (issue #151). η is a per-element SHARE of the mesh-wide ZZ
+           energy-norm error, not an absolute stress error; the global % figure is
+           the one number that IS an overall accuracy read. Populated/toggled from
+           applyStressColorsFromArrays(). -->
+      <div id="eta-explainer" style="display:none;max-width:220px;text-align:right;font-size:10px;line-height:1.5;color:var(--text-lo);margin-bottom:2px">
+        <div>η ranks elements by their <b>share</b> of total estimated mesh (discretization) error — not the % error of that element's stress. Red = the mesh limits accuracy most here; use it to decide <i>where</i> to refine, not <i>how wrong</i> a value is.</div>
+        <div id="eta-global-error" style="margin-top:4px;color:var(--text-mid)"></div>
+      </div>
       <div id="legend-labels" style="display:flex;align-items:stretch;gap:8px">
         <div id="legend-val-stack" style="display:flex;flex-direction:column;justify-content:space-between;align-items:flex-end">
           <span class="legend-val" style="font-size:10px;color:var(--text-lo);min-width:46px;white-space:nowrap;text-align:right">HIGH</span>
@@ -12406,6 +12415,27 @@ function applyStressColorsFromArrays(arrays) {
   // Update legend title from the single source of truth
   const lt = document.getElementById('legend-title');
   if (lt) lt.textContent = meta.legend();
+
+  // η ("Mesh quality") semantics panel — issue #151: η is a relative share of
+  // the global ZZ error norm, not an absolute per-element error percentage.
+  // Only shown while the error mode is active; paired with globalRelativeError
+  // (computed server-side in computeZZErrorEstimate, sent as a top-level field)
+  // so the one genuinely absolute accuracy number sits right next to the map.
+  const etaBox = document.getElementById('eta-explainer');
+  if (etaBox) {
+    if (S.stressMode === 'error') {
+      etaBox.style.display = 'block';
+      const gre = S.results?.globalRelativeError;
+      const greEl = document.getElementById('eta-global-error');
+      if (greEl) {
+        greEl.textContent = (typeof gre === 'number')
+          ? `Global relative error (whole-part estimate): ${(gre * 100).toFixed(1)}%`
+          : 'Global relative error: unavailable for this run';
+      }
+    } else {
+      etaBox.style.display = 'none';
+    }
+  }
 }
 
 // ── Threshold filter (legend) ─────────────────────────────────────────────────
