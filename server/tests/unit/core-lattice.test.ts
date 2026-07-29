@@ -399,6 +399,100 @@ describe("per-axis lattice strength fractions (issue #177)", () => {
   });
 });
 
+// ─── Issue #183: C¹ strength taper replaces the min(1,·) hard clip ────────────
+
+describe("strength taper to the solid anchor (issue #183)", () => {
+  // The above-reference patterns (patternMul > 1) used to hit min(1, patternMul·ρ^m)
+  // and PLATEAU at 1.0 from ρ* = (1/patternMul)^(1/m) to 1, with a slope
+  // discontinuity at ρ*. They now taper smoothly, staying strictly below 1 until
+  // ρ=1 and reaching 1 with continuous slope.
+  const ABOVE_REF = ALL_PATTERNS.filter(p => PATTERN_MULTIPLIERS[p]! > 1); // gyroid, cubic, honeycomb, trihexagon, adaptive
+
+  it("s(1) is still EXACTLY min(1, patternMul) — bit-for-bit anchor unchanged", () => {
+    for (const p of ALL_PATTERNS) {
+      expect(latticeStrengthFraction(p, 1)).toBe(Math.min(1, PATTERN_MULTIPLIERS[p]!));
+      const s = latticeStrengthFractions(p, 1);
+      const anchor = Math.min(1, PATTERN_MULTIPLIERS[p]!);
+      expect(s.sXY).toBe(anchor); expect(s.sZ).toBe(anchor); expect(s.sZS).toBe(anchor);
+    }
+  });
+
+  it("above-reference patterns no longer plateau: s(ρ) < 1 strictly for all ρ < 1", () => {
+    for (const p of ABOVE_REF) {
+      // The old clip made s = 1 for every ρ ≥ ρ* ≈ 0.94 (gyroid). Now s < 1
+      // right up to ρ = 1, so raising infill in that band buys real strength.
+      for (let rho = 0.90; rho < 1.0; rho += 0.005) {
+        const s = latticeStrengthFraction(p, rho);
+        expect(s).toBeLessThan(1);
+      }
+      expect(latticeStrengthFraction(p, 1)).toBe(1);
+    }
+  });
+
+  it("s is STRICTLY increasing on (0,1] for every pattern (no dead zone)", () => {
+    for (const p of ALL_PATTERNS) {
+      const mul = PATTERN_MULTIPLIERS[p]!;
+      let prev = -Infinity;
+      for (let rho = 0.02; rho <= 1.0001; rho += 0.01) {
+        const s = latticeStrengthFraction(p, Math.min(rho, 1));
+        // Skip the floored regime (s pinned at LATTICE_STRENGTH_FLOOR at ρ→0).
+        if (prev > LATTICE_STRENGTH_FLOOR) {
+          // Weaker/equal patterns (mul ≤ 1) are the bare power law — strictly up.
+          // Above-reference patterns now taper but still monotonically increase.
+          expect(s).toBeGreaterThan(prev - 1e-15);
+          if (mul <= 1 || rho < 0.999) expect(s).toBeGreaterThan(prev);
+        }
+        prev = s;
+      }
+    }
+  });
+
+  it("no slope discontinuity: finite-difference derivative is continuous across ρ=0.9…1.0", () => {
+    // The old clip produced a slope JUMP (from ~m·patternMul·ρ^(m-1) down to 0)
+    // at ρ*. A C¹ curve has bounded successive-derivative change ~O(step).
+    const h = 1e-6, step = 0.002;
+    for (const p of ABOVE_REF) {
+      let prevD: number | null = null;
+      for (let rho = 0.85; rho <= 1.0 - h; rho += step) {
+        const d = (latticeStrengthFraction(p, rho + h) - latticeStrengthFraction(p, rho - h)) / (2 * h);
+        if (prevD !== null) {
+          // Smooth ⇒ |Δderivative| stays tiny; the old kink jumped by ~O(1).
+          expect(Math.abs(d - prevD)).toBeLessThan(0.05);
+        }
+        prevD = d;
+      }
+    }
+  });
+
+  it("s'(1) > 0 for every default pattern/axis (approaches the anchor from below)", () => {
+    // Central difference just left of the anchor; positive ⇒ no overshoot above 1.
+    const h = 1e-5;
+    for (const p of ABOVE_REF) {
+      const slopeXY = (latticeStrengthFraction(p, 1) - latticeStrengthFraction(p, 1 - h)) / h;
+      expect(slopeXY).toBeGreaterThan(0);
+      const s0 = latticeStrengthFractions(p, 1 - h);
+      const s1 = latticeStrengthFractions(p, 1);
+      expect((s1.sZ  - s0.sZ)  / h).toBeGreaterThan(0);
+      expect((s1.sZS - s0.sZS) / h).toBeGreaterThan(0);
+    }
+  });
+
+  it("low/typical infill is bit-unchanged by the taper (ρ^K ≈ 0): locked ρ=0.2 values hold", () => {
+    // K=10 concentrates the taper in the top density; the ρ=0.2 lock is untouched.
+    expect(latticeStrengthFraction("gyroid", 0.2)).toBeCloseTo(0.144452, 5);
+    const g = latticeStrengthFractions("gyroid", 0.2);
+    expect(g.sZ).toBeCloseTo(0.096598, 5);
+    expect(g.sZS).toBeCloseTo(0.082238, 5);
+  });
+
+  it("weaker/equal patterns (patternMul ≤ 1) keep the plain power law (grid override = ρ^m)", () => {
+    // patternMul = 1 (grid): taper term (patternMul−1) = 0, so s = ρ^m exactly.
+    expect(latticeStrengthFraction("grid", 0.5, 1.0)).toBeCloseTo(0.5, 12);
+    // lines patternMul 0.92 < 1: s(1) = 0.92 (materialsEqual does NOT fire).
+    expect(latticeStrengthFraction("lines", 1)).toBe(0.92);
+  });
+});
+
 // ─── Issue #176: ONE in-plane density knockdown across all paths ──────────────
 
 describe("unified in-plane density knockdown (issue #176)", () => {
