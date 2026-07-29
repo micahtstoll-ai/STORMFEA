@@ -83,6 +83,10 @@ import { flagMergedHoleWarnings }           from "./holes.js";
 import type { HoleFeature }                 from "./holes.js";
 import { meshWithTetGen, TetGenNotFoundError } from "./tetgen.js";
 import { meshStepWithGmsh }                 from "./gmsh_mesh.js";
+import {
+  computeFingerprint, computeValidationCoverage,
+  type ValidationCoverageReport, type CriterionValue as CoverageCriterionValue,
+} from "./validation-coverage.js";
 
 // ─── Standard bolt database ───────────────────────────────────────────────────
 /**
@@ -2394,6 +2398,15 @@ export interface MaterialModelInfo {
 
 export interface AnalysisResult {
   materialModel:           MaterialModelInfo;
+  /**
+   * Per-analysis validation coverage map (issue #191) — which
+   * solver_validation groups and unit-test suites directly exercise THIS
+   * analysis's configuration (element order, material model, criterion,
+   * load types, mesher, opt-in options), and which characteristics have no
+   * direct anchor. See server/validation-coverage.ts for what "covered"
+   * means and doesn't.
+   */
+  validationCoverage:      ValidationCoverageReport;
   vertexStress:            Float32Array;
   vertexPrincipalStress:   Float32Array;
   vertexPrincipalStress2:  Float32Array;
@@ -5075,8 +5088,33 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     if (sv > maxSignedVM) maxSignedVM = sv;
   }
 
+  // ── Per-analysis validation coverage map (issue #191) ───────────────────────
+  // Reuses characteristics already computed above rather than re-deriving them
+  // — sfCriterion (bulk.criterion) is the authoritative record of which
+  // criterion actually governed this solve, not a re-guess from settings.
+  const coverageCriterion: CoverageCriterionValue =
+    bulk.criterion === "hill" ? "hill-legacy" : bulk.criterion;
+  const fingerprint = computeFingerprint({
+    nodesPerElem: mesh.nodesPerElem,
+    twoRegionActive: !!materialField,
+    orthotropic: isOrthotropic(material),
+    criterion: coverageCriterion,
+    hasForces: req.forces.length > 0,
+    hasPressures: !!(req.pressures && req.pressures.length > 0),
+    hasBoltHoles: req.boltHoleIds.length > 0,
+    isModal: !!modalResult,
+    computesBuckling: mayBuckle,
+    fileType: req.fileType,
+    meshFallback,
+    bondProcessActive: !!bondRel,
+    inPlaneAnisotropyActive: !!inPlaneAniso,
+    wallBondActive: !!wallBondField,
+  });
+  const validationCoverage: ValidationCoverageReport = computeValidationCoverage(fingerprint);
+
   return {
     materialModel,
+    validationCoverage,
     vertexStress,
     vertexSignedVonMises,
     vertexXyUtil,

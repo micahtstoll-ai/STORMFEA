@@ -6238,6 +6238,68 @@ function updateStickyResults(s) {
   bar.style.display = 'flex';
 }
 
+// ── Per-analysis validation coverage panel (issue #191) ─────────────────────
+// The live DEBUG-tab scoreboard (GET /api/solver-tests) shows the WHOLE
+// validation suite passing — a global assurance. This panel answers a
+// narrower, more honest question: which of those groups/suites actually
+// exercise the characteristics of the analysis just run, and which
+// characteristics have NO direct anchor. Deliberately renders gaps in the
+// same visual register as coverage (not hidden in a tooltip) — an
+// uncovered axis or a known combo gap must read as a plain statement, not
+// be implied away by an otherwise-green panel.
+function renderValidationCoverage(vc) {
+  const AXIS_LABEL = {
+    elementOrder: 'Element order', material: 'Material model', criterion: 'Failure criterion',
+    loadType: 'Load type', mesher: 'Mesher', option: 'Option',
+  };
+  const axisText = axis => {
+    const [group, value] = axis.split(':');
+    return `${AXIS_LABEL[group] || group}: <b style="color:var(--text-hi)">${value}</b>`;
+  };
+  const totalAxes = vc.axisCoverage.length;
+  const uncoveredCount = vc.uncoveredAxes.length;
+  const hasGaps = uncoveredCount > 0 || vc.comboGaps.length > 0;
+  const headColor = hasGaps ? 'var(--warn)' : 'var(--success)';
+  const headText = hasGaps
+    ? `${totalAxes - uncoveredCount}/${totalAxes} characteristics covered — ${uncoveredCount ? uncoveredCount + ' uncovered' : ''}${uncoveredCount && vc.comboGaps.length ? ', ' : ''}${vc.comboGaps.length ? vc.comboGaps.length + ' combo gap' + (vc.comboGaps.length > 1 ? 's' : '') : ''}`
+    : `${totalAxes}/${totalAxes} characteristics directly covered`;
+
+  const axisRows = vc.axisCoverage.map(ac => {
+    const covered = ac.entries.length > 0;
+    const color = covered ? 'var(--text-mid)' : 'var(--warn)';
+    const detail = covered
+      ? ac.entries.map(e => e.label).join('; ')
+      : 'No direct validation anchor for this characteristic.';
+    return `<div style="padding:4px 0;border-bottom:1px solid var(--border)">
+      <div style="font-size:10px;color:var(--text-lo)">${axisText(ac.axis)} ${covered ? `<span style="color:var(--success)">✓ ${ac.entries.length} anchor${ac.entries.length > 1 ? 's' : ''}</span>` : `<span style="color:var(--warn)">✗ no direct anchor</span>`}</div>
+      <div style="font-size:9px;color:${color};line-height:1.5;margin-top:2px">${detail}</div>
+    </div>`;
+  }).join('');
+
+  const comboHTML = vc.comboGaps.length ? `
+    <div style="margin-top:8px;padding:8px 10px;background:#3a1a00;border:1px solid var(--warn);border-radius:4px">
+      <div style="font-size:10px;font-weight:600;color:var(--warn);margin-bottom:4px">Known combination gaps</div>
+      ${vc.comboGaps.map(g => `<div style="font-size:9px;color:var(--text-mid);line-height:1.5;margin-bottom:4px">${g.note}</div>`).join('')}
+    </div>` : '';
+
+  return `
+    <details style="margin-bottom:12px">
+      <summary style="cursor:pointer;font-size:11px;font-weight:600;color:var(--text-mid);padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;user-select:none">
+        <span style="color:${headColor}">⚙ Validation Coverage — ${headText}</span>
+      </summary>
+      <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px">
+        <div style="font-size:9px;color:var(--text-lo);line-height:1.5;margin-bottom:8px">
+          Which validation groups/suites exercise THIS analysis's configuration — not proof this
+          exact geometry/load case is correct, only that the same kind of characteristic (element
+          order, material model, criterion, load type, mesher, options) is exercised somewhere in
+          the automated suite. See DEBUG tab for the full suite scoreboard.
+        </div>
+        ${axisRows}
+        ${comboHTML}
+      </div>
+    </details>`;
+}
+
 function showResults(s) {
   updateStickyResults(s);
   document.getElementById('results-placeholder').style.display = 'none';
@@ -6449,6 +6511,8 @@ function showResults(s) {
         </div>
       </details>`;
     })() : ''}
+
+    ${s.validationCoverage ? renderValidationCoverage(s.validationCoverage) : ''}
 
     ${S.modal && S.modal.modes && S.modal.modes.length ? (() => {
       const rows = S.modal.modes.map((m, k) => {

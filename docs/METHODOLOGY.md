@@ -416,6 +416,43 @@ These solver checks run alongside the Vitest unit tests, the parallel-assembly
 equivalence check, and the client-logic checks. Exact counts are reported by
 `npm run test`; see the README's Contributing section for the current totals.
 
+### 9.1 Per-analysis validation coverage (issue #191)
+
+The suite scoreboard above is **global** — it reports that the whole suite
+passes, not whether the suite covers the specific model path a given analysis
+just exercised. Those are different assurances: an isotropic C3D4 part with a
+single applied force rests on a very different (larger) set of anchors than a
+C3D10 two-region part with a bond-process block and bolt loads.
+
+`server/validation-coverage.ts` maintains a small, explicit mapping from
+configuration **axes** (element order, material model, failure criterion,
+load types, mesher, opt-in options) to the solver-validation groups and unit
+suites that directly exercise each axis value. Every analysis computes its own
+**fingerprint** from its actual characteristics and gets back a coverage
+report (`summary.validationCoverage`) — surfaced in the client as a
+"Validation Coverage" panel near the results, and identical data is available
+via the API.
+
+**What a coverage claim means:** the listed suite exercises the same *kind*
+of characteristic (e.g. "runs a C3D10 mesh", "activates the two-region
+material field") somewhere in the automated suite.
+
+**What it does NOT mean:** it is not a claim that this exact geometry, load
+case, or material combination has been proven correct — that would require a
+regression fixture matching the user's actual part, which the project does
+not maintain. Coverage is also tracked primarily **per-axis**, not per full
+combination; a small, explicitly-maintained list of **known combination
+gaps** (`KNOWN_COMBO_GAPS`) states plainly where two individually-covered
+axes have no direct anchor for their *combination* (e.g. two-region
+validation runs exclusively on C3D10 meshes today, so C3D4 + two-region has
+no direct combination anchor even though each axis alone does). An
+intentionally-uncovered axis or combination is reported as a plain gap
+statement, never silently implied as covered — this is checked directly by
+`server/tests/unit/validation-coverage.test.ts`, including a CI guard that
+every axis value in the fingerprint enum has an explicit (possibly empty)
+entry in the coverage map, so a new feature must declare its coverage or
+declare none rather than falling through unmapped.
+
 ---
 
 ## References

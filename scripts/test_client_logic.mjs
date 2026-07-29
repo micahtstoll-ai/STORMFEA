@@ -564,6 +564,63 @@ console.log('\n[J] bed frame — bedDirToWorld maps bed Z to world +Y');
     `got (${rt.x.toFixed(3)},${rt.y.toFixed(3)},${rt.z.toFixed(3)})`);
 }
 
+// ── Test group O: renderValidationCoverage — per-analysis coverage panel (#191) ─
+console.log('\n[O] renderValidationCoverage — validation coverage panel (#191)');
+{
+  const fnCode = extractFunction(html, 'renderValidationCoverage\\(vc\\)', 'showResults');
+  const mod = { exports: {} };
+  new Function('module', 'exports', fnCode + '\nmodule.exports = { renderValidationCoverage };')(mod, mod.exports);
+  const { renderValidationCoverage } = mod.exports;
+
+  // Fully-covered configuration: no warn color, no "no direct anchor" text,
+  // no combo-gap block.
+  {
+    const vc = {
+      fingerprint: { elementOrder: 'C3D4', material: 'isotropic', criterion: 'von-mises', loadTypes: ['force'], mesher: 'tetgen', options: [] },
+      axisCoverage: [
+        { axis: 'elementOrder:C3D4', entries: [{ id: 'solver:1', label: 'Patch test', kind: 'solver-group' }] },
+        { axis: 'material:isotropic', entries: [{ id: 'solver:1', label: 'Patch test', kind: 'solver-group' }] },
+      ],
+      coveringEntryIds: ['solver:1'],
+      uncoveredAxes: [],
+      comboGaps: [],
+    };
+    const html2 = renderValidationCoverage(vc);
+    test('fully-covered: reports 2/2 characteristics', html2.includes('2/2 characteristics directly covered'));
+    test('fully-covered: no "no direct anchor" text', !html2.includes('no direct anchor'));
+    test('fully-covered: no combo-gap block', !html2.includes('Known combination gaps'));
+    test('fully-covered: includes axis label and entry label', html2.includes('Element order') && html2.includes('Patch test'));
+  }
+
+  // Gapped configuration: an uncovered axis AND a combo gap must both
+  // surface as plain text, not be hidden or implied-away.
+  {
+    const vc = {
+      fingerprint: { elementOrder: 'C3D4', material: 'two-region', criterion: 'fdm-interface', loadTypes: ['force'], mesher: 'tetgen', options: [] },
+      axisCoverage: [
+        { axis: 'elementOrder:C3D4', entries: [{ id: 'solver:1', label: 'Patch test', kind: 'solver-group' }] },
+        { axis: 'material:two-region', entries: [] },   // deliberately uncovered
+      ],
+      coveringEntryIds: ['solver:1'],
+      uncoveredAxes: ['material:two-region'],
+      comboGaps: [{ axes: ['elementOrder:C3D4', 'material:two-region'], note: 'C3D4 + two-region is not directly anchored.' }],
+    };
+    const html2 = renderValidationCoverage(vc);
+    test('gapped: header mentions 1 uncovered', html2.includes('1 uncovered'));
+    test('gapped: shows "no direct anchor" for the uncovered axis', html2.includes('no direct anchor'));
+    test('gapped: renders the combo-gap note verbatim', html2.includes('C3D4 + two-region is not directly anchored.'));
+    test('gapped: combo-gap block header present', html2.includes('Known combination gaps'));
+  }
+
+  // Degenerate: no axes at all must not throw (defensive).
+  {
+    const vc = { fingerprint: {}, axisCoverage: [], coveringEntryIds: [], uncoveredAxes: [], comboGaps: [] };
+    let threw = false;
+    try { renderValidationCoverage(vc); } catch (e) { threw = true; }
+    test('empty coverage report does not throw', !threw);
+  }
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 if (failed > 0) {

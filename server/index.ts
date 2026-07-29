@@ -405,6 +405,11 @@ app.post("/api/analyse", async (req, res) => {
         maxSignedVonMisesMPa: result.maxSignedVonMisesMPa,
         boltReactions:        (result as any).boltReactions ?? [],
         residualCheckpoints:  result.residualCheckpoints ?? [],
+        // Per-analysis validation coverage map (#191) — which validation
+        // groups/suites cover THIS analysis's configuration, and which
+        // characteristics have no direct anchor. Always present (computed
+        // from characteristics the solve already has, no extra opt-in).
+        validationCoverage:   result.validationCoverage,
       },
       vertexStressB64:              Buffer.from(result.vertexStress.buffer).toString("base64"),
       vertexSignedVonMisesB64:      Buffer.from(result.vertexSignedVonMises.buffer).toString("base64"),
