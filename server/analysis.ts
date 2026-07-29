@@ -831,6 +831,26 @@ export const CROSS_BEAD_RATIO_LITERATURE = 0.85;
  * normal after the swap (issue #101). See the "upright_swap" SOURCES entry
  * and server/tests/unit/upright-swap.test.ts.
  *
+ * Poisson ratios are swapped consistently with the moduli (issue #187). The
+ * fabricated material is transversely isotropic about global Z (isotropy
+ * plane = the horizontal XY, now the WEAK plane; axis = vertical Z, now the
+ * STRONG in-layer direction). Modelling BOTH horizontal directions as the
+ * weak through-layer axis means every Poisson coupling that involves a
+ * horizontal direction is the through-layer coupling ν_zx (the minor ratio of
+ * the input, ν_zx = ν_xz·E_z/E_xy by reciprocity):
+ *   - nu_xz_new (horizontal→vertical) = ν_zx  — this exactly preserves the
+ *     physical interlayer cross-coupling compliance entry
+ *     s13 = −ν_xz_new/E_xy_new = −ν_zx/E_z = −ν_xz/E_xy (the input's own s13),
+ *     whereas leaving nu_xz unchanged inflated it by E_xy/E_z.
+ *   - nu_xy_new (horizontal↔horizontal, both weak) = ν_zx as well.
+ * The result is a self-consistent, symmetric-positive-definite compliance
+ * (reciprocity ν_ij/E_i = ν_ji/E_j holds by construction in
+ * buildOrthotropicConstitutiveMatrix) rather than the pre-#187 hybrid that
+ * kept the strong-plane ν_xy and the un-rescaled ν_xz against swapped E's.
+ * The change is a consistency fix, not a loosening: conservatism still lives
+ * in the moduli (both horizontals weak) and the yield swap. Locked by
+ * server/tests/unit/upright-swap.test.ts.
+ *
  * The input must be in the NATURAL frame (weak axis = local Z) and must not
  * carry a weakAxis — swapping an already-rotated material is meaningless.
  */
@@ -840,11 +860,13 @@ export function applyUprightScalarSwap(mat: OrthotropicMaterial): OrthotropicMat
   // does not alter. The swapped material is analysed with the hill-legacy
   // criterion anyway (the interface criterion needs a known weak axis, which
   // the no-bed swap deliberately does not have — see runAnalysis).
+  const nu_zx = mat.nu_xz * mat.E_z / mat.E_xy; // input minor ratio (reciprocity)
   return {
     ...mat,
     E_xy: mat.E_z, E_z: mat.E_xy,
     G_xy: mat.G_xz, G_xz: mat.G_xz,
     yieldXY: mat.yieldZ, yieldZ: mat.yieldXY,
+    nu_xy: nu_zx, nu_xz: nu_zx,
   };
 }
 
