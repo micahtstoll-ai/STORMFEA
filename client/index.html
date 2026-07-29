@@ -1141,6 +1141,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
           <button class="btn" id="clip-z" onclick="setClipAxis('z')" style="font-size:10px;padding:4px 7px" title="Cut along the Z axis">Z</button>
           <input type="range" id="clip-pos" min="0" max="100" value="50" step="1" oninput="onClipPosInput(this.value)" style="width:70px;vertical-align:middle" title="Position of the cutting plane along the chosen axis">
           <button class="btn" id="clip-flip" onclick="toggleClipFlip()" style="font-size:11px;padding:4px 7px" title="Flip which half of the part is kept">⇄</button>
+          <button class="btn" id="clip-interior" onclick="toggleSectionInteriorStress()" style="font-size:9px;padding:4px 6px" title="Color the cut face with real interpolated interior stress instead of flat grey. Requires re-running the analysis once (larger response payload), so it only fetches interior data while this is on.">σ INSIDE</button>
         </span>
       </div>
     </div>
@@ -2429,6 +2430,11 @@ const S = {
   _convergenceData: null,
   // Hole bolt-type overrides: holeId -> string key
   holeTypeOverrides: {},
+  // Section-view interior stress opt-in (#190) — persisted across solves so
+  // re-running the analysis (needed to fetch the volumetric payload) keeps
+  // the user's choice. See toggleSectionInteriorStress / buildAnalyseBody.
+  sectionInteriorStress: localStorage.getItem('sf-section-interior-stress') === '1',
+  _volumeField: null,
 };
 
 // ─── Landing screen state ─────────────────────────────────────────────────────
@@ -3435,6 +3441,7 @@ function loadMeshFromPositions(posB64) {
   S.baseNormals   = geo.attributes.normal ? geo.attributes.normal.array.slice() : null;
   S._modelSizeMax = Math.max(sz.x, sz.y, sz.z);
   S._modelSize    = sz.clone();   // per-axis extents for the section plane
+  S._volumeField  = null;         // stale volumetric payload belonged to the old geometry (#190)
   resetDeform();
   resetClip();
 
@@ -3738,6 +3745,140 @@ function _decodeStressF32(b64) {
   } catch (e) { return null; }
 }
 
+// Decode a base64 Int32 payload (tet connectivity), or null when absent/corrupt.
+function _decodeStressI32(b64) {
+  if (!b64) return null;
+  try {
+    return new Int32Array(Uint8Array.from(atob(b64), c => c.charCodeAt(0)).buffer);
+  } catch (e) { return null; }
+}
+
+// ── Volumetric interior-stress payload (section-view cut face, issue #190) ──
+// Decodes the opt-in volumeField block (analysis-mesh nodes + corner-tet
+// connectivity + per-node stress/utilization arrays) sent only when the
+// request set analysis.includeVolumeField (see toggleSectionInteriorStress).
+// Returns null when the payload is absent (flag was off) or fails to decode,
+// so callers fall back to the flat "cut material, no data" cap.
+function decodeVolumeField(vfRaw, effYield) {
+  if (!vfRaw) return null;
+  const nodes = _decodeStressF32(vfRaw.nodesB64);
+  const tets  = _decodeStressI32(vfRaw.tetsB64);
+  const vm    = _decodeStressF32(vfRaw.nodeVonMisesB64);
+  if (!nodes || !tets || !vm) return null;
+  const svm    = _decodeStressF32(vfRaw.nodeSignedVonMisesB64);
+  const s1     = _decodeStressF32(vfRaw.nodePrincipal1B64);
+  const s2     = _decodeStressF32(vfRaw.nodePrincipal2B64);
+  const s3     = _decodeStressF32(vfRaw.nodePrincipal3B64);
+  const xyutil = vfRaw.nodeXyUtilB64 ? _decodeStressF32(vfRaw.nodeXyUtilB64) : null;
+  const zutil  = vfRaw.nodeZUtilB64  ? _decodeStressF32(vfRaw.nodeZUtilB64)  : null;
+  const tc = (s1 && s3) ? computeDominantPrincipal(s1, s3) : null;
+  const yield_ = effYield || 1;
+  const dmg = new Float32Array(vm.length);
+  for (let i = 0; i < vm.length; i++) dmg[i] = (vm[i] ?? 0) / yield_;
+  return {
+    nodeCount: vfRaw.nodeCount, tetCount: vfRaw.cornerTetCount,
+    nodes, tets, vm, svm, s1, s2, s3, tc, dmg, xyutil, zutil,
+  };
+}
+
+// Per-node data selector for each stress-mode, mirroring MODE_META's `data`
+// selector but reading the volumetric per-node arrays instead of the
+// display-mesh per-vertex arrays. `error` has no per-node volumetric
+// counterpart (Zienkiewicz-Zhu error is an element-level estimate that is
+// only projected to the SURFACE mesh server-side) — the cap honestly falls
+// back to the flat "no data" material for that mode rather than fabricating
+// a value.
+const VOLUME_MODE_DATA = {
+  tc:     vf => vf.tc,
+  vm:     vf => vf.vm,
+  svm:    vf => vf.svm,
+  s1:     vf => vf.s1,
+  s2:     vf => vf.s2,
+  s3:     vf => vf.s3,
+  dmg:    vf => vf.dmg,
+  xyutil: vf => vf.xyutil,
+  zutil:  vf => vf.zutil,
+  error:  () => null,
+};
+
+/**
+ * Marching-tetrahedra slice of a scalar field, cut by an axis-aligned plane
+ * (coordinate[axis] == off, in the same local frame as `nodes`). Pure
+ * function of plain arrays — no THREE.js/DOM dependency — so it is directly
+ * unit-testable (scripts/test_client_logic.mjs) and reusable for any future
+ * non-axis-aligned generalization.
+ *
+ * For every tet straddling the plane, the two/three/four crossing edges are
+ * linearly interpolated for both position and `values`, producing 1 triangle
+ * (3-vs-1 corner split) or 2 triangles (2-vs-2 split, "quad" case). Edge
+ * intersections are cached per (loNode,hiNode) pair with the LOWER node index
+ * always used as the interpolation origin — two tets sharing a face edge
+ * therefore compute that edge's cut point and value with the exact same
+ * floating-point expression, so coincident cap vertices from different tets
+ * are bit-identical by construction (the weld invariant in CLAUDE.md is
+ * satisfied without a separate spatial-hash weld pass — there is nothing to
+ * weld, duplicate vertices already agree exactly).
+ *
+ * @param nodes  Float32/Float64 array, node positions xyz interleaved.
+ * @param tets   Int32 array, 4 node indices per tet.
+ * @param values Float32/Float64 array, one scalar per node (nodeCount long).
+ * @param axis   0, 1, or 2 — which coordinate the cut plane is normal to.
+ * @param off    The plane's coordinate value along `axis` (local frame).
+ * @returns { positions: Float32Array, values: Float32Array } — flat
+ *          triangle-soup (3 verts/values per triangle), no index buffer.
+ */
+function sliceTetsByAxisPlane(nodes, tets, values, axis, off) {
+  const nTets = tets.length / 4;
+  const outPos = [];
+  const outVal = [];
+  const edgeCache = new Map();
+  const coordOf = n => nodes[n * 3 + axis];
+
+  function cut(nLo, nHi) {
+    const key = nLo * 2000000000 + nHi;
+    let c = edgeCache.get(key);
+    if (c) return c;
+    const dLo = coordOf(nLo) - off;
+    const dHi = coordOf(nHi) - off;
+    const t = dLo / (dLo - dHi);
+    c = {
+      x: nodes[nLo*3]   + t * (nodes[nHi*3]   - nodes[nLo*3]),
+      y: nodes[nLo*3+1] + t * (nodes[nHi*3+1] - nodes[nLo*3+1]),
+      z: nodes[nLo*3+2] + t * (nodes[nHi*3+2] - nodes[nLo*3+2]),
+      v: (values[nLo] ?? 0) + t * ((values[nHi] ?? 0) - (values[nLo] ?? 0)),
+    };
+    edgeCache.set(key, c);
+    return c;
+  }
+  const edgePoint = (a, b) => a < b ? cut(a, b) : cut(b, a);
+  function pushTri(p0, p1, p2) {
+    outPos.push(p0.x,p0.y,p0.z, p1.x,p1.y,p1.z, p2.x,p2.y,p2.z);
+    outVal.push(p0.v, p1.v, p2.v);
+  }
+
+  for (let e = 0; e < nTets; e++) {
+    const ids = [tets[e*4], tets[e*4+1], tets[e*4+2], tets[e*4+3]];
+    const plus = [], minus = [];
+    for (let k = 0; k < 4; k++) (coordOf(ids[k]) >= off ? plus : minus).push(ids[k]);
+    if (plus.length === 0 || minus.length === 0) continue; // tet doesn't straddle the plane
+    if (plus.length === 1 || minus.length === 1) {
+      const iso   = plus.length === 1 ? plus[0] : minus[0];
+      const group = plus.length === 1 ? minus   : plus;
+      pushTri(edgePoint(iso, group[0]), edgePoint(iso, group[1]), edgePoint(iso, group[2]));
+    } else {
+      // 2-vs-2 split: plus=[a,b], minus=[c,d]. Standard quad triangulation —
+      // valid regardless of which of a/b or c/d comes first in the tet's
+      // original node order.
+      const [a, b] = plus, [c, d] = minus;
+      const Pac = edgePoint(a, c), Pad = edgePoint(a, d);
+      const Pbc = edgePoint(b, c), Pbd = edgePoint(b, d);
+      pushTri(Pac, Pbc, Pbd);
+      pushTri(Pac, Pbd, Pad);
+    }
+  }
+  return { positions: Float32Array.from(outPos), values: Float32Array.from(outVal) };
+}
+
 // Single entry point for painting a solve's heatmap. Takes the whole results
 // object (not 9 positional args, which let call sites clobber cached fields
 // with null), MERGES the decoded arrays into S._stressArrays, reveals/greys the
@@ -3777,6 +3918,12 @@ function applyStressColorsFromResults(results, { fresh = false } = {}) {
   // Combined tension/compression view — derived from σ₁ and σ₃ (server always
   // sends both), so it is available whenever the principals are.
   cache.tc = (cache.s1 && cache.s3) ? computeDominantPrincipal(cache.s1, cache.s3) : null;
+
+  // Volumetric interior-stress payload (section-view cut face, #190) — only
+  // present when the request opted in (analysis.includeVolumeField, driven by
+  // the SECTION panel's "interior stress" toggle). Absent on ordinary solves.
+  S._volumeField = decodeVolumeField(results.volumeField, effYield);
+  if (S.clipActive) _refreshInteriorCap();
 
   S._stressArrays = cache;
   S.showStress = true;
@@ -8705,6 +8852,11 @@ function buildAnalyseBody(quality, opts) {
       useCLT:          !!(document.getElementById('clt-toggle')?.checked),
       twoRegion:       !!(document.getElementById('two-region-toggle')?.checked),
       wallBond:        !!(document.getElementById('two-region-toggle')?.checked && document.getElementById('wall-bond-toggle')?.checked),
+      // Interior-stress volumetric payload for the section-view cut face
+      // (#190) — opt-in because it's a materially larger response than a
+      // normal solve. Only requested once the user has turned on the
+      // SECTION panel's "σ INSIDE" toggle.
+      includeVolumeField: !!S.sectionInteriorStress,
     },
     calibration:  getActiveProfile(),
     ...(gravityRequest() ? { gravity: gravityRequest() } : {}),
@@ -12070,6 +12222,7 @@ function resetClip() {
   }
   _syncMarkerClipPlanes();
   _disposeCapObjects();
+  _disposeInteriorCap();
   _syncClipUI();
 }
 
@@ -12088,10 +12241,12 @@ function toggleClip() {
     mat.clippingPlanes = [];
     mat.side = THREE.FrontSide;
     _setCapVisible(false);
+    _hideInteriorCap();
   }
   mat.needsUpdate = true;
   _syncMarkerClipPlanes();
   _syncClipUI();
+  _refreshInteriorCap();
 }
 
 // ── Stencil cap: solid face where the section plane slices through material ──
@@ -12141,7 +12296,14 @@ function _ensureCapObjects() {
   const capGeo  = new THREE.PlaneGeometry(1, 1);
   const capMesh = new THREE.Mesh(capGeo, capMat);
   capMesh.renderOrder = 2.1;
-  capMesh.onAfterRender = renderer => renderer.clearStencil();
+  // Normally the LAST stencil consumer clears it for the next frame's
+  // writers. When the interior-stress mesh (#190) is also drawn this frame
+  // (renderOrder 2.2, on top of this grey plane), it renders after this one
+  // and does the clearing instead — clearing here first would blank the
+  // stencil test the interior mesh still needs.
+  capMesh.onAfterRender = renderer => {
+    if (!(S._interiorCap && S._interiorCap.mesh.visible)) renderer.clearStencil();
+  };
 
   // None of these may intercept picking rays — raycast() calls
   // intersectObject(mesh3d) recursively, and THREE's raycaster ignores
@@ -12178,19 +12340,39 @@ function _disposeCapObjects() {
 
 function setClipAxis(axis) {
   S.clipAxis = axis;
-  if (S.clipActive) _updateClipPlane();
+  if (S.clipActive) { _updateClipPlane(); _refreshInteriorCap(); }
   _syncClipUI();
 }
 
 function onClipPosInput(v) {
   S.clipPos = Math.max(0, Math.min(100, +v || 0));
-  if (S.clipActive) _updateClipPlane();
+  if (S.clipActive) { _updateClipPlane(); _refreshInteriorCap(); }
 }
 
 function toggleClipFlip() {
   S.clipFlip = !S.clipFlip;
-  if (S.clipActive) _updateClipPlane();
+  if (S.clipActive) { _updateClipPlane(); _refreshInteriorCap(); }
   _syncClipUI();
+}
+
+// Toggle the section-view interior-stress heatmap (#190). Opt-in and
+// persisted: turning it on does NOT retroactively fetch data for a solve
+// that already ran without it — the volumetric payload only accompanies a
+// solve that requested it (analysis.includeVolumeField), so the user is
+// told to re-run once. This keeps ordinary analyses' response payload small
+// by default (issue #190 acceptance criterion: gate volumetric data behind
+// the feature actually being used).
+function toggleSectionInteriorStress() {
+  S.sectionInteriorStress = !S.sectionInteriorStress;
+  localStorage.setItem('sf-section-interior-stress', S.sectionInteriorStress ? '1' : '0');
+  _syncClipUI();
+  if (S.sectionInteriorStress && !S._volumeField) {
+    showErrorToast(
+      'Interior stress needs one more solve to fetch the volumetric data — click Solve again.',
+      { severity: 'info', source: '[section]' }
+    );
+  }
+  _refreshInteriorCap();
 }
 
 // Rebuild the world-space clipping plane from the current axis/position/flip.
@@ -12229,14 +12411,146 @@ function _syncClipUI() {
   const controls = document.getElementById('clip-controls');
   const flip     = document.getElementById('clip-flip');
   const slider   = document.getElementById('clip-pos');
+  const interior = document.getElementById('clip-interior');
   if (btn)      btn.className = 'btn' + (S.clipActive ? ' active' : '');
   if (controls) controls.style.display = S.clipActive ? 'inline-flex' : 'none';
   if (flip)     flip.className = 'btn' + (S.clipFlip ? ' active' : '');
   if (slider)   slider.value = S.clipPos;
+  if (interior) {
+    interior.className = 'btn' + (S.sectionInteriorStress ? ' active' : '');
+    interior.title = S.sectionInteriorStress
+      ? (S._volumeField
+          ? 'Cut face shows real interpolated interior stress. Click to go back to flat grey.'
+          : 'Interior stress requested — click Solve again to fetch the volumetric data for this analysis.')
+      : 'Color the cut face with real interpolated interior stress instead of flat grey. Requires re-running the analysis once (larger response payload).';
+  }
   ['x', 'y', 'z'].forEach(a => {
     const b = document.getElementById('clip-' + a);
     if (b) b.className = 'btn' + (S.clipAxis === a ? ' active' : '');
   });
+}
+
+// ── Interior-stress cap: real stress on the section-view cut face (#190) ────
+// Layered ON TOP of the flat grey stencil cap above (same renderOrder family,
+// higher = drawn after = wins the compare regardless of exact depth thanks
+// to depthTest:false), using the SAME stencil test so it is masked to the
+// exact same solid cross-section (holes/cavities stay open automatically —
+// nothing to draw there since no tet exists in a void).
+//
+// Geometry comes from sliceTetsByAxisPlane (pure function, unit-tested) run
+// against the volumetric payload (S._volumeField, decoded in
+// decodeVolumeField). Color comes from _colorInteriorValues, which reuses
+// the CURRENT surface heatmap's scale (S._filterScale, set by
+// applyStressColorsFromArrays) so the cut face and the exterior are on the
+// same color scale — required by issue #190's acceptance criterion that cut-
+// face color match probe values at the same points.
+//
+// Per CLAUDE.md's heatmap invariants: Gouraud shading (flatShading:false),
+// every generated vertex gets a real interpolated value (sliceTetsByAxisPlane
+// only emits vertices from valid edge interpolations, never NaN), and
+// coincident vertices from adjacent tets are bit-identical by construction
+// (see sliceTetsByAxisPlane's docstring) rather than needing a runtime weld.
+//
+// Scoped limitation (documented in the PR): built from the analysis mesh's
+// CORNER nodes only, so a C3D10 (quadratic) mesh's mid-side curvature is not
+// reflected in the cut geometry or its interpolation — the cap is exact for
+// C3D4 and a first-order (linear-per-tet-corner) approximation for C3D10.
+// It also does not follow the exaggerated deformed-shape warp (built from the
+// undeformed analysis-mesh nodes), matching the existing grey cap's behavior.
+function _colorInteriorValues(values, mode) {
+  const meta = MODE_META[mode] || MODE_META[DEFAULT_STRESS_MODE];
+  const n = values.length;
+  const colors = new Float32Array(n * 3);
+  const disableGamma = new URLSearchParams(window.location.search).has('disableGamma');
+  const GAMMA = disableGamma ? 1.0 : 0.55;
+  const sc = (S._filterScale && S._filterScale.mode === mode) ? S._filterScale : null;
+  if (meta.kind === 'diverging') {
+    const absMax = (sc && sc.kind === 'diverging' && sc.absMax > 0)
+      ? sc.absMax
+      : (meta.divAbs ? meta.divAbs() : 1) || 1;
+    for (let i = 0; i < n; i++) {
+      const t = 0.5 + 0.5 * Math.max(-1, Math.min(1, (values[i] ?? 0) / absMax));
+      const [r, g, b] = divergingColor(t);
+      colors[i*3] = r; colors[i*3+1] = g; colors[i*3+2] = b;
+    }
+  } else {
+    const min   = (sc && sc.kind === 'sequential') ? sc.min : 0;
+    const range = (sc && sc.kind === 'sequential' && sc.range > 0) ? sc.range : 1;
+    for (let i = 0; i < n; i++) {
+      const linear = Math.max(0, Math.min(1, ((values[i] ?? 0) - min) / range));
+      const t = Math.pow(linear, GAMMA);
+      const [r, g, b] = stressColor(t);
+      colors[i*3] = r; colors[i*3+1] = g; colors[i*3+2] = b;
+    }
+  }
+  return colors;
+}
+
+function _refreshInteriorCap() {
+  if (!mesh3d) return;
+  const on = S.clipActive && S.sectionInteriorStress && S._volumeField && S._modelSize;
+  if (!on) { _hideInteriorCap(); return; }
+
+  const vf = S._volumeField;
+  const dataSel = VOLUME_MODE_DATA[S.stressMode];
+  const values = dataSel ? dataSel(vf) : null;
+  if (!values || values.length !== vf.nodeCount) { _hideInteriorCap(); return; }
+
+  const axisIdx = S.clipAxis === 'x' ? 0 : S.clipAxis === 'y' ? 1 : 2;
+  const sz  = S._modelSize;
+  const ext = axisIdx === 0 ? sz.x : axisIdx === 1 ? sz.y : sz.z;
+  const off = -ext / 2 + (S.clipPos / 100) * ext;   // matches _updateClipPlane's local-frame cut coord
+
+  const { positions, values: vAtVerts } = sliceTetsByAxisPlane(vf.nodes, vf.tets, values, axisIdx, off);
+  if (positions.length === 0) { _hideInteriorCap(); return; }
+
+  const colors = _colorInteriorValues(vAtVerts, S.stressMode);
+  const nVerts = positions.length / 3;
+  const normals = new Float32Array(nVerts * 3);
+  for (let i = 0; i < nVerts; i++) normals[i*3 + axisIdx] = 1; // flat cap: uniform normal
+
+  if (!S._interiorCap) {
+    const geo = new THREE.BufferGeometry();
+    const mat = new THREE.MeshPhongMaterial({
+      vertexColors: true,
+      shininess: 25,
+      side: THREE.DoubleSide,   // lit correctly whichever half is kept
+      flatShading: false,       // Gouraud shading — CLAUDE.md heatmap invariant
+      depthTest: false,         // always wins over the coplanar grey fallback cap
+      depthWrite: true,
+      stencilWrite: false,
+      stencilRef:   0,
+      stencilFunc:  THREE.NotEqualStencilFunc,   // masked to the same cross-section as the grey cap
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.renderOrder = 2.2;     // after the grey cap (2.1) — see its onAfterRender comment
+    mesh.raycast = () => {};    // never intercept picking rays (spans the cut cross-section)
+    mesh.onAfterRender = renderer => renderer.clearStencil();
+    mesh3d.add(mesh);
+    S._interiorCap = { mesh, geo, mat };
+  }
+  const c = S._interiorCap;
+  c.geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  c.geo.setAttribute('normal',   new THREE.BufferAttribute(normals, 3));
+  c.geo.setAttribute('color',    new THREE.BufferAttribute(colors, 3));
+  c.geo.attributes.position.needsUpdate = true;
+  c.geo.attributes.normal.needsUpdate   = true;
+  c.geo.attributes.color.needsUpdate    = true;
+  c.geo.computeBoundingSphere();
+  c.mesh.visible = true;
+}
+
+function _hideInteriorCap() {
+  if (S._interiorCap) S._interiorCap.mesh.visible = false;
+}
+
+function _disposeInteriorCap() {
+  if (!S._interiorCap) return;
+  const c = S._interiorCap;
+  if (c.mesh.parent) c.mesh.parent.remove(c.mesh);
+  c.geo.dispose();
+  c.mat.dispose();
+  S._interiorCap = null;
 }
 
 // ── Stress visualization modes ────────────────────────────────────────────────
@@ -12406,6 +12720,10 @@ function applyStressColorsFromArrays(arrays) {
   // Update legend title from the single source of truth
   const lt = document.getElementById('legend-title');
   if (lt) lt.textContent = meta.legend();
+
+  // Keep the section-view interior cap (#190) on the same mode + color scale
+  // as the surface heatmap it was just repainted with.
+  if (S.clipActive) _refreshInteriorCap();
 }
 
 // ── Threshold filter (legend) ─────────────────────────────────────────────────
