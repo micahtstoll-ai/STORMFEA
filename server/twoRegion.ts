@@ -51,6 +51,24 @@ import { interlaminarShearOf } from "./solver/stress.js";
 /** Quantization level count for the wall-fraction bins (f_b = b/(N−1)). */
 export const TWO_REGION_BIN_COUNT = 9;
 
+/**
+ * Default solid-skin cone half-angle, degrees: a boundary face is a solid
+ * top/bottom SKIN when the angle between its normal and the build axis is
+ * ≤ this value (equivalently, the face is tilted ≤ this many degrees from
+ * horizontal). Faces steeper than this — within (90° − cone) of vertical —
+ * stay on the perimeter WALL band.
+ *
+ * The legacy value was 45° (a hard cos45 test), which sent 45°–90°-from-
+ * horizontal up/down-facing surfaces — shallow domes, moderate overhangs and
+ * undersides that slicers print as stair-stepped SOLID top/bottom skins — into
+ * the vertical-perimeter band with wall thickness (issue #181). 65° captures
+ * those solid-skin surfaces (e.g. a 60°-from-horizontal dome region: normal
+ * 60° off the axis, cos 60° = 0.5 ≥ cos 65° = 0.423 → skin) while leaving
+ * genuine near-vertical perimeter walls (tilt > 65°, i.e. within 25° of
+ * vertical) on the wall band. Overridable per-analysis via SkinBands.skinConeDeg.
+ */
+export const DEFAULT_SKIN_CONE_DEG = 65;
+
 /** Sanity cap: skip the field on absurdly large meshes (memory/latency). */
 export const TWO_REGION_MAX_ELEMENTS = 400_000;
 
@@ -97,16 +115,27 @@ export interface SkinBands {
   tSkinTop: number;
   /** Bottom (floor) skin band thickness, mm. */
   tSkinBot: number;
+  /**
+   * Solid-skin cone half-angle in degrees (max tilt of a solid-skin face's
+   * normal from the build axis). Defaults to DEFAULT_SKIN_CONE_DEG (65°).
+   * Set to 45 to reproduce the legacy hard-cos45 classification.
+   */
+  skinConeDeg?: number;
 }
 
 /**
  * Per-boundary-triangle band thickness for the multi-thickness classifier.
- * A triangle whose normal is within 45° of the build axis is a solid SKIN
- * (top or bottom, split by its centroid's position along the axis relative to
- * the part mid-plane — winding-independent); everything else (side walls,
- * steep overhangs) uses the perimeter band `tWall`.
+ * A triangle whose normal is within `skinConeDeg` (default 65°) of the build
+ * axis is a solid SKIN (top or bottom, split by its centroid's position along
+ * the axis relative to the part mid-plane — winding-independent); everything
+ * else (near-vertical side walls) uses the perimeter band `tWall`. The cone
+ * angle replaces the legacy hard cos45 test so 45°–90°-from-horizontal
+ * up/down-facing overhang/underside surfaces are credited as solid skin
+ * rather than mis-classified as vertical perimeter (issue #181).
+ *
+ * Exported for direct unit testing of the face classification.
  */
-function classifyFaceBands(
+export function classifyFaceBands(
   mesh: TetMesh,
   surfaceFaces: Int32Array,
   skin: SkinBands,
@@ -127,7 +156,11 @@ function classifyFaceBands(
     if (proj > pMax) pMax = proj;
   }
   const mid = (pMin + pMax) / 2;
-  const COS45 = Math.SQRT1_2; // cos(45°) ≈ 0.70710678
+  // Skin faces: normal within `skinConeDeg` of the build axis (|n·ŵ| ≥ cos θ).
+  // Larger cone → more up/down-facing overhang/underside faces credited as
+  // solid skin; genuine near-vertical walls stay on tWall (issue #181).
+  const coneDeg = skin.skinConeDeg ?? DEFAULT_SKIN_CONE_DEG;
+  const cosCone = Math.cos((coneDeg * Math.PI) / 180);
 
   for (let t = 0; t < triCount; t++) {
     const na = surfaceFaces[t * 3] ?? 0, nb = surfaceFaces[t * 3 + 1] ?? 0, nc = surfaceFaces[t * 3 + 2] ?? 0;
@@ -143,7 +176,7 @@ function classifyFaceBands(
     const nlen = Math.hypot(nx, ny, nz);
     if (nlen < 1e-12) { band[t] = tWall; continue; } // degenerate → perimeter
     const nDotW = (nx * wx + ny * wy + nz * wz) / nlen;
-    if (Math.abs(nDotW) >= COS45) {
+    if (Math.abs(nDotW) >= cosCone) {
       const cProj = ((ax + bx + cx) / 3) * wx + ((ay + by + cy) / 3) * wy + ((az + bz + cz) / 3) * wz;
       band[t] = cProj >= mid ? skin.tSkinTop : skin.tSkinBot;
     } else {

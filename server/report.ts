@@ -212,7 +212,7 @@ export function generateHtmlReport(
       ${materialModel.twoRegion
         ? `<br><b>Two-region model:</b> ${((materialModel.shellVolumeFraction ?? 0) * 100).toFixed(0)}% dense wall band (perimeter ${materialModel.wallThicknessMm?.toFixed(2)} mm${
             materialModel.skinTopThicknessMm != null
-              ? `, top skin ${materialModel.skinTopThicknessMm.toFixed(2)} mm, bottom skin ${materialModel.skinBotThicknessMm?.toFixed(2)} mm${materialModel.skinBuildAxis === "assumed-z-up" ? " — skins assumed Z-up (no bed picked)" : ""}`
+              ? `, top skin ${materialModel.skinTopThicknessMm.toFixed(2)} mm (${materialModel.skinTopLayers} layers), bottom skin ${materialModel.skinBotThicknessMm?.toFixed(2)} mm (${materialModel.skinBotLayers} layers)${materialModel.skinLayersAssumed ? " — assumed slicer-default layer counts; set actual top/bottom layers for accuracy" : ""}${materialModel.skinBuildAxis === "assumed-z-up" ? " — skins assumed Z-up (no bed picked)" : ""}`
               : ``
           }) over a homogenized ${materialModel.core ? materialModel.core.patternFamily + " Gibson-Ashby" : ""} infill core; shell yield ${materialModel.shellYieldXYMPa?.toFixed(1)} MPa vs core ${materialModel.coreYieldXYMPa?.toFixed(1)} MPa.`
         : ``}

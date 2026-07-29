@@ -18,7 +18,8 @@ import {
 } from "../../solver/distance.js";
 import { computeWallFractions, computeWallFractionsFromPhi } from "../../solver/wallfrac.js";
 import { generateBoxMeshC3D4, extractSurfaceFaces } from "../../solver/meshgen.js";
-import { buildTwoRegionField } from "../../twoRegion.js";
+import { buildTwoRegionField, classifyFaceBands, DEFAULT_SKIN_CONE_DEG } from "../../twoRegion.js";
+import type { TetMesh } from "../../solver/types.js";
 
 const isoOrtho = (E: number, label: string) => ({
   kind: "orthotropic" as const,
@@ -43,6 +44,45 @@ function tetVolumes(mesh: ReturnType<typeof generateBoxMeshC3D4>): Float64Array 
   }
   return V;
 }
+
+describe("classifyFaceBands face-orientation classification (issue #181)", () => {
+  // Three synthetic boundary triangles, build axis +Z:
+  //  A — horizontal (normal ‖ +Z, φ ≈ 0°), centroid high → top skin.
+  //  B — 60°-from-horizontal overhang (|n·ẑ| = cos60° = 0.5), centroid low → bottom skin.
+  //  C — vertical wall (normal ⟂ build axis, φ = 90°) → perimeter band.
+  const nodes = new Float64Array([
+    // Triangle A (z = 10)
+    0, 0, 10,   1, 0, 10,   0, 1, 10,
+    // Triangle B (normal 60° off +Z)
+    0, 0, 0,    0, 1, 0,    0.5, 0, -0.8660254,
+    // Triangle C (vertical, normal ‖ +X)
+    0, 0, 0,    0, 1, 0,    0, 0, 1,
+  ]);
+  const mesh: TetMesh = {
+    nodes, elements: new Int32Array(0), nodeCount: 9, elementCount: 0, nodesPerElem: 4,
+  };
+  const faces = new Int32Array([0, 1, 2,  3, 4, 5,  6, 7, 8]);
+  const T_WALL = 1.0, T_TOP = 3.0, T_BOT = 2.0;
+
+  it("60° overhang face is credited as solid skin, not the wall band (default 65° cone)", () => {
+    const band = classifyFaceBands(mesh, faces, {
+      buildAxis: [0, 0, 1], tSkinTop: T_TOP, tSkinBot: T_BOT,
+    }, T_WALL);
+    expect(band[0]).toBe(T_TOP);          // horizontal top → top skin
+    expect(band[1]).toBe(T_BOT);          // 60° overhang underside → bottom skin (NOT tWall)
+    expect(band[1]).not.toBe(T_WALL);
+    expect(band[2]).toBe(T_WALL);         // vertical wall → perimeter band
+    expect(DEFAULT_SKIN_CONE_DEG).toBeGreaterThan(60);
+  });
+
+  it("legacy 45° cone would mis-classify the 60° overhang as wall", () => {
+    const band = classifyFaceBands(mesh, faces, {
+      buildAxis: [0, 0, 1], tSkinTop: T_TOP, tSkinBot: T_BOT, skinConeDeg: 45,
+    }, T_WALL);
+    expect(band[1]).toBe(T_WALL);         // the pre-fix cliff (issue #181)
+    expect(band[2]).toBe(T_WALL);         // vertical still a wall
+  });
+});
 
 describe("computeNodeBandPenetration equal-thickness equivalence", () => {
   const mesh = generateBoxMeshC3D4(0, 0, 0, 20, 12, 8, 10, 6, 4);
