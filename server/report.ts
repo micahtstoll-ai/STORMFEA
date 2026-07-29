@@ -32,7 +32,7 @@ export function generateHtmlReport(
     safetyFactor, estimatedFailForce, verdict,
     failureModes, holeClassifications, fatigue, singularity,
     topologySuggestions, calibrationId,
-    converged, meshFallback,
+    converged, meshFallback, rigidBodyMode,
     sfCriterion, safetyfactorLow, safetyFactorHigh,
     isotropicComparison, materialModel,
   } = result;
@@ -78,6 +78,48 @@ export function generateHtmlReport(
   const topoList = topologySuggestions.slice(0, 2).map((t, i) => `
     <li style="margin-bottom:4px"><b>${t.stressMPa} MPa</b> at (${t.position.join(', ')}) mm — ${t.suggestion.slice(0, 120)}</li>
   `).join('');
+
+  // ── Reliability caveats (issue #196) ──────────────────────────────────────
+  // The app shows explicit banners for compromised results (client/index.html
+  // reliabilityBanner, ~L6291-6321) but the printed report used to signal
+  // this ONLY via a grey verdict box — indistinguishable from a normal result
+  // once photocopied or grayscale-printed. Port every caveat state the app
+  // can show into report text as well, wording kept in sync with the app.
+  let reliabilityCaveats = '';
+  const caveatBox = (title: string, body: string) => `
+    <div style="padding:8px 10px;margin-bottom:8px;background:#fdf0e0;border:1px solid #7a1a1a;border-radius:3px;font-size:10px;color:#3a1a00">
+      <div style="font-weight:700;color:#7a1a1a;margin-bottom:2px">&#9888; ${title}</div>
+      <div style="line-height:1.5">${body}</div>
+    </div>`;
+  if (meshFallback) {
+    reliabilityCaveats += caveatBox(
+      'Approximate result — mesh fallback',
+      'STL meshing failed, so the part was analysed as a solid bounding box. Holes, fillets, and stress concentrations are <b>not modelled</b> — the true peak stress is higher than shown. Re-export the STL (check for non-manifold edges or self-intersections) and re-run before trusting this number.',
+    );
+  }
+  if (converged === false) {
+    const convergenceDetail = (rigidBodyMode && rigidBodyMode.detected)
+      ? rigidBodyMode.message
+      : 'The linear solve did not reach its tolerance, so the stress field — and every number derived from it — is unreliable in either direction. Try a finer mesh or verify that the constraints fully restrain the part.';
+    reliabilityCaveats += caveatBox(
+      `Solver did not converge${rigidBodyMode && rigidBodyMode.detected ? ' — under-constrained rotation' : ''}`,
+      convergenceDetail,
+    );
+  }
+  if (converged !== false && rigidBodyMode?.detected) {
+    reliabilityCaveats += caveatBox('Under-constrained rotation detected', rigidBodyMode.message);
+  }
+  if (materialModel.twoRegion && materialModel.degraded) {
+    reliabilityCaveats += caveatBox('Two-region material model degraded', materialModel.degraded);
+  } else if (!materialModel.twoRegion && materialModel.degraded) {
+    reliabilityCaveats += caveatBox('Two-region material model requested but ran uniform', materialModel.degraded);
+  }
+  if (materialModel.wallBond) {
+    reliabilityCaveats += caveatBox(
+      'Wall-to-wall bond — LOW confidence',
+      `Wall-to-wall bond allowable ${materialModel.wallBond.yieldWallMPa.toFixed(2)} MPa tension / ${materialModel.wallBond.yieldWallShearMPa.toFixed(2)} MPa shear (×${materialModel.wallBond.relStrength.toFixed(2)} vs interlayer baseline, est. perimeter ${materialModel.wallBond.perimeterLengthMm.toFixed(0)} mm${materialModel.wallBond.perimeterFallback ? ' — fallback' : ''}) — no bead-to-bead coupon data.`,
+    );
+  }
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -136,6 +178,9 @@ export function generateHtmlReport(
       </div>
     </div>
   </div>
+
+  <!-- Reliability caveats -->
+  ${reliabilityCaveats}
 
   <!-- Verdict -->
   <div class="verdict-box">
