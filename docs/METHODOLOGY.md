@@ -62,12 +62,13 @@ interbead porosity. Multipliers are **relative** and normalized to exactly `1.0`
 at the per-material reference condition (reference nozzle AND reference cooling
 fan — both per-material — 60 mm/s, bed 60 °C) evaluated at the same layer height,
 so with no process block the legacy layer-height path is reproduced bit-for-bit.
-The reference **fan is per-material** (issue #184): PLA 100%, PETG 50%, ASA 20%,
-ABS/PA12 0% — each material's normal print practice, so "multiplier = 1.0" is a
-condition the material is actually printed at (the old shared 100% anchored
-ABS/ASA/PA to a fan-off-avoiding setting that promotes the very warping and
-interlayer cracking this model predicts). Surfaced as `materialModel.bond.
-coolingFanRefPct`. Trends are locked (hotter nozzle ↑,
+The reference **fan is per-material** (issue #184): PLA/PETG 100%, TPU 50%,
+ASA 20%, ABS/PA12 0% — each material's normal print practice, so "multiplier =
+1.0" is a condition the material is actually printed at (the old shared 100%
+anchored ABS/ASA/PA to a fan-off-avoiding setting that promotes the very warping
+and interlayer cracking this model predicts). PLA and PETG keep the 100%
+reference, so their results are unchanged; only ABS/ASA/TPU/PA12 shift. Surfaced
+as `materialModel.bond.coolingFanRefPct`. Trends are locked (hotter nozzle ↑,
 more fan ↓, faster printing ↑) even though the constants are LOW confidence until
 fitted from a printer process sweep (`POST /api/calibration/bond-sweep`). The
 `POST /api/bond-sensitivity` route evaluates the same model for the process

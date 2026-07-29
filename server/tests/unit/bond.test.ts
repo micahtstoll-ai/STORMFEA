@@ -100,7 +100,7 @@ describe("per-material reference cooling fan (#184)", () => {
   // warping + interlayer cracking this model predicts). The per-material values
   // live on BOND_MATERIALS.fanRefPct and are LOW confidence, regression-locked.
   const REF_FAN: Record<string, number> = {
-    pla: 100, petg: 50, abs: 0, tpu: 50, pa12: 0, asa: 20,
+    pla: 100, petg: 100, abs: 0, tpu: 50, pa12: 0, asa: 20,
   };
 
   it("each material's fanRefPct matches the locked reference table", () => {
@@ -134,16 +134,20 @@ describe("per-material reference cooling fan (#184)", () => {
     expect(absFan.relStrength).toBeLessThan(1.0);
   });
 
-  it("PLA/PETG (already high-fan reference) are unchanged: fan 100 / 50 → ≈1.0", () => {
-    // PLA reference stayed 100 %, so PLA behavior is bit-identical to pre-#184.
+  it("PLA/PETG (100% reference, unchanged from pre-#184) evaluate at 1.0 at fan 100", () => {
+    // PLA and PETG references both stayed 100 %, so their behavior is
+    // bit-identical to the pre-#184 shared-100 % reference (only ABS/ASA/TPU/
+    // PA12 moved). A part evaluated at fan 100 lands exactly on reference.
     const pla = predictBondMultipliers("pla", 0.2, {
       nozzleTempC: BOND_MATERIALS["pla"]!.nozzleRefC, coolingFanPct: 100,
     });
     const petg = predictBondMultipliers("petg", 0.2, {
-      nozzleTempC: BOND_MATERIALS["petg"]!.nozzleRefC, coolingFanPct: 50,
+      nozzleTempC: BOND_MATERIALS["petg"]!.nozzleRefC, coolingFanPct: 100,
     });
     expect(pla.relStrength).toBeCloseTo(1.0, 9);
     expect(petg.relStrength).toBeCloseTo(1.0, 9);
+    expect(pla.coolingFanRefPct).toBe(100);
+    expect(petg.coolingFanRefPct).toBe(100);
     // And PLA still weakens with fan above its reference is impossible (100 is
     // max), so check the below-reference direction: less fan → stronger.
     const plaLowFan = predictBondMultipliers("pla", 0.2, {

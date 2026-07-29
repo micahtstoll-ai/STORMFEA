@@ -146,8 +146,9 @@ interface BondMaterialParams {
  * each material's NORMAL print practice (all LOW confidence, regression-locked):
  *   pla  100 — always printed with full part cooling (crisp overhangs, no
  *              warping tendency); this is the historical shared reference.
- *   petg  50 — moderate cooling; too much fan visibly weakens PETG layer
- *              adhesion, so slicer profiles sit around 30–50 %.
+ *   petg 100 — routinely printed with high/full part cooling on open desktop
+ *              machines (not warp-prone like the styrenics); kept at 100 so
+ *              PETG behavior is unchanged from the pre-#184 shared reference.
  *   abs    0 — run with the fan OFF (enclosed chamber); part cooling drives
  *              warping and interlayer delamination — the failure this predicts.
  *   asa   20 — like ABS but marginally more forgiving; profiles use a low
@@ -159,7 +160,7 @@ interface BondMaterialParams {
  */
 export const BOND_MATERIALS: Record<string, BondMaterialParams> = {
   pla:   { nozzleRefC: 210, fanRefPct: 100, TgC:  60, EaKJmol: 60, rho: 1240, cp: 1800 },
-  petg:  { nozzleRefC: 240, fanRefPct:  50, TgC:  80, EaKJmol: 70, rho: 1270, cp: 1700 },
+  petg:  { nozzleRefC: 240, fanRefPct: 100, TgC:  80, EaKJmol: 70, rho: 1270, cp: 1700 },
   abs:   { nozzleRefC: 245, fanRefPct:   0, TgC: 105, EaKJmol: 95, rho: 1050, cp: 1900 },
   tpu:   { nozzleRefC: 225, fanRefPct:  50, TgC:  25, EaKJmol: 45, rho: 1200, cp: 1800 },
   pa12:  { nozzleRefC: 255, fanRefPct:   0, TgC:  50, EaKJmol: 65, rho: 1010, cp: 2100 },
