@@ -33,6 +33,7 @@ import {
 import {
   predictBondMultipliers,
   hasProcessSettings,
+  WALL_THERMAL_DEPTH_CLAMP_MM,
   type ProcessSettings,
   type BondModelCoeffs,
   type BondPrediction,
@@ -2388,6 +2389,13 @@ export interface MaterialModelInfo {
     perimeterLengthMm:    number;
     /** True when the perimeter estimate degenerated and the fallback constant was used. */
     perimeterFallback:    boolean;
+    /**
+     * Basis of the loop-length estimate (#182): "outer-contour" — the
+     * outer-wall loop(s) only, internal hole bores excluded; or "fallback" —
+     * the fixed characteristic length used when the geometric estimate
+     * degenerated.
+     */
+    loopLengthBasis:      "outer-contour" | "fallback";
     note?:                string;
   } | null;
 }
@@ -3506,13 +3514,21 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         // printed back-to-back within the same layer, so the relevant
         // "return" is roughly the time to finish one full perimeter loop —
         // perimeterLengthMm / printSpeed — not a fixed toolpath constant.
-        // Estimated from the classified perimeter-face area (exact for a
-        // prismatic part); degenerates (near-zero height, no perimeter
-        // faces) fall back to a fixed characteristic length.
+        // Estimated from the OUTER-contour perimeter-face area (exact for a
+        // prismatic part; internal hole bores excluded — #182); degenerates
+        // (near-zero height, no perimeter faces) fall back to a fixed length.
         const perimeterEstimate = estimateWallLoopPerimeterMm(mesh, surfaceFaces, buildAxis);
         const perimeterFallback = !(perimeterEstimate > 1e-6);
         const passLengthMmWall = perimeterFallback ? WALL_BOND_PASS_LENGTH_FALLBACK_MM : perimeterEstimate;
 
+        // Wall-to-wall weld: the road's thermal DEPTH is the bead LINE WIDTH
+        // (adjacent beads cool laterally toward each other through their sides),
+        // not the layer height — so pass lineWidth as the thermal depth WITH the
+        // width-appropriate clamp, instead of silently repurposing the layer-
+        // height slot and its layer-height clamp (issue #185; τc π/8 transfer
+        // derivation in WALL_THERMAL_DEPTH_CLAMP_MM's docs). Same value for
+        // in-clamp widths (≤1.0 mm) as before, so results are bit-identical
+        // there; a >1.0 mm wide bead is now honored instead of clamped to 1.0.
         const bondRelWall: BondPrediction | null = hasProcessSettings(req.print.process)
           ? predictBondMultipliers(
               req.print.materialId,
@@ -3520,6 +3536,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
               req.print.process,
               req.calibration?.bondCoeffs ?? null,
               passLengthMmWall,
+              WALL_THERMAL_DEPTH_CLAMP_MM,
             )
           : null;
 
@@ -3546,6 +3563,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
             yieldWallShearMPa: +yieldWallShearMPa.toFixed(3),
             perimeterLengthMm: +passLengthMmWall.toFixed(1),
             perimeterFallback,
+            loopLengthBasis: perimeterFallback ? "fallback" : "outer-contour",
             ...(bondRelWall ? { note: bondRelWall.note } : {}),
           } : null,
         };

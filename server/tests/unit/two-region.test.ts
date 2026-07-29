@@ -6,10 +6,10 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { buildTwoRegionField, buildWallBondField, TWO_REGION_BIN_COUNT } from "../../twoRegion.js";
+import { buildTwoRegionField, buildWallBondField, estimateWallLoopPerimeterMm, TWO_REGION_BIN_COUNT } from "../../twoRegion.js";
 import { generateBoxMeshC3D4, extractSurfaceFaces } from "../../solver/meshgen.js";
 import { buildAnyConstitutiveMatrix } from "../../solver/element.js";
-import type { OrthotropicMaterial } from "../../solver/types.js";
+import type { OrthotropicMaterial, TetMesh } from "../../solver/types.js";
 
 const SHELL: OrthotropicMaterial = {
   kind: "orthotropic",
@@ -121,6 +121,87 @@ describe("buildTwoRegionField", () => {
     const coreW: OrthotropicMaterial = { ...CORE, weakAxis: [0, 0, 1] as const };
     const tr = buildTwoRegionField(mesh, faces, shellW, coreW, 1.35);
     expect(tr.averageMaterial.weakAxis).toEqual([0, 0, 1]);
+  });
+});
+
+describe("estimateWallLoopPerimeterMm — outer-loop only, hole bores excluded (#182)", () => {
+  const Z: readonly [number, number, number] = [0, 0, 1];
+
+  // Build a surface-triangle-soup "mesh" of vertical walls for a set of closed
+  // XY loops extruded from z=0 to z=H. Each loop's points are given in order;
+  // pass CCW (viewed from +z) for an OUTER wall (outward normals) and CW for a
+  // HOLE bore (outward-of-solid normals point into the void). Only mesh.nodes /
+  // mesh.nodeCount and the returned faces are read by the estimator.
+  function buildWalls(H: number, loops: Array<ReadonlyArray<readonly [number, number]>>): { mesh: TetMesh; faces: Int32Array } {
+    const nodes: number[] = [];
+    const faces: number[] = [];
+    for (const loop of loops) {
+      const n = loop.length;
+      const base = nodes.length / 3;
+      // bottom ring then top ring
+      for (const [x, y] of loop) nodes.push(x, y, 0);
+      for (const [x, y] of loop) nodes.push(x, y, H);
+      for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n;
+        const b0 = base + i, b1 = base + j, t0 = base + n + i, t1 = base + n + j;
+        // two triangles per wall quad; winding matches the loop orientation so
+        // CCW loops emit outward normals, CW loops inward-of-solid normals.
+        faces.push(b0, b1, t1);
+        faces.push(b0, t1, t0);
+      }
+    }
+    const mesh = {
+      nodes: new Float64Array(nodes), elements: new Int32Array(0),
+      nodeCount: nodes.length / 3, elementCount: 0, nodesPerElem: 4,
+    } as TetMesh;
+    return { mesh, faces: new Int32Array(faces) };
+  }
+
+  const W = 20, D = 12, H = 8;
+  const outerCCW: ReadonlyArray<readonly [number, number]> = [[0, 0], [W, 0], [W, D], [0, D]];
+
+  it("prismatic box is exact: perimeter = 2(w+d)", () => {
+    const { mesh, faces } = buildWalls(H, [outerCCW]);
+    expect(estimateWallLoopPerimeterMm(mesh, faces, Z)).toBeCloseTo(2 * (W + D), 6);
+  });
+
+  it("real tet-mesh box (extractSurfaceFaces) is exact too", () => {
+    // Uses the actual outward-oriented surface faces of a solid box.
+    expect(estimateWallLoopPerimeterMm(mesh, faces, Z)).toBeCloseTo(2 * (20 + 12), 4);
+  });
+
+  it("adding a through-hole leaves the OUTER loop estimate unchanged (bore excluded)", () => {
+    const solid = buildWalls(H, [outerCCW]);
+    // Same outer wall + a 4×4 square bore centered in the plate, traversed CW
+    // (its outward-of-solid normals point into the hole → negative signed area).
+    const holeCW: ReadonlyArray<readonly [number, number]> = [[8, 4], [8, 8], [12, 8], [12, 4]];
+    const withHole = buildWalls(H, [outerCCW, holeCW]);
+    const solidLen = estimateWallLoopPerimeterMm(solid.mesh, solid.faces, Z);
+    const holeLen = estimateWallLoopPerimeterMm(withHole.mesh, withHole.faces, Z);
+    // Pre-#182 the bore's 16 mm circumference would have inflated the estimate.
+    expect(holeLen).toBeCloseTo(solidLen, 6);
+    expect(holeLen).toBeCloseTo(2 * (W + D), 6);
+  });
+
+  it("a naive all-vertical-area sum WOULD have counted the bore (guards the fix)", () => {
+    // Sanity: the hole geometry really does add vertical wall area, so the
+    // unchanged result above is due to exclusion, not a degenerate mesh.
+    const holeCW: ReadonlyArray<readonly [number, number]> = [[8, 4], [8, 8], [12, 8], [12, 4]];
+    const { mesh: hm, faces: hf } = buildWalls(H, [outerCCW, holeCW]);
+    let allVertArea = 0;
+    for (let t = 0; t < hf.length / 3; t++) {
+      const a = hf[t * 3]!, b = hf[t * 3 + 1]!, c = hf[t * 3 + 2]!;
+      const ax = hm.nodes[a * 3]!, ay = hm.nodes[a * 3 + 1]!, az = hm.nodes[a * 3 + 2]!;
+      const bx = hm.nodes[b * 3]!, by = hm.nodes[b * 3 + 1]!, bz = hm.nodes[b * 3 + 2]!;
+      const cx = hm.nodes[c * 3]!, cy = hm.nodes[c * 3 + 1]!, cz = hm.nodes[c * 3 + 2]!;
+      const nx = (by - ay) * (cz - az) - (bz - az) * (cy - ay);
+      const ny = (bz - az) * (cx - ax) - (bx - ax) * (cz - az);
+      const nz = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+      allVertArea += Math.hypot(nx, ny, nz) / 2;
+    }
+    const naive = allVertArea / H;
+    expect(naive).toBeCloseTo(2 * (W + D) + 4 * 4, 6); // outer + 16 mm bore
+    expect(naive).toBeGreaterThan(2 * (W + D));        // the inflation the fix removes
   });
 });
 
