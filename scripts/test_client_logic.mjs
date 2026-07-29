@@ -564,6 +564,49 @@ console.log('\n[J] bed frame — bedDirToWorld maps bed Z to world +Y');
     `got (${rt.x.toFixed(3)},${rt.y.toFixed(3)},${rt.z.toFixed(3)})`);
 }
 
+// ── Test group K: updateMeshOrderSelector — C3D4 bending-underprediction warning (#189) ─
+console.log('\n[K] updateMeshOrderSelector — C3D4 warning shown whenever C3D4 is selected');
+{
+  const fnMatch = html.match(
+    /function updateMeshOrderSelector\(\) \{[\s\S]*?\n\}\n/
+  );
+  if (!fnMatch) throw new Error('Could not extract updateMeshOrderSelector');
+
+  const mod = { exports: {} };
+  const sel  = { value: '2', disabled: false };
+  const opt2 = { disabled: false };
+  const hint = { innerHTML: '' };
+  const els = { 's-mesh-order': sel, 's-mesh-order-c3d10': opt2, 's-mesh-order-hint': hint };
+  global.document = { getElementById: (id) => els[id] };
+  global.S = { fileData: { fileType: 'step', stepB64: 'x' } };
+  new Function('module', 'exports', fnMatch[0] + '\nmodule.exports = { updateMeshOrderSelector };')(mod, mod.exports);
+  const { updateMeshOrderSelector } = mod.exports;
+
+  // STEP file, C3D10 (default) selected — no warning.
+  sel.value = '2';
+  updateMeshOrderSelector();
+  test('C3D10 (default) shows no bending-underprediction warning',
+    !/underpredict/i.test(hint.innerHTML), `got: ${hint.innerHTML}`);
+
+  // STEP file, user manually selects C3D4 — must warn (this was the
+  // reported gap: the old hint only warned when C3D4 was STL-forced).
+  sel.value = '1';
+  updateMeshOrderSelector();
+  test('C3D4 selected on a STEP file shows the ~55% bending-underprediction warning',
+    /underpredict.*55%/i.test(hint.innerHTML), `got: ${hint.innerHTML}`);
+  test('C3D4 warning recommends switching to C3D10',
+    /C3D10/.test(hint.innerHTML), `got: ${hint.innerHTML}`);
+
+  // STL file — C3D10 disabled, forced to C3D4, still warns.
+  global.S = { fileData: { fileType: 'stl' } };
+  sel.value = '2';
+  updateMeshOrderSelector();
+  test('STL file disables C3D10 and forces C3D4',
+    opt2.disabled === true && sel.value === '1', `opt2.disabled=${opt2.disabled} sel.value=${sel.value}`);
+  test('STL-forced C3D4 still shows the bending-underprediction warning',
+    /underpredict/i.test(hint.innerHTML), `got: ${hint.innerHTML}`);
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 if (failed > 0) {

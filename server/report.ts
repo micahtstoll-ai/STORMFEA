@@ -34,8 +34,18 @@ export function generateHtmlReport(
     topologySuggestions, calibrationId,
     converged, meshFallback,
     sfCriterion, safetyfactorLow, safetyFactorHigh,
-    isotropicComparison, materialModel,
+    isotropicComparison, materialModel, nodesPerElem,
   } = result;
+
+  // C3D4 (linear tet, nodesPerElem===4) carries a documented ~55%
+  // bending-stress underprediction from shear locking — never let the
+  // printed report show a C3D4 result without this caveat (issue #189).
+  // C3D10 (nodesPerElem===10, the default) gets no banner.
+  const c3d4Caveat = nodesPerElem === 4
+    ? `<div style="padding:8px 10px;margin-bottom:10px;background:#fff8e0;border:1px solid #8B6914;border-radius:3px;font-size:10px;color:#5c3a00">
+        <b>&#9888; Computed with C3D4 linear elements:</b> underpredict bending stress by up to ~55% due to shear locking. The safety factor above may be more optimistic than the true value for bending-loaded geometry. Re-run with C3D10 before trusting this margin.
+      </div>`
+    : '';
 
   const criterionLabel =
     sfCriterion === "fdm-interface" ? "FDM dual criterion (bulk von Mises + interlayer interface)"
@@ -138,6 +148,7 @@ export function generateHtmlReport(
   </div>
 
   <!-- Verdict -->
+  ${c3d4Caveat}
   <div class="verdict-box">
     <div class="verdict-text">${verdict}</div>
     <div class="verdict-sub">

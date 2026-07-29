@@ -1864,7 +1864,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
 
       <div style="margin-bottom:16px">
         <label for="s-mesh-order">Element order</label>
-        <select id="s-mesh-order">
+        <select id="s-mesh-order" onchange="updateMeshOrderSelector(); markSessionDirty()">
           <option value="1">C3D4 — Linear (fast, shear-locking in bending)</option>
           <option value="2" id="s-mesh-order-c3d10" selected>C3D10 — Quadratic ★ Recommended</option>
         </select>
@@ -3253,9 +3253,20 @@ function updateMeshOrderSelector() {
     hint.innerHTML =
       'C3D10 requires a STEP file — STL meshing (TetGen) does not support quadratic elements. ' +
       'Export your CAD as STEP to enable C3D10. ' +
-      '<b style="color:var(--warn)">C3D4 linear elements underpredict bending stress by ~55% due to shear locking.</b>';
+      '<b style="color:var(--warn)">C3D4 linear elements underpredict bending stress by ~55% due to shear locking — use for quick iteration only, never for final verdicts.</b>';
+    return;
+  }
+
+  opt2.disabled = false;
+  // Reflect whichever element order is CURRENTLY selected (issue #189) — the
+  // hint used to only warn about C3D4 when it was STL-forced, staying silent
+  // when a STEP-file user deliberately picked C3D4 from the dropdown. The
+  // fastest option must never be the quietest one.
+  if (sel.value === '1') {
+    hint.innerHTML =
+      '<b style="color:var(--warn)">C3D4 linear tetrahedra underpredict bending stress by up to ~55% (shear locking) — ' +
+      'use for quick iteration only, never for final verdicts. Switch to C3D10 before trusting a safety factor.</b>';
   } else {
-    opt2.disabled = false;
     hint.innerHTML =
       'C3D10 uses 10-node quadratic tetrahedra — eliminates shear locking for more accurate bending and stress concentrations near holes.';
   }
@@ -6319,6 +6330,16 @@ function showResults(s) {
       <div style="font-size:11px;color:var(--text-mid);line-height:1.5">${s.rigidBodyMode.message}</div>
     </div>`;
   }
+  // C3D4 linear tetrahedra carry a documented ~55% bending-stress
+  // underprediction (shear locking, docs/METHODOLOGY.md) — never let a
+  // C3D4 result (green "Safe" or otherwise) appear without this caveat
+  // adjacent to it (issue #189). C3D10 (the default) gets no banner.
+  if (s.nodesPerElem === 4) {
+    reliabilityBanner += `<div style="padding:12px 14px;background:#3a1a00;border:2px solid var(--warn);border-radius:6px;margin-bottom:12px">
+      <div style="font-size:12px;font-weight:600;color:var(--warn);margin-bottom:4px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Computed with C3D4 linear elements</div>
+      <div style="font-size:11px;color:var(--text-mid);line-height:1.5">Linear tetrahedra underpredict bending stress by up to ~55% due to shear locking — the safety factor shown may be more optimistic than the true value for bending-loaded geometry. Re-run with C3D10 (MATERIAL tab → Element order) before trusting this margin.</div>
+    </div>`;
+  }
 
   let actionHTML = '';
   // Guard govSF comparisons on safetyFactorAvailable: null coerces to 0 in JS,
@@ -6424,7 +6445,7 @@ function showResults(s) {
       ${s.materialModel && s.materialModel.bond ? `Bond model: interlayer strength <b style="color:${s.materialModel.bond.relStrength < 1 ? 'var(--warn)' : 'var(--text-hi)'}">×${s.materialModel.bond.relStrength.toFixed(2)}</b> · stiffness ×${s.materialModel.bond.relStiffness.toFixed(2)} vs typical settings (interface ${s.materialModel.bond.interfaceTempC.toFixed(0)}°C, substrate ${s.materialModel.bond.substrateTempC.toFixed(0)}°C, τ<sub>cool</sub> ${s.materialModel.bond.coolTimeConstS.toFixed(1)}s)${s.materialModel.bond.clamped ? ' <span style="color:var(--warn)">clamped</span>' : ''} · <span style="color:${s.materialModel.bond.confidence === 'medium' ? 'var(--warn)' : 'var(--danger)'};font-size:10px">${s.materialModel.bond.confidence.toUpperCase()} confidence</span><br>` : ''}
       ${s.materialModel && s.materialModel.wallBond ? `Wall-to-wall bond: allowable <b style="color:var(--text-hi)">${s.materialModel.wallBond.yieldWallMPa.toFixed(2)} MPa</b> tension / ${s.materialModel.wallBond.yieldWallShearMPa.toFixed(2)} MPa shear (×${s.materialModel.wallBond.relStrength.toFixed(2)} vs interlayer baseline, est. perimeter ${s.materialModel.wallBond.perimeterLengthMm.toFixed(0)} mm${s.materialModel.wallBond.perimeterFallback ? ' <span style="color:var(--warn)">fallback</span>' : ''}) · <span style="color:var(--danger);font-size:10px">LOW confidence — no bead-to-bead coupon data</span><br>` : ''}
       ${s.sfCriterion ? `Criterion: <b style="color:var(--text-hi)">${s.sfCriterion === 'fdm-interface' ? 'FDM dual (bulk + interlayer interface)' : s.sfCriterion === 'hill' ? 'Hill 1948 (legacy path)' : 'von Mises'}</b><br>` : ''}
-      Mesh: <b style="color:var(--text-hi)">${s.nodeCount.toLocaleString()} nodes</b> · <b style="color:var(--text-hi)">${s.elementCount.toLocaleString()} elements</b> · C3D10 quadratic tet<br>
+      Mesh: <b style="color:var(--text-hi)">${s.nodeCount.toLocaleString()} nodes</b> · <b style="color:var(--text-hi)">${s.elementCount.toLocaleString()} elements</b> · ${s.nodesPerElem === 4 ? '<span style="color:var(--warn)">C3D4 linear tet</span>' : 'C3D10 quadratic tet'}<br>
       Solver: ${s.cgIterations} CG iterations · ${s.solverMs}ms · converged=${s.converged ? 'yes' : '<span style="color:var(--warn)">no</span>'}
       ${s.governingDirection != null ? `<br>Governing direction: <b style="color:var(--text-hi)">${s.governingDirection === 'xy' ? 'XY in-plane' : 'Z inter-layer'}</b> · U<sub>XY</sub>=${(s.peakUtilXY??0).toFixed(3)} · U<sub>Z</sub>=${(s.peakUtilZ??0).toFixed(3)} ${s.governingDirection === 'xy' ? '<span style="color:var(--text-lo);font-size:10px">→ increase infill to resist</span>' : '<span style="color:var(--text-lo);font-size:10px">→ reorient or add perimeters</span>'}` : ''}
     </div>
