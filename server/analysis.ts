@@ -2367,6 +2367,8 @@ export interface MaterialModelInfo {
   bond?: {
     relStrength:    number;
     relStiffness:   number;
+    /** Per-material reference cooling-fan duty the multiplier is anchored to, % (#184). */
+    coolingFanRefPct: number;
     interfaceTempC: number;
     substrateTempC: number;
     coolTimeConstS: number;
@@ -3411,8 +3413,9 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     impliedAvgStrengthMul: null,
     globalModelStrengthMul: strengthMul * orientFallbackMul,
     ...(bondRel ? { bond: {
-      relStrength:    +bondRel.relStrength.toFixed(4),
-      relStiffness:   +bondRel.relStiffness.toFixed(4),
+      relStrength:      +bondRel.relStrength.toFixed(4),
+      relStiffness:     +bondRel.relStiffness.toFixed(4),
+      coolingFanRefPct: bondRel.coolingFanRefPct,
       interfaceTempC: +bondRel.interfaceTempC.toFixed(1),
       substrateTempC: +bondRel.substrateTempC.toFixed(1),
       coolTimeConstS: +bondRel.coolTimeConstS.toFixed(2),

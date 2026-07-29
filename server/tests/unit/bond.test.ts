@@ -62,7 +62,7 @@ describe("physical trends (direction locks)", () => {
     const noFan   = predictBondMultipliers("pla", 0.2, { ...REF_PROC, coolingFanPct: 0 });
     const fullFan = predictBondMultipliers("pla", 0.2, { ...REF_PROC, coolingFanPct: 100 });
     expect(noFan.relStrength).toBeGreaterThan(fullFan.relStrength);
-    expect(fullFan.relStrength).toBeCloseTo(1.0, 9);   // reference IS full fan
+    expect(fullFan.relStrength).toBeCloseTo(1.0, 9);   // PLA reference IS full fan
   });
 
   it("faster printing → hotter substrate → stronger bond (Coogan & Kazmer 2017 trend)", () => {
@@ -90,6 +90,70 @@ describe("physical trends (direction locks)", () => {
     const thinCold  = predictBondMultipliers("pla", 0.1, { ...REF_PROC, nozzleTempC: 190 });
     const thickCold = predictBondMultipliers("pla", 0.3, { ...REF_PROC, nozzleTempC: 190 });
     expect(thinCold.coolTimeConstS).toBeLessThan(thickCold.coolTimeConstS);
+  });
+});
+
+describe("per-material reference cooling fan (#184)", () => {
+  // The reference (multiplier = 1.0) fan is now per-material, anchored to each
+  // material's NORMAL print practice instead of a shared 100 %. PLA/PETG print
+  // with high part cooling; ABS/ASA/PA are run fan-off/low (full fan drives the
+  // warping + interlayer cracking this model predicts). The per-material values
+  // live on BOND_MATERIALS.fanRefPct and are LOW confidence, regression-locked.
+  const REF_FAN: Record<string, number> = {
+    pla: 100, petg: 50, abs: 0, tpu: 50, pa12: 0, asa: 20,
+  };
+
+  it("each material's fanRefPct matches the locked reference table", () => {
+    for (const [m, fan] of Object.entries(REF_FAN)) {
+      expect(BOND_MATERIALS[m]!.fanRefPct).toBe(fan);
+    }
+  });
+
+  it("a material printed at its OWN reference fan sits at exactly 1.0 (no spurious >1)", () => {
+    // Pre-#184 this was the bug: ABS at fan 0 was scored against a fan-100
+    // anchor, so relStrength came out > 1 (spuriously strong at the setting
+    // ABS is actually printed at). Now fan 0 IS the ABS reference ⇒ exactly 1.0.
+    for (const [m, fan] of Object.entries(REF_FAN)) {
+      const p = predictBondMultipliers(m, 0.2, {
+        nozzleTempC: BOND_MATERIALS[m]!.nozzleRefC, coolingFanPct: fan,
+      });
+      expect(p.relStrength).toBeCloseTo(1.0, 9);
+      expect(p.coolingFanRefPct).toBe(fan);
+    }
+  });
+
+  it("ABS at fan 0 is at reference (≈1.0) and MORE fan weakens it (trend preserved)", () => {
+    const absRef  = predictBondMultipliers("abs", 0.2, {
+      nozzleTempC: BOND_MATERIALS["abs"]!.nozzleRefC, coolingFanPct: 0,
+    });
+    const absFan  = predictBondMultipliers("abs", 0.2, {
+      nozzleTempC: BOND_MATERIALS["abs"]!.nozzleRefC, coolingFanPct: 100,
+    });
+    expect(absRef.relStrength).toBeCloseTo(1.0, 9);   // fan-off IS the ABS reference
+    expect(absRef.relStrength).toBeGreaterThan(absFan.relStrength);  // more fan ↓ (trend lock)
+    expect(absFan.relStrength).toBeLessThan(1.0);
+  });
+
+  it("PLA/PETG (already high-fan reference) are unchanged: fan 100 / 50 → ≈1.0", () => {
+    // PLA reference stayed 100 %, so PLA behavior is bit-identical to pre-#184.
+    const pla = predictBondMultipliers("pla", 0.2, {
+      nozzleTempC: BOND_MATERIALS["pla"]!.nozzleRefC, coolingFanPct: 100,
+    });
+    const petg = predictBondMultipliers("petg", 0.2, {
+      nozzleTempC: BOND_MATERIALS["petg"]!.nozzleRefC, coolingFanPct: 50,
+    });
+    expect(pla.relStrength).toBeCloseTo(1.0, 9);
+    expect(petg.relStrength).toBeCloseTo(1.0, 9);
+    // And PLA still weakens with fan above its reference is impossible (100 is
+    // max), so check the below-reference direction: less fan → stronger.
+    const plaLowFan = predictBondMultipliers("pla", 0.2, {
+      nozzleTempC: BOND_MATERIALS["pla"]!.nozzleRefC, coolingFanPct: 0,
+    });
+    expect(plaLowFan.relStrength).toBeGreaterThan(pla.relStrength);
+  });
+
+  it("BOND_REFERENCE no longer carries a shared fan (per-material only)", () => {
+    expect((BOND_REFERENCE as Record<string, unknown>).coolingFanPct).toBeUndefined();
   });
 });
 

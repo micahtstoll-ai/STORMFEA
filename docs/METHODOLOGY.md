@@ -59,9 +59,15 @@ the `S_zt`, `S_zs`, and `E_z` ratios from an anchored physics chain: interface
 temperature history (lumped-capacitance cooling) → neck growth (Frenkel/Pokluda)
 → reptation healing (Φ^¾), plus a void/consolidation factor for cold-deposition
 interbead porosity. Multipliers are **relative** and normalized to exactly `1.0`
-at the per-material reference condition (reference nozzle, 60 mm/s, fan 100%, bed
-60 °C) evaluated at the same layer height, so with no process block the legacy
-layer-height path is reproduced bit-for-bit. Trends are locked (hotter nozzle ↑,
+at the per-material reference condition (reference nozzle AND reference cooling
+fan — both per-material — 60 mm/s, bed 60 °C) evaluated at the same layer height,
+so with no process block the legacy layer-height path is reproduced bit-for-bit.
+The reference **fan is per-material** (issue #184): PLA 100%, PETG 50%, ASA 20%,
+ABS/PA12 0% — each material's normal print practice, so "multiplier = 1.0" is a
+condition the material is actually printed at (the old shared 100% anchored
+ABS/ASA/PA to a fan-off-avoiding setting that promotes the very warping and
+interlayer cracking this model predicts). Surfaced as `materialModel.bond.
+coolingFanRefPct`. Trends are locked (hotter nozzle ↑,
 more fan ↓, faster printing ↑) even though the constants are LOW confidence until
 fitted from a printer process sweep (`POST /api/calibration/bond-sweep`). The
 `POST /api/bond-sensitivity` route evaluates the same model for the process
