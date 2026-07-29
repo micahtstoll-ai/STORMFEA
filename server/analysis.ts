@@ -81,8 +81,13 @@ import {
 } from "./solver/stress.js";
 import { flagMergedHoleWarnings }           from "./holes.js";
 import type { HoleFeature }                 from "./holes.js";
-import { meshWithTetGen, TetGenNotFoundError } from "./tetgen.js";
+import { meshWithTetGen, meshWithTetGenSizing, TetGenNotFoundError, probeTetGen } from "./tetgen.js";
 import { meshStepWithGmsh }                 from "./gmsh_mesh.js";
+import {
+  buildSizeField, relaxSizeFieldToBudget, shouldStopRefinement,
+  targetPerElementError, DEFAULT_LOOP_OPTIONS, DEFAULT_SIZE_FIELD_FACTORS,
+  type LoopControlOptions, type SingularityRegion,
+} from "./solver/adaptiveMesh.js";
 
 // ─── Standard bolt database ───────────────────────────────────────────────────
 /**
@@ -1453,6 +1458,42 @@ export interface AnalysisSettings {
    * criterion only.
    */
   inPlaneAnisotropy?: boolean;
+  /**
+   * Opt-in error-driven adaptive mesh refinement (issue #149). When true (STL
+   * path only, and only where a TetGen binary with sizing support exists), the
+   * analysis runs an adaptive loop: solve → ZZ error estimate → build a
+   * regional size field targeting the high-error elements → re-mesh → re-solve,
+   * stopping on a target global error, an iteration cap, an element-growth cap,
+   * or a stalled improvement. Default false ⇒ a single solve at the selected
+   * mesh tier, BIT-IDENTICAL to the legacy path. Ignored (with a notice) on the
+   * STEP/Gmsh path and on the box-mesh fallback, which degrade to tier behavior.
+   */
+  adaptiveRefinement?: boolean;
+}
+
+/**
+ * Result of the adaptive-refinement loop, surfaced on AnalysisResult when the
+ * opt-in path ran. Purely informational; absent on the default single-solve.
+ */
+export interface AdaptiveRefinementInfo {
+  /** Number of solves performed (1 = no refinement happened). */
+  iterations:            number;
+  /** Why the loop stopped. */
+  stopReason:            string;
+  /** Global relative error of the FIRST (tier) solve. */
+  initialGlobalError:    number;
+  /** Global relative error of the FINAL (reported) solve. */
+  finalGlobalError:      number;
+  /** Element count of the first solve. */
+  initialElementCount:   number;
+  /** Element count of the final solve. */
+  finalElementCount:     number;
+  /** Per-iteration (globalRelativeError, elementCount) history. */
+  history:               Array<{ globalRelativeError: number; elementCount: number }>;
+  /** True if the loop degraded to a single tier solve (no binary / STEP / box). */
+  degradedToTier:        boolean;
+  /** Human-readable note (e.g. why it degraded). */
+  note:                  string;
 }
 
 /**
@@ -1608,6 +1649,33 @@ export interface AnalysisRequest {
    * AnalysisAbortError instead of burning CPU on a result nobody will read.
    */
   signal?: AbortSignal;
+  /**
+   * Adaptive-refinement seam (issue #149) — INTERNAL. When present, runAnalysis
+   * skips its own STL/STEP meshing and solves this pre-built mesh instead. Set
+   * only by runAdaptiveAnalysis when feeding a re-meshed volume back through the
+   * pipeline. Undefined on every normal request ⇒ zero effect on the default
+   * path. `_prebuiltMesh` must carry the same surface→node conventions
+   * meshWithTetGen produces (surface vertices first, in order).
+   */
+  _prebuiltMesh?: {
+    mesh:          import("./solver/types.js").TetMesh;
+    surfaceToNode: Int32Array;
+    surfaceFaces:  Int32Array | null;
+  };
+  /**
+   * Adaptive-refinement seam (issue #149) — INTERNAL. A mutable capture object
+   * runAnalysis writes the raw solved mesh and per-element error field into, so
+   * the adaptive driver can build the next size field. A pure side-write at the
+   * very end of the solve; it changes NO computed output, so the default path
+   * (undefined) stays bit-identical.
+   */
+  _captureInternals?: {
+    mesh?:          import("./solver/types.js").TetMesh;
+    errorEstimate?: Float32Array;
+    surfaceToNode?: Int32Array;
+    surfaceFaces?:  Int32Array | null;
+    meshFallback?:  boolean;
+  };
 }
 
 export interface PrintRecommendation {
@@ -2484,6 +2552,11 @@ export interface AnalysisResult {
   globalRelativeError?:    number;
   /** Top-20 elements with highest error estimates, for refinement guidance */
   topErrorElements?:       Array<{ x: number; y: number; z: number; errorEstimate: number }>;
+  /**
+   * Adaptive-refinement report (issue #149). Present only when the opt-in
+   * `analysis.adaptiveRefinement` path ran; absent on the default single solve.
+   */
+  adaptiveRefinement?:     AdaptiveRefinementInfo;
   /** XY in-plane utilization per surface vertex (null if unavailable) */
   vertexXyUtil:            Float32Array | null;
   /** Z inter-layer utilization per surface vertex (null if unavailable) */
@@ -3311,7 +3384,16 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   let gmshResult: import("./gmsh_mesh.js").GmshMeshResult | null = null;
   let meshFallback = false;
 
-  if (req.fileType === "step" && req.stepBuffer) {
+  if (req._prebuiltMesh) {
+    // ── Adaptive-refinement seam (issue #149) ────────────────────────────────
+    // A re-meshed volume was handed to us by runAdaptiveAnalysis; skip meshing
+    // entirely and solve it. Undefined on every normal request, so this branch
+    // is inert on the default path.
+    mesh          = req._prebuiltMesh.mesh;
+    surfaceToNode = req._prebuiltMesh.surfaceToNode;
+    surfaceFaces  = req._prebuiltMesh.surfaceFaces;
+    console.log(`[analysis] adaptive: solving pre-built mesh (${mesh.nodeCount} nodes, ${mesh.elementCount} elements)`);
+  } else if (req.fileType === "step" && req.stepBuffer) {
     // ── STEP path: Gmsh with curvature-based refinement ──────────────────────
     const clOpts = {
       coarse:   { clMin: 0.5, clMax: 4.0, clCurv: 15 },
@@ -3914,6 +3996,19 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   const intermediate = await runLinearStaticWithK(input);
   checkAbort();
   const result: import("./solver/types.js").SolverResult = intermediate.result;
+
+  // ── Adaptive-refinement capture (issue #149) ───────────────────────────────
+  // Pure side-write: expose the solved mesh + per-element error field to the
+  // adaptive driver so it can build the next size field. Undefined on every
+  // normal request, so this does not touch the default path's output at all.
+  if (req._captureInternals) {
+    req._captureInternals.mesh          = mesh;
+    req._captureInternals.errorEstimate = result.errorEstimate;
+    req._captureInternals.surfaceToNode = surfaceToNode;
+    req._captureInternals.surfaceFaces  = surfaceFaces;
+    req._captureInternals.meshFallback  = meshFallback;
+  }
+
   let modalResult: ModalAnalysisResult | undefined;
 
   if (wantsModal) {
@@ -5141,5 +5236,181 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     vertexErrorEstimateB64: vertexErrorEstimate ? Buffer.from(vertexErrorEstimate.buffer).toString("base64") : undefined,
     globalRelativeError: result.globalRelativeError,
     topErrorElements: result.topErrorElements ? [...result.topErrorElements] : undefined,
+  };
+}
+
+// ─── Adaptive-refinement driver (issue #149) ─────────────────────────────────
+/**
+ * runAdaptiveAnalysis — the OPT-IN error-driven adaptive refinement loop.
+ *
+ * Runs the normal analysis once at the selected mesh tier, then, while the ZZ
+ * global relative error is above target and the guards allow, builds a regional
+ * SIZE FIELD from the per-element error indicator (small elements where error
+ * concentrates, coarse elsewhere), re-meshes with TetGen sizing, and re-solves.
+ * Reports the BEST (lowest global-error) iteration with an AdaptiveRefinementInfo.
+ *
+ * DEGRADES CLEANLY to the single tier solve — returning exactly what runAnalysis
+ * would return, plus a `degradedToTier` note — when adaptivity cannot run: the
+ * STEP/Gmsh path, the box-mesh fallback, a missing TetGen binary, or no error
+ * field. This keeps the default single-solve behaviour reachable and unchanged.
+ *
+ * The size-field construction, budget guard, and stop criteria are unit-tested
+ * without any binary (server/tests/unit/adaptive-mesh.test.ts). Only the
+ * meshWithTetGenSizing re-mesh needs the binary; where it is absent the loop
+ * degrades on the first iteration.
+ */
+export async function runAdaptiveAnalysis(
+  req: AnalysisRequest,
+  loopOverrides?: Partial<LoopControlOptions>,
+): Promise<AnalysisResult> {
+  const opts: LoopControlOptions = { ...DEFAULT_LOOP_OPTIONS, ...loopOverrides };
+  const order = (req.analysis.meshOrder ?? 2) as 1 | 2;
+
+  // ── First (tier) solve, capturing the raw mesh + error field ───────────────
+  const cap0: NonNullable<AnalysisRequest["_captureInternals"]> = {};
+  const first = await runAnalysis({ ...req, _captureInternals: cap0 });
+
+  const history: Array<{ globalRelativeError: number; elementCount: number }> = [
+    { globalRelativeError: first.globalRelativeError ?? 0, elementCount: first.elementCount },
+  ];
+
+  const degrade = (note: string): AnalysisResult => ({
+    ...first,
+    adaptiveRefinement: {
+      iterations:          1,
+      stopReason:          "degraded-to-tier",
+      initialGlobalError:  first.globalRelativeError ?? 0,
+      finalGlobalError:    first.globalRelativeError ?? 0,
+      initialElementCount: first.elementCount,
+      finalElementCount:   first.elementCount,
+      history,
+      degradedToTier:      true,
+      note,
+    },
+  });
+
+  if (req.fileType !== "stl" || req.stepBuffer) {
+    return degrade("Adaptive refinement runs on the STL/TetGen path only; used the selected mesh tier.");
+  }
+  if (cap0.meshFallback) {
+    return degrade("Mesh degraded to the box fallback (no surface connectivity); adaptive sizing unavailable — used the tier mesh.");
+  }
+  if (!cap0.mesh || !cap0.errorEstimate) {
+    return degrade("No per-element error field was produced; used the selected mesh tier.");
+  }
+
+  const probe = await probeTetGen();
+  if (!probe.found) {
+    return degrade("TetGen binary not found; adaptive re-mesh unavailable — used the selected mesh tier.");
+  }
+
+  // ── Singularity exclusion (issue #147): keep a small radius around a flagged
+  //    singular corner coarse — refining a true singularity never converges. ──
+  const singularities: SingularityRegion[] = [];
+  if (first.singularity?.detected && cap0.mesh) {
+    const idx = first.singularity.peakVertexIdx;
+    const nx = cap0.mesh.nodes[idx * 3];
+    const ny = cap0.mesh.nodes[idx * 3 + 1];
+    const nz = cap0.mesh.nodes[idx * 3 + 2];
+    if (nx !== undefined && ny !== undefined && nz !== undefined) {
+      // 2 mm exclusion ball — comfortably larger than the ~1 mm neighbourhood
+      // the detector samples, so the singular tip and its immediate ring are
+      // left coarse.
+      singularities.push({ x: nx, y: ny, z: nz, radius: 2.0 });
+    }
+  }
+
+  const baseElementCount = first.elementCount;
+  const budget = Math.max(baseElementCount + 1, Math.floor(baseElementCount * opts.maxElementGrowth));
+
+  let best = first;
+  let bestGRE = first.globalRelativeError ?? Infinity;
+  let curMesh = cap0.mesh;
+  let curError = cap0.errorEstimate;
+  let iterations = 1;
+  let stopReason = "max-iterations";
+
+  // Loop state reflects the iteration just COMPLETED (starts at the tier solve).
+  let state = {
+    iteration:                   0,
+    globalRelativeError:         first.globalRelativeError ?? 0,
+    elementCount:                first.elementCount,
+    baseElementCount,
+    previousGlobalRelativeError: null as number | null,
+    refinedNodeCount:            null as number | null,
+  };
+
+  for (;;) {
+    const decision = shouldStopRefinement(state, opts);
+    if (decision.stop) { stopReason = decision.reason; break; }
+
+    // ── Build the regional size field from the current error field ───────────
+    const targetErr = targetPerElementError(opts.targetGlobalError, curMesh.elementCount);
+    let field = buildSizeField(curMesh, curError, {
+      targetError:   targetErr,
+      order,
+      minSizeFactor: DEFAULT_SIZE_FIELD_FACTORS.minSizeFactor,
+      maxSizeFactor: DEFAULT_SIZE_FIELD_FACTORS.maxSizeFactor,
+      singularities,
+    });
+    if (field.refinedNodeCount === 0) { stopReason = "no-refinement-requested"; break; }
+    field = relaxSizeFieldToBudget(curMesh, field, budget);
+
+    // ── Re-mesh with the sizing field (binary-dependent) ─────────────────────
+    let remesh;
+    try {
+      remesh = await meshWithTetGenSizing(req.positions, req.triangleCount, curMesh, field, order);
+    } catch (err) {
+      console.warn("[analysis] adaptive re-mesh failed, keeping best-so-far:", err);
+      stopReason = "remesh-failed";
+      break;
+    }
+
+    // ── Re-solve on the refined mesh ─────────────────────────────────────────
+    const capN: NonNullable<AnalysisRequest["_captureInternals"]> = {};
+    const next = await runAnalysis({
+      ...req,
+      _prebuiltMesh: {
+        mesh:          remesh.mesh,
+        surfaceToNode: remesh.surfaceToNode,
+        surfaceFaces:  remesh.surfaceFaces,
+      },
+      _captureInternals: capN,
+    });
+    iterations++;
+    const nextGRE = next.globalRelativeError ?? 0;
+    history.push({ globalRelativeError: nextGRE, elementCount: next.elementCount });
+
+    if (nextGRE < bestGRE) { best = next; bestGRE = nextGRE; }
+
+    // Advance loop state for the next stop decision.
+    const prevGRE = state.globalRelativeError;
+    state = {
+      iteration:                   state.iteration + 1,
+      globalRelativeError:         nextGRE,
+      elementCount:                next.elementCount,
+      baseElementCount,
+      previousGlobalRelativeError: prevGRE,
+      refinedNodeCount:            field.refinedNodeCount,
+    };
+
+    if (!capN.mesh || !capN.errorEstimate) { stopReason = "no-error-field"; break; }
+    curMesh = capN.mesh;
+    curError = capN.errorEstimate;
+  }
+
+  return {
+    ...best,
+    adaptiveRefinement: {
+      iterations,
+      stopReason,
+      initialGlobalError:  first.globalRelativeError ?? 0,
+      finalGlobalError:    Number.isFinite(bestGRE) ? bestGRE : (first.globalRelativeError ?? 0),
+      initialElementCount: baseElementCount,
+      finalElementCount:   best.elementCount,
+      history,
+      degradedToTier:      false,
+      note:                `Adaptive refinement: ${iterations} solve(s), stopped on '${stopReason}'.`,
+    },
   };
 }

@@ -41,6 +41,9 @@ import { tmpdir }                             from "os";
 import * as path                              from "path";
 import { fileURLToPath as ftu }               from "url";
 import type { TetMesh }                       from "./solver/types.js";
+import {
+  sizeFieldToMtr, meshToNodeFile, meshToEleFile, type SizeField,
+} from "./solver/adaptiveMesh.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -430,4 +433,144 @@ async function tryTetGen(offPath: string, switches: string[]): Promise<"ok" | "f
   } catch (err: unknown) {
     return (err as NodeJS.ErrnoException)?.code === "ENOENT" ? "missing" : "fail";
   }
+}
+
+// ─── Write a TetGen .smesh PLC from a welded surface ──────────────────────────
+// The .smesh format is a simple PLC: node list, then facet list, then hole and
+// region lists (both empty for us). 1-based indices. Unlike the .off path this
+// is the format that supports background-mesh sizing (-m) cleanly.
+function buildSmesh(weld: WeldResult): string {
+  const lines: string[] = [];
+  lines.push(`# node list`);
+  lines.push(`${weld.vertCount} 3 0 0`);
+  const p = weld.positions;
+  for (let v = 0; v < weld.vertCount; v++) {
+    lines.push(`${v + 1} ${p[v * 3] ?? 0} ${p[v * 3 + 1] ?? 0} ${p[v * 3 + 2] ?? 0}`);
+  }
+  lines.push(`# facet list`);
+  lines.push(`${weld.triCount} 0`);
+  for (let t = 0; t < weld.triCount; t++) {
+    // "<#corners> n0 n1 n2" — TetGen wants the corner count first, then the
+    // (1-based) node indices.
+    lines.push(`3 ${(weld.faces[t * 3] ?? 0) + 1} ${(weld.faces[t * 3 + 1] ?? 0) + 1} ${(weld.faces[t * 3 + 2] ?? 0) + 1}`);
+  }
+  lines.push(`# hole list`);
+  lines.push(`0`);
+  lines.push(`# region list`);
+  lines.push(`0`);
+  return lines.join("\n") + "\n";
+}
+
+/**
+ * meshWithTetGenSizing — issue #149, the BINARY-DEPENDENT step of the adaptive
+ * refinement loop. Re-meshes the SAME surface PLC but honours a per-node target
+ * SIZE FIELD (built by server/solver/adaptiveMesh.ts from the ZZ error field)
+ * so elements shrink only where the error concentrates.
+ *
+ * Mechanism: TetGen's `-m` (mesh sizing function) with a BACKGROUND MESH. The
+ * previous volume mesh is written as `<base>.b.node` / `<base>.b.ele`, and the
+ * target sizes as `<base>.b.mtr`. TetGen interpolates the sizing function from
+ * that background mesh through the new volume. `-Y` preserves the surface
+ * vertices (still the first N output nodes, in order), giving the same O(1)
+ * surface→volume map as meshWithTetGen.
+ *
+ * This function CANNOT be exercised without a tetgen binary. Callers must guard
+ * with probeTetGen() (or catch TetGenNotFoundError) and fall back to the tier
+ * path. The sizing-field CONSTRUCTION and the loop control it feeds are
+ * unit-tested independently in server/tests/unit/adaptive-mesh.test.ts; this
+ * function's end-to-end behaviour is covered by an integration test that
+ * self-skips where tetgen is absent (adaptive-remesh.test.ts).
+ */
+export async function meshWithTetGenSizing(
+  stlPositions:  Float32Array,
+  triangleCount: number,
+  backgroundMesh: TetMesh,
+  sizeField:     SizeField,
+  elementOrder:  1 | 2 = 2,
+): Promise<TetGenResult> {
+  if (tetgenKnownMissing) throw new TetGenNotFoundError(TETGEN_BIN);
+  if (sizeField.targetSize.length !== backgroundMesh.nodeCount) {
+    throw new Error(
+      `meshWithTetGenSizing: size field has ${sizeField.targetSize.length} values ` +
+      `but background mesh has ${backgroundMesh.nodeCount} nodes — they must match 1:1.`,
+    );
+  }
+
+  // ── 1. Weld surface + write PLC ────────────────────────────────────────────
+  const weld = weldVertices(stlPositions, triangleCount);
+  const smesh = buildSmesh(weld);
+
+  const tmpBase   = path.join(tmpdir(), `stormfea_adapt_${Date.now()}`);
+  const smeshPath = tmpBase + ".smesh";
+  // Background mesh files share the input base name with a ".b" infix, which is
+  // how TetGen locates them under -m.
+  const bNodePath = tmpBase + ".b.node";
+  const bElePath  = tmpBase + ".b.ele";
+  const bMtrPath  = tmpBase + ".b.mtr";
+
+  await Promise.all([
+    writeFile(smeshPath, smesh, "utf8"),
+    writeFile(bNodePath, meshToNodeFile(backgroundMesh), "utf8"),
+    writeFile(bElePath,  meshToEleFile(backgroundMesh),  "utf8"),
+    writeFile(bMtrPath,  sizeFieldToMtr(sizeField),      "utf8"),
+  ]);
+
+  // ── 2. Run TetGen with the sizing function ─────────────────────────────────
+  // -p  PLC, -m  sizing from background mesh, -Y preserve surface, -Q quiet.
+  // Fallback chain mirrors meshWithTetGen: quality+sizing, sizing only, then a
+  // plain (unsized) mesh so a pathological background metric still meshes.
+  const nodePath = tmpBase + ".1.node";
+  const elePath  = tmpBase + ".1.ele";
+  const o2 = elementOrder === 2 ? ["-o2"] : [];
+  const switchSets = [
+    [`-pmq1.4YQ`, ...o2],
+    [`-pmYQ`,     ...o2],
+    [`-pYQ`,      ...o2],   // last resort: ignore sizing, just mesh the surface
+  ];
+
+  let meshed = false;
+  for (const switches of switchSets) {
+    const outcome = await tryTetGen(smeshPath, switches);
+    if (outcome === "ok") {
+      console.log(`[tetgen] adaptive re-mesh succeeded with switches: ${switches.join(" ")}`);
+      meshed = true;
+      break;
+    }
+    if (outcome === "missing") {
+      tetgenKnownMissing = true;
+      await Promise.allSettled([smeshPath, bNodePath, bElePath, bMtrPath].map(f => unlink(f)));
+      throw new TetGenNotFoundError(TETGEN_BIN);
+    }
+    console.log(`[tetgen] adaptive re-mesh failed with ${switches.join(" ")}, trying fallback...`);
+  }
+  if (!meshed) {
+    throw new Error("TetGen failed to re-mesh with the adaptive sizing field.");
+  }
+
+  // ── 3. Read + parse output ─────────────────────────────────────────────────
+  const [nodeText, eleText] = await Promise.all([
+    readFile(nodePath, "utf8"),
+    readFile(elePath,  "utf8"),
+  ]);
+  const nodes                      = parseNodeFile(nodeText);
+  const { elements, nodesPerElem } = parseEleFile(eleText);
+  const nodeCount    = nodes.length / 3;
+  const elementCount = elements.length / nodesPerElem;
+
+  const surfaceToNode = new Int32Array(weld.vertCount);
+  for (let i = 0; i < weld.vertCount; i++) surfaceToNode[i] = i;
+
+  await Promise.allSettled([
+    smeshPath, bNodePath, bElePath, bMtrPath, nodePath, elePath,
+    tmpBase + ".1.face", tmpBase + ".1.edge", tmpBase + ".1.smesh",
+  ].map(f => unlink(f)));
+
+  console.log(`[tetgen] adaptive mesh: ${nodeCount} nodes, ${elementCount} elements (${nodesPerElem}-node)`);
+
+  return {
+    mesh: { nodes, elements, nodeCount, elementCount, nodesPerElem },
+    surfaceToNode,
+    surfaceFaces: weld.faces,
+    steinerCount: nodeCount - weld.vertCount,
+  };
 }
