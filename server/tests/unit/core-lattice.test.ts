@@ -26,6 +26,7 @@ import {
   latticeStiffnessScales,
   latticeStrengthFraction,
   latticeStrengthFractions,
+  latticeStrengthExpExcursion,
   lumpedInPlaneStiffnessScale,
   wallCreditFraction,
   patternFamilyOf,
@@ -467,5 +468,51 @@ describe("unified in-plane density knockdown (issue #176)", () => {
       expect(rCLT).toBeCloseTo(k, 6);
       expect(Math.abs(rNon - rCLT) / rNon).toBeLessThan(0.01);
     }
+  });
+});
+
+// ── SF-band excursion from the GA strength-exponent uncertainty (#173) ─────────
+describe("latticeStrengthExpExcursion (SF-band widening from LOW-confidence exponents)", () => {
+  it("is EXACTLY {1,1} at ρ=1 for every pattern (solid anchor — band unchanged)", () => {
+    for (const pattern of Object.keys(PATTERN_FAMILY)) {
+      const exc = latticeStrengthExpExcursion(pattern, 1.0);
+      expect(exc.low).toBe(1);
+      expect(exc.high).toBe(1);
+    }
+  });
+
+  it("widens strictly below full density (low < 1 < high) for a structural pattern", () => {
+    const exc = latticeStrengthExpExcursion("grid", 0.2);
+    expect(exc.low).toBeLessThan(1);
+    expect(exc.high).toBeGreaterThan(1);
+  });
+
+  it("is monotone in (1−ρ): lower infill ⇒ wider band", () => {
+    let prevWidth = 0;
+    for (const rho of [1.0, 0.6, 0.4, 0.2, 0.1]) {
+      const exc = latticeStrengthExpExcursion("grid", rho);
+      const width = exc.high - exc.low;
+      expect(width).toBeGreaterThanOrEqual(prevWidth - 1e-12);
+      prevWidth = width;
+    }
+    expect(prevWidth).toBeGreaterThan(0);
+  });
+
+  it("brackets the point law: strength fractions at the exponent extremes straddle the central", () => {
+    const pattern = "grid", rho = 0.2;
+    const p = LATTICE_PARAMS[patternFamilyOf(pattern)];
+    const [mLo, mHi] = p.strengthExpXYRange;
+    const sC  = latticeStrengthFraction(pattern, rho);
+    const exc = latticeStrengthExpExcursion(pattern, rho);
+    // high uses the shallow exponent (stronger), low uses the steep one (weaker)
+    const patternMul = PATTERN_MULTIPLIERS[pattern] ?? 1.0;
+    expect(exc.high).toBeCloseTo(Math.min(1, patternMul * rho ** mLo) / sC, 12);
+    expect(exc.low).toBeCloseTo(Math.min(1, patternMul * rho ** mHi) / sC, 12);
+  });
+
+  it("a calibration exponent override PINS the law ⇒ excursion collapses to {1,1}", () => {
+    const exc = latticeStrengthExpExcursion("grid", 0.2, 1.6);
+    expect(exc.low).toBe(1);
+    expect(exc.high).toBe(1);
   });
 });

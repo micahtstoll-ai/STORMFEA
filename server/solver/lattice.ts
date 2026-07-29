@@ -96,6 +96,15 @@ export interface LatticeFamilyParams {
    *  (yieldXY). This is the representative scalar `latticeStrengthFraction`
    *  returns — its value is unchanged from the pre-per-axis `strengthExp`. */
   readonly strengthExpXY:  number;
+  /** Plausible LOW-confidence spread on the representative strength exponent
+   *  m_xy, [m_lo, m_hi] (issue #173). Gibson & Ashby (1997) give m ≈ 1.5 for
+   *  bending-dominated plastic collapse and ~1.2–1.3 for stretch-dominated
+   *  topologies; the point value sits inside this band and the endpoints are
+   *  the cross-study scatter the "confidence LOW" label already implies. Used
+   *  ONLY to widen the reported SF uncertainty band for core-governed
+   *  two-region parts (never enters the constitutive matrix); collapses to the
+   *  point value under a calibration exponent override. */
+  readonly strengthExpXYRange: readonly [number, number];
   /** Through-layer strength exponent m_z (yieldZ). Per-axis so the strength
    *  anisotropy tracks the stiffness anisotropy (issue #177): for extruded
    *  walls the continuous vertical walls give the mildest law (rule of
@@ -130,7 +139,7 @@ export const LATTICE_PARAMS: Record<PatternFamily, LatticeFamilyParams> = {
     // ordering (XY < Z < Gxz) so the near-isotropic core keeps Z weaker AND
     // softer than XY at low ρ (both signs already agreed here; the per-axis
     // law keeps them consistent). m_xy unchanged from the legacy strengthExp.
-    strengthExpXY: 1.25, strengthExpZ: 1.5, strengthExpZS: 1.6,
+    strengthExpXY: 1.25, strengthExpXYRange: [1.0, 1.5], strengthExpZ: 1.5, strengthExpZS: 1.6,
     stiffExpZ: 2.1, stiffCorrZ: 0.18, stiffExpGxz: 2.3, stiffCorrGxz: 0.22, stiffExpGxy: null,
     confidence: "LOW",
   },
@@ -145,7 +154,7 @@ export const LATTICE_PARAMS: Record<PatternFamily, LatticeFamilyParams> = {
     // continuous vertical walls (rule of mixtures m_z = 1.0, matching gZ's
     // n = 1) so the strength anisotropy INVERTS at low ρ just like the
     // stiffness; interlaminar shear stays conservative at 1.5.
-    strengthExpXY: 1.5, strengthExpZ: 1.0, strengthExpZS: 1.5,
+    strengthExpXY: 1.5, strengthExpXYRange: [1.2, 1.8], strengthExpZ: 1.0, strengthExpZS: 1.5,
     stiffExpZ: 1.0, stiffCorrZ: 0.0, stiffExpGxz: 1.5, stiffCorrGxz: 0.10, stiffExpGxy: 3.0,
     confidence: "LOW",
   },
@@ -154,7 +163,7 @@ export const LATTICE_PARAMS: Record<PatternFamily, LatticeFamilyParams> = {
     family: "sparse",
     stiffExpXY: 2.0, stiffCorrXY: 0.0, stiffPrefactor: 0.3,
     // Decorative — isotropic strength (no directional wall network to credit).
-    strengthExpXY: 1.5, strengthExpZ: 1.5, strengthExpZS: 1.5,
+    strengthExpXY: 1.5, strengthExpXYRange: [1.2, 1.8], strengthExpZ: 1.5, strengthExpZS: 1.5,
     stiffExpZ: 2.0, stiffCorrZ: 0.0, stiffExpGxz: 2.0, stiffCorrGxz: 0.0, stiffExpGxy: null,
     confidence: "LOW",
   },
@@ -363,4 +372,42 @@ export function latticeStrengthFraction(
   overrideExp?: number | null,
 ): number {
   return latticeStrengthFractions(pattern, rho, overrideExp).sXY;
+}
+
+/**
+ * Multiplicative SF-band excursion from the Gibson-Ashby STRENGTH-EXPONENT
+ * uncertainty (issue #173). Returns { low, high } — the ratio of the core
+ * strength fraction s(ρ) = min(1, patternMul·ρ^m) evaluated at the exponent
+ * range endpoints to its value at the point exponent:
+ *
+ *   low  = s(ρ | m_hi) / s(ρ | m_xy)   (≤ 1 — the steeper exponent is weaker)
+ *   high = s(ρ | m_lo) / s(ρ | m_xy)   (≥ 1 — the shallower exponent is stronger)
+ *
+ * ANCHOR (invariant #8): at ρ = 1, Math.pow(1, m) = 1 for every m, so
+ * low = high = 1 EXACTLY — a solid / 100%-infill core adds no band width, and
+ * the existing solid-part band is reproduced bit-for-bit. The spread grows
+ * monotonically with (1 − ρ): the wider the extrapolation below full density,
+ * the less certain the least-trusted exponents in the model make the strength.
+ *
+ * A calibration exponent override PINS the law to one fitted number, so the
+ * exponent is no longer a free uncertainty — the excursion collapses to
+ * { 1, 1 } (a future infill-coupon sweep narrows the band, mirroring the
+ * bond-sweep pattern).
+ */
+export function latticeStrengthExpExcursion(
+  pattern: string,
+  rho: number,
+  overrideExp?: number | null,
+): { low: number; high: number } {
+  if (overrideExp != null) return { low: 1, high: 1 };
+  const p = LATTICE_PARAMS[patternFamilyOf(pattern)];
+  const [mLo, mHi] = p.strengthExpXYRange;
+  const r = clampRho(rho);
+  const patternMul = PATTERN_MULTIPLIERS[pattern] ?? 1.0;
+  // Same min(1, ·) clamp as the real strength law, so the excursion vanishes
+  // wherever the point law itself saturates at solid strength.
+  const sAt = (m: number) => Math.min(1, patternMul * Math.pow(r, m));
+  const sC = sAt(p.strengthExpXY);
+  if (!(sC > 0)) return { low: 1, high: 1 };
+  return { low: sAt(mHi) / sC, high: sAt(mLo) / sC };
 }
