@@ -184,12 +184,26 @@ geometrically:
   matches composite-EI beam theory within 0.3% where the homogenized model is
   ~23% too soft (`solver_validation.ts` group 25); a Taguchi L9 orthogonal
   array sweeps infill/walls/pattern/orientation for main-effect sanity.
+- **Core yield criterion (Deshpande–Fleck–Ashby, issue #171).** The homogenized
+  infill core is a cellular solid: it yields under HYDROSTATIC stress (the
+  lattice compacts), unlike the deviatoric von Mises the solid obeys. Core bulk
+  yield therefore uses the isotropic-foam DFA criterion
+  `σ̂² = (σ_vm² + α²·σ_m²)/(1 + (α/3)²)` (σ_m = mean stress), with the
+  pressure-sensitivity `α(ρ) = 2.08·(1 − ρ)` (Deshpande & Fleck 2000). The
+  `(1 + (α/3)²)` normalization keeps the in-plane uniaxial yield at yieldXY for
+  every α, so DFA never disturbs the coupon anchor — it only ADDS hydrostatic
+  yield. `α(1) = 0` EXACTLY, so at ρ=1 (and in every shell/wall bin and the
+  single-material flag-off path) the criterion collapses to von Mises
+  bit-for-bit; α grows toward 2.08 as ρ→0. Applied per element via the
+  core-fraction-weighted per-bin α `(1−shellFrac)·α(ρ)` in
+  `recoverElementStress`; a strength-side change only (stiffness untouched).
+  The α₀ magnitude and the linear knockdown are literature-form estimates,
+  confidence LOW, regression-locked (`dfa-core-yield.test.ts`).
 - **Known limits:** Voigt blending is an upper bound inside the one-element
   transition band; nozzle-temp/flow effects on bond quality are captured
-  empirically via calibration coupons, not parametric inputs; the core yield
-  criterion remains deviatoric (the dual criterion's bulk von Mises term) — a
-  Deshpande–Fleck–Ashby pressure-dependent lattice criterion is a planned
-  follow-up.
+  empirically via calibration coupons, not parametric inputs; the DFA core
+  criterion is isotropic (an anisotropic honeycomb-foam extension, and a fitted
+  α(ρ), remain follow-ups).
 
 **Print orientation (weak-axis rotation).** The weak (through-layer) axis is the
 FDM layer normal. **C** is built in the material's local frame (weak along local

@@ -95,6 +95,16 @@ export interface OrthotropicMaterial {
    * τ_z,yield = Z/√3), so old materials reproduce legacy behavior.
    */
   readonly yieldZShear?:  number;   // MPa
+  /**
+   * Deshpande–Fleck–Ashby pressure-sensitivity coefficient α of the bulk yield
+   * criterion (`fdmDualCriterionSF`). Absent or 0 → deviatoric von Mises (the
+   * solid limit; every non-lattice material). Positive → the cellular-foam DFA
+   * criterion σ̂² = (σ_vm² + α²σ_m²)/(1 + (α/3)²), which yields under hydrostatic
+   * stress too. Set only on the homogenized infill CORE, where α = α(ρ) grows
+   * from 0 at ρ=1 (solid ⇒ von Mises exactly) toward ~2.08 at ρ→0 (issue #171).
+   * Confidence LOW; see `dfaPressureSensitivity` in solver/lattice.ts.
+   */
+  readonly dfaAlpha?:     number;   // dimensionless, ≥ 0
   readonly label:         string;
   /**
    * Unit vector (global frame) giving the material's weak / through-layer axis —
@@ -150,6 +160,8 @@ export interface GyroidOrthotropic {
   readonly yieldZ:        number;           // MPa — yield strength in Z
   /** Interlaminar shear allowable S_zs; absent → yieldZ/√3 (see OrthotropicMaterial). */
   readonly yieldZShear?:  number;           // MPa
+  /** DFA pressure-sensitivity α; absent → von Mises (see OrthotropicMaterial.dfaAlpha). */
+  readonly dfaAlpha?:     number;           // dimensionless, ≥ 0
   readonly label:         string;
   /** Mass density in kg/m³ (SI); see IsotropicMaterial.massRho. */
   readonly massRho?:      number;
@@ -193,6 +205,15 @@ export interface ElementMaterialField {
   readonly yieldZ:       Float64Array;
   /** Interlaminar shear allowable per bin, MPa (endpoint absent → yieldZ/√3) */
   readonly yieldZShear:  Float64Array;
+  /**
+   * Deshpande–Fleck–Ashby pressure-sensitivity α per bin (issue #171).
+   * Absent = every bin von Mises (legacy; older/hand-built fields stay
+   * bit-identical). Present: the core-fraction-weighted α, (1−shellFrac)·α(ρ),
+   * so pure-shell bins are 0 (von Mises, untouched) and the pure-core bin
+   * carries the full foam α. Recovery-only (like the yields) — does NOT cross
+   * the assembly-worker boundary (invariant #7); the worker only reads C.
+   */
+  readonly dfaAlpha?:    Float64Array;
   /** Mass density per bin, kg/m³ (SI, converted at assembly time) */
   readonly massRho:      Float64Array;
   /** Representative shell (wall) volume fraction per bin, for reporting */
