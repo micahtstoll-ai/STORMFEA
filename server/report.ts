@@ -35,7 +35,26 @@ export function generateHtmlReport(
     converged, meshFallback,
     sfCriterion, safetyfactorLow, safetyFactorHigh,
     isotropicComparison, materialModel,
+    nodeCount, elementCount, globalRelativeError, bucklingResult,
   } = result;
+
+  // Issue #204: estimatedFailForce is a linear first-yield extrapolation
+  // (totalAppliedForce × SF, server/analysis.ts) presented with no caveat.
+  // When buckling governs below that first-yield load, lead with the lower,
+  // more honest number instead and flag it — the BLF and safetyFactor
+  // needed to derive the applied load are both already on the result.
+  let bucklingGoverns = false;
+  let displayFailForce = estimatedFailForce;
+  if (bucklingResult && bucklingResult.blf != null
+      && bucklingResult.verdict !== 'no-buckling' && bucklingResult.verdict !== 'indeterminate'
+      && safetyFactor != null && safetyFactor > 0) {
+    const appliedForce = estimatedFailForce / safetyFactor;
+    const bucklingForce = bucklingResult.blf * appliedForce;
+    if (bucklingForce < estimatedFailForce) {
+      bucklingGoverns = true;
+      displayFailForce = bucklingForce;
+    }
+  }
 
   const criterionLabel =
     sfCriterion === "fdm-interface" ? "FDM dual criterion (bulk von Mises + interlayer interface)"
@@ -157,14 +176,24 @@ export function generateHtmlReport(
       <div class="card-value">${maxVonMisesMPa.toFixed(1)}<span class="card-unit"> MPa</span></div>
     </div>
     <div class="card">
-      <div class="card-label">Fail Force</div>
-      <div class="card-value">${estimatedFailForce.toFixed(0)}<span class="card-unit"> N</span></div>
-      <div class="card-unit">(${(estimatedFailForce/4.448).toFixed(0)} lbf)</div>
+      <div class="card-label">Est. Failure Load${bucklingGoverns ? ' (buckling-limited)' : ''}</div>
+      <div class="card-value">${displayFailForce.toFixed(0)}<span class="card-unit"> N</span></div>
+      <div class="card-unit">(${(displayFailForce/4.448).toFixed(0)} lbf)</div>
     </div>
     <div class="card">
       <div class="card-label">Max Displacement</div>
       <div class="card-value">${maxDisplacementMm.toFixed(3)}<span class="card-unit"> mm</span></div>
     </div>
+  </div>
+
+  <!-- Fail-force caveat (issue #204) — the number above is a linear
+       first-yield extrapolation (totalAppliedForce × SF), not a definitive
+       ultimate/collapse load. Every other point estimate in this report
+       (SF band, fatigue) is disclosed with the same kind of humility. -->
+  <div style="font-size:9px;color:#888;margin:-8px 0 14px;line-height:1.5">
+    ${bucklingGoverns
+      ? `⚠ Buckling-limited estimate: BLF ${bucklingResult!.blf!.toFixed(2)}× applied load, lower than the linear first-yield estimate of ${estimatedFailForce.toFixed(0)} N. Linear buckling can overestimate real capacity by 10–40% for imperfect FDM geometry.`
+      : `Linear first-yield estimate: assumes stress ∝ load and failure at first yield (no plasticity/buckling redistribution). Actual capacity is typically higher for ductile bending, lower if buckling governs.`}
   </div>
 
   <div class="grid2">
@@ -224,6 +253,25 @@ export function generateHtmlReport(
         : ``}
     </div>
   </div>
+
+  <!-- Mesh & discretization confidence (issue #202) — globalRelativeError
+       and topErrorElements were computed and transmitted but never shown
+       anywhere; this is the plain-percentage answer to "how much of the
+       stress field is mesh, not physics?" next to the node/element counts
+       a reviewer already expects here. -->
+  ${nodeCount != null && elementCount != null ? `
+  <div style="margin-bottom:14px">
+    <div class="section-title">Mesh</div>
+    <div style="font-size:10px;color:#444;line-height:1.7">
+      <b>${nodeCount.toLocaleString()}</b> nodes &nbsp;·&nbsp; <b>${elementCount.toLocaleString()}</b> elements
+      ${globalRelativeError != null ? (() => {
+        const pct = globalRelativeError * 100;
+        const errColor = pct < 5 ? '#1a7a40' : pct < 10 ? '#7a5a00' : '#7a1a1a';
+        const errLabel = pct < 5 ? 'low — mesh is well resolved' : pct < 10 ? 'moderate — consider a finer mesh for final numbers' : 'high — refine the mesh before trusting margins';
+        return ` &nbsp;·&nbsp; <b>Discretization error (η):</b> <span style="color:${errColor}">${pct.toFixed(1)}% — ${errLabel}</span>. Zienkiewicz-Zhu ESTIMATE of mesh-artifact share of the stress field, not an exact bound — lower is better.`;
+      })() : ``}
+    </div>
+  </div>` : ``}
 
   <!-- Holes + Topology -->
   <div class="grid2">

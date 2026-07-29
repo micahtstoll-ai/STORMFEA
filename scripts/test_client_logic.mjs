@@ -564,6 +564,73 @@ console.log('\n[J] bed frame — bedDirToWorld maps bed Z to world +Y');
     `got (${rt.x.toFixed(3)},${rt.y.toFixed(3)},${rt.z.toFixed(3)})`);
 }
 
+// ── Test group L: computeDisplayFailForce — buckling-governed selection (#204) ─
+console.log('\n[L] computeDisplayFailForce — "Will fail at X N" caveat / buckling-governed selection');
+{
+  const fnMatch = html.match(
+    /function computeDisplayFailForce\(s, bucklingResult\) \{[\s\S]*?\n\}\n\nfunction showResults/
+  );
+  if (!fnMatch) throw new Error('Could not extract computeDisplayFailForce');
+  const mod = { exports: {} };
+  new Function('module', 'exports',
+    fnMatch[0].replace(/\n\nfunction showResults$/, '') + '\nmodule.exports = { computeDisplayFailForce };')(mod, mod.exports);
+  const { computeDisplayFailForce } = mod.exports;
+
+  // No buckling data at all — falls back to the plain first-yield estimate.
+  {
+    const s = { estimatedFailForce: 500, safetyFactorAvailable: true, safetyFactor: 2.0 };
+    const r = computeDisplayFailForce(s, null);
+    test('No buckling result: displayFailForceN === estimatedFailForce',
+      r.displayFailForceN === 500, `got ${r.displayFailForceN}`);
+    test('No buckling result: bucklingGoverns is false',
+      r.bucklingGoverns === false);
+  }
+
+  // Buckling result present but BLF×appliedForce is ABOVE first-yield — first
+  // yield still governs, buckling must not override it.
+  {
+    const s = { estimatedFailForce: 500, safetyFactorAvailable: true, safetyFactor: 2.0 };
+    // appliedForce = 500/2 = 250N; BLF 5x -> bucklingForce=1250N > 500N
+    const bk = { blf: 5.0, verdict: 'PASS' };
+    const r = computeDisplayFailForce(s, bk);
+    test('Buckling force above first-yield: first-yield still governs',
+      r.bucklingGoverns === false && r.displayFailForceN === 500,
+      `bucklingGoverns=${r.bucklingGoverns} displayFailForceN=${r.displayFailForceN}`);
+  }
+
+  // Buckling result BELOW first-yield — the more honest (lower) number must
+  // be selected and flagged (issue #204 acceptance criterion).
+  {
+    const s = { estimatedFailForce: 500, safetyFactorAvailable: true, safetyFactor: 2.0 };
+    // appliedForce = 250N; BLF 1.2x -> bucklingForce=300N < 500N
+    const bk = { blf: 1.2, verdict: 'MARGINAL' };
+    const r = computeDisplayFailForce(s, bk);
+    test('Buckling force below first-yield: buckling governs',
+      r.bucklingGoverns === true, `bucklingGoverns=${r.bucklingGoverns}`);
+    test('Buckling force below first-yield: displayFailForceN is the buckling-limited value',
+      Math.abs(r.displayFailForceN - 300) < 1e-9, `got ${r.displayFailForceN}`);
+  }
+
+  // 'no-buckling' (tensile-dominated) and 'indeterminate' verdicts must never
+  // be treated as a governing buckling force even if blf happened to be set.
+  {
+    const s = { estimatedFailForce: 500, safetyFactorAvailable: true, safetyFactor: 2.0 };
+    test('no-buckling verdict is ignored',
+      computeDisplayFailForce(s, { blf: 0.1, verdict: 'no-buckling' }).bucklingGoverns === false);
+    test('indeterminate verdict is ignored',
+      computeDisplayFailForce(s, { blf: 0.1, verdict: 'indeterminate' }).bucklingGoverns === false);
+  }
+
+  // safetyFactor unavailable (mesh fallback) — cannot recover appliedForce,
+  // must not throw and must not claim buckling governs.
+  {
+    const s = { estimatedFailForce: 500, safetyFactorAvailable: false, safetyFactor: null };
+    const r = computeDisplayFailForce(s, { blf: 1.0, verdict: 'MARGINAL' });
+    test('SF unavailable: does not throw and buckling does not govern',
+      r.bucklingGoverns === false && r.displayFailForceN === 500);
+  }
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 if (failed > 0) {
