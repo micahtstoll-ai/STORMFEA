@@ -5184,6 +5184,20 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       nodeXyUtilB64: nXyUtilB64,
       nodeZUtilB64:  nZUtilB64,
     };
+    // Payload-size visibility (issue #190 acceptance criterion: "payload size
+    // impact measured"). Opt-in only, so this never fires on an ordinary
+    // analysis — logged here rather than asserted in a test because the
+    // number is mesh-density-dependent, not a solver invariant.
+    const approxBytes =
+      volumeField.nodesB64.length + volumeField.tetsB64.length +
+      volumeField.nodeVonMisesB64.length + volumeField.nodeSignedVonMisesB64.length +
+      volumeField.nodePrincipal1B64.length + volumeField.nodePrincipal2B64.length +
+      volumeField.nodePrincipal3B64.length +
+      (volumeField.nodeXyUtilB64?.length ?? 0) + (volumeField.nodeZUtilB64?.length ?? 0);
+    console.log(
+      `[analyse] volumeField: ${mesh.nodeCount} nodes, ${cornerTetCount} tets, ` +
+      `~${(approxBytes / 1024).toFixed(0)} KB base64 (opt-in, includeVolumeField=true)`
+    );
   }
 
   return {

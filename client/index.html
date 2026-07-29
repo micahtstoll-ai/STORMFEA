@@ -12296,14 +12296,13 @@ function _ensureCapObjects() {
   const capGeo  = new THREE.PlaneGeometry(1, 1);
   const capMesh = new THREE.Mesh(capGeo, capMat);
   capMesh.renderOrder = 2.1;
-  // Normally the LAST stencil consumer clears it for the next frame's
-  // writers. When the interior-stress mesh (#190) is also drawn this frame
-  // (renderOrder 2.2, on top of this grey plane), it renders after this one
-  // and does the clearing instead — clearing here first would blank the
-  // stencil test the interior mesh still needs.
-  capMesh.onAfterRender = renderer => {
-    if (!(S._interiorCap && S._interiorCap.mesh.visible)) renderer.clearStencil();
-  };
+  // The grey cap and the interior-stress cap (#190) are mutually exclusive
+  // consumers of the SAME stencil write from backMesh/frontMesh — only one
+  // of them is ever visible for a given frame (see _refreshInteriorCap).
+  // Whichever one draws also clears the stencil for the next frame's
+  // writers via its ReplaceStencilOp pass, so a plain clearStencil() here is
+  // always safe (no other consumer is depending on this stencil surviving).
+  capMesh.onAfterRender = renderer => renderer.clearStencil();
 
   // None of these may intercept picking rays — raycast() calls
   // intersectObject(mesh3d) recursively, and THREE's raycaster ignores
@@ -12431,11 +12430,15 @@ function _syncClipUI() {
 }
 
 // ── Interior-stress cap: real stress on the section-view cut face (#190) ────
-// Layered ON TOP of the flat grey stencil cap above (same renderOrder family,
-// higher = drawn after = wins the compare regardless of exact depth thanks
-// to depthTest:false), using the SAME stencil test so it is masked to the
+// Replaces the flat grey stencil cap above whenever real data is available —
+// the two are mutually exclusive within a frame (see the interior material's
+// stencil comment) — using the SAME stencil recipe so it is masked to the
 // exact same solid cross-section (holes/cavities stay open automatically —
-// nothing to draw there since no tet exists in a void).
+// nothing to draw there since no tet exists in a void). Falls back to the
+// grey cap automatically (_hideInteriorCap) whenever the interior heatmap
+// has nothing to show: clip off, feature not requested, payload not fetched
+// yet, or the current stress mode has no volumetric counterpart (e.g. ZZ
+// error, which is only ever projected to the surface mesh).
 //
 // Geometry comes from sliceTetsByAxisPlane (pure function, unit-tested) run
 // against the volumetric payload (S._volumeField, decoded in
@@ -12518,12 +12521,23 @@ function _refreshInteriorCap() {
       flatShading: false,       // Gouraud shading — CLAUDE.md heatmap invariant
       depthTest: false,         // always wins over the coplanar grey fallback cap
       depthWrite: true,
-      stencilWrite: false,
+      // Same stencil recipe as the grey cap (test != 0 to draw, then Replace
+      // to 0 so the pass also clears for the next frame's writers). This
+      // material is NEVER visible at the same time as the grey cap (mutual
+      // exclusion enforced in _refreshInteriorCap) — if both consumed the
+      // stencil in the same frame, whichever draws SECOND would find the
+      // FIRST already replaced it to 0 and its NotEqual test would fail,
+      // silently painting nothing. Mutual exclusion avoids that draw-order
+      // trap entirely rather than trying to out-order it.
+      stencilWrite: true,
       stencilRef:   0,
-      stencilFunc:  THREE.NotEqualStencilFunc,   // masked to the same cross-section as the grey cap
+      stencilFunc:  THREE.NotEqualStencilFunc,
+      stencilFail:  THREE.ReplaceStencilOp,
+      stencilZFail: THREE.ReplaceStencilOp,
+      stencilZPass: THREE.ReplaceStencilOp,
     });
     const mesh = new THREE.Mesh(geo, mat);
-    mesh.renderOrder = 2.2;     // after the grey cap (2.1) — see its onAfterRender comment
+    mesh.renderOrder = 2.1;     // same slot as the grey cap — they never coexist in a frame
     mesh.raycast = () => {};    // never intercept picking rays (spans the cut cross-section)
     mesh.onAfterRender = renderer => renderer.clearStencil();
     mesh3d.add(mesh);
@@ -12538,10 +12552,17 @@ function _refreshInteriorCap() {
   c.geo.attributes.color.needsUpdate    = true;
   c.geo.computeBoundingSphere();
   c.mesh.visible = true;
+  // Mutual exclusion (see the interior material's stencil comment above):
+  // hide the grey fallback cap while the interior heatmap owns the stencil.
+  if (S._cap) S._cap.capMesh.visible = false;
 }
 
 function _hideInteriorCap() {
   if (S._interiorCap) S._interiorCap.mesh.visible = false;
+  // Restore the grey fallback cap so the cut face still reads as solid
+  // material when the interior heatmap isn't showing (clip off, toggled
+  // off, no data yet, or the current stress mode has no volumetric field).
+  if (S._cap && S.clipActive) S._cap.capMesh.visible = true;
 }
 
 function _disposeInteriorCap() {

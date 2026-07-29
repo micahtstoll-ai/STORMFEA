@@ -217,6 +217,17 @@
 - [x] Fatigue load ratio R — Goodman/Basquin now takes R = σ_min/σ_max
       (default 0). Surface pressure: normal-to-surface option + region selector
       (face/facing/all). Suction (negative) pressure allowed in the UI.
+- [x] Section-view interior stress heatmap (issue #190) — opt-in volumetric
+      payload on `/api/analyse` (`analysis.includeVolumeField`, off by default
+      to keep ordinary responses light) carries analysis-mesh node positions,
+      corner-tet connectivity, and per-node stress/utilization arrays. The
+      client marching-tetrahedra slices whichever tets the section/clip plane
+      cuts (`sliceTetsByAxisPlane`) and renders the cut face with the SAME
+      color scale (gamma, legend, threshold filter) as the exterior heatmap,
+      replacing the flat grey "cut material" cap. Scoped limitation: built
+      from the analysis mesh's corner nodes only, so a C3D10 mesh's mid-side
+      curvature is not reflected in the cut geometry — exact for C3D4,
+      first-order-per-tet-corner for C3D10.
 
 ### Layer-model overhaul (audit + decoupled interlayer failure + bond model)
 - [x] Layer-model audit (docs/layer-model-audit.md) — six findings: azimuth-
@@ -263,10 +274,6 @@
 
 ## IN PROGRESS / NEXT
 
-- Section-view interior stress heatmap — color the cut face with real
-  interpolated stress (design complete: volume payload on `/api/analyse`,
-  client marching-tet slice over the stencil cap; carries per-node yield/region
-  so two-region parts show region-correct interior stress)
 - Deshpande–Fleck–Ashby core yield criterion — pressure-dependent yield for the
   cellular infill core (σ̂² = (σ_vm² + α²σ_m²)/(1+(α/3)²)); plugs into the
   per-bin yield hook in `recoverElementStress`; isotropic-DFA first, anisotropic
