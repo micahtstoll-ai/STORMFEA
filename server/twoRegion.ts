@@ -498,11 +498,11 @@ export function buildTwoRegionField(
  *                           scaled by the wall-to-wall bond model).
  */
 /**
- * Estimate the average wall-loop perimeter length (mm): sum of "perimeter"
- * (non-skin, i.e. more-than-45°-off-build-axis) boundary triangle area,
- * divided by the part's extent along the build axis. For a prismatic part
- * this is exact (perimeter area = perimeter length × height); for general
- * shapes it's a first-order average.
+ * Estimate the average OUTER wall-loop perimeter length (mm): the vertical-ish
+ * ("perimeter", more-than-45°-off-build-axis) boundary triangle area of the
+ * OUTER contour(s) only, divided by the part's extent along the build axis. For
+ * a prismatic part this is exact (perimeter area = perimeter length × height);
+ * for general shapes it's a first-order average.
  *
  * Used to derive a physically-grounded inter-pass revisit time for the
  * wall-to-wall bond model: unlike interlayer (Z) bonding, where the nozzle
@@ -511,9 +511,27 @@ export function buildTwoRegionField(
  * traverse one full perimeter loop before starting the next, i.e.
  * perimeterLengthMm / printSpeedMmS.
  *
- * Reuses the same face-classification logic as classifyFaceBands (normal
- * vs build-axis, 45° threshold) but accumulates triangle AREA instead of
- * assigning a band thickness — a distinct, reporting/timing-only quantity.
+ * INTERNAL HOLE BORES ARE EXCLUDED (issue #182). The old estimate summed ALL
+ * vertical boundary area, so a bolt-hole bore inflated the loop length, doubled
+ * the modeled inter-pass time, and understated wall-to-wall bond strength — with
+ * hole count a spurious driver. Physically a bore is a SEPARATE, short loop, not
+ * part of the outer wall's return path. We separate the two here:
+ *
+ *   1. Group the vertical boundary triangles into connected components (shared
+ *      mesh edges). The outer shell is one component; each hole bore is its own.
+ *   2. For each component compute its signed projected cross-section via the
+ *      divergence theorem, Σ (r_⊥ · A_⊥) = 2·(signed area)·height, using the
+ *      OUTWARD triangle normals (extractSurfaceFaces / Gmsh emit outward faces).
+ *      Outer contours enclose POSITIVE area; a hole's outward-of-solid normal
+ *      points INTO the void, so its bore encloses NEGATIVE area. The sign is
+ *      origin-independent (Σ A_⊥ = 0 over a closed band).
+ *   3. Keep only components on the OUTER side (same sign as the largest-|area|
+ *      component — robust to a globally flipped winding convention); drop the
+ *      opposite-sign bores. Sum their area / height.
+ *
+ * A solid (hole-free) part is one positive component ⇒ identical to the legacy
+ * sum (bit-for-bit). Adding a through-hole adds one negative component that is
+ * now excluded, so the outer-loop estimate is unchanged by the hole.
  */
 export function estimateWallLoopPerimeterMm(
   mesh: TetMesh,
@@ -534,7 +552,21 @@ export function estimateWallLoopPerimeterMm(
   }
   const height = Math.max(pMax - pMin, 1e-6);
 
-  let vertArea = 0;
+  // In-plane orthonormal basis (ex, ey) spanning the plane ⊥ buildAxis, for the
+  // signed-area projection.
+  const seedX = Math.abs(wx) < 0.9 ? 1 : 0, seedY = Math.abs(wx) < 0.9 ? 0 : 1, seedZ = 0;
+  const sdotw = seedX * wx + seedY * wy + seedZ * wz;
+  let exx = seedX - sdotw * wx, exy = seedY - sdotw * wy, exz = seedZ - sdotw * wz;
+  const exlen = Math.hypot(exx, exy, exz) || 1;
+  exx /= exlen; exy /= exlen; exz /= exlen;
+  const eyx = wy * exz - wz * exy, eyy = wz * exx - wx * exz, eyz = wx * exy - wy * exx;
+
+  // Collect vertical-ish triangles with their area, in-plane centroid, and
+  // in-plane outward area-vector (raw cross product / 2 projected onto ex, ey).
+  const vTri: number[] = [];         // global triangle indices (vertical-ish)
+  const vArea: number[] = [];        // triangle area
+  const vCu: number[] = [], vCv: number[] = [];   // in-plane centroid coords
+  const vAu: number[] = [], vAv: number[] = [];   // in-plane area-vector coords
   for (let t = 0; t < triCount; t++) {
     const na = surfaceFaces[t * 3] ?? 0, nb = surfaceFaces[t * 3 + 1] ?? 0, nc = surfaceFaces[t * 3 + 2] ?? 0;
     const ax = nodes[na * 3] ?? 0, ay = nodes[na * 3 + 1] ?? 0, az = nodes[na * 3 + 2] ?? 0;
@@ -546,9 +578,60 @@ export function estimateWallLoopPerimeterMm(
     const nlen = Math.hypot(nx, ny, nz);
     if (nlen < 1e-12) continue;
     const nDotW = (nx * wx + ny * wy + nz * wz) / nlen;
-    if (Math.abs(nDotW) < COS45) vertArea += nlen / 2; // "perimeter" (vertical-ish) face
+    if (Math.abs(nDotW) >= COS45) continue; // skin (floor/ceiling) face — skip
+    const gx = (ax + bx + cx) / 3, gy = (ay + by + cy) / 3, gz = (az + bz + cz) / 3;
+    vTri.push(t);
+    vArea.push(nlen / 2);
+    vCu.push(gx * exx + gy * exy + gz * exz);
+    vCv.push(gx * eyx + gy * eyy + gz * eyz);
+    // Area vector = (nx,ny,nz)/2 (outward); its in-plane components.
+    vAu.push((nx * exx + ny * exy + nz * exz) / 2);
+    vAv.push((nx * eyx + ny * eyy + nz * eyz) / 2);
   }
-  return vertArea / height;
+  const M = vTri.length;
+  if (M === 0) return 0;
+
+  // Union-find over vertical triangles sharing a mesh edge → connected loops.
+  const parent = new Int32Array(M);
+  for (let i = 0; i < M; i++) parent[i] = i;
+  const find = (x: number): number => { while (parent[x] !== x) { parent[x] = parent[parent[x]!]!; x = parent[x]!; } return x; };
+  const union = (a: number, b: number): void => { const ra = find(a), rb = find(b); if (ra !== rb) parent[ra] = rb; };
+  const stride = mesh.nodeCount + 1;
+  const edgeOwner = new Map<number, number>();
+  for (let i = 0; i < M; i++) {
+    const t = vTri[i]!;
+    const n0 = surfaceFaces[t * 3] ?? 0, n1 = surfaceFaces[t * 3 + 1] ?? 0, n2 = surfaceFaces[t * 3 + 2] ?? 0;
+    const edges = [[n0, n1], [n1, n2], [n2, n0]];
+    for (const [p, q] of edges) {
+      const lo = Math.min(p!, q!), hi = Math.max(p!, q!);
+      const key = lo * stride + hi;
+      const owner = edgeOwner.get(key);
+      if (owner === undefined) edgeOwner.set(key, i);
+      else union(owner, i);
+    }
+  }
+
+  // Per-component signed cross-section (Σ r_⊥·A_⊥) and total area.
+  const compSigned = new Map<number, number>();
+  const compArea = new Map<number, number>();
+  for (let i = 0; i < M; i++) {
+    const r = find(i);
+    compSigned.set(r, (compSigned.get(r) ?? 0) + (vCu[i]! * vAu[i]! + vCv[i]! * vAv[i]!));
+    compArea.set(r, (compArea.get(r) ?? 0) + vArea[i]!);
+  }
+
+  // Outer side = sign of the largest-|signed-area| component (robust to a
+  // globally flipped winding convention). Keep components on that side; the
+  // opposite-sign components are internal hole bores → excluded.
+  let outerSign = 0, maxAbs = -1;
+  for (const s of compSigned.values()) {
+    if (Math.abs(s) > maxAbs) { maxAbs = Math.abs(s); outerSign = s >= 0 ? 1 : -1; }
+  }
+  let outerArea = 0;
+  for (const [r, s] of compSigned) {
+    if (s * outerSign >= 0) outerArea += compArea.get(r) ?? 0; // outer contour
+  }
+  return outerArea / height;
 }
 
 export function buildWallBondField(

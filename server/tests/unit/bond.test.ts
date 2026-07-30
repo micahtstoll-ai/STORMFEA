@@ -20,6 +20,7 @@ import {
   BOND_REFERENCE,
   BOND_MATERIALS,
   BOND_FIT_RMSE_MAX_PCT,
+  WALL_THERMAL_DEPTH_CLAMP_MM,
   type BondSweepPoint,
 } from "../../solver/bond.js";
 import { buildOrthotropicMaterial, layerHeightFactor } from "../../analysis.js";
@@ -410,5 +411,47 @@ describe("bondBandExcursion (SF-band widening from LOW-confidence bond constants
     const excRefCal = bondBandExcursion("pla", 0.2, refProc, { hConv: 30, activationEnergyKJmol: 60, voidSensitivity: 0.35, strengthPrefactor: 1.0 });
     expect(excRefCal.low).toBeCloseTo(1, 12);
     expect(excRefCal.high).toBeCloseTo(1, 12);
+  });
+});
+
+describe("thermal-depth clamp / wall-bond parameterization (#185)", () => {
+  // The wall-to-wall bond reuses the τc road-cooling formula with the bead LINE
+  // WIDTH as the thermal depth (derivation in WALL_THERMAL_DEPTH_CLAMP_MM docs),
+  // but under its OWN width-appropriate clamp — not the interlayer layer-height
+  // clamp silently repurposed. The default (interlayer) clamp is unchanged.
+  const proc = { ...REF_PROC };
+
+  it("in-clamp inputs are bit-identical whichever clamp is passed (≤1.0 mm)", () => {
+    // 0.45 mm sits inside BOTH the layer [0.04,1.0] and wall [0.1,2.0] clamps,
+    // so τc — and therefore every output — is identical. This is the
+    // no-results-change guarantee for typical line widths.
+    const dflt = predictBondMultipliers("pla", 0.45, proc, null, 30);
+    const wall = predictBondMultipliers("pla", 0.45, proc, null, 30, WALL_THERMAL_DEPTH_CLAMP_MM);
+    expect(wall.coolTimeConstS).toBeCloseTo(dflt.coolTimeConstS, 12);
+    expect(wall.relStrength).toBeCloseTo(dflt.relStrength, 12);
+  });
+
+  it("a wide bead (>1.0 mm) is honored under the wall clamp, not silently clamped to 1.0", () => {
+    // Under the OLD layer-height clamp a 1.2 mm width was pinned to 1.0 mm, so a
+    // 1.2 mm and a 1.0 mm bead gave the same τc. The wall clamp lets τc keep
+    // rising with width (τc ∝ depth), which is the disclosed behavior change.
+    const layerClamped = predictBondMultipliers("pla", 1.2, proc, null, 30);            // default → clamps 1.2→1.0
+    const wall12       = predictBondMultipliers("pla", 1.2, proc, null, 30, WALL_THERMAL_DEPTH_CLAMP_MM);
+    const wall10       = predictBondMultipliers("pla", 1.0, proc, null, 30, WALL_THERMAL_DEPTH_CLAMP_MM);
+    expect(layerClamped.coolTimeConstS).toBeCloseTo(wall10.coolTimeConstS, 12); // old: 1.2 pinned to 1.0
+    expect(wall12.coolTimeConstS).toBeGreaterThan(wall10.coolTimeConstS);       // new: 1.2 honored
+    // τc scales linearly with the (clamped) thermal depth.
+    expect(wall12.coolTimeConstS / wall10.coolTimeConstS).toBeCloseTo(1.2, 6);
+  });
+
+  it("wall clamp still anchors to exactly 1.0 at the reference condition", () => {
+    const p = predictBondMultipliers("pla", 0.6, REF_PROC, null, 30, WALL_THERMAL_DEPTH_CLAMP_MM);
+    expect(p.relStrength).toBeCloseTo(1.0, 9);
+    expect(p.relStiffness).toBeCloseTo(1.0, 9);
+  });
+
+  it("WALL_THERMAL_DEPTH_CLAMP_MM covers typical line widths and large nozzles", () => {
+    expect(WALL_THERMAL_DEPTH_CLAMP_MM[0]).toBeLessThanOrEqual(0.1);
+    expect(WALL_THERMAL_DEPTH_CLAMP_MM[1]).toBeGreaterThanOrEqual(1.2);
   });
 });

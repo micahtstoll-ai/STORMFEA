@@ -120,7 +120,25 @@ geometrically:
   then applies a **second, independent interface check** in that per-element
   wall-normal frame (distinct from the global-Z interlayer check), governing via
   `min()` alongside the bulk/interlayer SFs. Uses the inter-pass revisit time for
-  bonding; no dedicated coupon data exists, so it is LOW confidence.
+  bonding; no dedicated coupon data exists, so it is LOW confidence. Two
+  geometry corrections make it faithful:
+  - **Loop-length basis (#182).** The inter-pass revisit time is
+    `outerLoopPerimeter / printSpeed`. `estimateWallLoopPerimeterMm` groups the
+    vertical boundary faces into connected loops and keeps only the **outer
+    contour(s)** by the sign of each loop's projected cross-section (outward
+    normals ⇒ outer loops enclose positive area, hole bores negative), so
+    internal bolt-hole bores no longer inflate the loop length and understate
+    the bond. A solid part is bit-identical to the legacy all-vertical-area sum;
+    surfaced as `materialModel.wallBond.loopLengthBasis`.
+  - **Thermal depth = line width (#185).** The τc road-cooling constant
+    `τc = π·ρ·cp·d/(8·h)` uses the road's characteristic thermal depth `d`. For
+    the vertical weld that is the bead **line width** (adjacent beads cool
+    laterally through their sides), which the same π/8 elliptical-road prefactor
+    covers with the width/height roles swapped. It is passed as a **named
+    thermal-depth argument with a width-appropriate clamp**
+    (`WALL_THERMAL_DEPTH_CLAMP_MM = [0.1, 2.0] mm`), not the layer-height clamp —
+    so a >1.0 mm large-nozzle bead is no longer silently pinned to 1.0 mm.
+    Results are unchanged for in-clamp (≤1.0 mm) widths.
 - **Shell** carries solid-material properties (calibrated coupon values flow to
   it unchanged); **core** carries wall-free lattice properties from
   Gibson-Ashby power laws in relative density (`solver/lattice.ts`), applied as

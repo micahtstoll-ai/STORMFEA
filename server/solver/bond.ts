@@ -221,6 +221,32 @@ const VOID_FLOOR     = 0.6;  // floor on the consolidation factor
 const REL_S_CLAMP: readonly [number, number] = [0.4, 1.5];
 const REL_E_CLAMP: readonly [number, number] = [0.6, 1.25];
 
+/**
+ * Thermal-depth clamps (mm) for the τc road-cooling formula. τc uses a single
+ * characteristic length — the road's thermal DEPTH — but which geometric
+ * dimension plays that role depends on the weld being modeled, so the plausible
+ * range (and hence the clamp) is geometry-specific (issue #185):
+ *
+ *  - LAYER (interlayer / vertical Z bond): the road cools through its top and
+ *    bottom faces, so the thermal depth is the LAYER HEIGHT h_L. Physical layer
+ *    heights span ~0.04–1.0 mm.
+ *
+ *  - WALL (wall-to-wall / horizontal bead-to-bead bond): adjacent perimeter
+ *    beads cool laterally toward each other through their SIDES, so the thermal
+ *    depth is the bead LINE WIDTH w. The π/8 prefactor in
+ *    τc = π·ρ·cp·d/(8·h) comes from A_c/P ≈ (π/4·w·h_L)/(2·w) = π/8·h_L for an
+ *    elliptical road — the width cancels and the height is left as the depth.
+ *    For the side-by-side wall weld the roles swap: the shared interface is the
+ *    vertical bead flank (area ≈ h_L per unit length), and the mass cooling
+ *    toward it scales with the bead width, giving A_c/P ≈ (π/4·w·h_L)/(2·h_L) =
+ *    π/8·w — the SAME π/8 prefactor with WIDTH as the depth. So the transfer is
+ *    exact to first order, not merely asserted. Physical line widths span
+ *    ~0.1–2.0 mm (small nozzles to large-nozzle/ CHT profiles); a 1.2 mm wide
+ *    bead must NOT silently clamp to the layer-height ceiling of 1.0.
+ */
+const LAYER_THERMAL_DEPTH_CLAMP_MM: readonly [number, number] = [0.04, 1.0];
+export const WALL_THERMAL_DEPTH_CLAMP_MM: readonly [number, number] = [0.1, 2.0];
+
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
 // ─── Core physics ────────────────────────────────────────────────────────────
@@ -234,22 +260,28 @@ interface ThermalResult {
 
 function thermalBondPotential(
   mat: BondMaterialParams,
-  layerHeightMm: number,
+  thermalDepthMm: number,
   proc: Required<Pick<ProcessSettings, "printSpeedMmS" | "coolingFanPct" | "bedTempC" | "ambientTempC">> & { nozzleTempC: number },
   h0: number,
   EaKJmol: number,
   passLengthMmOverride?: number,
+  depthClampMm: readonly [number, number] = LAYER_THERMAL_DEPTH_CLAMP_MM,
 ): ThermalResult {
-  const hL_m  = clamp(layerHeightMm, 0.04, 1.0) / 1000;
+  // Characteristic thermal depth of the road (LAYER HEIGHT for the interlayer
+  // weld, LINE WIDTH for the wall-to-wall weld — see the clamp docs). The clamp
+  // is geometry-specific and passed in so the wall path is not silently held to
+  // the layer-height ceiling (issue #185).
+  const d_m   = clamp(thermalDepthMm, depthClampMm[0], depthClampMm[1]) / 1000;
   const fan   = clamp(proc.coolingFanPct, 0, 100) / 100;
   const speed = clamp(proc.printSpeedMmS, 1, 1000);
   const Tn    = clamp(proc.nozzleTempC, mat.TgC + 20, 500);
 
   const Tenv = proc.ambientTempC + BED_ENV_WEIGHT * (proc.bedTempC - proc.ambientTempC);
   const hEff = h0 * (1 + FAN_H_GAIN * fan);
-  // τc = ρ·cp·A/(h·P) with A = (π/4)·w·hL and P ≈ 2w → π·ρ·cp·hL/(8·h).
-  // The extrusion width cancels — the road's thermal depth is its height.
-  const tauC = (Math.PI * mat.rho * mat.cp * hL_m) / (8 * hEff);
+  // τc = ρ·cp·A_c/(h·P) = π·ρ·cp·d/(8·h) — the same π/8 elliptical-road prefactor
+  // for both welds, with d the geometry's thermal depth (layer height for
+  // interlayer, line width for wall-to-wall; derivation in the clamp docs).
+  const tauC = (Math.PI * mat.rho * mat.cp * d_m) / (8 * hEff);
 
   // Substrate road cooled for one inter-pass time before the bead lands.
   // Default: characteristic toolpath return distance (one Z-layer later, at
@@ -291,13 +323,18 @@ export function hasProcessSettings(proc: ProcessSettings | undefined | null): pr
 }
 
 /**
- * Predict the interlayer bond multipliers for the given process settings,
- * RELATIVE to the reference condition at the same layer height (see module
- * docblock — multiplies on top of layerHeightFactor and calibration ratios).
+ * Predict the bond multipliers for the given process settings, RELATIVE to the
+ * reference condition at the same thermal depth (see module docblock —
+ * multiplies on top of layerHeightFactor and calibration ratios).
+ *
+ * `thermalDepthMm` is the road's characteristic cooling depth: for the default
+ * (interlayer) use it is the LAYER HEIGHT; for the wall-to-wall weld the caller
+ * passes the bead LINE WIDTH together with `depthClampMm =
+ * WALL_THERMAL_DEPTH_CLAMP_MM` (issue #185 — no silent parameter repurposing).
  */
 export function predictBondMultipliers(
   materialId:    string,
-  layerHeightMm: number,
+  thermalDepthMm: number,
   proc:          ProcessSettings,
   coeffs?:       BondModelCoeffs | null,
   /**
@@ -308,6 +345,13 @@ export function predictBondMultipliers(
    * full perimeter loop before starting the next.
    */
   passLengthMmOverride?: number,
+  /**
+   * Clamp (mm) applied to `thermalDepthMm` in the τc formula. Defaults to the
+   * LAYER-height range; the wall-to-wall caller passes
+   * {@link WALL_THERMAL_DEPTH_CLAMP_MM} so wide beads (>1.0 mm) are not held to
+   * the layer-height ceiling (issue #185).
+   */
+  depthClampMm: readonly [number, number] = LAYER_THERMAL_DEPTH_CLAMP_MM,
 ): BondPrediction {
   const mat = BOND_MATERIALS[materialId];
   if (!mat) {
@@ -347,8 +391,8 @@ export function predictBondMultipliers(
     ambientTempC:  BOND_REFERENCE.ambientTempC,
   };
 
-  const cur = thermalBondPotential(mat, layerHeightMm, filled, h0, Ea, passLengthMmOverride);
-  const ref = thermalBondPotential(mat, layerHeightMm, refProc, h0, Ea, passLengthMmOverride);
+  const cur = thermalBondPotential(mat, thermalDepthMm, filled, h0, Ea, passLengthMmOverride, depthClampMm);
+  const ref = thermalBondPotential(mat, thermalDepthMm, refProc, h0, Ea, passLengthMmOverride, depthClampMm);
 
   // Void/consolidation factor: 1.0 when the interface is at/above the reference
   // deposition temperature, dropping toward VOID_FLOOR as it cools toward Tg.
