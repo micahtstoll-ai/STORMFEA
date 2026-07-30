@@ -1602,6 +1602,15 @@ export interface AnalysisSettings {
    */
   twoRegion?:    boolean;
   /**
+   * When true, also return a volumetric stress payload (analysis-mesh node
+   * positions + corner-tet connectivity + per-node stress/utilization arrays)
+   * for the section-view interior heatmap (issue #190). Off by default: the
+   * analysis mesh is much denser than the display mesh, so this payload can
+   * be several MB and would slow down every ordinary analysis if always
+   * included. Opt in only when the user has the section/clip view open.
+   */
+  includeVolumeField?: boolean;
+  /**
    * When true (and twoRegion is also true, and print.wallCount >= 2), also
    * model wall-to-wall (bead-to-bead) bonding as a distinct, criterion-only
    * failure mode: adjacent perimeter loops are fused along a LOCAL radial
@@ -2791,6 +2800,36 @@ export interface MaterialModelInfo {
   } | null;
 }
 
+/**
+ * Volumetric stress payload for the section-view interior heatmap (issue
+ * #190). Everything is expressed on the ANALYSIS mesh (mesh.nodes /
+ * mesh.elements), not the display mesh — the client's marching-tet slicer
+ * walks corner tets directly, so mid-side nodes of C3D10 elements are
+ * omitted (linear interpolation across the 4 corners is exact for a linear
+ * element and a documented approximation for a quadratic one; see PR notes).
+ * All arrays are per-node (indexed by nodeIndex, 0..nodeCount-1) except
+ * `tets`, which is 4 node indices per tet (cornerTetCount*4 length).
+ */
+export interface VolumeFieldPayload {
+  nodeCount:    number;
+  cornerTetCount: number;
+  /** Node positions, xyz interleaved, length = nodeCount*3. Base64 Float32. */
+  nodesB64:           string;
+  /** Corner-tet connectivity (4 node indices per tet). Base64 Int32. */
+  tetsB64:            string;
+  /** Per-node von Mises stress (MPa). Base64 Float32. */
+  nodeVonMisesB64:        string;
+  /** Per-node signed von Mises (tension +, compression -). Base64 Float32. */
+  nodeSignedVonMisesB64:  string;
+  /** Per-node principal stresses σ1≥σ2≥σ3. Base64 Float32 each. */
+  nodePrincipal1B64:      string;
+  nodePrincipal2B64:      string;
+  nodePrincipal3B64:      string;
+  /** Per-node anisotropic utilization ratios (0-2ish); null if unavailable (isotropic material with no tensor recovery). */
+  nodeXyUtilB64:          string | null;
+  nodeZUtilB64:            string | null;
+}
+
 export interface AnalysisResult {
   materialModel:           MaterialModelInfo;
   vertexStress:            Float32Array;
@@ -2906,6 +2945,14 @@ export interface AnalysisResult {
   globalRelativeError?:    number;
   /** Top-20 elements with highest error estimates, for refinement guidance */
   topErrorElements?:       Array<{ x: number; y: number; z: number; errorEstimate: number }>;
+  /**
+   * Volumetric stress payload for the section-view interior heatmap (#190).
+   * Present only when req.analysis.includeVolumeField was true. Node
+   * positions and corner-tet connectivity of the ANALYSIS mesh (not the
+   * display mesh), plus per-node stress/utilization values so the client can
+   * linearly interpolate across whichever tet the section plane cuts.
+   */
+  volumeField?: VolumeFieldPayload;
   /** XY in-plane utilization per surface vertex (null if unavailable) */
   vertexXyUtil:            Float32Array | null;
   /** Z inter-layer utilization per surface vertex (null if unavailable) */
@@ -5856,6 +5903,84 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     if (sv > maxSignedVM) maxSignedVM = sv;
   }
 
+  // ── Volumetric stress payload (issue #190, opt-in) ──────────────────────────
+  // Built from the ANALYSIS mesh (mesh.nodes/mesh.elements), not the display
+  // mesh — the client's marching-tet slicer walks corner tets directly against
+  // whatever cut plane the section view is using. Only computed when the
+  // client asked for it (includeVolumeField), so ordinary analyses (section
+  // view closed) don't pay the extra payload size / encode time.
+  let volumeField: VolumeFieldPayload | undefined;
+  if (req.analysis.includeVolumeField && !meshFallback) {
+    const npeV = mesh.nodesPerElem ?? 4;
+    const cornerTetCount = mesh.elementCount;
+    const nodesArr = new Float32Array(mesh.nodeCount * 3);
+    for (let i = 0; i < mesh.nodeCount * 3; i++) nodesArr[i] = mesh.nodes[i] ?? 0;
+    const tetsArr = new Int32Array(cornerTetCount * 4);
+    for (let e = 0; e < cornerTetCount; e++) {
+      const base = e * npeV;
+      tetsArr[e*4]   = mesh.elements[base]   ?? 0;
+      tetsArr[e*4+1] = mesh.elements[base+1] ?? 0;
+      tetsArr[e*4+2] = mesh.elements[base+2] ?? 0;
+      tetsArr[e*4+3] = mesh.elements[base+3] ?? 0;
+    }
+    const nVM  = new Float32Array(mesh.nodeCount);
+    const nSVM = new Float32Array(mesh.nodeCount);
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      nVM[n]  = nodeStress[n] ?? 0;
+      nSVM[n] = nodeSignedStress[n] ?? 0;
+    }
+    const np = result.nodePrincipalStress;
+    const nP1 = new Float32Array(mesh.nodeCount);
+    const nP2 = new Float32Array(mesh.nodeCount);
+    const nP3 = new Float32Array(mesh.nodeCount);
+    if (np) {
+      for (let n = 0; n < mesh.nodeCount; n++) {
+        nP1[n] = np[n*3]   ?? 0;
+        nP2[n] = np[n*3+1] ?? 0;
+        nP3[n] = np[n*3+2] ?? 0;
+      }
+    }
+    let nXyUtilB64: string | null = null;
+    let nZUtilB64:  string | null = null;
+    if (nodeUtilXY && nodeUtilZ) {
+      const nXY = new Float32Array(mesh.nodeCount);
+      const nZ  = new Float32Array(mesh.nodeCount);
+      for (let n = 0; n < mesh.nodeCount; n++) {
+        nXY[n] = nodeUtilXY[n] ?? 0;
+        nZ[n]  = nodeUtilZ[n]  ?? 0;
+      }
+      nXyUtilB64 = Buffer.from(nXY.buffer).toString("base64");
+      nZUtilB64  = Buffer.from(nZ.buffer).toString("base64");
+    }
+    volumeField = {
+      nodeCount: mesh.nodeCount,
+      cornerTetCount,
+      nodesB64:              Buffer.from(nodesArr.buffer).toString("base64"),
+      tetsB64:               Buffer.from(tetsArr.buffer).toString("base64"),
+      nodeVonMisesB64:       Buffer.from(nVM.buffer).toString("base64"),
+      nodeSignedVonMisesB64: Buffer.from(nSVM.buffer).toString("base64"),
+      nodePrincipal1B64:     Buffer.from(nP1.buffer).toString("base64"),
+      nodePrincipal2B64:     Buffer.from(nP2.buffer).toString("base64"),
+      nodePrincipal3B64:     Buffer.from(nP3.buffer).toString("base64"),
+      nodeXyUtilB64: nXyUtilB64,
+      nodeZUtilB64:  nZUtilB64,
+    };
+    // Payload-size visibility (issue #190 acceptance criterion: "payload size
+    // impact measured"). Opt-in only, so this never fires on an ordinary
+    // analysis — logged here rather than asserted in a test because the
+    // number is mesh-density-dependent, not a solver invariant.
+    const approxBytes =
+      volumeField.nodesB64.length + volumeField.tetsB64.length +
+      volumeField.nodeVonMisesB64.length + volumeField.nodeSignedVonMisesB64.length +
+      volumeField.nodePrincipal1B64.length + volumeField.nodePrincipal2B64.length +
+      volumeField.nodePrincipal3B64.length +
+      (volumeField.nodeXyUtilB64?.length ?? 0) + (volumeField.nodeZUtilB64?.length ?? 0);
+    console.log(
+      `[analyse] volumeField: ${mesh.nodeCount} nodes, ${cornerTetCount} tets, ` +
+      `~${(approxBytes / 1024).toFixed(0)} KB base64 (opt-in, includeVolumeField=true)`
+    );
+  }
+
   return {
     materialModel,
     vertexStress,
@@ -5926,5 +6051,6 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     vertexErrorEstimateB64: vertexErrorEstimate ? Buffer.from(vertexErrorEstimate.buffer).toString("base64") : undefined,
     globalRelativeError: result.globalRelativeError,
     topErrorElements: result.topErrorElements ? [...result.topErrorElements] : undefined,
+    volumeField,
   };
 }

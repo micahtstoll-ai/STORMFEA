@@ -261,6 +261,7 @@ const ANALYSE_SPEC: Spec = {
     "beadProps?":       "object",
     "twoRegion?":       "boolean",
     "criterion?":       "fdm-interface|hill-legacy",
+    "includeVolumeField?": "boolean",
   },
   "gravity?":      { g: "number", direction: "vec3" },
   "pressures?":    [{ magnitude: "number", direction: "vec3", "normal?": "boolean", "region?": "face|facing|all" }],
@@ -341,6 +342,7 @@ app.post("/api/analyse", async (req, res) => {
       useCLT:          body.analysis?.useCLT === true,
       ...(body.analysis?.beadProps ? { beadProps: body.analysis.beadProps } : {}),
       twoRegion:       body.analysis?.twoRegion === true,
+      includeVolumeField: body.analysis?.includeVolumeField === true,
     };
 
     console.log(`[analyse] fileType=${body.fileType} bolts=[${body.boltHoleIds}] forces=${body.forces.length} mesh=${analysis.meshQuality}`);
@@ -432,6 +434,10 @@ app.post("/api/analyse", async (req, res) => {
       globalRelativeError:      result.globalRelativeError ?? null,
       topErrorElements:         result.topErrorElements ?? null,
       vertexModeShapesB64:      result.vertexModeShapesB64 ?? null,
+      // Volumetric interior-stress payload for the section-view cut-face
+      // heatmap (#190) — present only when the request opted in via
+      // analysis.includeVolumeField (kept off default analyses' payload).
+      volumeField:              result.volumeField ?? null,
       modalResult:              result.modalResult ? {
         modalMs:            result.modalResult.modalMs,
         converged:          result.modalResult.converged,
