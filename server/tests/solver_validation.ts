@@ -21,10 +21,22 @@ import {
   c3d10ShapeFunctions,
   c3d10ElementStiffness,
 } from "../solver/element.js";
+import fs   from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let passed = 0, failed = 0;
+const groupsSeen = new Set<number>();
 
 function test(name: string, condition: boolean, detail = "") {
+  // Test names are conventionally prefixed "[N]" or "[N.M...]" — track the
+  // leading group number so the JSON summary's group count is derived from
+  // what actually ran, not hand-counted from source comments.
+  const groupMatch = /^\[(\d+)/.exec(name);
+  if (groupMatch) groupsSeen.add(Number(groupMatch[1]));
+
   if (condition) {
     console.log(`  ✓ ${name}`);
     passed++;
@@ -2787,6 +2799,18 @@ console.log("\n[32] Lekhnitskii orthotropic open-hole Kt — anisotropic known-a
 // up to that point and never gated on later failures.)
 console.log(`\n${"─".repeat(52)}`);
 console.log(`Validation: ${passed} passed, ${failed} failed`);
+
+// Machine-readable summary consumed by scripts/check-doc-test-counts.mjs so
+// user-facing surfaces (README, methodology PDF, DEBUG tab) can be checked
+// against the suite as it actually ran, instead of a hand-copied number
+// (issue #198 — three different stale counts had drifted across surfaces).
+try {
+  fs.writeFileSync(
+    path.join(__dirname, "solver-validation-summary.json"),
+    JSON.stringify({ passed, failed, groups: groupsSeen.size }, null, 2)
+  );
+} catch { /* best-effort — never fail the suite over the summary file */ }
+
 if (failed > 0) {
   console.error("VALIDATION FAILED — check solver before release");
   process.exit(1);

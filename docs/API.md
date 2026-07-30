@@ -4,7 +4,9 @@ STORMFEA runs as a local Express server on `http://localhost:3000`. The
 single-file client (`client/index.html`) is the only intended consumer, but the
 API is a plain JSON/REST surface you can also drive from `curl`, Postman, or a
 script. This document covers every route defined in
-[`server/index.ts`](../server/index.ts).
+[`server/index.ts`](../server/index.ts) — enforced by
+`scripts/check-api-routes.mjs`, which runs as part of `npm run test` and
+fails the build if a registered route is undocumented here or vice versa.
 
 ## Conventions
 

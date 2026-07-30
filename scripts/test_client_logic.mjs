@@ -1151,6 +1151,16 @@ console.log('\n[R] renderValidationCoverage — validation coverage panel (#191)
 
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
+
+// Machine-readable summary consumed by scripts/check-doc-test-counts.mjs —
+// see server/tests/solver_validation.ts for why (issue #198).
+try {
+  fs.writeFileSync(
+    path.join(__dirname, 'client-logic-summary.json'),
+    JSON.stringify({ passed, failed }, null, 2)
+  );
+} catch { /* best-effort */ }
+
 if (failed > 0) {
   console.log('CLIENT LOGIC VALIDATION FAILED');
   process.exit(1);
