@@ -59,17 +59,40 @@ the `S_zt`, `S_zs`, and `E_z` ratios from an anchored physics chain: interface
 temperature history (lumped-capacitance cooling) → neck growth (Frenkel/Pokluda)
 → reptation healing (Φ^¾), plus a void/consolidation factor for cold-deposition
 interbead porosity. Multipliers are **relative** and normalized to exactly `1.0`
-at the per-material reference condition (reference nozzle, 60 mm/s, fan 100%, bed
-60 °C) evaluated at the same layer height, so with no process block the legacy
-layer-height path is reproduced bit-for-bit. Trends are locked (hotter nozzle ↑,
+at the per-material reference condition (reference nozzle AND reference cooling
+fan — both per-material — 60 mm/s, bed 60 °C) evaluated at the same layer height,
+so with no process block the legacy layer-height path is reproduced bit-for-bit.
+The reference **fan is per-material** (issue #184): PLA/PETG 100%, TPU 50%,
+ASA 20%, ABS/PA12 0% — each material's normal print practice, so "multiplier =
+1.0" is a condition the material is actually printed at (the old shared 100%
+anchored ABS/ASA/PA to a fan-off-avoiding setting that promotes the very warping
+and interlayer cracking this model predicts). PLA and PETG keep the 100%
+reference, so their results are unchanged; only ABS/ASA/TPU/PA12 shift. Surfaced
+as `materialModel.bond.coolingFanRefPct`. Trends are locked (hotter nozzle ↑,
 more fan ↓, faster printing ↑) even though the constants are LOW confidence until
 fitted from a printer process sweep (`POST /api/calibration/bond-sweep`). The
 `POST /api/bond-sensitivity` route evaluates the same model for the process
 dashboard and a nozzle×speed bond-quality surface without running a solve.
 
-**Infill & pattern.** Effective properties are scaled by infill fraction and
-pattern (gyroid degrades less than rectilinear at equal infill). Wall/bead
-contributions can be added via Classical Laminate Theory (`solver/laminate.ts`).
+**Infill & pattern.** The single-material (default) model scales in-plane
+stiffness by ONE density law shared across every toggle (issue #176):
+`knockdown(ρ) = wallCredit + (1 − wallCredit)·g_GA(ρ)`
+(`lumpedInPlaneStiffnessScale`, `solver/lattice.ts`) — a Voigt volume average of
+solid perimeter walls and a Gibson-Ashby infill core `g_GA(ρ) = ρⁿ·(1 − c(1−ρ))`,
+i.e. the lumped limit of the two-region model's `E_eff = Vf·E_solid +
+(1−Vf)·E_solid·g(ρ)`. The `wallCredit` is a geometry-free `min(0.9, 0.10·wallCount)`
+perimeter-fraction proxy (LOW confidence; the two-region model supersedes it with
+the exact per-element wall fraction when geometry is available). Both single-material
+paths route through this one law — the **Classical Laminate Theory** path
+(`solver/laminate.ts`) passes it as the A-matrix scale (replacing the legacy
+linear-ρ scaling), the isotropic-base path as the `E_xy` scale (replacing the
+legacy `min(1, 0.30 + 0.70ρ + wallBonus)·patternMul`) — so a 20% part no longer
+swings 2–5× between the CLT and two-region toggles. Pattern enters stiffness only
+through the Gibson-Ashby family exponent (pattern *strength* multipliers stay a
+strength concept, no longer folded into stiffness). At 100% infill `g_GA(1) = 1`
+exactly, so `knockdown = 1` and every path reproduces the solid (anchor). Density
+knockdown is now decoupled from the strength multiplier, which keeps driving
+`yieldXY` on its own linear infill curve.
 
 **Two-region model (walls vs infill, opt-in).** The default model above smears
 perimeter walls and infill into ONE homogenized material (walls enter only as a
@@ -97,27 +120,56 @@ geometrically:
   then applies a **second, independent interface check** in that per-element
   wall-normal frame (distinct from the global-Z interlayer check), governing via
   `min()` alongside the bulk/interlayer SFs. Uses the inter-pass revisit time for
-  bonding; no dedicated coupon data exists, so it is LOW confidence.
+  bonding; no dedicated coupon data exists, so it is LOW confidence. Two
+  geometry corrections make it faithful:
+  - **Loop-length basis (#182).** The inter-pass revisit time is
+    `outerLoopPerimeter / printSpeed`. `estimateWallLoopPerimeterMm` groups the
+    vertical boundary faces into connected loops and keeps only the **outer
+    contour(s)** by the sign of each loop's projected cross-section (outward
+    normals ⇒ outer loops enclose positive area, hole bores negative), so
+    internal bolt-hole bores no longer inflate the loop length and understate
+    the bond. A solid part is bit-identical to the legacy all-vertical-area sum;
+    surfaced as `materialModel.wallBond.loopLengthBasis`.
+  - **Thermal depth = line width (#185).** The τc road-cooling constant
+    `τc = π·ρ·cp·d/(8·h)` uses the road's characteristic thermal depth `d`. For
+    the vertical weld that is the bead **line width** (adjacent beads cool
+    laterally through their sides), which the same π/8 elliptical-road prefactor
+    covers with the width/height roles swapped. It is passed as a **named
+    thermal-depth argument with a width-appropriate clamp**
+    (`WALL_THERMAL_DEPTH_CLAMP_MM = [0.1, 2.0] mm`), not the layer-height clamp —
+    so a >1.0 mm large-nozzle bead is no longer silently pinned to 1.0 mm.
+    Results are unchanged for in-clamp (≤1.0 mm) widths.
 - **Shell** carries solid-material properties (calibrated coupon values flow to
   it unchanged); **core** carries wall-free lattice properties from
   Gibson-Ashby power laws in relative density (`solver/lattice.ts`), applied as
   PER-AXIS scale factors on the solid's natural-frame constants
   (`buildCoreMaterial` in `analysis.ts`): stiffness `g(ρ) = ρⁿ·(1 − c(1−ρ))`
-  per axis and strength `s(ρ) = min(1, patternMul·ρᵐ)` — near zero at 0%
-  infill (floored at 10⁻³×solid; the legacy curve's 0.30 intercept represents
-  the walls and is not reused). Exponents are per pattern family, confidence
-  LOW, regression-locked, calibration-overridable (an override routes to a
-  single scalar law — one fitted exponent can't say which axis it belongs to):
+  per axis and strength `s(ρ) = min(1, patternMul·ρᵐ)` **also per axis**
+  (yieldXY / yieldZ / yieldZShear each carry their own exponent — issue #177) —
+  near zero at 0% infill (floored at 10⁻³×solid; the legacy curve's 0.30
+  intercept represents the walls and is not reused). Exponents are per pattern
+  family, confidence LOW, regression-locked, calibration-overridable (an
+  override routes both stiffness and strength to a single scalar law — one
+  fitted exponent can't say which axis it belongs to):
 
-  | Family | Patterns | n in-plane (c) | n through-layer (c) | n G_xz (c) | n G_xy | Strength m |
+  | Family | Patterns | n in-plane (c) | n through-layer (c) | n G_xz (c) | n G_xy | Strength m (xy / z / zs) |
   |---|---|---|---|---|---|---|
-  | TPMS-like 3-D | gyroid, cubic, adaptive | 1.75 (0.12) | 2.1 (0.18) | 2.3 (0.22) | derived | 1.25 (stretch-dominated) |
-  | extruded walls | grid, lines, honeycomb, trihexagon, concentric | 2.0 (0.10) | 1.0 (rule of mixtures) | 1.5 (0.10) | 3.0 (honeycomb bending) | 1.5 (bending-dominated) |
-  | sparse | lightning | 2.0 ×0.3 prefactor | 2.0 | 2.0 | derived | 1.5 |
+  | TPMS-like 3-D | gyroid, cubic, adaptive | 1.75 (0.12) | 2.1 (0.18) | 2.3 (0.22) | derived | 1.25 / 1.5 / 1.6 (stretch-dominated) |
+  | extruded walls | grid, lines, honeycomb, trihexagon, concentric | 2.0 (0.10) | 1.0 (rule of mixtures) | 1.5 (0.10) | 3.0 (honeycomb bending) | 1.5 / 1.0 / 1.5 (bending-dominated) |
+  | sparse | lightning | 2.0 ×0.3 prefactor | 2.0 | 2.0 | derived | 1.5 / 1.5 / 1.5 |
 
-  Extruded-wall infill is continuous along the build axis, so its through-layer
-  law is the mildest and the core's anisotropy INVERTS at low density (E_z >
-  E_xy). Because ν_zx = ν_xz·E_z/E_xy would then exceed the thermodynamic
+  Extruded-wall infill is continuous along the build axis, so BOTH its
+  through-layer stiffness (n = 1, rule of mixtures) and its through-layer
+  strength (m = 1) are the mildest, and the core's anisotropy INVERTS at low
+  density: `E_z > E_xy` AND `yieldZ > yieldXY` in the core. The per-axis
+  strength exponents mirror the stiffness-exponent ordering per family, so
+  `sign(E_z − E_xy)` now agrees with `sign(yieldZ − yieldXY)` in the core
+  (previously the single scalar strength law kept the solid's yieldZ/yieldXY =
+  0.58 ratio, claiming a Z-stiffer-yet-Z-weaker core at once — issue #177).
+  Because ν_zx = ν_xz·E_z/E_xy would then exceed the thermodynamic
+  stability limit, ν_xz is scaled by `min(1, gXY/gZ, gZ/gXY)` — symmetric so
+  the bound holds in the natural frame and after the upright scalar swap
+  alike. Because ν_zx = ν_xz·E_z/E_xy would then exceed the thermodynamic
   stability limit, ν_xz is scaled by `min(1, gXY/gZ, gZ/gXY)` — symmetric so
   the bound holds in the natural frame and after the upright scalar swap
   alike. Per-bin constitutive matrices are true Voigt blends of the two
@@ -132,11 +184,20 @@ geometrically:
   scalar swap does, applied AFTER the natural-frame scaling); it still scales
   strength. Both regions keep the full orientation anisotropy (layer bonds
   exist in walls and infill alike).
-- Fractions are quantized into 9 bins of Voigt-blended constitutive matrices,
+- Fractions are quantized into Voigt-blended bins of constitutive matrices,
   yields, and densities (`twoRegion.ts` → `ElementMaterialField`), consumed
-  per element by assembly, stress recovery, mass, and self-weight. The scalar
-  `material` becomes the volume-weighted average and keeps feeding
-  whole-part consumers (error estimate, analytic hole checks).
+  per element by assembly, stress recovery, mass, and self-weight. The bin
+  **spacing is adaptive to the shell:core contrast** (issue #178): low/medium
+  contrast keeps the legacy 9 LINEARLY spaced bins bit-for-bit, but above a
+  ~9:1 contrast the fractions are LOG-spaced and the count grows (capped at 33)
+  so no adjacent-bin stiffness step exceeds ~2×. Without this, at the ~10³:1
+  contrast of a near-zero-infill core a 0.01 change in wallFrac could flip an
+  element's stiffness ~100× (0.06→bin0≈1× vs 0.07→bin1≈126×). The bin ENDPOINTS
+  stay f=0 and f=1 exactly, so pure-phase elements map to the endpoint matrices
+  bit-for-bit and the field SHAPE is unchanged (binCount is read as C.length/36,
+  so the assembly-worker payload is untouched). The scalar `material` becomes
+  the volume-weighted average and keeps feeding whole-part consumers (error
+  estimate, analytic hole checks).
 - **Anchoring:** endpoints agree with the legacy model by construction (100%
   infill → solid; thin part → all walls). In between the summary reports both
   the implied average multiplier and the legacy global one — deliberately not
@@ -148,12 +209,26 @@ geometrically:
   matches composite-EI beam theory within 0.3% where the homogenized model is
   ~23% too soft (`solver_validation.ts` group 25); a Taguchi L9 orthogonal
   array sweeps infill/walls/pattern/orientation for main-effect sanity.
+- **Core yield criterion (Deshpande–Fleck–Ashby, issue #171).** The homogenized
+  infill core is a cellular solid: it yields under HYDROSTATIC stress (the
+  lattice compacts), unlike the deviatoric von Mises the solid obeys. Core bulk
+  yield therefore uses the isotropic-foam DFA criterion
+  `σ̂² = (σ_vm² + α²·σ_m²)/(1 + (α/3)²)` (σ_m = mean stress), with the
+  pressure-sensitivity `α(ρ) = 2.08·(1 − ρ)` (Deshpande & Fleck 2000). The
+  `(1 + (α/3)²)` normalization keeps the in-plane uniaxial yield at yieldXY for
+  every α, so DFA never disturbs the coupon anchor — it only ADDS hydrostatic
+  yield. `α(1) = 0` EXACTLY, so at ρ=1 (and in every shell/wall bin and the
+  single-material flag-off path) the criterion collapses to von Mises
+  bit-for-bit; α grows toward 2.08 as ρ→0. Applied per element via the
+  core-fraction-weighted per-bin α `(1−shellFrac)·α(ρ)` in
+  `recoverElementStress`; a strength-side change only (stiffness untouched).
+  The α₀ magnitude and the linear knockdown are literature-form estimates,
+  confidence LOW, regression-locked (`dfa-core-yield.test.ts`).
 - **Known limits:** Voigt blending is an upper bound inside the one-element
   transition band; nozzle-temp/flow effects on bond quality are captured
-  empirically via calibration coupons, not parametric inputs; the core yield
-  criterion remains deviatoric (the dual criterion's bulk von Mises term) — a
-  Deshpande–Fleck–Ashby pressure-dependent lattice criterion is a planned
-  follow-up.
+  empirically via calibration coupons, not parametric inputs; the DFA core
+  criterion is isotropic (an anisotropic honeycomb-foam extension, and a fitted
+  α(ρ), remain follow-ups).
 
 **Print orientation (weak-axis rotation).** The weak (through-layer) axis is the
 FDM layer normal. **C** is built in the material's local frame (weak along local
@@ -289,7 +364,12 @@ onto the raster axes (audit A7). The interface term is untouched, so azimuth
 invariance about the weak axis is preserved. With no evidence the cross-bead
 ratio is 1 (no penalty) and the criterion collapses exactly to the von Mises
 bulk term; typical ±45° alternating rasters homogenize toward isotropic and stay
-isotropic, which is why this is opt-in and evidence-gated.
+isotropic, which is why this is opt-in and evidence-gated. Absent a measured
+`CalibrationProfile.crossBeadRatio`, the literature default is
+`CROSS_BEAD_RATIO_LITERATURE = 0.85` — an engineering default mid-band of the
+~0.7–0.9 spread reported for unidirectional-raster tensile coupons (no single
+paper pins 0.85 exactly), confidence LOW; see the SOURCES tab entry
+`cross_bead_ratio`.
 
 **Legacy Hill.** The Hill (1948) quadratic (`hillEquivalentStress`) remains
 callable (`criterion: "hill-legacy"`) for comparison and as the
@@ -323,14 +403,15 @@ from the headline SF (both already folded into it):
 
 With in-plane raster anisotropy active, an **In-plane bead bond (cross-raster)**
 row is added likewise. The optional **Linear buckling (BLF)** mode is added when
-buckling is requested (§7). The governing (lowest-SF) mode drives the overall
+buckling is requested (§8). The governing (lowest-SF) mode drives the overall
 verdict.
 
 ### Fatigue (Goodman)
 
 A fatigue-life estimate uses the **modified Goodman** relation (plus Basquin for
-cycle count) with an FDM-specific endurance ratio `Se/UTS = 0.37` (Wang et al.
-2020). The **load ratio** `R = σ_min/σ_max` is a user input (default `0`,
+cycle count) with an orientation-dependent endurance ratio `Se/UTS = 0.37`
+(flat print, inter-layer bonds are the weak link) or `0.43` (upright print)
+(Wang et al. 2020). The **load ratio** `R = σ_min/σ_max` is a user input (default `0`,
 pulsating): `σ_a = σ_max(1−R)/2`, `σ_m = σ_max(1+R)/2`, with compressive mean
 stress conservatively clamped to zero. `R = −1` is fully reversed; `R > 0` is a
 tension-biased cycle. Confidence is LOW by default — published FDM S-N data is
@@ -339,11 +420,162 @@ to MEDIUM by fitting their own S-N curve: enter cyclic-coupon (σ_amplitude,
 cycles) points at `POST /api/calibration/fatigue`, which least-squares fits the
 Basquin exponent `b` and endurance ratio `Se/UTS`; those measured constants then
 replace the literature defaults and lift the fatigue mode to MEDIUM confidence
-(the same LOW→MEDIUM data gate the bearing coupon uses).
+(the same LOW→MEDIUM data gate the bearing coupon uses) — **provided the fit is
+clean**; a poorly-fitting (high-scatter) S-N dataset is still used but stays LOW
+confidence (see the fit-quality gating note in §8).
 
 ---
 
-## 7. Optional analyses
+## 7. Convergence & discretization error
+
+Every finite element solution is an approximation whose error shrinks as the
+mesh refines. STORMFEA surfaces that error two ways: an in-app **estimate** of
+where it concentrates (the ZZ heatmap, no re-solve needed) and an actual
+**measurement** of the trend (running a second, finer mesh). *(The estimator's
+internals are under revision in #207/#209 — energy-norm and observed-order
+Richardson improvements exist on other branches but are not on `main`; this
+section documents `main`'s current behavior.)*
+
+### The ZZ (Zienkiewicz–Zhu) error estimate, η
+
+`computeZZErrorEstimate` (`server/solver/stress.ts:1002–1117`) recovers a
+smoothed stress field with **SPR** (§5) and compares it against the raw
+per-element stress — the gap between "what the mesh computed" and "what a
+locally-fitted polynomial says it should be" is the error indicator, per
+Zienkiewicz & Zhu 1992.
+
+For each element `e`:
+
+- The SPR nodal von Mises values at its 4 corner nodes are interpolated to the
+  element centroid with an inverse-distance weight (`1/(1+dist²)`,
+  `stress.ts:1058–1074`) to get `σ_SPR`.
+- The **error energy** is `‖error‖²_e = (σ_SPR − σ_centroid)² · (1+ν)/E`
+  (`stress.ts:1077–1079`) — an approximation: the true SPR energy norm needs
+  the full stress **tensor** and `C⁻¹`, but this uses the scalar von Mises
+  *magnitude* difference instead (flagged in the code comment at
+  `stress.ts:1078`). It also does **not** weight by element volume, so a
+  cluster of small elements and one large element contribute equally per
+  element, not per unit of part volume.
+- Per-element η is that error energy normalized by the **global** stress
+  energy norm, `‖σ‖_global = √(Σ_e σ_e² · (1+ν)/E)` (`stress.ts:1094`, `:1099`):
+
+  ```
+  η_e = ‖error‖_e / ‖σ‖_global
+  ```
+
+  So **η is a share of the whole part's energy norm, not a percentage error on
+  that element's own stress value.** Two consequences that make it easy to
+  misread:
+  - Refining the mesh spreads the same total error over more elements, so the
+    same physical defect produces a *smaller* η per element on a finer mesh —
+    η values are not comparable across mesh densities.
+  - η says nothing about whether the *element's own* stress is high or low in
+    absolute terms — a low-stress element in a poorly-resolved region can rank
+    above a high-stress element in a well-resolved one.
+
+  `globalRelativeError` (`stress.ts:1095`, returned alongside `errorEstimate`)
+  is the one number that IS an absolute, whole-part accuracy read: the
+  root-sum-square of every element's η, `√(Σ_e η_e²)`. It answers "how far is
+  this solve, overall, from the SPR-smoothed reference" — the η heatmap then
+  shows *where* that total is concentrated. STORMFEA's client shows both
+  together for exactly this reason (η heatmap legend, issue #151): the map for
+  "where to refine," the global figure for "how much to trust the numbers."
+  Neither `η` nor `globalRelativeError` is validated against a known-exact
+  solution in the automated suite (`solver_validation.ts` [14.2]/[14.4] only
+  check that both are defined and non-negative, and that a finer mesh's
+  global error is ≤ the coarse mesh's) — they are *indicators*, not calibrated
+  error bounds.
+
+### The 5% "converged" threshold
+
+Both the automatic background check and the manual mesh-convergence study use
+the same criterion, hard-coded as `changePct < 5.0` (percent) — in
+`client/index.html`, once for the automatic upgrade path
+(`const converged = changePct < 5.0;`, near line 6094) and once for the manual
+multi-mesh study (same expression, near line 8558). `changePct` is the
+percent change in **peak von Mises stress** between two mesh levels:
+
+```
+changePct = |maxVM_fine − maxVM_std| / maxVM_std × 100
+```
+
+Under 5% is reported "converged" / "mesh-independent within tolerance"; 5% or
+more triggers an automatic swap to the finer mesh's results (the "auto-
+upgrade" badge) in the background-check path, or a "not converged" call-out in
+the manual study. 5% is an engineering heuristic on ONE scalar (peak stress at
+one point), not a formal a-posteriori bound — a badge can read "converged"
+while a different, non-peak location is still drifting.
+
+**C3D4 caveat.** For linear tetrahedra (C3D4), two meshes can agree within 5%
+because both suffer the *same* shear-locking stiffening, not because the
+answer is right (`client/index.html` badge text: "Standard and fine C3D4
+meshes agree because both are equally locked, not because they are correct" —
+C3D4 underpredicts bending stress by ~55% at practical densities). C3D10
+(quadratic) elements skip the check entirely — the standard-mesh response
+already reports `nodesPerElem === 10`, and the code treats quadratic elements
+as not needing the fine-mesh confirmation (`client/index.html:6061–6064`).
+
+### The SF > 3.0 smart-skip
+
+The background fine-mesh check itself only runs when it is likely to matter.
+`client/index.html:6056–6084`: if the standard mesh has no computable safety
+factor (`safetyFactorAvailable === false`), the fine mesh is skipped outright
+— a finer mesh cannot manufacture an SF that doesn't exist. Otherwise, if
+`stdSF > 3.0` the fine mesh is also skipped and a "clearly safe" badge is
+shown instead. The rationale (`client/index.html` badge sub-text): a part
+already at 3× the failure load has enough margin that mesh-driven changes to
+the peak stress are very unlikely to flip the SF below 1, so the extra solve
+is not worth the compute cost. This is a heuristic gate on cost, not a proof —
+it is skipped only for the *background, automatic* check; the manual
+multi-mesh "MESH CONVERGENCE STUDY" button always runs every requested mesh
+level regardless of SF.
+
+### Manual convergence study & Richardson extrapolation
+
+The "MESH CONVERGENCE STUDY" action (`client/index.html`, around line 8520)
+re-solves the model at several mesh-quality settings and reports peak von
+Mises stress, node/element counts, and SF at each level. From the **two
+finest** results in that set it computes a Richardson-extrapolated estimate of
+the mesh-independent stress (`client/index.html:8554–8573`):
+
+```
+r  = (nodes_fine / nodes_std)^(1/3)     // refinement ratio, from node counts
+p  = 2                                   // ASSUMED convergence order — not
+                                          // measured from the mesh series
+σ_exact ≈ σ_fine + (σ_fine − σ_std) / (r^p − 1)
+```
+
+`p = 2` is a fixed assumption ("assumed for linear elements" per the code
+comment) rather than an order observed from the actual sequence of results —
+main does not fit `p` from 3+ mesh levels (an "observed-order" Richardson fit
+is planned in #209, not yet merged). The refinement ratio `r` is derived from
+node counts as a proxy for element-size ratio (`(nodes_fine/nodes_std)^(1/3)`,
+appropriate for uniform 3-D refinement, not guaranteed for adaptive/local
+refinement). The extrapolated value is only trusted, and shown, when it lands
+in a sane envelope, `0 < extrapolated < 3 × σ_fine`
+(`client/index.html:8569`) — outside that range the raw finest-mesh value is
+used with no extrapolation note. The same `< 5%` criterion (previous
+subsection) decides the study's own "converged" / "not converged" call-out,
+here compared between the last two mesh levels in the study.
+
+### What this machinery does not cover
+
+- **Singularities.** Reentrant corners, point loads, and sharp fillets are
+  classic FEA stress singularities: the theoretical peak stress grows without
+  bound as the mesh refines there, so `changePct` at that location will not
+  settle below 5% no matter how fine the mesh gets, and Richardson
+  extrapolation's assumed order does not apply. STORMFEA does not currently
+  detect or flag singular regions separately from ordinary discretization
+  error; a persistently "not converged" result at a sharp geometric feature
+  should be read as evidence of a singularity, not treated as a mesh-density
+  problem to solve by refining further.
+- **η is diagnostic, not a safety gate.** Nothing in the SF/verdict pipeline
+  reads `errorEstimate` — a high-η region does not lower the reported SF or
+  block the "safe" verdict. It is purely an accuracy diagnostic for the user.
+
+---
+
+## 8. Optional analyses
 
 - **Modal (`solver/modal.ts`).** Solves `K·φ = ω²·M·φ` by subspace iteration with
   shift-invert for the lowest natural frequencies; `f = √(ω²)/(2π)`. Mode shapes
@@ -354,7 +586,7 @@ replace the literature defaults and lift the fatigue mode to MEDIUM confidence
 
 ---
 
-## 8. Calibration
+## 9. Calibration
 
 Literature defaults carry **MEDIUM** confidence. Teams can upgrade to **HIGH** by
 printing standard coupons on their own printer/filament, pulling them to failure,
@@ -383,9 +615,36 @@ Two further calibrations fit process/cycle models rather than static allowables:
 `POST /api/calibration/bond-sweep` fits the bead-penetration bond coefficients
 from a process sweep of Z-tension coupons (bond model LOW→MEDIUM).
 
+**Fit-quality gating (both fitted models).** A fit that reproduces the data
+poorly must not silently earn the LOW→MEDIUM upgrade, so each endpoint measures
+its own residual and gates on it. The residual is always returned — even a clean
+fit shows its evidence — and every response carries an additive `fitQuality`
+field.
+
+- **Bond sweep — reject.** `fitBondCoeffs` reports `rmsePct`, the RMS of
+  (predicted − measured) Z-tension strength as a percentage of the mean measured
+  strength. A clean sweep fits to well under 1%; the threshold is **15%**
+  (`BOND_FIT_RMSE_MAX_PCT`, generous headroom that still catches a mislabeled
+  point — a single 3× outlier lands near 77%). Above it the endpoint **refuses
+  with 400**, naming the worst datum and its deviation. Rationale: the fitted
+  coefficients are applied *multiplicatively* to interlayer strength and stiffness
+  in **every** subsequent process-aware analysis, so accepting a fit the physics
+  cannot reproduce would corrupt all of them at once; the literature-constants
+  path (no `bondCoeffs`) stays the honest default.
+- **Fatigue — accept but keep LOW.** `fitFatigueProfile` reports `logRms`, the RMS
+  residual of the log-log Basquin regression (≈ multiplicative amplitude scatter).
+  The threshold is **0.15** (`FATIGUE_LOGRMS_MAX`, ≈ ±16%). S-N scatter is
+  physically inherent, so a team's own noisy coupons are still their best data —
+  the endpoint **accepts** the fit and stores the measured `Se`/`b`, but tags the
+  profile `fatigueFitQuality: "poor"`, which keeps `estimateFatigue` at **LOW**
+  confidence (no MEDIUM upgrade) and says so in the mode note. A clean fit behaves
+  exactly as before. The reject-vs-keep split is deliberate: bond coefficients
+  are global multipliers on load-bearing allowables, whereas the fatigue fields
+  drive only the already order-of-magnitude fatigue mode.
+
 ---
 
-## 9. Validation
+## 10. Validation
 
 The solver ships an automated validation suite
 (`server/tests/solver_validation.ts`, run via `npm run test` and reproducible live
@@ -415,6 +674,43 @@ answers, grouped by:
 These solver checks run alongside the Vitest unit tests, the parallel-assembly
 equivalence check, and the client-logic checks. Exact counts are reported by
 `npm run test`; see the README's Contributing section for the current totals.
+
+### 9.1 Per-analysis validation coverage (issue #191)
+
+The suite scoreboard above is **global** — it reports that the whole suite
+passes, not whether the suite covers the specific model path a given analysis
+just exercised. Those are different assurances: an isotropic C3D4 part with a
+single applied force rests on a very different (larger) set of anchors than a
+C3D10 two-region part with a bond-process block and bolt loads.
+
+`server/validation-coverage.ts` maintains a small, explicit mapping from
+configuration **axes** (element order, material model, failure criterion,
+load types, mesher, opt-in options) to the solver-validation groups and unit
+suites that directly exercise each axis value. Every analysis computes its own
+**fingerprint** from its actual characteristics and gets back a coverage
+report (`summary.validationCoverage`) — surfaced in the client as a
+"Validation Coverage" panel near the results, and identical data is available
+via the API.
+
+**What a coverage claim means:** the listed suite exercises the same *kind*
+of characteristic (e.g. "runs a C3D10 mesh", "activates the two-region
+material field") somewhere in the automated suite.
+
+**What it does NOT mean:** it is not a claim that this exact geometry, load
+case, or material combination has been proven correct — that would require a
+regression fixture matching the user's actual part, which the project does
+not maintain. Coverage is also tracked primarily **per-axis**, not per full
+combination; a small, explicitly-maintained list of **known combination
+gaps** (`KNOWN_COMBO_GAPS`) states plainly where two individually-covered
+axes have no direct anchor for their *combination* (e.g. two-region
+validation runs exclusively on C3D10 meshes today, so C3D4 + two-region has
+no direct combination anchor even though each axis alone does). An
+intentionally-uncovered axis or combination is reported as a plain gap
+statement, never silently implied as covered — this is checked directly by
+`server/tests/unit/validation-coverage.test.ts`, including a CI guard that
+every axis value in the fingerprint enum has an explicit (possibly empty)
+entry in the coverage map, so a new feature must declare its coverage or
+declare none rather than falling through unmapped.
 
 ---
 

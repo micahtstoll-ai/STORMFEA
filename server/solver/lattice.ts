@@ -6,7 +6,11 @@
  *
  * Model: cellular-solid power laws (Gibson & Ashby 1997):
  *   stiffness  g(ρ) = pf · ρ^n · (1 − c(1−ρ))       E_core = E_solid · g(ρ)
- *   strength   s(ρ) = min(1, patternMul · ρ^m)       σ_core = σ_solid · s(ρ)
+ *   strength   s(ρ) = clamp(patternMul·ρ^m − (patternMul−1)·ρ^(m+K))
+ *                                                    σ_core = σ_solid · s(ρ)
+ * where the strength law's C¹ taper (issue #183) replaces the old
+ * min(1, patternMul·ρ^m) HARD CLIP that plateaued strength from
+ * ρ* = (1/patternMul)^(1/m) to 1 with a slope discontinuity at ρ*.
  * with n ∈ [1.5, 2.5] for open-cell (bending-dominated) solids and lower for
  * stretch-dominated topologies; m ≈ 1.5 for bending-dominated plastic
  * collapse, ~1.2–1.3 for stretch-dominated TPMS lattices.
@@ -92,8 +96,28 @@ export interface LatticeFamilyParams {
   readonly stiffCorrXY:    number;
   /** Prefactor pf: 1.0 for structural families, <1 for sparse. */
   readonly stiffPrefactor: number;
-  /** Strength power-law exponent m in s = min(1, patternMul·ρ^m). */
-  readonly strengthExp:    number;
+  /** In-plane strength power-law exponent m_xy in s = min(1, patternMul·ρ^m)
+   *  (yieldXY). This is the representative scalar `latticeStrengthFraction`
+   *  returns — its value is unchanged from the pre-per-axis `strengthExp`. */
+  readonly strengthExpXY:  number;
+  /** Plausible LOW-confidence spread on the representative strength exponent
+   *  m_xy, [m_lo, m_hi] (issue #173). Gibson & Ashby (1997) give m ≈ 1.5 for
+   *  bending-dominated plastic collapse and ~1.2–1.3 for stretch-dominated
+   *  topologies; the point value sits inside this band and the endpoints are
+   *  the cross-study scatter the "confidence LOW" label already implies. Used
+   *  ONLY to widen the reported SF uncertainty band for core-governed
+   *  two-region parts (never enters the constitutive matrix); collapses to the
+   *  point value under a calibration exponent override. */
+  readonly strengthExpXYRange: readonly [number, number];
+  /** Through-layer strength exponent m_z (yieldZ). Per-axis so the strength
+   *  anisotropy tracks the stiffness anisotropy (issue #177): for extruded
+   *  walls the continuous vertical walls give the mildest law (rule of
+   *  mixtures, m ≈ 1), so at low ρ yieldZ_core can exceed yieldXY_core, exactly
+   *  as E_z_core exceeds E_xy_core — the sign of (Z − XY) now agrees between
+   *  stiffness and strength. */
+  readonly strengthExpZ:   number;
+  /** Interlaminar-shear strength exponent m_zs (yieldZShear). */
+  readonly strengthExpZS:  number;
   // Per-axis laws (natural frame: local Z = layer normal = build axis).
   // Consumed by the gyroid constitutive builder today and by the anisotropic
   // core model (Stage 2). tpms3d values are the pre-existing locked gyroid
@@ -114,7 +138,12 @@ export const LATTICE_PARAMS: Record<PatternFamily, LatticeFamilyParams> = {
   // gyroid formula in element.ts; strength stretch-dominated.
   tpms3d: {
     family: "tpms3d",
-    stiffExpXY: 1.75, stiffCorrXY: 0.12, stiffPrefactor: 1.0, strengthExp: 1.25,
+    stiffExpXY: 1.75, stiffCorrXY: 0.12, stiffPrefactor: 1.0,
+    // Strength stretch-dominated; per-axis exponents MIRROR the stiffness
+    // ordering (XY < Z < Gxz) so the near-isotropic core keeps Z weaker AND
+    // softer than XY at low ρ (both signs already agreed here; the per-axis
+    // law keeps them consistent). m_xy unchanged from the legacy strengthExp.
+    strengthExpXY: 1.25, strengthExpXYRange: [1.0, 1.5], strengthExpZ: 1.5, strengthExpZS: 1.6,
     stiffExpZ: 2.1, stiffCorrZ: 0.18, stiffExpGxz: 2.3, stiffCorrGxz: 0.22, stiffExpGxy: null,
     confidence: "LOW",
   },
@@ -123,14 +152,22 @@ export const LATTICE_PARAMS: Record<PatternFamily, LatticeFamilyParams> = {
   // (continuous walls → rule of mixtures, n = 1).
   walls25d: {
     family: "walls25d",
-    stiffExpXY: 2.0, stiffCorrXY: 0.10, stiffPrefactor: 1.0, strengthExp: 1.5,
+    stiffExpXY: 2.0, stiffCorrXY: 0.10, stiffPrefactor: 1.0,
+    // Per-axis strength (issue #177): in-plane bending collapse m_xy = 1.5
+    // (unchanged from the legacy strengthExp); through-layer follows the
+    // continuous vertical walls (rule of mixtures m_z = 1.0, matching gZ's
+    // n = 1) so the strength anisotropy INVERTS at low ρ just like the
+    // stiffness; interlaminar shear stays conservative at 1.5.
+    strengthExpXY: 1.5, strengthExpXYRange: [1.2, 1.8], strengthExpZ: 1.0, strengthExpZS: 1.5,
     stiffExpZ: 1.0, stiffCorrZ: 0.0, stiffExpGxz: 1.5, stiffCorrGxz: 0.10, stiffExpGxy: 3.0,
     confidence: "LOW",
   },
   // Lightning: decorative — prefactor 0.3 on top of the power law.
   sparse: {
     family: "sparse",
-    stiffExpXY: 2.0, stiffCorrXY: 0.0, stiffPrefactor: 0.3, strengthExp: 1.5,
+    stiffExpXY: 2.0, stiffCorrXY: 0.0, stiffPrefactor: 0.3,
+    // Decorative — isotropic strength (no directional wall network to credit).
+    strengthExpXY: 1.5, strengthExpXYRange: [1.2, 1.8], strengthExpZ: 1.5, strengthExpZS: 1.5,
     stiffExpZ: 2.0, stiffCorrZ: 0.0, stiffExpGxz: 2.0, stiffCorrGxz: 0.0, stiffExpGxy: null,
     confidence: "LOW",
   },
@@ -149,6 +186,26 @@ export function patternFamilyOf(pattern: string): PatternFamily {
  */
 export const LATTICE_STIFFNESS_FLOOR = 1e-3;
 export const LATTICE_STRENGTH_FLOOR  = 1e-3;
+
+/**
+ * Issue #183: exponent controlling how sharply a pattern's ABOVE-reference
+ * strength benefit (patternMul > 1) tapers back to the solid anchor as ρ→1.
+ * The strength law's excess term (patternMul − 1) is faded out by (1 − ρ^K):
+ *
+ *   s(ρ) = ρ^m·(1 + (patternMul−1)(1 − ρ^K))
+ *        = patternMul·ρ^m − (patternMul−1)·ρ^(m+K)
+ *
+ * This replaces the old min(1, patternMul·ρ^m) hard clip (which pinned s = 1
+ * for all ρ ∈ [ρ*, 1] and put a kink at ρ*). K = 10 concentrates the taper in
+ * the top ~10–20% of density, so:
+ *   • low/typical infill is bit-unchanged (ρ^K ≈ 0 ⇒ s ≈ patternMul·ρ^m);
+ *   • s(1) = 1 EXACTLY (invariant #8, bit-for-bit: base = 1, (1 − ρ^K) = 0);
+ *   • s'(1) = m − (patternMul−1)·K > 0 for every default pattern/axis (tightest
+ *     margin gyroid m_xy = 1.25, patternMul = 1.08 ⇒ 0.45), so s rises
+ *     monotonically to 1 from below with no interior critical point / overshoot.
+ * Confidence LOW like the exponents; regression-locked in core-lattice.test.ts.
+ */
+export const STRENGTH_TAPER_K = 10;
 
 // ─── Laws ────────────────────────────────────────────────────────────────────
 
@@ -190,6 +247,49 @@ export function latticeStiffnessScale(
   return Math.max(LATTICE_STIFFNESS_FLOOR, gibsonAshbyModulus(p.stiffPrefactor, r, n, p.stiffCorrXY));
 }
 
+/**
+ * Geometry-free solid-perimeter volume-fraction proxy for the LUMPED
+ * single-material paths (issue #176). The non-two-region analysis has no mesh
+ * classification, so the perimeter contribution is estimated from wall count
+ * alone: ~10% of a small part's cross-section per perimeter loop, capped well
+ * below solid. This is the SAME +0.10-per-wall heuristic the mass model uses
+ * (effectiveVolumeFraction) — LOW confidence, and superseded by the two-region
+ * model's exact per-element wall fraction whenever geometry is available.
+ */
+export function wallCreditFraction(wallCount: number): number {
+  return Math.min(0.9, Math.max(0, wallCount) * 0.10);
+}
+
+/**
+ * Unified LUMPED in-plane stiffness knockdown for the single-material paths
+ * (issue #176): a Voigt (iso-strain) volume average of solid perimeter walls
+ * and a Gibson-Ashby infill core,
+ *
+ *     knockdown = wallCredit + (1 − wallCredit) · g_GA(ρ)
+ *
+ * i.e. the lumped limit of the two-region model's E_eff = Vf·E_solid +
+ * (1−Vf)·E_solid·g(ρ). Both the CLT and the non-CLT single-material paths route
+ * their density knockdown through THIS one law (the CLT path passes it as the
+ * A-matrix scale, the non-CLT path as the E_xy scale), replacing the three
+ * inconsistent laws (linear-ρ, 0.30+0.70ρ, bare Gibson-Ashby) that swung a 20%
+ * part 2–5× across toggles.
+ *
+ * Anchor (invariant #8): g_GA(1) = 1 exactly for structural patterns, so
+ * knockdown(ρ=1) = wallCredit + (1−wallCredit) = 1 EXACTLY regardless of wall
+ * credit — 100% infill reproduces the solid across every path. Floored
+ * implicitly by g_GA's own LATTICE_STIFFNESS_FLOOR and the wall credit.
+ */
+export function lumpedInPlaneStiffnessScale(
+  pattern: string,
+  rho: number,
+  wallCredit: number,
+  overrideExp?: number | null,
+): number {
+  const g = latticeStiffnessScale(pattern, rho, overrideExp);
+  const w = Math.min(1, Math.max(0, wallCredit));
+  return Math.min(1, w + (1 - w) * g);
+}
+
 /** Per-axis stiffness scale factors in the NATURAL material frame
  *  (local Z = layer normal = build axis). */
 export interface LatticeAxisScales {
@@ -227,12 +327,127 @@ export function latticeStiffnessScales(pattern: string, rho: number): LatticeAxi
   };
 }
 
+/** Per-axis wall-free lattice strength fractions in the NATURAL material frame
+ *  (local Z = layer normal = build axis), each s = min(1, patternMul·ρ^m). */
+export interface LatticeStrengthScales {
+  /** Scales yieldXY (in-plane). Representative scalar (see latticeStrengthFraction). */
+  readonly sXY:  number;
+  /** Scales yieldZ (through-layer). */
+  readonly sZ:   number;
+  /** Scales yieldZShear (interlaminar shear). */
+  readonly sZS:  number;
+}
+
 /**
- * Wall-free lattice strength fraction s(ρ) = max(floor, min(1, patternMul·ρ^m)).
+ * Per-axis wall-free lattice strength fractions s_a(ρ) = max(floor,
+ * min(1, patternMul·ρ^m_a)) for a = XY, Z, ZS (issue #177).
  *
- * Excludes orientation — the single source for BOTH coreStrengthMultiplier
- * (which multiplies by orientationMultiplier) and the impliedAvgStrengthMul
- * diagnostic in analysis.ts, so the two can never desynchronize.
+ * The single scalar `latticeStrengthFraction` knocked yieldXY, yieldZ, and
+ * yieldZShear down by the SAME factor, so the core kept the solid's
+ * yieldZ/yieldXY = 0.58 ratio while the per-axis STIFFNESS law inverted the
+ * anisotropy (E_z > E_xy for extruded walls at low ρ) — the model claimed
+ * Z-stiffer-yet-Z-weaker at once. Per-axis strength exponents (mirroring the
+ * stiffness family structure) fix the sign inconsistency.
+ *
+ * Anchors (invariant #8): Math.pow(1, m) = 1, so every s_a(1) = min(1, patternMul)
+ * EXACTLY and identically across axes — the 100%-infill materialsEqual collapse
+ * is preserved. Floored at LATTICE_STRENGTH_FLOOR.
+ *
+ * A calibration `overrideExp` (a single fitted number) applies to ALL axes
+ * uniformly — collapsing to the isotropic-in-ratio strength law, exactly as the
+ * stiffness override routes to the scalar `latticeStiffnessScale`. One fitted
+ * exponent cannot say which axis it belongs to.
+ */
+export function latticeStrengthFractions(
+  pattern: string,
+  rho: number,
+  overrideExp?: number | null,
+): LatticeStrengthScales {
+  const p = LATTICE_PARAMS[patternFamilyOf(pattern)];
+  const patternMul = PATTERN_MULTIPLIERS[pattern] ?? 1.0;
+  const r = clampRho(rho);
+  const s = (m: number) => {
+    const base = Math.pow(r, m);
+    // Issue #183: for patterns crediting a > reference strength (patternMul > 1),
+    // taper the excess benefit smoothly to zero as ρ→1 instead of hard-clipping
+    // at min(1,·). scaled = ρ^m·(1 + (patternMul−1)(1 − ρ^K)); equals
+    // patternMul·ρ^m at low ρ (ρ^K→0) and EXACTLY 1 at ρ=1 (base=1, 1−ρ^K=0).
+    // Patterns with patternMul ≤ 1 never clipped → keep the plain power law and
+    // their ρ=1 anchor at patternMul (min(1, patternMul) = patternMul).
+    const scaled = patternMul > 1
+      ? base * (1 + (patternMul - 1) * (1 - Math.pow(r, STRENGTH_TAPER_K)))
+      : patternMul * base;
+    // Safety clamp only: guards a pathological calibration override exponent
+    // (a very small m can lift the interior above solid); never engages for the
+    // default per-axis exponents, whose maximum is s(1) = 1.
+    return Math.max(LATTICE_STRENGTH_FLOOR, Math.min(1, scaled));
+  };
+  return {
+    sXY: s(overrideExp ?? p.strengthExpXY),
+    sZ:  s(overrideExp ?? p.strengthExpZ),
+    sZS: s(overrideExp ?? p.strengthExpZS),
+  };
+}
+
+// ─── Deshpande–Fleck–Ashby pressure sensitivity (core yield) ─────────────────
+/**
+ * DFA pressure-sensitivity coefficient α in the fully-cellular (ρ→0) limit.
+ *
+ * Deshpande & Fleck (2000), "Isotropic constitutive models for metallic foams"
+ * (JMPS 48:1253–1283), measured α ≈ 2.08 for aluminium foams (Alporas/Duocel),
+ * corresponding via their self-consistent relation
+ *     α² = (9/2)·(1 − 2ν_p)/(1 + ν_p)
+ * to a plastic Poisson ratio ν_p ≈ 0 (the low-density foam limit √(9/2) ≈ 2.12).
+ * A low-ρ FDM lattice is the same cellular-solid class. Confidence LOW.
+ */
+export const DFA_ALPHA0 = 2.08;
+
+/**
+ * Density knockdown exponent p in α(ρ) = DFA_ALPHA0·(1 − ρ)^p. Linear (p = 1)
+ * is the LOW-confidence default: pressure sensitivity falls off in proportion to
+ * void fraction (1 − ρ) and vanishes exactly as the voids close (ρ → 1). No
+ * override is exposed — a nonzero p is what makes the ρ=1 → von-Mises collapse
+ * exact (Math.pow(0, p>0) === 0), and that anchor (invariant #8) must never be
+ * reachable-away by calibration. Regression-locked in dfa-core-yield.test.ts.
+ */
+export const DFA_ALPHA_EXP = 1.0;
+
+/**
+ * Deshpande–Fleck–Ashby pressure-sensitivity coefficient α(ρ) of the
+ * homogenized infill core as a function of relative density ρ ∈ [0, 1]:
+ *
+ *     α(ρ) = DFA_ALPHA0 · (1 − ρ)^DFA_ALPHA_EXP
+ *
+ * Plugs into the bulk yield criterion (fdmDualCriterionSF): the core's DFA
+ * equivalent stress is σ̂² = (σ_vm² + α²σ_m²)/(1 + (α/3)²), so the core yields
+ * under hydrostatic stress (a lattice compacts) where von Mises predicts
+ * infinite strength.
+ *
+ * ANCHORS:
+ *  - α(1) = 0 EXACTLY (IEEE-754: DFA_ALPHA_EXP > 0 ⇒ Math.pow(0, p) === 0, and
+ *    2.08·0 === 0), so σ̂ ≡ σ_vm and the ρ=1 core reproduces the solid's von
+ *    Mises criterion bit-for-bit (CLAUDE.md two-region invariant #8).
+ *  - α(0) = DFA_ALPHA0, the fully-cellular foam limit.
+ *  - Monotone-decreasing in ρ: denser ⇒ less pressure-sensitive.
+ *
+ * Confidence LOW (the α₀ magnitude and the linear knockdown are literature-form
+ * estimates, like the Gibson-Ashby stiffness/strength exponents).
+ */
+export function dfaPressureSensitivity(rho: number): number {
+  const r = clampRho(rho);
+  return DFA_ALPHA0 * Math.pow(1 - r, DFA_ALPHA_EXP);
+}
+
+/**
+ * Representative (in-plane) wall-free lattice strength fraction
+ * s_xy(ρ) = max(floor, min(1, patternMul·ρ^m_xy)) — the yieldXY axis of
+ * latticeStrengthFractions.
+ *
+ * Kept as the single source for BOTH coreStrengthMultiplier (which multiplies
+ * by orientationMultiplier) and the impliedAvgStrengthMul diagnostic in
+ * analysis.ts, so the two can never desynchronize; in-plane is what coupons
+ * measure. Its VALUE is unchanged from the pre-per-axis law (m_xy equals the
+ * old strengthExp), so every locked regression value holds.
  *
  * s(1) = min(1, patternMul) exactly — identical to the legacy linear curve's
  * ρ=1 value pattern-for-pattern, preserving the 100%-infill degenerate
@@ -244,9 +459,43 @@ export function latticeStrengthFraction(
   rho: number,
   overrideExp?: number | null,
 ): number {
+  return latticeStrengthFractions(pattern, rho, overrideExp).sXY;
+}
+
+/**
+ * Multiplicative SF-band excursion from the Gibson-Ashby STRENGTH-EXPONENT
+ * uncertainty (issue #173). Returns { low, high } — the ratio of the core
+ * strength fraction s(ρ) = min(1, patternMul·ρ^m) evaluated at the exponent
+ * range endpoints to its value at the point exponent:
+ *
+ *   low  = s(ρ | m_hi) / s(ρ | m_xy)   (≤ 1 — the steeper exponent is weaker)
+ *   high = s(ρ | m_lo) / s(ρ | m_xy)   (≥ 1 — the shallower exponent is stronger)
+ *
+ * ANCHOR (invariant #8): at ρ = 1, Math.pow(1, m) = 1 for every m, so
+ * low = high = 1 EXACTLY — a solid / 100%-infill core adds no band width, and
+ * the existing solid-part band is reproduced bit-for-bit. The spread grows
+ * monotonically with (1 − ρ): the wider the extrapolation below full density,
+ * the less certain the least-trusted exponents in the model make the strength.
+ *
+ * A calibration exponent override PINS the law to one fitted number, so the
+ * exponent is no longer a free uncertainty — the excursion collapses to
+ * { 1, 1 } (a future infill-coupon sweep narrows the band, mirroring the
+ * bond-sweep pattern).
+ */
+export function latticeStrengthExpExcursion(
+  pattern: string,
+  rho: number,
+  overrideExp?: number | null,
+): { low: number; high: number } {
+  if (overrideExp != null) return { low: 1, high: 1 };
   const p = LATTICE_PARAMS[patternFamilyOf(pattern)];
-  const m = overrideExp ?? p.strengthExp;
-  const patternMul = PATTERN_MULTIPLIERS[pattern] ?? 1.0;
+  const [mLo, mHi] = p.strengthExpXYRange;
   const r = clampRho(rho);
-  return Math.max(LATTICE_STRENGTH_FLOOR, Math.min(1, patternMul * Math.pow(r, m)));
+  const patternMul = PATTERN_MULTIPLIERS[pattern] ?? 1.0;
+  // Same min(1, ·) clamp as the real strength law, so the excursion vanishes
+  // wherever the point law itself saturates at solid strength.
+  const sAt = (m: number) => Math.min(1, patternMul * Math.pow(r, m));
+  const sC = sAt(p.strengthExpXY);
+  if (!(sC > 0)) return { low: 1, high: 1 };
+  return { low: sAt(mHi) / sC, high: sAt(mLo) / sC };
 }

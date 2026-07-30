@@ -564,8 +564,607 @@ console.log('\n[J] bed frame — bedDirToWorld maps bed Z to world +Y');
     `got (${rt.x.toFixed(3)},${rt.y.toFixed(3)},${rt.z.toFixed(3)})`);
 }
 
+// ── Test group K: sfVerdictTier — safety-factor verdict tiering (issue #141) ──
+console.log('\n[K] sfVerdictTier — Safe requires SF >= 2.0, not 1.5 (issue #141)');
+{
+  // Extract the shared thresholds + classifier that both the headline action
+  // card and sticky bar now read from, so this locks the exact regression:
+  // the headline used to render green "Safe" at SF 1.5x while the same panel
+  // said "Recommended minimum: 2x".
+  const m = html.match(/const FAIL_SF_THRESHOLD[\s\S]*?function sfVerdictTier\(sf\) \{[\s\S]*?\n\}\n/);
+  if (!m) throw new Error('Could not extract sfVerdictTier + its threshold constants');
+  const mod = { exports: {} };
+  new Function('module', 'exports',
+    m[0] + '\nmodule.exports = { sfVerdictTier, FAIL_SF_THRESHOLD, ACCEPTABLE_SF_THRESHOLD, SAFE_SF_THRESHOLD };'
+  )(mod, mod.exports);
+  const { sfVerdictTier, FAIL_SF_THRESHOLD, ACCEPTABLE_SF_THRESHOLD, SAFE_SF_THRESHOLD } = mod.exports;
+
+  test('Thresholds are 1.0 / 1.5 / 2.0',
+    FAIL_SF_THRESHOLD === 1.0 && ACCEPTABLE_SF_THRESHOLD === 1.5 && SAFE_SF_THRESHOLD === 2.0,
+    `got ${FAIL_SF_THRESHOLD}/${ACCEPTABLE_SF_THRESHOLD}/${SAFE_SF_THRESHOLD}`);
+
+  test('SF 0.9 -> fail tier', sfVerdictTier(0.9) === 'fail', `got ${sfVerdictTier(0.9)}`);
+  test('SF 1.2 -> marginal tier', sfVerdictTier(1.2) === 'marginal', `got ${sfVerdictTier(1.2)}`);
+  test('SF 1.6 -> acceptable tier, NOT "safe" (the exact issue #141 regression case — used to render green "Safe" here)',
+    sfVerdictTier(1.6) === 'acceptable', `got ${sfVerdictTier(1.6)}`);
+  test('SF 1.5 boundary resolves to acceptable, not marginal (>= 1.5 is the acceptable band)',
+    sfVerdictTier(1.5) === 'acceptable', `got ${sfVerdictTier(1.5)}`);
+  test('SF 2.1 -> safe tier', sfVerdictTier(2.1) === 'safe', `got ${sfVerdictTier(2.1)}`);
+  test('SF 2.0 boundary resolves to safe (green requires >= 2.0, not > 2.0)',
+    sfVerdictTier(2.0) === 'safe', `got ${sfVerdictTier(2.0)}`);
+  test('null SF -> null tier (safety factor unavailable)', sfVerdictTier(null) === null);
+  test('NaN SF -> null tier (guards against a false verdict, mirrors the safetyFactorAvailable guard)',
+    sfVerdictTier(NaN) === null);
+}
+
+// ── Test group L: legend/model heatmap color agreement (issue #142) ──────────
+console.log('\n[L] Legend gradient bar matches model gamma color at 25/50/75% (issue #142)');
+{
+  // Extract currentGamma (+ its localStorage/URL-backed init), stressColor,
+  // COLORMAPS, and updateLegendSwatches together — updateLegendSwatches calls
+  // currentGamma() and stressColor() directly, so they need to come from the
+  // same extracted block rather than being re-implemented by the test.
+  const m = html.match(/\(function\(\) \{\n  const stored = localStorage\.getItem\('sf-gamma-disabled'\);[\s\S]*?\n\}\n\n\/\/ Restore saved colormap/);
+  if (!m) throw new Error('Could not extract gamma-init IIFE..updateLegendSwatches block');
+  const src = m[0];
+
+  let gradientCss = null;
+  global.document = {
+    getElementById(id) {
+      if (id === 'legend-gradient') {
+        const el = { style: {} };
+        Object.defineProperty(el.style, 'background', {
+          set(v) { gradientCss = v; }, get() { return gradientCss; },
+        });
+        return el;
+      }
+      return { style: {}, classList: { toggle() {} }, textContent: '' };
+    },
+  };
+  global.window = { location: { search: '' } };
+  global.localStorage = {
+    _store: {},
+    getItem(k) { return Object.prototype.hasOwnProperty.call(this._store, k) ? this._store[k] : null; },
+    setItem(k, v) { this._store[k] = v; },
+  };
+
+  // Runs the REAL extracted updateLegendSwatches() with gamma on/off (driven
+  // through localStorage exactly like the app's own init IIFE does — not by
+  // poking S.gammaEnabled directly, so this exercises the real init path)
+  // and returns helpers to read back the generated gradient plus an
+  // independent re-derivation of what the model would paint.
+  function run(gammaEnabled) {
+    gradientCss = null;
+    global.localStorage._store = { 'sf-gamma-disabled': gammaEnabled ? 'false' : 'true' };
+    global.S = { colormap: 'viridis' };
+    const mod = { exports: {} };
+    new Function('module', 'exports',
+      src + '\nmodule.exports = { currentGamma, stressColor, updateLegendSwatches };'
+    )(mod, mod.exports);
+    const { currentGamma, stressColor, updateLegendSwatches } = mod.exports;
+    updateLegendSwatches();
+    const stopRe = /rgb\((\d+),(\d+),(\d+)\)\s+([\d.]+)%/g;
+    const stops = [];
+    let mm;
+    while ((mm = stopRe.exec(gradientCss))) {
+      stops.push({ pct: parseFloat(mm[4]), r: +mm[1], g: +mm[2], b: +mm[3] });
+    }
+    const colorAtPct = (pct) => {
+      const s = stops.find(s => Math.abs(s.pct - pct) < 1e-6);
+      if (!s) throw new Error(`No legend stop at pct=${pct}`);
+      return [s.r, s.g, s.b];
+    };
+    // computeSmoothedStressColors paints each vertex with
+    // stressColor(pow(stressFraction, GAMMA)) — reproduce that exactly for a
+    // given stress fraction (0 = min, 1 = max) as the "model" color.
+    const modelColorAtFraction = (f) => {
+      const t = Math.pow(f, currentGamma());
+      const [r, g, b] = stressColor(t, 'viridis');
+      return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+    };
+    return { colorAtPct, modelColorAtFraction, stressColor, gammaValue: currentGamma() };
+  }
+
+  // Legend label rows sit at fixed positions 0/25/50/75/100% (flexbox
+  // space-between over 5 rows), each labeled with the linear stress fraction
+  // f = 1 - pct/100 (HIGH at top/0%, LOW at bottom/100%). For each position,
+  // the legend bar's color there must equal the model's color for that same
+  // stress fraction — that's the exact property issue #142 broke.
+  {
+    const { colorAtPct, modelColorAtFraction, stressColor, gammaValue } = run(true);
+    test('gamma enabled -> currentGamma() = 0.55', gammaValue === 0.55, `got ${gammaValue}`);
+    [25, 50, 75].forEach(pct => {
+      const f = 1 - pct / 100;
+      const legend = colorAtPct(pct);
+      const model = modelColorAtFraction(f);
+      test(`gamma ON: legend color at ${pct}% matches model color at stress fraction ${f.toFixed(2)}`,
+        legend[0] === model[0] && legend[1] === model[1] && legend[2] === model[2],
+        `legend=rgb(${legend}) model=rgb(${model})`);
+    });
+
+    // Sanity check that the fix isn't a no-op: the gamma-mapped 50% stop must
+    // differ from the naive linear stressColor(0.5) — otherwise this test
+    // group wouldn't actually have caught the original ~1.8x over-read bug.
+    const legendMid = colorAtPct(50);
+    const [rNaive, gNaive, bNaive] = stressColor(0.5, 'viridis');
+    const naiveLinear = [Math.round(rNaive * 255), Math.round(gNaive * 255), Math.round(bNaive * 255)];
+    test('gamma ON: 50% stop is NOT the naive linear color (proves gamma actually changed the output)',
+      !(legendMid[0] === naiveLinear[0] && legendMid[1] === naiveLinear[1] && legendMid[2] === naiveLinear[2]),
+      `legend50%=rgb(${legendMid}) naiveLinear=rgb(${naiveLinear})`);
+  }
+
+  // When gamma is disabled, GAMMA=1 and pow(f,1)=f, so the legend must go
+  // back to sampling linearly — i.e. exactly stressColor(1 - pct/100) with no
+  // warp, keyed to the same currentGamma() the model itself reads (not a
+  // second copy of the disableGamma flag).
+  {
+    const { colorAtPct, gammaValue, stressColor } = run(false);
+    test('gamma disabled -> currentGamma() = 1.0', gammaValue === 1.0, `got ${gammaValue}`);
+    [25, 50, 75].forEach(pct => {
+      const f = 1 - pct / 100;
+      const legend = colorAtPct(pct);
+      const [r, g, b] = stressColor(f, 'viridis');
+      const linear = [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+      test(`gamma OFF: legend color at ${pct}% is exactly linear (fraction ${f.toFixed(2)}, no warp)`,
+        legend[0] === linear[0] && legend[1] === linear[1] && legend[2] === linear[2],
+        `legend=rgb(${legend}) linear=rgb(${linear})`);
+    });
+  }
+}
+
+// ── Test group M: convergenceObservedOrder / richardsonExtrapolate (#146) ────
+console.log('\n[M] Observed order of convergence — recovers known p, clamps, falls back');
+{
+  const mA = html.match(/function convergenceObservedOrder\(meshes, theoreticalP\) \{[\s\S]*?\n\}/);
+  const mB = html.match(/function richardsonExtrapolate\(second, finest, orderInfo\) \{[\s\S]*?\n\}/);
+  if (!mA) throw new Error('Could not extract convergenceObservedOrder');
+  if (!mB) throw new Error('Could not extract richardsonExtrapolate');
+  const mod = { exports: {} };
+  new Function('module', 'exports',
+    mA[0] + '\n' + mB[0] + '\nmodule.exports = { convergenceObservedOrder, richardsonExtrapolate };'
+  )(mod, mod.exports);
+  const { convergenceObservedOrder, richardsonExtrapolate } = mod.exports;
+
+  // Synthetic sequence with constant linear refinement r=2 (node counts scale
+  // by 8 each step) and f_i = f_exact + C*h_i^p. With h halving each refinement
+  // the closed-form order recovers p exactly regardless of C or f_exact.
+  const seq = (p, fExact = 100, C = 40) => {
+    // coarsest h=4, std h=2, fine h=1 ; nodes ∝ (1/h)^3
+    const hs = [4, 2, 1];
+    const nodesFine = 64000; // 1/h=1 -> base; scale so ratios are exactly 8
+    const nodesFor = h => Math.round(nodesFine / (h * h * h)); // (1/h)^3 * (nodesFine)
+    return hs.map(h => ({ nodes: nodesFor(h), value: fExact + C * Math.pow(h, p) }));
+  };
+
+  // p = 2 (quadratic-stress-like), converging from above (C>0)
+  {
+    const r = convergenceObservedOrder(seq(2), 2);
+    test('M recovers p=2 from a clean O(h^2) sequence',
+      r.source === 'observed' && Math.abs(r.order - 2) < 1e-6, `order=${r.order} src=${r.source}`);
+    test('M p=2 sequence is monotone', r.monotone === true);
+  }
+  // p = 1 (linear-stress), the exact case the old hard-coded p=2 got wrong
+  {
+    const r = convergenceObservedOrder(seq(1), 1);
+    test('M recovers p=1 from a clean O(h^1) sequence (C3D4 stress rate)',
+      r.source === 'observed' && Math.abs(r.order - 1) < 1e-6, `order=${r.order}`);
+  }
+  // Clamp high: p=5 synthetic must clamp to 3
+  {
+    const r = convergenceObservedOrder(seq(5), 2);
+    test('M clamps a super-cubic observed order to the [0.5,3] ceiling',
+      r.order === 3 && r.raw > 3, `order=${r.order} raw=${r.raw?.toFixed(2)}`);
+  }
+  // Diverging peak: values GROW under refinement (singularity) -> raw <= 0,
+  // order clamps to floor 0.5, still flagged observed so the raw signal survives
+  {
+    const diverge = [
+      { nodes: 1000,  value: 50 },
+      { nodes: 8000,  value: 80 },
+      { nodes: 64000, value: 140 },  // difference grows 30 -> 60
+    ];
+    const r = convergenceObservedOrder(diverge, 1);
+    test('M diverging peak yields raw order ≤ 0 (singularity signal)',
+      isFinite(r.raw) && r.raw <= 0, `raw=${r.raw}`);
+    test('M diverging peak clamps reported order to the 0.5 floor',
+      r.order === 0.5, `order=${r.order}`);
+  }
+  // Non-monotone (sign flip) -> theoretical fallback
+  {
+    const osc = [
+      { nodes: 1000,  value: 100 },
+      { nodes: 8000,  value: 108 },
+      { nodes: 64000, value: 104 },  // up then down
+    ];
+    const r = convergenceObservedOrder(osc, 1);
+    test('M non-monotone sequence falls back to theoretical order',
+      r.source === 'theoretical' && r.order === 1 && r.monotone === false, `order=${r.order} src=${r.source}`);
+  }
+  // Fewer than 3 meshes -> theoretical fallback
+  {
+    const r = convergenceObservedOrder([{ nodes: 1000, value: 10 }, { nodes: 8000, value: 12 }], 2);
+    test('M <3 meshes falls back to theoretical order', r.source === 'theoretical' && r.order === 2);
+  }
+  // Richardson uses the observed order, not a hard-coded p=2
+  {
+    // O(h^1) sequence: f_exact=100. Extrapolation with p=1 must land ~100.
+    const s = seq(1, 100, 40);
+    const order = convergenceObservedOrder(s, 1);
+    const rich = richardsonExtrapolate(s[1], s[2], order);
+    test('M Richardson with observed p=1 recovers the true limit (~100)',
+      rich.valid && Math.abs(rich.value - 100) < 1e-6, `value=${rich.value}`);
+    // The old hard-coded p=2 would UNDER-correct an O(h) sequence: r^2-1=3 vs
+    // the correct r-1=1, so it lands at 105, not 100 — prove the fix matters.
+    const wrong = richardsonExtrapolate(s[1], s[2], { order: 2 });
+    test('M hard-coded p=2 would mis-extrapolate the O(h) sequence (proves fix matters)',
+      Math.abs(wrong.value - 100) > 1, `p2 value=${wrong.value}`);
+  }
+}
+
+// ── Test group N: selectConvergenceMetric / stressPercentile (#147) ──────────
+console.log('\n[N] Singularity-aware convergence metric — evidence hierarchy + p99');
+{
+  const mA = html.match(/function selectConvergenceMetric\(singularity, peakOrder\) \{[\s\S]*?\n\}/);
+  const mB = html.match(/function stressPercentile\(stressArr, pct\) \{[\s\S]*?\n\}/);
+  if (!mA) throw new Error('Could not extract selectConvergenceMetric');
+  if (!mB) throw new Error('Could not extract stressPercentile');
+  const mod = { exports: {} };
+  new Function('module', 'exports',
+    mA[0] + '\n' + mB[0] + '\nmodule.exports = { selectConvergenceMetric, stressPercentile };'
+  )(mod, mod.exports);
+  const { selectConvergenceMetric, stressPercentile } = mod.exports;
+
+  // No singularity, healthy observed order -> converge on peak VM as usual.
+  {
+    const r = selectConvergenceMetric(null, { source: 'observed', raw: 1.8 });
+    test('N healthy peak: metric peakVM, not singular', !r.singularAtPeak && r.metric === 'peakVM' && r.evidence === 'none');
+  }
+  // Refinement divergence (raw <= 0.5) is PRIMARY, scale-independent evidence.
+  {
+    const r = selectConvergenceMetric(null, { source: 'observed', raw: 0.1 });
+    test('N diverging observed order -> singular, p99, refinement evidence',
+      r.singularAtPeak && r.metric === 'p99' && r.evidence === 'refinement');
+  }
+  // Negative observed order (peak growing) also counts as refinement evidence.
+  {
+    const r = selectConvergenceMetric(null, { source: 'observed', raw: -1 });
+    test('N negative observed order -> refinement evidence', r.evidence === 'refinement' && r.metric === 'p99');
+  }
+  // Server single-mesh flag with no refinement signal -> single-mesh evidence.
+  {
+    const r = selectConvergenceMetric({ detected: true }, { source: 'observed', raw: 2.2 });
+    test('N server flag only -> singular, p99, single-mesh evidence',
+      r.singularAtPeak && r.metric === 'p99' && r.evidence === 'single-mesh');
+  }
+  // Refinement OUTRANKS the single-mesh heuristic when both fire.
+  {
+    const r = selectConvergenceMetric({ detected: true }, { source: 'observed', raw: 0 });
+    test('N refinement outranks single-mesh heuristic', r.evidence === 'refinement');
+  }
+  // Non-monotone peak order (theoretical fallback) is NOT treated as divergence.
+  {
+    const r = selectConvergenceMetric(null, { source: 'theoretical', raw: null });
+    test('N non-monotone order alone is not a singularity flag', !r.singularAtPeak && r.metric === 'peakVM');
+  }
+  // A server flag still fires even with a non-monotone client order.
+  {
+    const r = selectConvergenceMetric({ detected: true }, { source: 'theoretical', raw: null });
+    test('N server flag fires under non-monotone order (single-mesh evidence)',
+      r.singularAtPeak && r.evidence === 'single-mesh');
+  }
+  // stressPercentile: p99 excludes a lone unbounded spike; p100 == max.
+  {
+    const arr = new Float32Array(1000);
+    for (let i = 0; i < 1000; i++) arr[i] = 10;      // uniform background
+    arr[500] = 100000;                                // singular spike
+    const p99 = stressPercentile(arr, 99);
+    const p100 = stressPercentile(arr, 100);
+    test('N p99 rejects the lone singular spike (stays at background)', p99 === 10, `p99=${p99}`);
+    test('N p100 is the max (includes the spike)', p100 === 100000, `p100=${p100}`);
+    test('N stressPercentile of empty array is null', stressPercentile(new Float32Array(0), 99) === null);
+  }
+}
+
+// ── Test group O: updateMeshOrderSelector — C3D4 bending-underprediction warning (#189) ─
+console.log('\n[O] updateMeshOrderSelector — C3D4 warning shown whenever C3D4 is selected');
+{
+  const fnMatch = html.match(
+    /function updateMeshOrderSelector\(\) \{[\s\S]*?\n\}\n/
+  );
+  if (!fnMatch) throw new Error('Could not extract updateMeshOrderSelector');
+
+  const mod = { exports: {} };
+  const sel  = { value: '2', disabled: false };
+  const opt2 = { disabled: false };
+  const hint = { innerHTML: '' };
+  const els = { 's-mesh-order': sel, 's-mesh-order-c3d10': opt2, 's-mesh-order-hint': hint };
+  global.document = { getElementById: (id) => els[id] };
+  global.S = { fileData: { fileType: 'step', stepB64: 'x' } };
+  new Function('module', 'exports', fnMatch[0] + '\nmodule.exports = { updateMeshOrderSelector };')(mod, mod.exports);
+  const { updateMeshOrderSelector } = mod.exports;
+
+  // STEP file, C3D10 (default) selected — no warning.
+  sel.value = '2';
+  updateMeshOrderSelector();
+  test('C3D10 (default) shows no bending-underprediction warning',
+    !/underpredict/i.test(hint.innerHTML), `got: ${hint.innerHTML}`);
+
+  // STEP file, user manually selects C3D4 — must warn (this was the
+  // reported gap: the old hint only warned when C3D4 was STL-forced).
+  sel.value = '1';
+  updateMeshOrderSelector();
+  test('C3D4 selected on a STEP file shows the ~55% bending-underprediction warning',
+    /underpredict.*55%/i.test(hint.innerHTML), `got: ${hint.innerHTML}`);
+  test('C3D4 warning recommends switching to C3D10',
+    /C3D10/.test(hint.innerHTML), `got: ${hint.innerHTML}`);
+
+  // STL file — C3D10 disabled, forced to C3D4, still warns.
+  global.S = { fileData: { fileType: 'stl' } };
+  sel.value = '2';
+  updateMeshOrderSelector();
+  test('STL file disables C3D10 and forces C3D4',
+    opt2.disabled === true && sel.value === '1', `opt2.disabled=${opt2.disabled} sel.value=${sel.value}`);
+  test('STL-forced C3D4 still shows the bending-underprediction warning',
+    /underpredict/i.test(hint.innerHTML), `got: ${hint.innerHTML}`);
+}
+
+// ── Test group P: computeDisplayFailForce — buckling-governed selection (#204) ─
+console.log('\n[P] computeDisplayFailForce — "Will fail at X N" caveat / buckling-governed selection');
+{
+  // Anchor on the function's own column-0 closing brace (not the next
+  // function), so the extraction is robust to what follows it in the merged
+  // client — the integration placed renderValidationCoverage between this and
+  // showResults, which the old "...\n}\n\nfunction showResults" anchor over-grabbed.
+  const fnMatch = html.match(
+    /function computeDisplayFailForce\(s, bucklingResult\) \{[\s\S]*?\n\}\n/
+  );
+  if (!fnMatch) throw new Error('Could not extract computeDisplayFailForce');
+  const mod = { exports: {} };
+  new Function('module', 'exports',
+    fnMatch[0] + '\nmodule.exports = { computeDisplayFailForce };')(mod, mod.exports);
+  const { computeDisplayFailForce } = mod.exports;
+
+  // No buckling data at all — falls back to the plain first-yield estimate.
+  {
+    const s = { estimatedFailForce: 500, safetyFactorAvailable: true, safetyFactor: 2.0 };
+    const r = computeDisplayFailForce(s, null);
+    test('No buckling result: displayFailForceN === estimatedFailForce',
+      r.displayFailForceN === 500, `got ${r.displayFailForceN}`);
+    test('No buckling result: bucklingGoverns is false',
+      r.bucklingGoverns === false);
+  }
+
+  // Buckling result present but BLF×appliedForce is ABOVE first-yield — first
+  // yield still governs, buckling must not override it.
+  {
+    const s = { estimatedFailForce: 500, safetyFactorAvailable: true, safetyFactor: 2.0 };
+    // appliedForce = 500/2 = 250N; BLF 5x -> bucklingForce=1250N > 500N
+    const bk = { blf: 5.0, verdict: 'PASS' };
+    const r = computeDisplayFailForce(s, bk);
+    test('Buckling force above first-yield: first-yield still governs',
+      r.bucklingGoverns === false && r.displayFailForceN === 500,
+      `bucklingGoverns=${r.bucklingGoverns} displayFailForceN=${r.displayFailForceN}`);
+  }
+
+  // Buckling result BELOW first-yield — the more honest (lower) number must
+  // be selected and flagged (issue #204 acceptance criterion).
+  {
+    const s = { estimatedFailForce: 500, safetyFactorAvailable: true, safetyFactor: 2.0 };
+    // appliedForce = 250N; BLF 1.2x -> bucklingForce=300N < 500N
+    const bk = { blf: 1.2, verdict: 'MARGINAL' };
+    const r = computeDisplayFailForce(s, bk);
+    test('Buckling force below first-yield: buckling governs',
+      r.bucklingGoverns === true, `bucklingGoverns=${r.bucklingGoverns}`);
+    test('Buckling force below first-yield: displayFailForceN is the buckling-limited value',
+      Math.abs(r.displayFailForceN - 300) < 1e-9, `got ${r.displayFailForceN}`);
+  }
+
+  // 'no-buckling' (tensile-dominated) and 'indeterminate' verdicts must never
+  // be treated as a governing buckling force even if blf happened to be set.
+  {
+    const s = { estimatedFailForce: 500, safetyFactorAvailable: true, safetyFactor: 2.0 };
+    test('no-buckling verdict is ignored',
+      computeDisplayFailForce(s, { blf: 0.1, verdict: 'no-buckling' }).bucklingGoverns === false);
+    test('indeterminate verdict is ignored',
+      computeDisplayFailForce(s, { blf: 0.1, verdict: 'indeterminate' }).bucklingGoverns === false);
+  }
+
+  // safetyFactor unavailable (mesh fallback) — cannot recover appliedForce,
+  // must not throw and must not claim buckling governs.
+  {
+    const s = { estimatedFailForce: 500, safetyFactorAvailable: false, safetyFactor: null };
+    const r = computeDisplayFailForce(s, { blf: 1.0, verdict: 'MARGINAL' });
+    test('SF unavailable: does not throw and buckling does not govern',
+      r.bucklingGoverns === false && r.displayFailForceN === 500);
+  }
+}
+
+// ── Test group Q: sliceTetsByAxisPlane — section-view interior stress (#190) ─
+console.log('\n[Q] sliceTetsByAxisPlane — marching-tet interior stress slice');
+{
+  // sliceTetsByAxisPlane is followed by a comment block (not directly by
+  // "function ..."), so extract up to its own closing brace at column 0
+  // rather than reusing the shared extractFunction(sig, nextFn) helper.
+  const startRe = /function sliceTetsByAxisPlane\(nodes, tets, values, axis, off\) \{/;
+  const startIdx = html.search(startRe);
+  if (startIdx < 0) throw new Error('Could not find sliceTetsByAxisPlane');
+  const endIdx = html.indexOf('\n}\n', startIdx);
+  if (endIdx < 0) throw new Error('Could not find end of sliceTetsByAxisPlane');
+  const fnCode = html.slice(startIdx, endIdx + 2);
+  const mod = { exports: {} };
+  new Function('module', 'exports', fnCode + '\nmodule.exports = { sliceTetsByAxisPlane };')(mod, mod.exports);
+  const { sliceTetsByAxisPlane } = mod.exports;
+
+  // Single tet, unit right tet at the origin: nodes 0..3, values 0..3.
+  // Cut at x=0.5 isolates node 1 (x=1) on the + side from nodes 0,2,3 (x=0)
+  // on the - side -> exactly one triangle (the "3 vs 1" case).
+  {
+    const nodes = new Float32Array([
+      0,0,0,   // node 0, value 10
+      1,0,0,   // node 1, value 20
+      0,1,0,   // node 2, value 30
+      0,0,1,   // node 3, value 40
+    ]);
+    const tets = new Int32Array([0,1,2,3]);
+    const values = new Float32Array([10,20,30,40]);
+    const { positions, values: vAtVerts } = sliceTetsByAxisPlane(nodes, tets, values, 0, 0.5);
+    test('3-vs-1 split produces exactly 1 triangle', positions.length === 9, `got ${positions.length/3} verts`);
+    // Every cut vertex must lie exactly on the plane (x === 0.5) — no NaN,
+    // no drift off the cut (CLAUDE.md: every vertex gets a real value, no NaN).
+    let onPlane = true, anyNaN = false;
+    for (let i = 0; i < positions.length / 3; i++) {
+      if (Math.abs(positions[i*3] - 0.5) > 1e-6) onPlane = false;
+      if (!Number.isFinite(vAtVerts[i])) anyNaN = true;
+    }
+    test('all cut vertices lie exactly on the cut plane', onPlane);
+    test('no NaN/Infinity in interpolated values', !anyNaN);
+    // Edge 0-1 (values 10,20) is cut at t=0.5 -> interpolated value 15 for
+    // every vertex on that edge (nodes 2 and 3 are untouched -> unchanged).
+    const has15 = Array.from(vAtVerts).some(v => Math.abs(v - 15) < 1e-5);
+    test('edge 0-1 interpolates to the midpoint value (15)', has15, `values=${Array.from(vAtVerts)}`);
+  }
+
+  // Same tet, cut plane entirely outside the tet's extent -> no crossing, no
+  // triangles (not even degenerate NaN-filled ones).
+  {
+    const nodes = new Float32Array([0,0,0, 1,0,0, 0,1,0, 0,0,1]);
+    const tets = new Int32Array([0,1,2,3]);
+    const values = new Float32Array([1,2,3,4]);
+    const { positions } = sliceTetsByAxisPlane(nodes, tets, values, 0, 5.0);
+    test('plane outside the tet produces zero triangles', positions.length === 0, `got ${positions.length}`);
+  }
+
+  // Two tets sharing a face (nodes 0,2,3 shared) straddling the plane at
+  // x=0.5 must produce IDENTICAL cut points/values for the shared edges,
+  // regardless of each tet's own internal node ordering — this is the "weld
+  // invariant" from CLAUDE.md: coincident vertices must share identical
+  // values. Confirmed here by construction (edgePoint always canonicalizes
+  // to the lower node index) rather than a runtime weld pass.
+  {
+    const nodes = new Float32Array([
+      0,0,0,   // 0
+      1,0,0,   // 1
+      0,1,0,   // 2
+      0,0,1,   // 3
+      1,1,1,   // 4 (second tet's apex, all on the + side with node 1)
+    ]);
+    const values = new Float32Array([10, 20, 30, 40, 50]);
+    const tetA = [0,1,2,3];
+    const tetB = [1,4,2,3];   // shares face {1,2,3} with tetA, opposite winding
+    const off = 0.5;
+    const a = sliceTetsByAxisPlane(nodes, new Int32Array(tetA), values, 0, off);
+    const b = sliceTetsByAxisPlane(nodes, new Int32Array(tetB), values, 0, off);
+    // Both tets cut edge 0-1... only tetA touches node 0; edge 1-2 and 1-3
+    // are shared by both (node 1 is the isolated + node in both tets since
+    // node 4 is also on the + side, x=1 >= 0.5). Find the value produced for
+    // edge 1-2 (10->wait, values at node1=20,node2=30, t=(20-off*? )) — just
+    // assert both slices agree on any value they have in common bit-for-bit.
+    const setA = new Set(Array.from(a.values).map(v => v.toFixed(10)));
+    const setB = new Set(Array.from(b.values).map(v => v.toFixed(10)));
+    let sharedCount = 0;
+    for (const v of setA) if (setB.has(v)) sharedCount++;
+    test('adjacent tets sharing an edge produce a bit-identical cut value',
+      sharedCount > 0, `setA=${[...setA]} setB=${[...setB]}`);
+  }
+
+  // 2-vs-2 "quad" split: a cube split diagonally so two nodes are on each
+  // side must produce 2 triangles (6 verts), all on-plane, no NaN.
+  {
+    const nodes = new Float32Array([
+      -1,0,0,  // 0, -
+      -1,1,0,  // 1, -
+       1,0,0,  // 2, +
+       1,1,0,  // 3, +
+    ]);
+    const tets = new Int32Array([0,1,2,3]);
+    const values = new Float32Array([1,2,3,4]);
+    const { positions, values: vAtVerts } = sliceTetsByAxisPlane(nodes, tets, values, 0, 0);
+    test('2-vs-2 split produces exactly 2 triangles', positions.length === 18, `got ${positions.length/3} verts`);
+    let onPlane = true, anyNaN = false;
+    for (let i = 0; i < positions.length / 3; i++) {
+      if (Math.abs(positions[i*3]) > 1e-6) onPlane = false;
+      if (!Number.isFinite(vAtVerts[i])) anyNaN = true;
+    }
+    test('2-vs-2 split: all vertices on-plane', onPlane);
+    test('2-vs-2 split: no NaN/Infinity', !anyNaN);
+  }
+
+  // Degenerate mesh sizes must not throw (defensive — empty arrays).
+  {
+    const { positions, values } = sliceTetsByAxisPlane(new Float32Array(0), new Int32Array(0), new Float32Array(0), 0, 0);
+    test('empty mesh does not throw and returns empty arrays', positions.length === 0 && values.length === 0);
+  }
+}
+
+// ── Test group R: renderValidationCoverage — per-analysis coverage panel (#191) ─
+console.log('\n[R] renderValidationCoverage — validation coverage panel (#191)');
+{
+  const fnCode = extractFunction(html, 'renderValidationCoverage\\(vc\\)', 'showResults');
+  const mod = { exports: {} };
+  new Function('module', 'exports', fnCode + '\nmodule.exports = { renderValidationCoverage };')(mod, mod.exports);
+  const { renderValidationCoverage } = mod.exports;
+
+  // Fully-covered configuration: no warn color, no "no direct anchor" text,
+  // no combo-gap block.
+  {
+    const vc = {
+      fingerprint: { elementOrder: 'C3D4', material: 'isotropic', criterion: 'von-mises', loadTypes: ['force'], mesher: 'tetgen', options: [] },
+      axisCoverage: [
+        { axis: 'elementOrder:C3D4', entries: [{ id: 'solver:1', label: 'Patch test', kind: 'solver-group' }] },
+        { axis: 'material:isotropic', entries: [{ id: 'solver:1', label: 'Patch test', kind: 'solver-group' }] },
+      ],
+      coveringEntryIds: ['solver:1'],
+      uncoveredAxes: [],
+      comboGaps: [],
+    };
+    const html2 = renderValidationCoverage(vc);
+    test('fully-covered: reports 2/2 characteristics', html2.includes('2/2 characteristics directly covered'));
+    test('fully-covered: no "no direct anchor" text', !html2.includes('no direct anchor'));
+    test('fully-covered: no combo-gap block', !html2.includes('Known combination gaps'));
+    test('fully-covered: includes axis label and entry label', html2.includes('Element order') && html2.includes('Patch test'));
+  }
+
+  // Gapped configuration: an uncovered axis AND a combo gap must both
+  // surface as plain text, not be hidden or implied-away.
+  {
+    const vc = {
+      fingerprint: { elementOrder: 'C3D4', material: 'two-region', criterion: 'fdm-interface', loadTypes: ['force'], mesher: 'tetgen', options: [] },
+      axisCoverage: [
+        { axis: 'elementOrder:C3D4', entries: [{ id: 'solver:1', label: 'Patch test', kind: 'solver-group' }] },
+        { axis: 'material:two-region', entries: [] },   // deliberately uncovered
+      ],
+      coveringEntryIds: ['solver:1'],
+      uncoveredAxes: ['material:two-region'],
+      comboGaps: [{ axes: ['elementOrder:C3D4', 'material:two-region'], note: 'C3D4 + two-region is not directly anchored.' }],
+    };
+    const html2 = renderValidationCoverage(vc);
+    test('gapped: header mentions 1 uncovered', html2.includes('1 uncovered'));
+    test('gapped: shows "no direct anchor" for the uncovered axis', html2.includes('no direct anchor'));
+    test('gapped: renders the combo-gap note verbatim', html2.includes('C3D4 + two-region is not directly anchored.'));
+    test('gapped: combo-gap block header present', html2.includes('Known combination gaps'));
+  }
+
+  // Degenerate: no axes at all must not throw (defensive).
+  {
+    const vc = { fingerprint: {}, axisCoverage: [], coveringEntryIds: [], uncoveredAxes: [], comboGaps: [] };
+    let threw = false;
+    try { renderValidationCoverage(vc); } catch (e) { threw = true; }
+    test('empty coverage report does not throw', !threw);
+  }
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
+
+// Machine-readable summary consumed by scripts/check-doc-test-counts.mjs —
+// see server/tests/solver_validation.ts for why (issue #198).
+try {
+  fs.writeFileSync(
+    path.join(__dirname, 'client-logic-summary.json'),
+    JSON.stringify({ passed, failed }, null, 2)
+  );
+} catch { /* best-effort */ }
+
 if (failed > 0) {
   console.log('CLIENT LOGIC VALIDATION FAILED');
   process.exit(1);

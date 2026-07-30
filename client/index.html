@@ -1141,6 +1141,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
           <button class="btn" id="clip-z" onclick="setClipAxis('z')" style="font-size:10px;padding:4px 7px" title="Cut along the Z axis">Z</button>
           <input type="range" id="clip-pos" min="0" max="100" value="50" step="1" oninput="onClipPosInput(this.value)" style="width:70px;vertical-align:middle" title="Position of the cutting plane along the chosen axis">
           <button class="btn" id="clip-flip" onclick="toggleClipFlip()" style="font-size:11px;padding:4px 7px" title="Flip which half of the part is kept">⇄</button>
+          <button class="btn" id="clip-interior" onclick="toggleSectionInteriorStress()" style="font-size:9px;padding:4px 6px" title="Color the cut face with real interpolated interior stress instead of flat grey. Requires re-running the analysis once (larger response payload), so it only fetches interior data while this is on.">σ INSIDE</button>
         </span>
       </div>
     </div>
@@ -1162,7 +1163,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <button class="btn vmode-btn"        id="btn-dmg"    onclick="setStressMode('dmg')"    style="display:flex" title="Damage ratio — stress as a fraction of material yield strength (1.0 = at yield)"><span class="vmode-abbr">DMG</span><span class="vmode-cap">Damage</span></button>
         <button class="btn vmode-btn"        id="btn-xyutil" onclick="setStressMode('xyutil')" style="display:flex" title="XY in-plane utilization — sqrt(σxx²+σyy²-σxx·σyy+3·σxy²) / yieldXY. Red at 1.0 = at in-plane yield. High → add infill."><span class="vmode-abbr">U<sub>XY</sub></span><span class="vmode-cap">In-plane use</span></button>
         <button class="btn vmode-btn"        id="btn-zutil"  onclick="setStressMode('zutil')"  style="display:flex" title="Interlayer interface utilization — tension-only ⟨σzz⟩₊/S_zt interacting with interlayer shear τ/S_zs (compression gets a friction credit instead). Red at 1.0 = delamination/shear onset. High → reorient or add walls."><span class="vmode-abbr">U<sub>Z</sub></span><span class="vmode-cap">Z-layer use</span></button>
-        <button class="btn vmode-btn"        id="btn-error"  onclick="setStressMode('error')"  style="display:flex" title="Error estimate η — Zienkiewicz-Zhu mesh quality metric (0–1), identifies under-resolved elements"><span class="vmode-abbr">η</span><span class="vmode-cap">Mesh quality</span></button>
+        <button class="btn vmode-btn"        id="btn-error"  onclick="setStressMode('error')"  style="display:flex" title="Error estimate η (Zienkiewicz-Zhu) — each element's SHARE of the mesh-wide discretization error, not an absolute % error on its stress. Ranks WHERE the mesh limits accuracy; red does not mean 'this stress is wrong by that much.' See the global % figure under the legend for overall accuracy."><span class="vmode-abbr">η</span><span class="vmode-cap">Mesh quality</span></button>
       </div>
     </div>
 
@@ -1193,6 +1194,15 @@ body:not(.has-results) #btn-stress { display: none !important; }
          conditions.) -->
     <div id="legend" style="display:none;flex-direction:column;position:absolute;bottom:12px;right:12px;gap:6px;align-items:flex-end;background:var(--bg-base);border:1px solid var(--border);border-radius:3px;padding:7px 10px">
       <div id="legend-title" style="font-size:9px;color:var(--text-lo);letter-spacing:.06em;text-align:right;pointer-events:none;text-transform:uppercase">von Mises (<span id="legend-stress-unit">MPa</span>)</div>
+      <!-- η ("Mesh quality") explainer — only shown while the error-estimate heatmap
+           is active (issue #151). η is a per-element SHARE of the mesh-wide ZZ
+           energy-norm error, not an absolute stress error; the global % figure is
+           the one number that IS an overall accuracy read. Populated/toggled from
+           applyStressColorsFromArrays(). -->
+      <div id="eta-explainer" style="display:none;max-width:220px;text-align:right;font-size:10px;line-height:1.5;color:var(--text-lo);margin-bottom:2px">
+        <div>η ranks elements by their <b>share</b> of total estimated mesh (discretization) error — not the % error of that element's stress. Red = the mesh limits accuracy most here; use it to decide <i>where</i> to refine, not <i>how wrong</i> a value is.</div>
+        <div id="eta-global-error" style="margin-top:4px;color:var(--text-mid)"></div>
+      </div>
       <div id="legend-labels" style="display:flex;align-items:stretch;gap:8px">
         <div id="legend-val-stack" style="display:flex;flex-direction:column;justify-content:space-between;align-items:flex-end">
           <span class="legend-val" style="font-size:10px;color:var(--text-lo);min-width:46px;white-space:nowrap;text-align:right">HIGH</span>
@@ -1205,6 +1215,16 @@ body:not(.has-results) #btn-stress { display: none !important; }
              stressColor() interpolates between, so this is an exact match
              to the actual heatmap coloring, not an approximation. -->
         <div id="legend-gradient" style="width:14px;border-radius:2px;min-height:84px"></div>
+      </div>
+      <!-- Gamma scale indicator + toggle (issue #142): the heatmap color
+           scale is gamma-warped (γ=0.55, expands low-stress detail) and the
+           legend gradient/labels are kept consistent with it (see
+           currentGamma()/updateLegendSwatches). This makes that fact visible
+           and lets users flip to a literal linear scale without needing the
+           ?disableGamma=true URL param. -->
+      <div id="legend-gamma" style="display:flex;align-items:center;justify-content:space-between;gap:6px;width:100%;font-size:8px;color:var(--text-lo);letter-spacing:.02em">
+        <span id="legend-gamma-label" title="Color scale expands low-stress detail (γ=0.55) so hotspots don't wash out the whole model. Legend and model always use the same scale.">γ 0.55 perceptual scale</span>
+        <button class="btn" id="legend-gamma-toggle" onclick="toggleGammaScale()" style="font-size:8px;padding:1px 5px" title="Toggle between the perceptual (γ) and a literal linear stress color scale">LINEAR</button>
       </div>
       <!-- Threshold filter: greys out one side of a stress cutoff so only the
            hot spots (or only the calm regions) stay colored. -->
@@ -1333,8 +1353,8 @@ body:not(.has-results) #btn-stress { display: none !important; }
       </div>
       <div style="width:1px;height:32px;background:var(--border);flex-shrink:0"></div>
       <!-- Fail force -->
-      <div style="display:flex;flex-direction:column;gap:1px">
-        <div style="font-size:10px;color:var(--text-lo);letter-spacing:.06em;font-weight:600">FAIL FORCE</div>
+      <div style="display:flex;flex-direction:column;gap:1px" title="Linear first-yield estimate, not an ultimate/collapse load — see full results for the caveat.">
+        <div style="font-size:10px;color:var(--text-lo);letter-spacing:.06em;font-weight:600">FAIL FORCE (EST.)</div>
         <div id="sticky-fail" style="font-family:'DM Mono',monospace;font-size:13px;
               color:var(--text-hi);line-height:1.3">—</div>
       </div>
@@ -1864,7 +1884,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
 
       <div style="margin-bottom:16px">
         <label for="s-mesh-order">Element order</label>
-        <select id="s-mesh-order">
+        <select id="s-mesh-order" onchange="updateMeshOrderSelector(); markSessionDirty()">
           <option value="1">C3D4 — Linear (fast, shear-locking in bending)</option>
           <option value="2" id="s-mesh-order-c3d10" selected>C3D10 — Quadratic ★ Recommended</option>
         </select>
@@ -2353,7 +2373,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
           </button>
         </div>
         <div style="font-family:'Outfit',system-ui,sans-serif;font-size:10px;color:var(--text-lo);margin-bottom:10px;line-height:1.6">
-          67 tests across 8 groups — patch test, cantilever beam, Hill 1948 criterion, SPR smoothing, C3D10 element properties, Kt calibration. Each validates against a known analytical solution.
+          Patch test, cantilever beam, FDM dual criterion, SPR smoothing, C3D10 element properties, Kt calibration, and more. Each validates against a known analytical solution — click Run Tests for the live pass/fail count and group breakdown.
         </div>
         <div id="validation-summary" style="display:none;font-family:'DM Mono',monospace;font-size:10px;padding:6px 10px;border-radius:3px;margin-bottom:10px;border:1px solid var(--border)"></div>
         <div id="validation-groups"></div>
@@ -2429,6 +2449,11 @@ const S = {
   _convergenceData: null,
   // Hole bolt-type overrides: holeId -> string key
   holeTypeOverrides: {},
+  // Section-view interior stress opt-in (#190) — persisted across solves so
+  // re-running the analysis (needed to fetch the volumetric payload) keeps
+  // the user's choice. See toggleSectionInteriorStress / buildAnalyseBody.
+  sectionInteriorStress: localStorage.getItem('sf-section-interior-stress') === '1',
+  _volumeField: null,
 };
 
 // ─── Landing screen state ─────────────────────────────────────────────────────
@@ -3009,6 +3034,51 @@ document.getElementById('viewer').addEventListener('mouseleave', () => {
   clearStressHover();
 });
 
+// ── Heatmap color gamma (issue #142) ──────────────────────────────────────────
+// GAMMA<1 expands the low-stress end of the color scale so hotspots stay
+// visible without flooding the whole model in "hot" colors. currentGamma()
+// is the SINGLE source of truth for every paint path that applies it —
+// computeSmoothedStressColors (the model), setColormap's fallback repaint,
+// renderSplitFrame (split view), and updateLegendSwatches (the legend
+// gradient bar). Previously the legend sampled its gradient LINEARLY in
+// stress fraction while the model applied this same gamma curve, so a
+// legend color at the visual midpoint actually corresponded to only ~28% of
+// the stress range on the model — a ~1.8x over-read. Routing every consumer
+// through this one function closes that gap, and means toggling gamma off
+// here makes the legend linear again too, instead of needing a second copy
+// of the flag kept manually in sync.
+//
+// Defaults from ?disableGamma=true (kept for back-compat / old bookmarks),
+// but is now also togglable from a small control in the legend (LINEAR/γ
+// button) and persisted across sessions.
+(function() {
+  const stored = localStorage.getItem('sf-gamma-disabled');
+  S.gammaEnabled = stored !== null
+    ? stored !== 'true'
+    : !new URLSearchParams(window.location.search).has('disableGamma');
+})();
+function currentGamma() { return S.gammaEnabled ? 0.55 : 1.0; }
+function toggleGammaScale() {
+  S.gammaEnabled = !S.gammaEnabled;
+  localStorage.setItem('sf-gamma-disabled', (!S.gammaEnabled).toString());
+  // Repaint the model (which also repaints the legend, keeping them in sync)
+  // if a solve is loaded; otherwise just refresh the legend swatch preview.
+  if (S._stressArrays && mesh3d) applyStressColorsFromArrays(S._stressArrays);
+  else updateLegendSwatches();
+}
+function _syncGammaUI() {
+  const btn = document.getElementById('legend-gamma-toggle');
+  const lbl = document.getElementById('legend-gamma-label');
+  if (btn) {
+    btn.textContent = S.gammaEnabled ? 'LINEAR' : 'γ 0.55';
+    btn.classList.toggle('active', !S.gammaEnabled);
+    btn.title = S.gammaEnabled
+      ? 'Switch to a literal linear stress color scale'
+      : 'Switch back to the perceptual γ=0.55 scale (expands low-stress detail)';
+  }
+  if (lbl) lbl.textContent = S.gammaEnabled ? 'γ 0.55 perceptual scale' : 'linear scale';
+}
+
 // ─── Stress colormap system ──────────────────────────────────────────────────
 // S.colormap: 'rainbow' | 'viridis' | 'plasma'  (default: 'viridis')
 // All maps: 5-stop RGB arrays, t in [0,1] -> [r,g,b]
@@ -3130,7 +3200,7 @@ function setColormap(name) {
     const cols = mesh3d.geometry.attributes.color.array;
     const nVerts = S.stressColors.length;
     const range = (S.stressMax - S.stressMin) || 1;
-    const GAMMA = 0.55;
+    const GAMMA = currentGamma();
     for (let i = 0; i < nVerts; i++) {
       const linear = Math.max(0, Math.min(1, (S.stressColors[i] - S.stressMin) / range));
       const t = Math.pow(linear, GAMMA);
@@ -3143,21 +3213,30 @@ function setColormap(name) {
 
 function updateLegendSwatches() {
   const bar = document.getElementById('legend-gradient');
-  if (!bar) return;
-  const map = S.colormap || 'viridis';
-  // Sample stressColor at enough stops for a visually smooth CSS gradient.
-  // 12 stops is comfortably more than the 5 raw colormap stops, so the
-  // rendered bar matches the true continuous interpolation rather than
-  // looking like discrete bands.
-  const STOPS = 12;
-  const stops = [];
-  for (let i = 0; i <= STOPS; i++) {
-    const pct = (i / STOPS) * 100;
-    const t = 1 - i / STOPS; // HIGH at top (pct=0), LOW at bottom (pct=100)
-    const [r, g, b] = stressColor(t, map);
-    stops.push(`rgb(${Math.round(r*255)},${Math.round(g*255)},${Math.round(b*255)}) ${pct.toFixed(1)}%`);
+  if (bar) {
+    const map = S.colormap || 'viridis';
+    // Sample stressColor at enough stops for a visually smooth CSS gradient.
+    // 12 stops is comfortably more than the 5 raw colormap stops, so the
+    // rendered bar matches the true continuous interpolation rather than
+    // looking like discrete bands.
+    const STOPS = 12;
+    const stops = [];
+    const GAMMA = currentGamma();
+    for (let i = 0; i <= STOPS; i++) {
+      const pct = (i / STOPS) * 100;
+      const linear = 1 - i / STOPS; // HIGH at top (pct=0), LOW at bottom (pct=100)
+      // Gamma-warp the position the SAME way the model warps stress fraction
+      // (computeSmoothedStressColors) so the color shown here matches the
+      // color painted on the part at this same fraction of the range —
+      // issue #142. When gamma is disabled, GAMMA=1 and pow() is a no-op,
+      // so this collapses back to the old linear sampling.
+      const t = Math.pow(linear, GAMMA);
+      const [r, g, b] = stressColor(t, map);
+      stops.push(`rgb(${Math.round(r*255)},${Math.round(g*255)},${Math.round(b*255)}) ${pct.toFixed(1)}%`);
+    }
+    bar.style.background = `linear-gradient(to bottom, ${stops.join(', ')})`;
   }
-  bar.style.background = `linear-gradient(to bottom, ${stops.join(', ')})`;
+  _syncGammaUI();
 }
 
 // Restore saved colormap (default: viridis)
@@ -3253,9 +3332,20 @@ function updateMeshOrderSelector() {
     hint.innerHTML =
       'C3D10 requires a STEP file — STL meshing (TetGen) does not support quadratic elements. ' +
       'Export your CAD as STEP to enable C3D10. ' +
-      '<b style="color:var(--warn)">C3D4 linear elements underpredict bending stress by ~55% due to shear locking.</b>';
+      '<b style="color:var(--warn)">C3D4 linear elements underpredict bending stress by ~55% due to shear locking — use for quick iteration only, never for final verdicts.</b>';
+    return;
+  }
+
+  opt2.disabled = false;
+  // Reflect whichever element order is CURRENTLY selected (issue #189) — the
+  // hint used to only warn about C3D4 when it was STL-forced, staying silent
+  // when a STEP-file user deliberately picked C3D4 from the dropdown. The
+  // fastest option must never be the quietest one.
+  if (sel.value === '1') {
+    hint.innerHTML =
+      '<b style="color:var(--warn)">C3D4 linear tetrahedra underpredict bending stress by up to ~55% (shear locking) — ' +
+      'use for quick iteration only, never for final verdicts. Switch to C3D10 before trusting a safety factor.</b>';
   } else {
-    opt2.disabled = false;
     hint.innerHTML =
       'C3D10 uses 10-node quadratic tetrahedra — eliminates shear locking for more accurate bending and stress concentrations near holes.';
   }
@@ -3435,6 +3525,7 @@ function loadMeshFromPositions(posB64) {
   S.baseNormals   = geo.attributes.normal ? geo.attributes.normal.array.slice() : null;
   S._modelSizeMax = Math.max(sz.x, sz.y, sz.z);
   S._modelSize    = sz.clone();   // per-axis extents for the section plane
+  S._volumeField  = null;         // stale volumetric payload belonged to the old geometry (#190)
   resetDeform();
   resetClip();
 
@@ -3672,9 +3763,10 @@ function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverrid
 
   // Gamma curve so mid-range detail is visible: gamma < 1 expands the
   // low-stress end, compresses the peak — hotspots stay visible as warm
-  // colors but don't flood the whole model.
-  const disableGamma = new URLSearchParams(window.location.search).has('disableGamma');
-  const GAMMA = disableGamma ? 1.0 : 0.55;
+  // colors but don't flood the whole model. currentGamma() is shared with
+  // the legend gradient (updateLegendSwatches) so the two can't drift apart
+  // again (issue #142).
+  const GAMMA = currentGamma();
   // Threshold filter: keep only the side of the threshold the user asked for;
   // the rest paints neutral grey. The decision is a pure function of the welded
   // per-vertex value, so coincident (welded) vertices share it — the smoothing
@@ -3738,6 +3830,140 @@ function _decodeStressF32(b64) {
   } catch (e) { return null; }
 }
 
+// Decode a base64 Int32 payload (tet connectivity), or null when absent/corrupt.
+function _decodeStressI32(b64) {
+  if (!b64) return null;
+  try {
+    return new Int32Array(Uint8Array.from(atob(b64), c => c.charCodeAt(0)).buffer);
+  } catch (e) { return null; }
+}
+
+// ── Volumetric interior-stress payload (section-view cut face, issue #190) ──
+// Decodes the opt-in volumeField block (analysis-mesh nodes + corner-tet
+// connectivity + per-node stress/utilization arrays) sent only when the
+// request set analysis.includeVolumeField (see toggleSectionInteriorStress).
+// Returns null when the payload is absent (flag was off) or fails to decode,
+// so callers fall back to the flat "cut material, no data" cap.
+function decodeVolumeField(vfRaw, effYield) {
+  if (!vfRaw) return null;
+  const nodes = _decodeStressF32(vfRaw.nodesB64);
+  const tets  = _decodeStressI32(vfRaw.tetsB64);
+  const vm    = _decodeStressF32(vfRaw.nodeVonMisesB64);
+  if (!nodes || !tets || !vm) return null;
+  const svm    = _decodeStressF32(vfRaw.nodeSignedVonMisesB64);
+  const s1     = _decodeStressF32(vfRaw.nodePrincipal1B64);
+  const s2     = _decodeStressF32(vfRaw.nodePrincipal2B64);
+  const s3     = _decodeStressF32(vfRaw.nodePrincipal3B64);
+  const xyutil = vfRaw.nodeXyUtilB64 ? _decodeStressF32(vfRaw.nodeXyUtilB64) : null;
+  const zutil  = vfRaw.nodeZUtilB64  ? _decodeStressF32(vfRaw.nodeZUtilB64)  : null;
+  const tc = (s1 && s3) ? computeDominantPrincipal(s1, s3) : null;
+  const yield_ = effYield || 1;
+  const dmg = new Float32Array(vm.length);
+  for (let i = 0; i < vm.length; i++) dmg[i] = (vm[i] ?? 0) / yield_;
+  return {
+    nodeCount: vfRaw.nodeCount, tetCount: vfRaw.cornerTetCount,
+    nodes, tets, vm, svm, s1, s2, s3, tc, dmg, xyutil, zutil,
+  };
+}
+
+// Per-node data selector for each stress-mode, mirroring MODE_META's `data`
+// selector but reading the volumetric per-node arrays instead of the
+// display-mesh per-vertex arrays. `error` has no per-node volumetric
+// counterpart (Zienkiewicz-Zhu error is an element-level estimate that is
+// only projected to the SURFACE mesh server-side) — the cap honestly falls
+// back to the flat "no data" material for that mode rather than fabricating
+// a value.
+const VOLUME_MODE_DATA = {
+  tc:     vf => vf.tc,
+  vm:     vf => vf.vm,
+  svm:    vf => vf.svm,
+  s1:     vf => vf.s1,
+  s2:     vf => vf.s2,
+  s3:     vf => vf.s3,
+  dmg:    vf => vf.dmg,
+  xyutil: vf => vf.xyutil,
+  zutil:  vf => vf.zutil,
+  error:  () => null,
+};
+
+/**
+ * Marching-tetrahedra slice of a scalar field, cut by an axis-aligned plane
+ * (coordinate[axis] == off, in the same local frame as `nodes`). Pure
+ * function of plain arrays — no THREE.js/DOM dependency — so it is directly
+ * unit-testable (scripts/test_client_logic.mjs) and reusable for any future
+ * non-axis-aligned generalization.
+ *
+ * For every tet straddling the plane, the two/three/four crossing edges are
+ * linearly interpolated for both position and `values`, producing 1 triangle
+ * (3-vs-1 corner split) or 2 triangles (2-vs-2 split, "quad" case). Edge
+ * intersections are cached per (loNode,hiNode) pair with the LOWER node index
+ * always used as the interpolation origin — two tets sharing a face edge
+ * therefore compute that edge's cut point and value with the exact same
+ * floating-point expression, so coincident cap vertices from different tets
+ * are bit-identical by construction (the weld invariant in CLAUDE.md is
+ * satisfied without a separate spatial-hash weld pass — there is nothing to
+ * weld, duplicate vertices already agree exactly).
+ *
+ * @param nodes  Float32/Float64 array, node positions xyz interleaved.
+ * @param tets   Int32 array, 4 node indices per tet.
+ * @param values Float32/Float64 array, one scalar per node (nodeCount long).
+ * @param axis   0, 1, or 2 — which coordinate the cut plane is normal to.
+ * @param off    The plane's coordinate value along `axis` (local frame).
+ * @returns { positions: Float32Array, values: Float32Array } — flat
+ *          triangle-soup (3 verts/values per triangle), no index buffer.
+ */
+function sliceTetsByAxisPlane(nodes, tets, values, axis, off) {
+  const nTets = tets.length / 4;
+  const outPos = [];
+  const outVal = [];
+  const edgeCache = new Map();
+  const coordOf = n => nodes[n * 3 + axis];
+
+  function cut(nLo, nHi) {
+    const key = nLo * 2000000000 + nHi;
+    let c = edgeCache.get(key);
+    if (c) return c;
+    const dLo = coordOf(nLo) - off;
+    const dHi = coordOf(nHi) - off;
+    const t = dLo / (dLo - dHi);
+    c = {
+      x: nodes[nLo*3]   + t * (nodes[nHi*3]   - nodes[nLo*3]),
+      y: nodes[nLo*3+1] + t * (nodes[nHi*3+1] - nodes[nLo*3+1]),
+      z: nodes[nLo*3+2] + t * (nodes[nHi*3+2] - nodes[nLo*3+2]),
+      v: (values[nLo] ?? 0) + t * ((values[nHi] ?? 0) - (values[nLo] ?? 0)),
+    };
+    edgeCache.set(key, c);
+    return c;
+  }
+  const edgePoint = (a, b) => a < b ? cut(a, b) : cut(b, a);
+  function pushTri(p0, p1, p2) {
+    outPos.push(p0.x,p0.y,p0.z, p1.x,p1.y,p1.z, p2.x,p2.y,p2.z);
+    outVal.push(p0.v, p1.v, p2.v);
+  }
+
+  for (let e = 0; e < nTets; e++) {
+    const ids = [tets[e*4], tets[e*4+1], tets[e*4+2], tets[e*4+3]];
+    const plus = [], minus = [];
+    for (let k = 0; k < 4; k++) (coordOf(ids[k]) >= off ? plus : minus).push(ids[k]);
+    if (plus.length === 0 || minus.length === 0) continue; // tet doesn't straddle the plane
+    if (plus.length === 1 || minus.length === 1) {
+      const iso   = plus.length === 1 ? plus[0] : minus[0];
+      const group = plus.length === 1 ? minus   : plus;
+      pushTri(edgePoint(iso, group[0]), edgePoint(iso, group[1]), edgePoint(iso, group[2]));
+    } else {
+      // 2-vs-2 split: plus=[a,b], minus=[c,d]. Standard quad triangulation —
+      // valid regardless of which of a/b or c/d comes first in the tet's
+      // original node order.
+      const [a, b] = plus, [c, d] = minus;
+      const Pac = edgePoint(a, c), Pad = edgePoint(a, d);
+      const Pbc = edgePoint(b, c), Pbd = edgePoint(b, d);
+      pushTri(Pac, Pbc, Pbd);
+      pushTri(Pac, Pbd, Pad);
+    }
+  }
+  return { positions: Float32Array.from(outPos), values: Float32Array.from(outVal) };
+}
+
 // Single entry point for painting a solve's heatmap. Takes the whole results
 // object (not 9 positional args, which let call sites clobber cached fields
 // with null), MERGES the decoded arrays into S._stressArrays, reveals/greys the
@@ -3777,6 +4003,12 @@ function applyStressColorsFromResults(results, { fresh = false } = {}) {
   // Combined tension/compression view — derived from σ₁ and σ₃ (server always
   // sends both), so it is available whenever the principals are.
   cache.tc = (cache.s1 && cache.s3) ? computeDominantPrincipal(cache.s1, cache.s3) : null;
+
+  // Volumetric interior-stress payload (section-view cut face, #190) — only
+  // present when the request opted in (analysis.includeVolumeField, driven by
+  // the SECTION panel's "interior stress" toggle). Absent on ordinary solves.
+  S._volumeField = decodeVolumeField(results.volumeField, effYield);
+  if (S.clipActive) _refreshInteriorCap();
 
   S._stressArrays = cache;
   S.showStress = true;
@@ -5959,7 +6191,7 @@ async function runAnalysis() {
     if (dataStd.summary.nodesPerElem === 10) {
       showConvergenceBadge('c3d10', 0, dataStd.summary.nodeCount, 0);
       S._convergenceData = {
-        standard: { nodes: dataStd.summary.nodeCount, maxVM: dataStd.summary.maxVonMisesMPa, sf: dataStd.summary.safetyFactor, safetyFactorAvailable: dataStd.summary.safetyFactorAvailable },
+        standard: convDatumFromPayload(dataStd),
         fine: null, changePct: 0, converged: true, skipped: true,
       };
     } else {
@@ -6059,7 +6291,7 @@ async function runAnalysis() {
     // would always launch an expensive fine-mesh analysis that produces no useful output.
     showConvergenceBadge('c3d4_no_sf', 0, dataStd.summary.nodeCount, 0);
     S._convergenceData = {
-      standard: { nodes: dataStd.summary.nodeCount, maxVM: dataStd.summary.maxVonMisesMPa, sf: null, safetyFactorAvailable: false },
+      standard: convDatumFromPayload(dataStd),
       fine: null, changePct: 0, converged: true, skipped: true,
     };
     return;
@@ -6068,7 +6300,7 @@ async function runAnalysis() {
     // C3D4 with high SF: fine mesh not run, but C3D4 may still underpredict bending stress.
     showConvergenceBadge('c3d4_skipped', 0, dataStd.summary.nodeCount, 0);
     S._convergenceData = {
-      standard: { nodes: dataStd.summary.nodeCount, maxVM: dataStd.summary.maxVonMisesMPa, sf: stdSF, safetyFactorAvailable: dataStd.summary.safetyFactorAvailable },
+      standard: convDatumFromPayload(dataStd),
       fine: null, changePct: 0, converged: true, skipped: true,
     };
     return;
@@ -6079,12 +6311,40 @@ async function runAnalysis() {
 
     const dataFine = await analyzeWithWorker(bodyFine);
 
-    const vmStd   = dataStd.summary.maxVonMisesMPa;
-    const vmFine  = dataFine.summary.maxVonMisesMPa;
+    const stdDatum  = convDatumFromPayload(dataStd);
+    const fineDatum = convDatumFromPayload(dataFine);
+    const vmStd   = stdDatum.maxVM;
+    const vmFine  = fineDatum.maxVM;
     const changePct = Math.abs((vmFine - vmStd) / vmStd * 100);
-    const converged = changePct < 5.0;
 
-    if (converged) {
+    // Singularity-aware convergence (issue #147). The peak VM diverges at a
+    // geometric singularity, so a naive >5% check would flag "not converged"
+    // forever and keep upgrading to an ever-worse (still-singular) fine mesh.
+    // When the peak sits at a singularity, converge on the robust p99 metric
+    // instead and report honestly. Two meshes (std, fine) is not enough for an
+    // observed order, so here the evidence is the server single-mesh flag on the
+    // fine mesh, corroborated by a large diverging peak jump.
+    const peakJumpUp = vmFine > vmStd && changePct > 5.0;
+    const sel = selectConvergenceMetric(
+      fineDatum.singularity,
+      peakJumpUp ? { source: 'observed', raw: 0 } : null,   // 2-mesh divergence hint
+    );
+    if (sel.evidence === 'refinement' && fineDatum.singularity) {
+      fineDatum.singularity = { ...fineDatum.singularity, evidence: 'refinement' };
+    }
+
+    let converged = changePct < 5.0;
+    if (sel.singularAtPeak && stdDatum.p99 != null && fineDatum.p99 != null) {
+      // Robust metric drives the decision at a singular peak.
+      const robustChange = Math.abs((fineDatum.p99 - stdDatum.p99) / (stdDatum.p99 || 1) * 100);
+      const robustConverged = robustChange < 5.0;
+      converged = robustConverged;
+      showConvergenceBadge('singular_robust', robustChange, dataStd.summary.nodeCount, dataFine.summary.nodeCount, {
+        peakChange: changePct, robustConverged, reason: sel.reason,
+      });
+      // Do NOT auto-upgrade to the fine mesh: its peak is a larger singularity
+      // artifact, not a better answer. Keep the standard-mesh result displayed.
+    } else if (converged) {
       // Both C3D4 meshes agree — but agreement between two locked meshes is not convergence.
       showConvergenceBadge('c3d4_stable', changePct, dataStd.summary.nodeCount, dataFine.summary.nodeCount);
     } else {
@@ -6109,8 +6369,8 @@ async function runAnalysis() {
 
     // Store convergence data for the manual study button
     S._convergenceData = {
-      standard: { nodes: dataStd.summary.nodeCount, maxVM: vmStd, sf: dataStd.summary.safetyFactorAvailable ? dataStd.summary.safetyFactor : null },
-      fine:     { nodes: dataFine.summary.nodeCount, maxVM: vmFine, sf: dataFine.summary.safetyFactorAvailable ? dataFine.summary.safetyFactor : null },
+      standard: stdDatum,
+      fine:     fineDatum,
       changePct, converged,
     };
 
@@ -6123,7 +6383,7 @@ async function runAnalysis() {
 }
 
 // ── Convergence badge ─────────────────────────────────────────────────────────
-function showConvergenceBadge(state, changePct, nodesStd, nodesFine) {
+function showConvergenceBadge(state, changePct, nodesStd, nodesFine, opts) {
   // Find or create the badge element inside results-content
   let badge = document.getElementById('convergence-badge');
   if (!badge) {
@@ -6188,6 +6448,16 @@ function showConvergenceBadge(state, changePct, nodesStd, nodesFine) {
       text: `Mesh auto-upgraded — standard mesh was not converged (${changePct?.toFixed(1)}% change)`,
       sub: `Results updated to fine mesh (${nodesFine?.toLocaleString()} nodes). Standard mesh underestimated peak stress by ${changePct?.toFixed(1)}%.`,
     },
+    // Singularity-robust convergence (issue #147): peak VM is at a geometric
+    // singularity and won't converge, so we report the robust 99th-percentile
+    // metric instead of a stuck "not converged" badge, and do NOT auto-upgrade.
+    singular_robust: {
+      color: opts?.robustConverged ? 'var(--success)' : 'var(--warn)',
+      bg: 'var(--bg-card)', border: 'var(--gold)33',
+      icon: '<svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg>',
+      text: `Peak stress is at a likely geometric singularity — ${opts?.robustConverged ? 'robust metric converged' : 'showing robust metric'} (99th-pct VM ${changePct?.toFixed(1)}% between meshes)`,
+      sub: `The peak von Mises grows without bound under refinement (${opts?.peakChange?.toFixed(1)}% peak change — ${opts?.reason || 'peak sits at a singularity'}), so it is not a convergence failure: the mesh is fine. Convergence is judged on the 99th-percentile stress instead, which excludes the singular point. Add a fillet at the flagged corner for a physical peak stress.`,
+    },
     failed: {
       color: 'var(--text-lo)', bg: 'var(--bg-card)', border: 'var(--border)',
       icon: '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4"><polygon points="5,1 9,5 5,9 1,5"/></svg>', text: 'Convergence check unavailable',
@@ -6204,6 +6474,31 @@ function showConvergenceBadge(state, changePct, nodesStd, nodesFine) {
 }
 
 
+// ── Safety-factor verdict tiers (issue #141) ──────────────────────────────────
+// Single source of truth for where "Safe" starts on this client. Keep these
+// three numbers numerically in sync with the identically named constants in
+// server/analysis.ts (baseVerdict text) and server/report.ts (sfColor /
+// verdictBg) — client and server are separate runtimes with no shared import,
+// so grep both when changing a threshold here.
+//
+// Policy: green "Safe" requires SF >= 2.0 (the recommended minimum margin).
+// 1.5–2.0 is a non-green "Acceptable — below recommended 2× margin" band —
+// it must never render as "Safe". Below 1.5 is "Marginal"; below 1.0 fails.
+const FAIL_SF_THRESHOLD       = 1.0;  // below this: predicted to yield
+const ACCEPTABLE_SF_THRESHOLD = 1.5;  // below this: "Marginal" (amber)
+const SAFE_SF_THRESHOLD       = 2.0;  // at/above this only: "Safe" (green)
+
+// Pure SF -> verdict tier classifier shared by every renderer (headline
+// action card, sticky bar, uncertainty-band caution) so they can't drift
+// apart again. Returns null when SF isn't available.
+function sfVerdictTier(sf) {
+  if (sf == null || !isFinite(sf)) return null;
+  if (sf < FAIL_SF_THRESHOLD) return 'fail';
+  if (sf < ACCEPTABLE_SF_THRESHOLD) return 'marginal';
+  if (sf < SAFE_SF_THRESHOLD) return 'acceptable';
+  return 'safe';
+}
+
 // ── Sticky results summary ────────────────────────────────────────────────────
 function updateStickyResults(s) {
   const bar = document.getElementById('results-sticky');
@@ -6212,10 +6507,11 @@ function updateStickyResults(s) {
   if (!s.safetyFactorAvailable) { bar.style.display = 'none'; return; }
 
   const sf      = s.safetyFactor;
-  const sfColor = sf >= 2 ? 'var(--success)' : sf >= 1 ? 'var(--warn)' : 'var(--danger)';
-  const verdict = sf >= 2 ? 'Safe — exceeds 2× threshold'
-    : sf >= 1 ? 'Marginal — below recommended 2×'
-    : 'Will fail under applied load';
+  const tier    = sfVerdictTier(sf);
+  const sfColor = tier === 'safe' ? 'var(--success)' : tier === 'fail' ? 'var(--danger)' : 'var(--warn)';
+  const verdict = tier === 'safe' ? 'Safe — exceeds 2× threshold'
+    : tier === 'fail' ? 'Will fail under applied load'
+    : 'Marginal — below recommended 2×';
 
   const sfEl   = document.getElementById('sticky-sf');
   const stEl   = document.getElementById('sticky-stress');
@@ -6236,6 +6532,90 @@ function updateStickyResults(s) {
   }
   if (expBtn) expBtn.style.display = 'block';
   bar.style.display = 'flex';
+}
+
+// Issue #204: estimatedFailForce is a linear first-yield extrapolation
+// (totalAppliedForce × SF, server/analysis.ts) — not a definitive
+// ultimate/collapse load. When the buckling mode's BLF × applied load is
+// lower than that first-yield estimate, the buckling-limited number is the
+// more honest (lower) one to lead with, flagged as such. appliedForce is
+// recoverable from already-transmitted numbers (estimatedFailForce /
+// safetyFactor — the exact inverse of how the server derived
+// estimatedFailForce), so this is a display-only re-derivation, not new
+// solver math.
+function computeDisplayFailForce(s, bucklingResult) {
+  const bk = bucklingResult;
+  let bucklingForceN = null;
+  if (bk && bk.blf != null && bk.verdict !== 'no-buckling' && bk.verdict !== 'indeterminate'
+      && s.safetyFactorAvailable && s.safetyFactor > 0) {
+    const appliedForceN = s.estimatedFailForce / s.safetyFactor;
+    bucklingForceN = bk.blf * appliedForceN;
+  }
+  const bucklingGoverns = bucklingForceN != null && bucklingForceN < s.estimatedFailForce;
+  const displayFailForceN = bucklingGoverns ? bucklingForceN : s.estimatedFailForce;
+  return { bucklingGoverns, displayFailForceN, bucklingForceN, bk };
+}
+
+// ── Per-analysis validation coverage panel (issue #191) ─────────────────────
+// The live DEBUG-tab scoreboard (GET /api/solver-tests) shows the WHOLE
+// validation suite passing — a global assurance. This panel answers a
+// narrower, more honest question: which of those groups/suites actually
+// exercise the characteristics of the analysis just run, and which
+// characteristics have NO direct anchor. Deliberately renders gaps in the
+// same visual register as coverage (not hidden in a tooltip) — an
+// uncovered axis or a known combo gap must read as a plain statement, not
+// be implied away by an otherwise-green panel.
+function renderValidationCoverage(vc) {
+  const AXIS_LABEL = {
+    elementOrder: 'Element order', material: 'Material model', criterion: 'Failure criterion',
+    loadType: 'Load type', mesher: 'Mesher', option: 'Option',
+  };
+  const axisText = axis => {
+    const [group, value] = axis.split(':');
+    return `${AXIS_LABEL[group] || group}: <b style="color:var(--text-hi)">${value}</b>`;
+  };
+  const totalAxes = vc.axisCoverage.length;
+  const uncoveredCount = vc.uncoveredAxes.length;
+  const hasGaps = uncoveredCount > 0 || vc.comboGaps.length > 0;
+  const headColor = hasGaps ? 'var(--warn)' : 'var(--success)';
+  const headText = hasGaps
+    ? `${totalAxes - uncoveredCount}/${totalAxes} characteristics covered — ${uncoveredCount ? uncoveredCount + ' uncovered' : ''}${uncoveredCount && vc.comboGaps.length ? ', ' : ''}${vc.comboGaps.length ? vc.comboGaps.length + ' combo gap' + (vc.comboGaps.length > 1 ? 's' : '') : ''}`
+    : `${totalAxes}/${totalAxes} characteristics directly covered`;
+
+  const axisRows = vc.axisCoverage.map(ac => {
+    const covered = ac.entries.length > 0;
+    const color = covered ? 'var(--text-mid)' : 'var(--warn)';
+    const detail = covered
+      ? ac.entries.map(e => e.label).join('; ')
+      : 'No direct validation anchor for this characteristic.';
+    return `<div style="padding:4px 0;border-bottom:1px solid var(--border)">
+      <div style="font-size:10px;color:var(--text-lo)">${axisText(ac.axis)} ${covered ? `<span style="color:var(--success)">✓ ${ac.entries.length} anchor${ac.entries.length > 1 ? 's' : ''}</span>` : `<span style="color:var(--warn)">✗ no direct anchor</span>`}</div>
+      <div style="font-size:9px;color:${color};line-height:1.5;margin-top:2px">${detail}</div>
+    </div>`;
+  }).join('');
+
+  const comboHTML = vc.comboGaps.length ? `
+    <div style="margin-top:8px;padding:8px 10px;background:#3a1a00;border:1px solid var(--warn);border-radius:4px">
+      <div style="font-size:10px;font-weight:600;color:var(--warn);margin-bottom:4px">Known combination gaps</div>
+      ${vc.comboGaps.map(g => `<div style="font-size:9px;color:var(--text-mid);line-height:1.5;margin-bottom:4px">${g.note}</div>`).join('')}
+    </div>` : '';
+
+  return `
+    <details style="margin-bottom:12px">
+      <summary style="cursor:pointer;font-size:11px;font-weight:600;color:var(--text-mid);padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;user-select:none">
+        <span style="color:${headColor}">⚙ Validation Coverage — ${headText}</span>
+      </summary>
+      <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px">
+        <div style="font-size:9px;color:var(--text-lo);line-height:1.5;margin-bottom:8px">
+          Which validation groups/suites exercise THIS analysis's configuration — not proof this
+          exact geometry/load case is correct, only that the same kind of characteristic (element
+          order, material model, criterion, load type, mesher, options) is exercised somewhere in
+          the automated suite. See DEBUG tab for the full suite scoreboard.
+        </div>
+        ${axisRows}
+        ${comboHTML}
+      </div>
+    </details>`;
 }
 
 function showResults(s) {
@@ -6270,6 +6650,11 @@ function showResults(s) {
       strengthDivergenceHtml += ` · core E ×${mm.core.stiffnessScale.toFixed(3)} of solid ` +
         `(Gibson-Ashby ρ<sup>${mm.core.stiffnessExponent}</sup>, ${mm.core.patternFamily}, ` +
         `${mm.core.confidence} confidence${mm.core.floored ? ', floored' : ''})`;
+      // DFA pressure-dependent core yield (issue #171; mm.core.yieldCriterion
+      // absent on older servers). α>0 ⇒ the foam core yields hydrostatically.
+      if (mm.core.yieldCriterion === 'deshpande-fleck-ashby') {
+        strengthDivergenceHtml += ` · core yield: Deshpande–Fleck–Ashby (α=${(mm.core.dfaAlpha ?? 0).toFixed(2)}, pressure-dependent, LOW confidence)`;
+      }
     }
   }
 
@@ -6293,6 +6678,12 @@ function showResults(s) {
   // not converge. Rendered above the verdict card so a green "Safe" header can
   // never stand alone without the caveat.
   let reliabilityBanner = '';
+  if (s.unitsWarning) {
+    reliabilityBanner += `<div style="padding:12px 14px;background:#3a1a00;border:2px solid var(--warn);border-radius:6px;margin-bottom:12px">
+      <div style="font-size:12px;font-weight:600;color:var(--warn);margin-bottom:4px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Check your units</div>
+      <div style="font-size:11px;color:var(--text-mid);line-height:1.5">${s.unitsWarning}</div>
+    </div>`;
+  }
   if (s.meshFallback) {
     reliabilityBanner += `<div style="padding:12px 14px;background:#3a1a00;border:2px solid var(--warn);border-radius:6px;margin-bottom:12px">
       <div style="font-size:12px;font-weight:600;color:var(--warn);margin-bottom:4px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Approximate result — mesh fallback</div>
@@ -6319,29 +6710,69 @@ function showResults(s) {
       <div style="font-size:11px;color:var(--text-mid);line-height:1.5">${s.rigidBodyMode.message}</div>
     </div>`;
   }
+  // C3D4 linear tetrahedra carry a documented ~55% bending-stress
+  // underprediction (shear locking, docs/METHODOLOGY.md) — never let a
+  // C3D4 result (green "Safe" or otherwise) appear without this caveat
+  // adjacent to it (issue #189). C3D10 (the default) gets no banner.
+  if (s.nodesPerElem === 4) {
+    reliabilityBanner += `<div style="padding:12px 14px;background:#3a1a00;border:2px solid var(--warn);border-radius:6px;margin-bottom:12px">
+      <div style="font-size:12px;font-weight:600;color:var(--warn);margin-bottom:4px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Computed with C3D4 linear elements</div>
+      <div style="font-size:11px;color:var(--text-mid);line-height:1.5">Linear tetrahedra underpredict bending stress by up to ~55% due to shear locking — the safety factor shown may be more optimistic than the true value for bending-loaded geometry. Re-run with C3D10 (MATERIAL tab → Element order) before trusting this margin.</div>
+    </div>`;
+  }
+
+  // Issue #204: estimatedFailForce is a LINEAR first-yield extrapolation
+  // (totalAppliedForce × SF, server/analysis.ts) — onset of yield under an
+  // assumption of proportional loading, not a definitive ultimate/collapse
+  // load. Buckling is checked separately and can govern below first yield
+  // for compression-dominated parts; when it does, that's the more honest
+  // (lower) number to lead with, flagged as buckling-limited.
+  const { bucklingGoverns, displayFailForceN, bk } = computeDisplayFailForce(s, S.buckling);
+  const failForceCaveat = `<div style="font-size:9px;color:var(--text-lo);margin-top:4px;line-height:1.4">${
+    bucklingGoverns
+      ? `Buckling-limited estimate (BLF ${bk.blf.toFixed(2)}× applied load) — lower than the first-yield estimate of ${U.forceStr(s.estimatedFailForce)}. Linear buckling can overestimate real capacity by 10–40% for imperfect FDM geometry.`
+      : `Linear first-yield estimate: assumes stress ∝ load and failure at first yield, no plasticity/buckling redistribution. Actual capacity is typically higher for ductile bending, lower if buckling governs.`
+  }</div>`;
 
   let actionHTML = '';
   // Guard govSF comparisons on safetyFactorAvailable: null coerces to 0 in JS,
   // which would falsely trigger "Will fail" when SF data is simply unavailable.
-  if (!s.safetyFactorAvailable || govSF === null) {
+  // Tier boundaries come from sfVerdictTier (issue #141) — this used to render
+  // a green "Safe" headline starting at 1.5×, contradicting the "Recommended
+  // minimum: 2×" note in the SAME panel below. Green now requires SF >= 2.0;
+  // 1.5–2.0 renders as a distinct non-green "Acceptable" tier.
+  const govTier = sfVerdictTier(govSF);
+  if (!s.safetyFactorAvailable || govTier === null) {
     actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--border);border-radius:6px;margin-bottom:16px">
       <div style="font-size:13px;font-weight:600;color:var(--text-lo);margin-bottom:4px">Safety factor unavailable</div>
       <div style="font-size:11px;color:var(--text-lo)">Not enough material data to compute a safety factor for this configuration.</div>
     </div>`;
-  } else if (govSF < 1.0) {
-    const failN = U.forceStr(s.estimatedFailForce);
-    const modeStr = govMode ? govMode.mode.toLowerCase() : 'bulk yield';
+  } else if (govTier === 'fail') {
+    const failN = U.forceStr(displayFailForceN);
+    const modeStr = bucklingGoverns ? 'buckling' : (govMode ? govMode.mode.toLowerCase() : 'bulk yield');
     actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--text-hi)66;border-radius:6px;margin-bottom:16px">
-      <div style="font-size:13px;font-weight:600;color:var(--text-hi);margin-bottom:6px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Will fail at ${failN}</div>
-      <div style="font-size:11px;color:var(--text-hi);margin-bottom:10px">Governed by ${modeStr}</div>
-      ${bestRec ? `<div style="font-size:11px;color:var(--text-mid);border-top:1px solid var(--border);padding-top:8px;margin-top:4px">
+      <div style="font-size:13px;font-weight:600;color:var(--text-hi);margin-bottom:6px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Estimated failure load: ${failN}</div>
+      <div style="font-size:11px;color:var(--text-hi);margin-bottom:2px">Governed by ${modeStr}</div>
+      ${failForceCaveat}
+      ${bestRec ? `<div style="font-size:11px;color:var(--text-mid);border-top:1px solid var(--border);padding-top:8px;margin-top:8px">
         <span style="color:var(--success)">Fix: </span>Print ${bestRec.label} — estimated SF ${bestRec.estimatedSF.toFixed(2)}×, fails at ${U.forceStr(bestRec.estimatedFailN)}
       </div>` : ''}
     </div>`;
-  } else if (govSF < 1.5) {
+  } else if (govTier === 'marginal') {
     actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--gold-glow);border-radius:6px;margin-bottom:16px">
       <div style="font-size:13px;font-weight:600;color:var(--warn);margin-bottom:6px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Marginal — SF ${govSF.toFixed(2)}×</div>
       <div style="font-size:11px;color:var(--gold-dim);margin-bottom:10px">${s.verdict}</div>
+      ${bestRec ? `<div style="font-size:11px;color:var(--text-mid);border-top:1px solid var(--border);padding-top:8px;margin-top:4px">
+        <span style="color:var(--success)">Improve: </span>Print ${bestRec.label} — SF ${bestRec.estimatedSF.toFixed(2)}× (${bestRec.vsCurrentPct > 0 ? '+' : ''}${bestRec.vsCurrentPct}%)
+      </div>` : ''}
+    </div>`;
+  } else if (govTier === 'acceptable') {
+    // 1.5–2.0×: real positive margin, but below the recommended 2× design
+    // minimum. Styled distinctly from both "Marginal" (no gold-faint fill)
+    // and "Safe" (warn-colored text, no checkmark) so it never reads as green.
+    actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--gold-glow);border-radius:6px;margin-bottom:16px">
+      <div style="font-size:13px;font-weight:600;color:var(--warn);margin-bottom:6px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Acceptable — below recommended 2× margin</div>
+      <div style="font-size:11px;color:var(--gold-dim);margin-bottom:10px">SF ${govSF.toFixed(2)}× — ${s.verdict}</div>
       ${bestRec ? `<div style="font-size:11px;color:var(--text-mid);border-top:1px solid var(--border);padding-top:8px;margin-top:4px">
         <span style="color:var(--success)">Improve: </span>Print ${bestRec.label} — SF ${bestRec.estimatedSF.toFixed(2)}× (${bestRec.vsCurrentPct > 0 ? '+' : ''}${bestRec.vsCurrentPct}%)
       </div>` : ''}
@@ -6373,8 +6804,10 @@ function showResults(s) {
           const lo = s.safetyfactorLow, hi = s.safetyFactorHigh ?? s.safetyfactorLow, mid = s.safetyFactor;
           const span = Math.max(hi - lo, 0.01);
           const pctMid = Math.round(((mid - lo) / span) * 100);
-          const loColor = lo < 1.0 ? '#c01717' : lo < 1.5 ? '#d97a00' : '#3a8a3a';
-          const hiColor = hi < 1.5 ? '#d97a00' : '#3a8a3a';
+          // Green only at/above SAFE_SF_THRESHOLD (issue #141) — matches the
+          // headline verdict tiering above instead of a locally-copied 1.5.
+          const loColor = lo < FAIL_SF_THRESHOLD ? '#c01717' : lo < SAFE_SF_THRESHOLD ? '#d97a00' : '#3a8a3a';
+          const hiColor = hi < SAFE_SF_THRESHOLD ? '#d97a00' : '#3a8a3a';
           return `<div style="margin-top:5px" title="Material uncertainty range (yieldZ/yieldXY: 0.48–0.68, layer height slope: −1.3 to −0.7 /mm). Conservative=${lo.toFixed(2)}×, Central=${mid.toFixed(2)}×, Optimistic=${hi.toFixed(2)}×">
             <div style="font-size:8px;color:var(--text-lo);margin-bottom:2px;letter-spacing:.03em">MATERIAL UNCERTAINTY</div>
             <div style="position:relative;height:6px;background:linear-gradient(to right,${loColor},${hiColor});border-radius:3px;width:100%">
@@ -6398,9 +6831,10 @@ function showResults(s) {
         <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">MAX DISPLACEMENT</div>
         <div style="font-size:18px;font-weight:500;color:var(--text-hi)">${s.maxDisplacementMm.toFixed(4)} <span style="font-size:10px;color:var(--text-label)">mm</span></div>
       </div>
-      <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
-        <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">ESTIMATED FAIL FORCE</div>
-        <div style="font-size:18px;font-weight:500;color:var(--text-hi)">${U.force(s.estimatedFailForce).toFixed(S.units==='imperial'?1:0)} <span style="font-size:10px;color:var(--text-label)">${U.forceLabel()}</span></div>
+      <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px" title="Linear first-yield estimate: assumes stress ∝ load and failure at first yield — not an ultimate/collapse load. Actual capacity is typically higher for ductile bending, lower if buckling governs.">
+        <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">ESTIMATED FAIL FORCE${bucklingGoverns ? ' <span style="color:var(--warn)">(buckling-limited)</span>' : ''}</div>
+        <div style="font-size:18px;font-weight:500;color:var(--text-hi)">${U.force(displayFailForceN).toFixed(S.units==='imperial'?1:0)} <span style="font-size:10px;color:var(--text-label)">${U.forceLabel()}</span></div>
+        <div style="font-size:8px;color:var(--text-lo);margin-top:3px;line-height:1.3">Linear first-yield estimate, not ultimate/collapse load</div>
       </div>
     </div>
 
@@ -6409,12 +6843,12 @@ function showResults(s) {
       <div style="font-size:11px;color:var(--text-mid)">${s.verdict}</div>
     </div>
 
-    ${(s.safetyFactorAvailable && s.safetyfactorLow !== undefined && s.safetyfactorLow < 1.5 && s.safetyFactor >= 1.5) ? `
+    ${(s.safetyFactorAvailable && s.safetyfactorLow !== undefined && s.safetyfactorLow < SAFE_SF_THRESHOLD && s.safetyFactor >= SAFE_SF_THRESHOLD) ? `
     <div style="padding:10px 12px;background:#fdf3e0;border:1px solid #d97a00;border-radius:4px;margin-bottom:12px;display:flex;gap:8px;align-items:flex-start">
       <span style="font-size:16px;line-height:1">&#9888;</span>
       <div>
         <div style="font-size:10px;font-weight:600;color:#8a5000;letter-spacing:.04em;margin-bottom:2px">MATERIAL UNCERTAINTY CAUTION</div>
-        <div style="font-size:11px;color:#6b3e00;line-height:1.5">Central SF ${s.safetyFactor.toFixed(2)}× passes the 1.5 threshold, but conservative material properties (yieldZ/yieldXY=0.48, steeper layer height penalty) give SF ${s.safetyfactorLow.toFixed(2)}× — below 1.5×. Consider another design iteration or physical coupon testing to confirm margin.</div>
+        <div style="font-size:11px;color:#6b3e00;line-height:1.5">Central SF ${s.safetyFactor.toFixed(2)}× clears the recommended 2× threshold, but conservative material properties (yieldZ/yieldXY=0.48, steeper layer height penalty) give SF ${s.safetyfactorLow.toFixed(2)}× — below 2×. Consider another design iteration or physical coupon testing to confirm margin.</div>
       </div>
     </div>` : ''}
 
@@ -6424,7 +6858,7 @@ function showResults(s) {
       ${s.materialModel && s.materialModel.bond ? `Bond model: interlayer strength <b style="color:${s.materialModel.bond.relStrength < 1 ? 'var(--warn)' : 'var(--text-hi)'}">×${s.materialModel.bond.relStrength.toFixed(2)}</b> · stiffness ×${s.materialModel.bond.relStiffness.toFixed(2)} vs typical settings (interface ${s.materialModel.bond.interfaceTempC.toFixed(0)}°C, substrate ${s.materialModel.bond.substrateTempC.toFixed(0)}°C, τ<sub>cool</sub> ${s.materialModel.bond.coolTimeConstS.toFixed(1)}s)${s.materialModel.bond.clamped ? ' <span style="color:var(--warn)">clamped</span>' : ''} · <span style="color:${s.materialModel.bond.confidence === 'medium' ? 'var(--warn)' : 'var(--danger)'};font-size:10px">${s.materialModel.bond.confidence.toUpperCase()} confidence</span><br>` : ''}
       ${s.materialModel && s.materialModel.wallBond ? `Wall-to-wall bond: allowable <b style="color:var(--text-hi)">${s.materialModel.wallBond.yieldWallMPa.toFixed(2)} MPa</b> tension / ${s.materialModel.wallBond.yieldWallShearMPa.toFixed(2)} MPa shear (×${s.materialModel.wallBond.relStrength.toFixed(2)} vs interlayer baseline, est. perimeter ${s.materialModel.wallBond.perimeterLengthMm.toFixed(0)} mm${s.materialModel.wallBond.perimeterFallback ? ' <span style="color:var(--warn)">fallback</span>' : ''}) · <span style="color:var(--danger);font-size:10px">LOW confidence — no bead-to-bead coupon data</span><br>` : ''}
       ${s.sfCriterion ? `Criterion: <b style="color:var(--text-hi)">${s.sfCriterion === 'fdm-interface' ? 'FDM dual (bulk + interlayer interface)' : s.sfCriterion === 'hill' ? 'Hill 1948 (legacy path)' : 'von Mises'}</b><br>` : ''}
-      Mesh: <b style="color:var(--text-hi)">${s.nodeCount.toLocaleString()} nodes</b> · <b style="color:var(--text-hi)">${s.elementCount.toLocaleString()} elements</b> · C3D10 quadratic tet<br>
+      Mesh: <b style="color:var(--text-hi)">${s.nodeCount.toLocaleString()} nodes</b> · <b style="color:var(--text-hi)">${s.elementCount.toLocaleString()} elements</b> · ${s.nodesPerElem === 4 ? '<span style="color:var(--warn)">C3D4 linear tet</span>' : 'C3D10 quadratic tet'}<br>
       Solver: ${s.cgIterations} CG iterations · ${s.solverMs}ms · converged=${s.converged ? 'yes' : '<span style="color:var(--warn)">no</span>'}
       ${s.governingDirection != null ? `<br>Governing direction: <b style="color:var(--text-hi)">${s.governingDirection === 'xy' ? 'XY in-plane' : 'Z inter-layer'}</b> · U<sub>XY</sub>=${(s.peakUtilXY??0).toFixed(3)} · U<sub>Z</sub>=${(s.peakUtilZ??0).toFixed(3)} ${s.governingDirection === 'xy' ? '<span style="color:var(--text-lo);font-size:10px">→ increase infill to resist</span>' : '<span style="color:var(--text-lo);font-size:10px">→ reorient or add perimeters</span>'}` : ''}
     </div>
@@ -6450,22 +6884,87 @@ function showResults(s) {
       </details>`;
     })() : ''}
 
+    ${s.globalRelativeError != null ? (() => {
+      // Discretization-confidence readout (issue #202) — globalRelativeError
+      // and topErrorElements were computed and transmitted but never shown;
+      // this is the one number that answers "how much of what I'm seeing is
+      // mesh, not physics?" in plain percentage terms. Lower is better; the
+      // 10% figure below is the same threshold the solver's own convergence
+      // check uses elsewhere, kept as a rough calibration point, not a hard
+      // pass/fail line — this is an ESTIMATE, not an exact bound.
+      const pct = s.globalRelativeError * 100;
+      const errColor = pct < 5 ? 'var(--success)' : pct < 10 ? 'var(--warn)' : 'var(--danger)';
+      const errLabel = pct < 5 ? 'low — mesh is well resolved' : pct < 10 ? 'moderate — consider a finer mesh for final numbers' : 'high — refine the mesh before trusting margins';
+      const worstList = (s.topErrorElements && s.topErrorElements.length)
+        ? s.topErrorElements.slice(0, 5).map(e =>
+            `<li>(${e.x.toFixed(1)}, ${e.y.toFixed(1)}, ${e.z.toFixed(1)}) mm — η≈${(e.errorEstimate*100).toFixed(1)}%</li>`
+          ).join('')
+        : '';
+      return `
+      <details style="margin-bottom:12px">
+        <summary style="cursor:pointer;font-size:11px;font-weight:600;color:var(--text-mid);padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;user-select:none">
+          <span style="color:${errColor}">◈ Mesh discretization error — ${pct.toFixed(1)}%</span>
+        </summary>
+        <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px;font-size:10px;color:var(--text-lo);line-height:1.8">
+          Zienkiewicz-Zhu global relative error estimate η — an ESTIMATE of how much of the stress field is mesh artifact rather than physics. Lower is better; below ~5% is generally trustworthy, above ~10% suggests refining the mesh before trusting margins. <span style="color:${errColor}">${errLabel}.</span>
+          ${worstList ? `<br><br>Worst-resolved regions (highest local error):<ul style="margin:4px 0 0 16px;padding:0">${worstList}</ul>` : ''}
+        </div>
+      </details>`;
+    })() : ''}
+    ${s.validationCoverage ? renderValidationCoverage(s.validationCoverage) : ''}
+
     ${S.modal && S.modal.modes && S.modal.modes.length ? (() => {
+      // Effective-mass fraction per direction: meff_d / total translational mass_d.
+      // Three influence directions (X/Y/Z) — a Y/Z-bending mode of an X-cantilever
+      // reads dominant Y or Z and ~0 X (issue #161).
+      const tmX = S.modal.totalMassX || 0, tmY = S.modal.totalMassY || 0, tmZ = S.modal.totalMassZ || 0;
+      const havePart = (tmX > 0 || tmY > 0 || tmZ > 0)
+        && S.modal.modes.some(m => m.effectiveMassX != null);
+      const pct = v => (v * 100 >= 9.95 ? (v * 100).toFixed(0) : (v * 100).toFixed(1));
       const rows = S.modal.modes.map((m, k) => {
-        const rigid = m.frequencyHz < 1.0;
+        const rigid = (m.rigid != null) ? m.rigid : (m.frequencyHz < 1.0);
         const hz = m.frequencyHz < 10 ? m.frequencyHz.toFixed(2) : m.frequencyHz.toFixed(1);
         const canView = !!(S.modeShapes && S.modeShapes[k]);
-        return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px solid var(--border)">
-          <span style="font-family:'DM Mono',monospace;font-size:9px;letter-spacing:.06em;color:var(--text-lo)">MODE ${k + 1}${rigid ? ' <span style="color:var(--text-lo)">· rigid body</span>' : ''}</span>
-          <span style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text-hi)">${hz} <span style="font-size:8px;color:var(--text-label)">Hz</span></span>
-          <button class="btn" id="mode-btn-${k}" onclick="viewModeShape(${k})" style="font-size:9px;padding:2px 8px"${canView ? '' : ' disabled'}>View</button>
+        let partLine = '';
+        if (havePart && !rigid) {
+          const fx = tmX > 0 ? (m.effectiveMassX || 0) / tmX : 0;
+          const fy = tmY > 0 ? (m.effectiveMassY || 0) / tmY : 0;
+          const fz = tmZ > 0 ? (m.effectiveMassZ || 0) / tmZ : 0;
+          const mx = Math.max(fx, fy, fz);
+          const cell = (lbl, f) => `<span style="color:${f >= mx && mx > 0 ? 'var(--text-hi)' : 'var(--text-lo)'}">${lbl} ${pct(f)}%</span>`;
+          partLine = `<div style="font-family:'DM Mono',monospace;font-size:8.5px;letter-spacing:.04em;color:var(--text-lo);padding:0 0 4px 0">
+            eff. mass&nbsp; ${cell('X', fx)} · ${cell('Y', fy)} · ${cell('Z', fz)}</div>`;
+        }
+        return `<div style="padding:5px 0;border-bottom:1px solid var(--border)">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+            <span style="font-family:'DM Mono',monospace;font-size:9px;letter-spacing:.06em;color:var(--text-lo)">MODE ${k + 1}${rigid ? ' <span style="color:var(--warn)">· rigid body</span>' : ''}</span>
+            <span style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text-hi)">${hz} <span style="font-size:8px;color:var(--text-label)">Hz</span></span>
+            <button class="btn" id="mode-btn-${k}" onclick="viewModeShape(${k})" style="font-size:9px;padding:2px 8px"${canView ? '' : ' disabled'}>View</button>
+          </div>
+          ${partLine}
         </div>`;
       }).join('');
+      // Cumulative effective-mass capture from the last reported mode (grows → 1).
+      let cumLine = '';
+      if (havePart) {
+        const last = S.modal.modes[S.modal.modes.length - 1] || {};
+        cumLine = `<div style="font-family:'DM Mono',monospace;font-size:8.5px;letter-spacing:.04em;color:var(--text-lo);margin-top:6px">
+          cumulative (${S.modal.modes.length} modes): X ${pct(last.cumulativeMassFracX || 0)}% · Y ${pct(last.cumulativeMassFracY || 0)}% · Z ${pct(last.cumulativeMassFracZ || 0)}%</div>`;
+      }
+      const warnLine = (S.modal.warnings && S.modal.warnings.length)
+        ? `<div style="font-size:9px;color:var(--warn);margin-top:6px;line-height:1.5">${S.modal.warnings.map(w => '⚠ ' + w).join('<br>')}</div>`
+        : '';
+      const certLine = (S.modal.certified && S.modal.certified !== 'guard-block')
+        ? `<div style="font-size:8.5px;color:var(--text-lo);margin-top:4px">Mode completeness: ${S.modal.certified}.</div>`
+        : '';
       return `
       <div style="border-left:2px solid var(--gold);background:var(--bg-input);padding:10px 14px;margin-bottom:12px">
         <div style="font-family:'Rajdhani',sans-serif;font-size:13px;letter-spacing:.08em;color:var(--text-mid);margin-bottom:6px">NATURAL FREQUENCIES</div>
         ${rows}
-        <div style="font-size:9px;color:var(--text-lo);margin-top:6px;line-height:1.5">Mode shapes show relative amplitude (unit-normalized eigenvectors), not physical deflection. Click View to animate a mode in the viewer.</div>
+        ${cumLine}
+        ${warnLine}
+        ${certLine}
+        <div style="font-size:9px;color:var(--text-lo);margin-top:6px;line-height:1.5">Mode shapes show relative amplitude (unit-normalized eigenvectors), not physical deflection. Effective-mass % is each mode's share of the total translational mass along X/Y/Z. Click View to animate a mode in the viewer.</div>
       </div>`;
     })() : ''}
 
@@ -6507,10 +7006,11 @@ function showResults(s) {
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
         <span style="font-size:10px;color:var(--warn)"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> STRESS SINGULARITY DETECTED</span>
         <span style="font-size:9px;color:var(--warn);border:1px solid var(--gold-glow);padding:1px 5px;border-radius:2px">${s.singularity.confidence.toUpperCase()} CONFIDENCE</span>
+        <span style="font-size:9px;color:var(--text-lo);border:1px solid var(--border);padding:1px 5px;border-radius:2px">${s.singularity.evidence === 'refinement' ? 'REFINEMENT EVIDENCE' : 'SINGLE-MESH HEURISTIC'}</span>
       </div>
       <div style="font-size:10px;color:var(--gold-dim);line-height:1.6">${s.singularity.message}</div>
       <div style="font-size:10px;color:var(--text-lo);margin-top:6px">
-        Peak: ${U.stressStr(s.singularity.peakStressMPa)} · 1mm neighborhood: ${U.stressStr(s.singularity.stressAt1mmMPa)} · ratio: ${s.singularity.concentrationRatio}×
+        Peak: ${U.stressStr(s.singularity.peakStressMPa)} · neighborhood${s.singularity.neighborhoodRadiusMm != null ? ` (${s.singularity.neighborhoodRadiusMm.toFixed(2)}mm ≈ 2.5× element)` : ''}: ${U.stressStr(s.singularity.stressAt1mmMPa)} · ratio: ${s.singularity.concentrationRatio}×${s.singularity.peakLocation ? ` · at (${s.singularity.peakLocation.map(v=>v.toFixed(1)).join(', ')}) mm` : ''}
       </div>
     </div>` : ''}
 
@@ -7986,7 +8486,7 @@ function renderSplitFrame() {
   const W = el.clientWidth, H = el.clientHeight;
   const splitPx = Math.round(0.5 * W);
   const range = _splitMax || 1;
-  const GAMMA = 0.55;
+  const GAMMA = currentGamma(); // shared with the main paint path (issue #142)
 
   // Save camera state
   const savedAspect = camera.aspect;
@@ -8493,6 +8993,156 @@ function showOrientComparison(results) {
   el.style.display = 'block';
 }
 
+// ─── Mesh-convergence order & extrapolation (issue #146) ─────────────────────
+// Pure, testable helpers extracted from the convergence study so the observed-
+// order logic can be unit-checked against synthetic sequences.
+
+// Observed order of convergence p_obs from a mesh-refinement sequence, per
+// standard Grid Convergence Index (GCI) practice:
+//
+//     p_obs = ln( (f_coarse − f_std) / (f_std − f_fine) ) / ln(r)
+//
+// where f_* are the tracked metric on three successively finer meshes and r is
+// the representative linear refinement ratio between the two finest meshes
+// (node-count ratio^(1/3) — the same r Richardson uses here). STRESS converges
+// at O(h^p) with p = element order: 1 for linear C3D4, 2 for quadratic C3D10.
+// The previous code hard-coded p=2 with the comment "p=2 for linear elements",
+// which is the DISPLACEMENT-energy-norm rate — wrong for the peak STRESS being
+// extrapolated (linear elements recover stress only to O(h)). Computing the
+// OBSERVED order fixes this AND doubles as a singularity diagnostic: when the
+// peak diverges under refinement the differences GROW instead of shrink, so
+// p_obs collapses toward 0 or goes negative (raw ≤ 0) — the fingerprint the
+// singularity-aware metric logic (issue #147) keys on. When the 3-point
+// sequence is non-monotone (differences flip sign) the observed order is
+// undefined, so we fall back to the element-order theoretical rate.
+//
+// Returns { order, source, monotone, raw }:
+//   order    — clamped to [0.5, 3] (observed) or the theoretical fallback
+//   source   — 'observed' | 'theoretical'
+//   monotone — whether the 3-point sequence was usable (monotone, finite)
+//   raw      — the UNclamped observed p (null on fallback); raw ≤ 0 is the
+//              refinement-divergence signal consumed by the singularity logic.
+function convergenceObservedOrder(meshes, theoreticalP) {
+  const P_MIN = 0.5, P_MAX = 3.0;
+  const fallbackP = isFinite(theoreticalP) ? theoreticalP : 2;
+  const fallback = { order: fallbackP, source: 'theoretical', monotone: false, raw: null };
+  if (!Array.isArray(meshes) || meshes.length < 3) return fallback;
+  const n = meshes.length;
+  const c = meshes[n - 3], s = meshes[n - 2], f = meshes[n - 1];
+  const d1 = c.value - s.value;   // coarse → standard step
+  const d2 = s.value - f.value;   // standard → fine step
+  if (!isFinite(d1) || !isFinite(d2) || d2 === 0) return fallback;
+  // Representative per-refinement linear ratio from the two finest meshes.
+  if (!(f.nodes > s.nodes) || !(s.nodes > 0)) return fallback;
+  const r = Math.pow(f.nodes / s.nodes, 1 / 3);
+  if (!(r > 1)) return fallback;
+  const ratio = d1 / d2;
+  const raw = Math.log(ratio) / Math.log(r);   // NaN when ratio ≤ 0
+  if (ratio <= 0 || !isFinite(raw)) {
+    // Sign flip: the sequence is non-monotone, so a single power-law order is
+    // undefined. Use the theoretical rate for extrapolation but keep any finite
+    // raw so callers can still read it as (weak) singularity evidence.
+    return { order: fallbackP, source: 'theoretical', monotone: false, raw: isFinite(raw) ? raw : null };
+  }
+  // Monotone (possibly diverging: raw < 0 when the differences GROW under
+  // refinement). Clamp the reported order into a physically-plausible band but
+  // preserve raw for the divergence signal.
+  const order = Math.max(P_MIN, Math.min(P_MAX, raw));
+  return { order, source: 'observed', monotone: true, raw };
+}
+
+// Given the two finest convergence meshes and an observed-order result,
+// Richardson-extrapolate the finest metric toward its mesh-independent limit:
+//   f_exact ≈ f_fine + (f_fine − f_std) / (r^p − 1)
+// r is the linear refinement ratio between the two finest meshes; p is the
+// observed order (or the theoretical fallback for a non-monotone sequence).
+// Pure so the extrapolation math is testable independently of the DOM.
+function richardsonExtrapolate(second, finest, orderInfo) {
+  const out = { value: finest.value, valid: false, r: null, p: null };
+  if (!(second.nodes > 0) || !(finest.nodes > second.nodes)) return out;
+  const r = Math.pow(finest.nodes / second.nodes, 1 / 3);
+  const p = orderInfo && isFinite(orderInfo.order) ? orderInfo.order : 2;
+  const rp = Math.pow(r, p);
+  if (!(rp > 1)) return out;
+  const extrapolated = finest.value + (finest.value - second.value) / (rp - 1);
+  out.r = r; out.p = p;
+  // Guard against runaway extrapolation (diverging peak) — only trust a value
+  // within a sane band of the finest computed metric.
+  if (extrapolated > 0 && extrapolated < finest.value * 3) {
+    out.value = extrapolated;
+    out.valid = true;
+  }
+  return out;
+}
+
+// Singularity-aware convergence-metric selection (issue #147). Given the finest
+// mesh's server-side SingularityWarning (the scale-invariant single-mesh
+// heuristic from issue #148) and the observed-order result for the PEAK metric
+// across meshes, decide whether the peak sits at a likely geometric singularity
+// and, if so, which mesh-robust metric the study should converge on instead of
+// max von Mises (which grows without bound under refinement at a re-entrant
+// corner / point load).
+//
+// Metric chosen: the 99th-percentile vertex von Mises (p99). A geometric
+// singularity is spatially a point, so its vertices stay a vanishing fraction of
+// the surface even as the mesh is refined; p99 tracks the genuine high-stress
+// field while excluding the unbounded point peak. It needs no server change (the
+// vertex-stress array is already in every analyse payload) and is directly
+// comparable across meshes because the DISPLAY mesh — hence the vertex count —
+// is identical for every quality level in the study.
+//
+// Evidence hierarchy (issue #148b): refinement-based divergence is scale- and
+// unit-independent, so it OUTRANKS the server's single-mesh geometric heuristic
+// as primary evidence. The peak observed order collapsing to ≤ 0.5 (peak not
+// converging / growing under refinement) IS that refinement evidence.
+//
+// Returns { singularAtPeak, metric, evidence, reason }:
+//   metric   — 'peakVM' (normal) | 'p99' (robust)
+//   evidence — 'refinement' | 'single-mesh' | 'none'
+function selectConvergenceMetric(singularity, peakOrder) {
+  const refinementDiverging = !!(peakOrder && peakOrder.source === 'observed'
+    && isFinite(peakOrder.raw) && peakOrder.raw <= 0.5);
+  const heuristicFlag = !!(singularity && singularity.detected);
+  const singularAtPeak = refinementDiverging || heuristicFlag;
+  if (!singularAtPeak) {
+    return { singularAtPeak: false, metric: 'peakVM', evidence: 'none',
+             reason: 'Peak stress converges under refinement.' };
+  }
+  const evidence = refinementDiverging ? 'refinement' : 'single-mesh';
+  const reason = refinementDiverging
+    ? 'peak stress grows systematically under mesh refinement (observed order ≈ 0) — a re-entrant corner or point load is a geometric singularity and will not converge'
+    : 'peak stress is flagged as a likely geometric singularity (steep local gradient) — it will not converge under refinement';
+  return { singularAtPeak: true, metric: 'p99', evidence, reason };
+}
+
+// 99th-percentile (nearest-rank) of a stress array — the singularity-robust
+// convergence metric. Pure; returns null on empty input.
+function stressPercentile(stressArr, pct) {
+  if (!stressArr || !stressArr.length) return null;
+  const arr = Array.prototype.slice.call(stressArr).sort((a, b) => a - b);
+  const idx = Math.min(arr.length - 1, Math.max(0, Math.round((pct / 100) * (arr.length - 1))));
+  return arr[idx];
+}
+
+// Extract the per-mesh convergence datum from a full analyse payload. Captures
+// the singularity-robust p99 metric (decoded from the vertex-stress array the
+// payload already carries) and the server's singularity flag, so both the
+// auto-upgrade check and the manual study can reuse cached mesh results without
+// re-solving (issue #147).
+function convDatumFromPayload(data) {
+  const s  = data.summary;
+  const vs = _decodeStressF32(data.vertexStressB64);
+  return {
+    nodes:                s.nodeCount,
+    maxVM:                s.maxVonMisesMPa,
+    sf:                   s.safetyFactorAvailable ? s.safetyFactor : null,
+    safetyFactorAvailable: s.safetyFactorAvailable,
+    nodesPerElem:         s.nodesPerElem,
+    p99:                  vs ? stressPercentile(vs, 99) : null,
+    singularity:          s.singularity || null,
+  };
+}
+
 // ─── Mesh convergence study ──────────────────────────────────────────────────
 async function runConvergenceStudy() {
   if (!S.fileData || !S.bolts.length || !S.forces.length) return;
@@ -8522,11 +9172,9 @@ async function runConvergenceStudy() {
       if (!body) continue;
       const data = await analyzeWithWorker(body);
       results.push({
-        quality:  q,
-        nodes:    data.summary.nodeCount,
-        elements: data.summary.elementCount,
-        maxVM:    data.summary.maxVonMisesMPa,
-        sf:       data.summary.safetyFactor,
+        quality:     q,
+        elements:    data.summary.elementCount,
+        ...convDatumFromPayload(data),
       });
     } catch(e) {
       console.error('Convergence step failed:', e);
@@ -8546,22 +9194,54 @@ async function runConvergenceStudy() {
   const finest  = results[results.length - 1];
   const second  = results[results.length - 2];
   const changePct = Math.abs((finest.maxVM - second.maxVM) / second.maxVM * 100);
-  const converged = changePct < 5.0;
 
-  // Richardson extrapolated value (p=2 assumed for linear elements)
-  // σ_exact ≈ σ_fine + (σ_fine - σ_std) / (r^p - 1)
-  // where r = refinement ratio = (nodes_fine/nodes_std)^(1/3)
-  let richardsonVM = finest.maxVM;
-  let richardsonNote = '';
-  if (results.length >= 2 && second.nodes > 0 && finest.nodes > second.nodes) {
-    const r = Math.pow(finest.nodes / second.nodes, 1/3);
-    const rp = r * r; // p=2
-    const extrapolated = finest.maxVM + (finest.maxVM - second.maxVM) / (rp - 1);
-    if (extrapolated > 0 && extrapolated < finest.maxVM * 3) {
-      richardsonVM = extrapolated;
-      richardsonNote = `Richardson extrapolation: ~${U.stressStr(extrapolated,1)} (estimated true solution)`;
-    }
-  }
+  // OBSERVED order of convergence (issue #146). STRESS converges O(h^p) with
+  // p = element order (1 for C3D4, 2 for C3D10); the old code hard-coded p=2
+  // (the displacement-norm rate) which over-extrapolates linear-element stress
+  // and — worse — hides singularities behind a confident number. We instead
+  // measure p from the 3-point sequence and fall back to the theoretical rate
+  // only when the sequence is non-monotone.
+  const theoreticalP = (finest.nodesPerElem === 10) ? 2 : 1;
+  const orderMeshes  = results.map(r => ({ nodes: r.nodes, value: r.maxVM }));
+  const peakOrder    = convergenceObservedOrder(orderMeshes, theoreticalP);
+
+  // Richardson extrapolated value using the observed order.
+  // σ_exact ≈ σ_fine + (σ_fine - σ_std) / (r^p - 1),  r = (nodes_fine/nodes_std)^(1/3)
+  const rich = richardsonExtrapolate(
+    { nodes: second.nodes, value: second.maxVM },
+    { nodes: finest.nodes, value: finest.maxVM },
+    peakOrder,
+  );
+  const orderLabel = peakOrder.source === 'observed'
+    ? `observed order p ≈ ${peakOrder.order.toFixed(2)}`
+    : `theoretical order p = ${peakOrder.order.toFixed(0)} (${finest.nodesPerElem === 10 ? 'C3D10' : 'C3D4'} stress; sequence non-monotone)`;
+  let richardsonNote = rich.valid
+    ? `Richardson extrapolation (${orderLabel}): ~${U.stressStr(rich.value,1)} (estimated true peak VM)`
+    : `Richardson extrapolation skipped (${orderLabel}) — sequence not extrapolable.`;
+
+  // Observed-order diagnostic (issue #146): p_obs ≪ theory is the fingerprint of
+  // a stress singularity (the peak grows under refinement instead of settling).
+  const theoryLabel   = `${theoreticalP} (${finest.nodesPerElem === 10 ? 'C3D10' : 'C3D4'} stress, O(hᵖ))`;
+  const orderDiverging = peakOrder.source === 'observed' && isFinite(peakOrder.raw) && peakOrder.raw <= 0.5;
+  const orderDiag = peakOrder.source === 'observed'
+    ? `Observed order of convergence p_obs ≈ ${peakOrder.raw.toFixed(2)} (theory: ${theoryLabel}).` +
+      (orderDiverging ? ' <b style="color:var(--warn)">p_obs ≪ theory — peak stress is not converging (likely singularity).</b>' : '')
+    : `Observed order undefined — the peak-VM sequence is non-monotone across meshes (a singularity signature). Using theoretical order ${theoryLabel}.`;
+
+  // Singularity-aware metric selection (issue #147). The max von Mises diverges
+  // at a geometric singularity, so when the peak is flagged (by the observed
+  // order collapsing — primary, scale-independent evidence — or the finest
+  // mesh's server heuristic) we converge on the robust 99th-percentile stress
+  // instead, and say so honestly rather than showing a stuck not-converged badge.
+  const sel = selectConvergenceMetric(finest.singularity, peakOrder);
+  const haveP99 = second.p99 != null && finest.p99 != null;
+  const robustChangePct = haveP99 ? Math.abs((finest.p99 - second.p99) / (second.p99 || 1) * 100) : null;
+  const useRobust = sel.singularAtPeak && haveP99;
+  const metricChangePct = useRobust ? robustChangePct : changePct;
+  const converged = metricChangePct < 5.0;
+  const singularNote = sel.singularAtPeak
+    ? `<div style="padding:6px 8px;margin-top:6px;background:var(--gold-faint);border:1px solid var(--gold-glow);border-radius:3px;font-size:10px;color:var(--gold-dim);line-height:1.6"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Peak stress is at a likely geometric singularity (evidence: ${sel.evidence === 'refinement' ? 'refinement divergence' : 'single-mesh gradient heuristic'}) — ${sel.reason}. It will not converge under refinement; showing convergence of the 99th-percentile stress instead${finest.singularity?.peakLocation ? ` (peak at ${finest.singularity.peakLocation.map(v=>v.toFixed(1)).join(', ')} mm)` : ''}.</div>`
+    : '';
 
   // Find or create report
   let reportEl = document.getElementById('convergence-report');
@@ -8572,35 +9252,44 @@ async function runConvergenceStudy() {
     document.getElementById('results-content')?.appendChild(reportEl);
   }
 
+  const metricName = useRobust ? '99th-percentile stress' : 'peak stress';
   const statusColor = converged ? 'var(--success)' : 'var(--warn)';
   const statusText  = converged
-    ? `<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> Converged — peak stress stable within ${changePct.toFixed(1)}% between last two mesh levels`
-    : `<svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Not converged — ${changePct.toFixed(1)}% change between last two meshes`;
+    ? `<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> Converged — ${metricName} stable within ${metricChangePct.toFixed(1)}% between last two mesh levels`
+    : `<svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Not converged — ${metricChangePct.toFixed(1)}% change in ${metricName} between last two meshes`;
 
+  // Columns: add a p99 column only when the robust metric is engaged.
+  const gridCols = useRobust ? '64px 1fr 74px 74px 62px' : '70px 1fr 80px 70px';
   const rows = results.map(r => `
-    <div style="display:grid;grid-template-columns:70px 1fr 80px 70px;gap:6px;padding:5px 0;border-bottom:1px solid var(--border);font-size:11px;align-items:center">
+    <div style="display:grid;grid-template-columns:${gridCols};gap:6px;padding:5px 0;border-bottom:1px solid var(--border);font-size:11px;align-items:center">
       <span style="color:var(--text-mid)">${r.quality}</span>
       <span style="color:var(--text-label)">${(r.nodes||0).toLocaleString()} nodes</span>
       <span style="color:var(--text-hi)">${U.stressStr(r.maxVM,2)}</span>
+      ${useRobust ? `<span style="color:var(--text-hi)">${r.p99 != null ? U.stressStr(r.p99,2) : '—'}</span>` : ''}
       <span style="color:${r.sf !== null && r.sf >= 1 ? 'var(--warn)' : 'var(--danger)'}">${r.sf !== null ? `SF ${r.sf.toFixed(2)}×` : 'SF —'}</span>
     </div>`).join('');
 
   reportEl.innerHTML = `
     <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:8px">MESH CONVERGENCE STUDY</div>
-    <div style="display:grid;grid-template-columns:70px 1fr 80px 70px;gap:6px;padding:4px 0;margin-bottom:2px">
+    <div style="display:grid;grid-template-columns:${gridCols};gap:6px;padding:4px 0;margin-bottom:2px">
       <span style="font-size:10px;color:var(--text-lo)">Mesh</span>
       <span style="font-size:10px;color:var(--text-lo)">Nodes</span>
       <span style="font-size:10px;color:var(--text-lo)">Peak VM</span>
+      ${useRobust ? '<span style="font-size:10px;color:var(--text-lo)">99% VM</span>' : ''}
       <span style="font-size:10px;color:var(--text-lo)">SF</span>
     </div>
     ${rows}
+    ${singularNote}
+    <div style="padding:5px 0;font-size:10px;color:var(--text-lo);border-bottom:1px solid var(--border);line-height:1.6">${orderDiag}</div>
     ${richardsonNote ? `<div style="padding:5px 0;font-size:10px;color:var(--text-label);border-bottom:1px solid var(--border)">${richardsonNote}</div>` : ''}
     <div style="margin-top:8px;padding:8px;background:var(--bg-card);border:1px solid ${statusColor}44;border-radius:3px;font-size:11px;color:${statusColor}">
       ${statusText}
     </div>
     <div style="font-size:10px;color:var(--text-lo);margin-top:6px;line-height:1.6">
-      Criterion: &lt;5% change in peak VM stress between mesh levels.<br>
-      ${!converged ? 'Results shown use the <b>fine mesh</b> values (auto-upgraded above).' : 'Results are mesh-independent within the 5% tolerance.'}
+      Criterion: &lt;5% change in ${metricName} between mesh levels.<br>
+      ${useRobust
+        ? 'The <b>peak</b> von Mises is excluded from the convergence test because it sits at a geometric singularity (unbounded under refinement). The standard-mesh result is retained — the fine mesh does not give a more physical peak.'
+        : (!converged ? 'Results shown use the <b>fine mesh</b> values (auto-upgraded above).' : 'Results are mesh-independent within the 5% tolerance.')}
     </div>`;
 }
 
@@ -8705,6 +9394,11 @@ function buildAnalyseBody(quality, opts) {
       useCLT:          !!(document.getElementById('clt-toggle')?.checked),
       twoRegion:       !!(document.getElementById('two-region-toggle')?.checked),
       wallBond:        !!(document.getElementById('two-region-toggle')?.checked && document.getElementById('wall-bond-toggle')?.checked),
+      // Interior-stress volumetric payload for the section-view cut face
+      // (#190) — opt-in because it's a materially larger response than a
+      // normal solve. Only requested once the user has turned on the
+      // SECTION panel's "σ INSIDE" toggle.
+      includeVolumeField: !!S.sectionInteriorStress,
     },
     calibration:  getActiveProfile(),
     ...(gravityRequest() ? { gravity: gravityRequest() } : {}),
@@ -9021,7 +9715,7 @@ async function runSolverValidation() {
   summary.style.color   = 'var(--text-mid)';
   summary.style.background = 'var(--bg-card)';
   summary.style.borderColor = 'var(--border)';
-  summary.textContent   = 'Running 67 tests...';
+  summary.textContent   = 'Running tests...';
   groups.innerHTML      = '';
 
   try {
@@ -9147,6 +9841,14 @@ const SOURCES_DB = [
         usedFor: "Material model for parts whose layer normal is not vertical (upright/angled)",
         confidence: "high",
         note: "An upright print is weak across layers along ONE horizontal axis and strong along the other horizontal axis and Z; the exact model is transverse isotropy about that horizontal (layer-normal) axis. When you pick a BED face, STORMFEA now sends the layer-normal direction and the solver applies the EXACT tensor rotation: the constitutive matrix is rotated to align the weak axis with the bed normal, and the failure criterion is evaluated in that rotated frame (handles flat, upright, and angled uniformly). If no bed face is picked (azimuth unknown), it falls back to the conservative scalar swap — E_z takes the strong in-layer modulus and BOTH horizontal directions take the weak through-layer modulus (pessimistic along the strong horizontal axis by up to E_z/E_xy ≈ 35%). Rotation core validated in server/tests/unit/bond-rotation.test.ts; swap fallback in upright-swap.test.ts.",
+      },
+      {
+        id: "cross_bead_ratio",
+        citation: "STORMFEA engineering default — literature cross-bead (bead-to-bead, in-plane) tensile ratio, informed by the same raster-orientation strength-anisotropy literature as ahn2002 and pla_ortho_2024 above. No single primary source pins 0.85 exactly; unidirectional-raster FDM coupons in that literature report roughly 0.7–0.9 for tensile strength across beads vs along them.",
+        url: "",
+        usedFor: "CROSS_BEAD_RATIO_LITERATURE = 0.85 — in-plane strength knockdown across beads, applied ONLY when in-plane (bead-to-bead) anisotropy is opted in (AnalysisSettings.inPlaneAnisotropy) and there is evidence of a unidirectional/dominant raster with no measured ratio",
+        confidence: "low",
+        note: "Labeled an engineering default (like the infill-pattern lattice exponents), not a single-paper measurement — 0.85 sits mid-band of the 0.7–0.9 range reported for unidirectional rasters. Default off: typical ±45° alternating rasters homogenize toward isotropic, so most analyses never engage this constant. Overridden by a measured CalibrationProfile.crossBeadRatio from a cross-raster tensile coupon, which is reported with its own (measured) provenance instead of this literature default.",
       },
     ]
   },
@@ -9339,6 +10041,14 @@ const SOURCES_DB = [
         note: "Establishes the power-law FORMS only. STORMFEA's per-family exponents (server/solver/lattice.ts: TPMS-like ρ^1.75 stiffness / ρ^1.25 strength; extruded-wall patterns ρ^2.0 / ρ^1.5; gyroid per-axis E_xy ρ^1.75, E_z ρ^2.1, G_xz ρ^2.3) and small linear corrections are engineering estimates chosen WITHIN the cited ranges — no paper reports pattern-specific coefficients. They are locked by regression tests (core-lattice.test.ts, gyroid-formula.test.ts) and overridable per calibration profile.",
       },
       {
+        id: "deshpande_fleck2000",
+        citation: "Deshpande VS, Fleck NA. Isotropic constitutive models for metallic foams. Journal of the Mechanics and Physics of Solids. 2000;48(6-7):1253-1283.",
+        url: "https://doi.org/10.1016/S0022-5096(99)00082-4",
+        usedFor: "Pressure-dependent (hydrostatic) yield of the homogenized infill core (two-region model, issue #171): the isotropic-foam criterion σ̂² = (σ_vm² + α²σ_m²)/(1 + (α/3)²), with α the pressure-sensitivity coefficient. Establishes α ≈ 2.08 for cellular metals (plastic Poisson ratio ν_p ≈ 0 via α² = (9/2)(1−2ν_p)/(1+ν_p)).",
+        confidence: "low",
+        note: "Establishes the criterion FORM and the α₀ ≈ 2.08 fully-cellular limit. STORMFEA's density law α(ρ) = 2.08·(1−ρ) is an engineering estimate: α→0 exactly at ρ=1 (solid ⇒ von Mises, so the ρ=1 core stays bit-identical to the solid) and α→2.08 as ρ→0. The linear knockdown exponent is a LOW-confidence default, regression-locked (dfa-core-yield.test.ts). Applied ONLY to core (infill) elements; shell/wall and single-material paths keep von Mises.",
+      },
+      {
         id: "comprehensive2025",
         citation: "A Comprehensive Investigation of Infill Geometry Effects on the Mechanical Performance of Polymer 3D Printed Components. PMC. 2025.",
         url: "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC12788003/",
@@ -9436,6 +10146,44 @@ const SOURCES_DB = [
         usedFor: "Classifying the linear buckling check: BLF < 1.5 → FAIL, 1.5 ≤ BLF < 3.0 → MARGINAL, BLF ≥ 3.0 → PASS (server/analysis.ts)",
         confidence: "medium",
         note: `Why these values:\n  FAIL below 1.5× — linear (eigenvalue) buckling assumes perfect geometry, perfectly centered loads, and linear pre-buckling response. FDM parts violate all three (layer seams, wall-thickness variation, warp, joint eccentricity), so the real buckling load is typically 10–40% below the linear prediction. A predicted margin under 1.5× can vanish entirely in the printed part.\n  MARGINAL between 1.5× and 3.0× — extra allowance beyond the imperfection knockdown for nonlinear pre-buckling deformation, idealized boundary conditions, and mesh/modeling error.\n  PASS at 3.0× and above — comfortable margin for a design-comparison tool.\n\nContext: applying a substantial factor to linear buckling predictions is normal engineering practice — pressure-vessel rules commonly use design factors of roughly 2–3 on elastic buckling, and structural steel codes place slender-column capacity well below the Euler load via column curves that account for imperfections. Those factors are calibrated for metals in other industries and do not transfer directly to FDM polymers; 1.5/3.0 are STORMFEA's own conservative choices.`,
+      },
+    ]
+  },
+  {
+    category: "FATIGUE (S-N ESTIMATE)",
+    color: "#7a4fb5",
+    entries: [
+      {
+        id: "wang2020_fatigue",
+        citation: "Wang X, Zhao L, Fuh JYH, Lee HP. Effect of porosity on mechanical properties of 3D printed polymers: Experiments and micromechanical modeling based on X-ray computed tomography analysis. Polymers. 2019;11(7):1154. (Fatigue behavior of FDM PLA under cyclic loading, Wang et al. 2020)",
+        url: "",
+        usedFor: "Orientation-dependent endurance ratio: Se/UTS = 0.37 (flat print) / 0.43 (upright print)",
+        confidence: "low",
+        note: "Flat prints fatigue-crack at the weaker inter-layer bond, so their endurance ratio is lower than upright prints, which fatigue through the stronger in-plane bead material. FDM cyclic-loading data is sparse relative to static-strength literature; treat as order-of-magnitude until a cyclic coupon is run.",
+      },
+      {
+        id: "juvinall_basquin",
+        citation: "Juvinall RC, Marshek KM. Fundamentals of Machine Component Design. Wiley. (Basquin power-law S-N relation, §7)",
+        url: "",
+        usedFor: "Basquin exponent b ≈ −0.1 and fatigue-strength coefficient σ_f′ ≈ 1.5 × UTS",
+        confidence: "low",
+        note: "b = −0.1 is a typical value for semi-ductile polymers, not a PLA/ABS/PETG-specific measurement. σ_f′ = 1.5·UTS is the companion literature default used with it. Both are replaced by fitted values once cyclic-coupon data is entered.",
+      },
+      {
+        id: "goodman_meanstress",
+        citation: "Shigley JE, Mischke CR, Budynas RG. Mechanical Engineering Design. 10th ed. McGraw-Hill. 2015. §6 (modified-Goodman mean-stress correction).",
+        url: "",
+        usedFor: "Modified Goodman diagram combining stress amplitude σ_a and mean stress σ_m into a single fatigue safety factor",
+        confidence: "high",
+        note: "Standard mean-stress correction; not FDM-specific. A compressive mean stress is conservatively clamped to zero (its life benefit is not credited).",
+      },
+      {
+        id: "fatigue_calibration_path",
+        citation: "STORMFEA calibration path — POST /api/calibration/fatigue least-squares fits Se/UTS and Basquin b from user-entered cyclic-coupon (σ_amplitude, cycles) points.",
+        url: "",
+        usedFor: "Upgrading the fatigue estimate from the literature defaults above to measured values",
+        confidence: "medium",
+        note: "Once a fitted profile is supplied, the measured Se/UTS ratio and Basquin b replace the 0.37/0.43 and −0.1 defaults and the fatigue mode's confidence is reported as MEDIUM instead of LOW, mirroring how the bearing coupon lifts the bearing mode.",
       },
     ]
   },
@@ -10146,7 +10894,7 @@ function drawSummaryCanvas() {
     }
 
     statRow('PEAK STRESS',   U.stressStr(s.maxVonMisesMPa, S.units==='imperial'?0:1), 0);
-    statRow('FAIL FORCE',    U.forceStr(s.estimatedFailForce, 0), 1);
+    statRow('FAIL FORCE (EST.)', U.forceStr(s.estimatedFailForce, 0), 1);
     RY += 32;
     statRow('YIELD STRENGTH', U.stressStr(s.effectiveYieldMPa, S.units==='imperial'?0:1), 0);
     statRow('MESH NODES',    (s.nodeCount||0).toLocaleString(), 1);
@@ -12070,6 +12818,7 @@ function resetClip() {
   }
   _syncMarkerClipPlanes();
   _disposeCapObjects();
+  _disposeInteriorCap();
   _syncClipUI();
 }
 
@@ -12088,10 +12837,12 @@ function toggleClip() {
     mat.clippingPlanes = [];
     mat.side = THREE.FrontSide;
     _setCapVisible(false);
+    _hideInteriorCap();
   }
   mat.needsUpdate = true;
   _syncMarkerClipPlanes();
   _syncClipUI();
+  _refreshInteriorCap();
 }
 
 // ── Stencil cap: solid face where the section plane slices through material ──
@@ -12141,6 +12892,12 @@ function _ensureCapObjects() {
   const capGeo  = new THREE.PlaneGeometry(1, 1);
   const capMesh = new THREE.Mesh(capGeo, capMat);
   capMesh.renderOrder = 2.1;
+  // The grey cap and the interior-stress cap (#190) are mutually exclusive
+  // consumers of the SAME stencil write from backMesh/frontMesh — only one
+  // of them is ever visible for a given frame (see _refreshInteriorCap).
+  // Whichever one draws also clears the stencil for the next frame's
+  // writers via its ReplaceStencilOp pass, so a plain clearStencil() here is
+  // always safe (no other consumer is depending on this stencil surviving).
   capMesh.onAfterRender = renderer => renderer.clearStencil();
 
   // None of these may intercept picking rays — raycast() calls
@@ -12178,19 +12935,39 @@ function _disposeCapObjects() {
 
 function setClipAxis(axis) {
   S.clipAxis = axis;
-  if (S.clipActive) _updateClipPlane();
+  if (S.clipActive) { _updateClipPlane(); _refreshInteriorCap(); }
   _syncClipUI();
 }
 
 function onClipPosInput(v) {
   S.clipPos = Math.max(0, Math.min(100, +v || 0));
-  if (S.clipActive) _updateClipPlane();
+  if (S.clipActive) { _updateClipPlane(); _refreshInteriorCap(); }
 }
 
 function toggleClipFlip() {
   S.clipFlip = !S.clipFlip;
-  if (S.clipActive) _updateClipPlane();
+  if (S.clipActive) { _updateClipPlane(); _refreshInteriorCap(); }
   _syncClipUI();
+}
+
+// Toggle the section-view interior-stress heatmap (#190). Opt-in and
+// persisted: turning it on does NOT retroactively fetch data for a solve
+// that already ran without it — the volumetric payload only accompanies a
+// solve that requested it (analysis.includeVolumeField), so the user is
+// told to re-run once. This keeps ordinary analyses' response payload small
+// by default (issue #190 acceptance criterion: gate volumetric data behind
+// the feature actually being used).
+function toggleSectionInteriorStress() {
+  S.sectionInteriorStress = !S.sectionInteriorStress;
+  localStorage.setItem('sf-section-interior-stress', S.sectionInteriorStress ? '1' : '0');
+  _syncClipUI();
+  if (S.sectionInteriorStress && !S._volumeField) {
+    showErrorToast(
+      'Interior stress needs one more solve to fetch the volumetric data — click Solve again.',
+      { severity: 'info', source: '[section]' }
+    );
+  }
+  _refreshInteriorCap();
 }
 
 // Rebuild the world-space clipping plane from the current axis/position/flip.
@@ -12229,14 +13006,168 @@ function _syncClipUI() {
   const controls = document.getElementById('clip-controls');
   const flip     = document.getElementById('clip-flip');
   const slider   = document.getElementById('clip-pos');
+  const interior = document.getElementById('clip-interior');
   if (btn)      btn.className = 'btn' + (S.clipActive ? ' active' : '');
   if (controls) controls.style.display = S.clipActive ? 'inline-flex' : 'none';
   if (flip)     flip.className = 'btn' + (S.clipFlip ? ' active' : '');
   if (slider)   slider.value = S.clipPos;
+  if (interior) {
+    interior.className = 'btn' + (S.sectionInteriorStress ? ' active' : '');
+    interior.title = S.sectionInteriorStress
+      ? (S._volumeField
+          ? 'Cut face shows real interpolated interior stress. Click to go back to flat grey.'
+          : 'Interior stress requested — click Solve again to fetch the volumetric data for this analysis.')
+      : 'Color the cut face with real interpolated interior stress instead of flat grey. Requires re-running the analysis once (larger response payload).';
+  }
   ['x', 'y', 'z'].forEach(a => {
     const b = document.getElementById('clip-' + a);
     if (b) b.className = 'btn' + (S.clipAxis === a ? ' active' : '');
   });
+}
+
+// ── Interior-stress cap: real stress on the section-view cut face (#190) ────
+// Replaces the flat grey stencil cap above whenever real data is available —
+// the two are mutually exclusive within a frame (see the interior material's
+// stencil comment) — using the SAME stencil recipe so it is masked to the
+// exact same solid cross-section (holes/cavities stay open automatically —
+// nothing to draw there since no tet exists in a void). Falls back to the
+// grey cap automatically (_hideInteriorCap) whenever the interior heatmap
+// has nothing to show: clip off, feature not requested, payload not fetched
+// yet, or the current stress mode has no volumetric counterpart (e.g. ZZ
+// error, which is only ever projected to the surface mesh).
+//
+// Geometry comes from sliceTetsByAxisPlane (pure function, unit-tested) run
+// against the volumetric payload (S._volumeField, decoded in
+// decodeVolumeField). Color comes from _colorInteriorValues, which reuses
+// the CURRENT surface heatmap's scale (S._filterScale, set by
+// applyStressColorsFromArrays) so the cut face and the exterior are on the
+// same color scale — required by issue #190's acceptance criterion that cut-
+// face color match probe values at the same points.
+//
+// Per CLAUDE.md's heatmap invariants: Gouraud shading (flatShading:false),
+// every generated vertex gets a real interpolated value (sliceTetsByAxisPlane
+// only emits vertices from valid edge interpolations, never NaN), and
+// coincident vertices from adjacent tets are bit-identical by construction
+// (see sliceTetsByAxisPlane's docstring) rather than needing a runtime weld.
+//
+// Scoped limitation (documented in the PR): built from the analysis mesh's
+// CORNER nodes only, so a C3D10 (quadratic) mesh's mid-side curvature is not
+// reflected in the cut geometry or its interpolation — the cap is exact for
+// C3D4 and a first-order (linear-per-tet-corner) approximation for C3D10.
+// It also does not follow the exaggerated deformed-shape warp (built from the
+// undeformed analysis-mesh nodes), matching the existing grey cap's behavior.
+function _colorInteriorValues(values, mode) {
+  const meta = MODE_META[mode] || MODE_META[DEFAULT_STRESS_MODE];
+  const n = values.length;
+  const colors = new Float32Array(n * 3);
+  const disableGamma = new URLSearchParams(window.location.search).has('disableGamma');
+  const GAMMA = disableGamma ? 1.0 : 0.55;
+  const sc = (S._filterScale && S._filterScale.mode === mode) ? S._filterScale : null;
+  if (meta.kind === 'diverging') {
+    const absMax = (sc && sc.kind === 'diverging' && sc.absMax > 0)
+      ? sc.absMax
+      : (meta.divAbs ? meta.divAbs() : 1) || 1;
+    for (let i = 0; i < n; i++) {
+      const t = 0.5 + 0.5 * Math.max(-1, Math.min(1, (values[i] ?? 0) / absMax));
+      const [r, g, b] = divergingColor(t);
+      colors[i*3] = r; colors[i*3+1] = g; colors[i*3+2] = b;
+    }
+  } else {
+    const min   = (sc && sc.kind === 'sequential') ? sc.min : 0;
+    const range = (sc && sc.kind === 'sequential' && sc.range > 0) ? sc.range : 1;
+    for (let i = 0; i < n; i++) {
+      const linear = Math.max(0, Math.min(1, ((values[i] ?? 0) - min) / range));
+      const t = Math.pow(linear, GAMMA);
+      const [r, g, b] = stressColor(t);
+      colors[i*3] = r; colors[i*3+1] = g; colors[i*3+2] = b;
+    }
+  }
+  return colors;
+}
+
+function _refreshInteriorCap() {
+  if (!mesh3d) return;
+  const on = S.clipActive && S.sectionInteriorStress && S._volumeField && S._modelSize;
+  if (!on) { _hideInteriorCap(); return; }
+
+  const vf = S._volumeField;
+  const dataSel = VOLUME_MODE_DATA[S.stressMode];
+  const values = dataSel ? dataSel(vf) : null;
+  if (!values || values.length !== vf.nodeCount) { _hideInteriorCap(); return; }
+
+  const axisIdx = S.clipAxis === 'x' ? 0 : S.clipAxis === 'y' ? 1 : 2;
+  const sz  = S._modelSize;
+  const ext = axisIdx === 0 ? sz.x : axisIdx === 1 ? sz.y : sz.z;
+  const off = -ext / 2 + (S.clipPos / 100) * ext;   // matches _updateClipPlane's local-frame cut coord
+
+  const { positions, values: vAtVerts } = sliceTetsByAxisPlane(vf.nodes, vf.tets, values, axisIdx, off);
+  if (positions.length === 0) { _hideInteriorCap(); return; }
+
+  const colors = _colorInteriorValues(vAtVerts, S.stressMode);
+  const nVerts = positions.length / 3;
+  const normals = new Float32Array(nVerts * 3);
+  for (let i = 0; i < nVerts; i++) normals[i*3 + axisIdx] = 1; // flat cap: uniform normal
+
+  if (!S._interiorCap) {
+    const geo = new THREE.BufferGeometry();
+    const mat = new THREE.MeshPhongMaterial({
+      vertexColors: true,
+      shininess: 25,
+      side: THREE.DoubleSide,   // lit correctly whichever half is kept
+      flatShading: false,       // Gouraud shading — CLAUDE.md heatmap invariant
+      depthTest: false,         // always wins over the coplanar grey fallback cap
+      depthWrite: true,
+      // Same stencil recipe as the grey cap (test != 0 to draw, then Replace
+      // to 0 so the pass also clears for the next frame's writers). This
+      // material is NEVER visible at the same time as the grey cap (mutual
+      // exclusion enforced in _refreshInteriorCap) — if both consumed the
+      // stencil in the same frame, whichever draws SECOND would find the
+      // FIRST already replaced it to 0 and its NotEqual test would fail,
+      // silently painting nothing. Mutual exclusion avoids that draw-order
+      // trap entirely rather than trying to out-order it.
+      stencilWrite: true,
+      stencilRef:   0,
+      stencilFunc:  THREE.NotEqualStencilFunc,
+      stencilFail:  THREE.ReplaceStencilOp,
+      stencilZFail: THREE.ReplaceStencilOp,
+      stencilZPass: THREE.ReplaceStencilOp,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.renderOrder = 2.1;     // same slot as the grey cap — they never coexist in a frame
+    mesh.raycast = () => {};    // never intercept picking rays (spans the cut cross-section)
+    mesh.onAfterRender = renderer => renderer.clearStencil();
+    mesh3d.add(mesh);
+    S._interiorCap = { mesh, geo, mat };
+  }
+  const c = S._interiorCap;
+  c.geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  c.geo.setAttribute('normal',   new THREE.BufferAttribute(normals, 3));
+  c.geo.setAttribute('color',    new THREE.BufferAttribute(colors, 3));
+  c.geo.attributes.position.needsUpdate = true;
+  c.geo.attributes.normal.needsUpdate   = true;
+  c.geo.attributes.color.needsUpdate    = true;
+  c.geo.computeBoundingSphere();
+  c.mesh.visible = true;
+  // Mutual exclusion (see the interior material's stencil comment above):
+  // hide the grey fallback cap while the interior heatmap owns the stencil.
+  if (S._cap) S._cap.capMesh.visible = false;
+}
+
+function _hideInteriorCap() {
+  if (S._interiorCap) S._interiorCap.mesh.visible = false;
+  // Restore the grey fallback cap so the cut face still reads as solid
+  // material when the interior heatmap isn't showing (clip off, toggled
+  // off, no data yet, or the current stress mode has no volumetric field).
+  if (S._cap && S.clipActive) S._cap.capMesh.visible = true;
+}
+
+function _disposeInteriorCap() {
+  if (!S._interiorCap) return;
+  const c = S._interiorCap;
+  if (c.mesh.parent) c.mesh.parent.remove(c.mesh);
+  c.geo.dispose();
+  c.mat.dispose();
+  S._interiorCap = null;
 }
 
 // ── Stress visualization modes ────────────────────────────────────────────────
@@ -12387,8 +13318,13 @@ function applyStressColorsFromArrays(arrays) {
 
   // Update legend gradient bar
   const bar = document.getElementById('legend-gradient');
+  const gammaRow = document.getElementById('legend-gamma');
   if (bar) {
     if (meta.kind === 'diverging') {
+      // Diverging fields (e.g. signed von Mises) are never gamma-warped
+      // (computeDivergingColors has no GAMMA step) — hide the gamma control
+      // here so it isn't shown as if it affects colors it doesn't touch.
+      if (gammaRow) gammaRow.style.display = 'none';
       const STOPS = 12;
       const stops = [];
       for (let i = 0; i <= STOPS; i++) {
@@ -12399,6 +13335,7 @@ function applyStressColorsFromArrays(arrays) {
       }
       bar.style.background = `linear-gradient(to bottom, ${stops.join(', ')})`;
     } else {
+      if (gammaRow) gammaRow.style.display = 'flex';
       updateLegendSwatches();
     }
   }
@@ -12406,6 +13343,30 @@ function applyStressColorsFromArrays(arrays) {
   // Update legend title from the single source of truth
   const lt = document.getElementById('legend-title');
   if (lt) lt.textContent = meta.legend();
+
+  // Keep the section-view interior cap (#190) on the same mode + color scale
+  // as the surface heatmap it was just repainted with.
+  if (S.clipActive) _refreshInteriorCap();
+  // η ("Mesh quality") semantics panel — issue #151: η is a relative share of
+  // the global ZZ error norm, not an absolute per-element error percentage.
+  // Only shown while the error mode is active; paired with globalRelativeError
+  // (computed server-side in computeZZErrorEstimate, sent as a top-level field)
+  // so the one genuinely absolute accuracy number sits right next to the map.
+  const etaBox = document.getElementById('eta-explainer');
+  if (etaBox) {
+    if (S.stressMode === 'error') {
+      etaBox.style.display = 'block';
+      const gre = S.results?.globalRelativeError;
+      const greEl = document.getElementById('eta-global-error');
+      if (greEl) {
+        greEl.textContent = (typeof gre === 'number')
+          ? `Global relative error (whole-part estimate): ${(gre * 100).toFixed(1)}%`
+          : 'Global relative error: unavailable for this run';
+      }
+    } else {
+      etaBox.style.display = 'none';
+    }
+  }
 }
 
 // ── Threshold filter (legend) ─────────────────────────────────────────────────

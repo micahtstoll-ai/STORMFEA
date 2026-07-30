@@ -32,7 +32,9 @@ import {
 } from "./solver/laminate.js";
 import {
   predictBondMultipliers,
+  bondBandExcursion,
   hasProcessSettings,
+  WALL_THERMAL_DEPTH_CLAMP_MM,
   type ProcessSettings,
   type BondModelCoeffs,
   type BondPrediction,
@@ -69,7 +71,12 @@ import {
   latticeStiffnessScale,
   latticeStiffnessScales,
   latticeStrengthFraction,
+  latticeStrengthFractions,
+  latticeStrengthExpExcursion,
+  lumpedInPlaneStiffnessScale,
+  wallCreditFraction,
   patternFamilyOf,
+  dfaPressureSensitivity,
 } from "./solver/lattice.js";
 import { isOrthotropic, isOrthotropicLike } from "./solver/types.js";
 import { recoverElementStressComponents }   from "./solver/stress_detail.js";
@@ -81,8 +88,27 @@ import {
 } from "./solver/stress.js";
 import { flagMergedHoleWarnings }           from "./holes.js";
 import type { HoleFeature }                 from "./holes.js";
-import { meshWithTetGen, TetGenNotFoundError } from "./tetgen.js";
+import { meshWithTetGen, TetGenNotFoundError, tetMaxVolumeForTier } from "./tetgen.js";
 import { meshStepWithGmsh }                 from "./gmsh_mesh.js";
+import {
+  computeFingerprint, computeValidationCoverage,
+  type ValidationCoverageReport, type CriterionValue as CoverageCriterionValue,
+} from "./validation-coverage.js";
+
+// ─── Safety-factor verdict tiers (issue #141) ──────────────────────────────────
+// Single source of truth for where "Safe" starts on the server. report.ts
+// imports these directly (both run in the same Node process, so — unlike the
+// client — there's a real shared import instead of a duplicated literal).
+// client/index.html keeps identically-NAMED constants of its own (browser
+// runtime, no shared module system with the server) — grep both when a
+// threshold changes.
+//
+// Policy: "Safe" requires SF >= 2.0 (the recommended minimum margin). The
+// 1.5–2.0 band is "Acceptable" — real positive margin, but never reported as
+// Safe. Below 1.5 is "Marginal"; below 1.0 fails.
+export const FAIL_SF_THRESHOLD       = 1.0;
+export const ACCEPTABLE_SF_THRESHOLD = 1.5;
+export const SAFE_SF_THRESHOLD       = 2.0;
 
 // ─── Standard bolt database ───────────────────────────────────────────────────
 /**
@@ -309,11 +335,29 @@ export function checkFailureModes(params: {
    * the FEM interface criterion uses).
    */
   interlayerShearMPa?: number | null;
+  /**
+   * Per-failure-mode material selection for WALL-LINED holes under the
+   * two-region model (issue #175). Slicers line every hole with dense
+   * perimeter walls, so the bolt shank / thread bears on SHELL material, not
+   * the volume-averaged shell/core blend that `effectiveYieldMPa` /
+   * `interlayerShearMPa` carry (CLAUDE.md invariant #6: per-feature consumers
+   * read the shell endpoint, whole-part consumers read the average). Present
+   * ⇒ two-region active AND walls line the hole (wallCount ≥ 1): bearing uses
+   * `wallShellYieldMPa`, thread strip-out uses `wallShellInterlayerShearMPa`.
+   * Absent (single-material / no walls) ⇒ bit-identical to the average path.
+   * Bulk / net-section / shear-out modes keep the average material.
+   */
+  wallShellYieldMPa?: number | null;
+  wallShellInterlayerShearMPa?: number | null;
 }): FailureModeResult[] {
   const { holeClass, plateThicknessMm, edgeDistMm, holeSeparationMm,
           appliedForceN, effectiveYieldMPa, bulkSF, orientation,
           layerHeightMm, calibratedBearingStrMPa } = params;
   const bearingStressMult = params.bearingStressMult ?? 1.0;
+  // Wall-lined-hole shell selection (issue #175): null unless two-region walls
+  // line this hole. Bearing/thread then read the dense perimeter allowable.
+  const wallShellYield = params.wallShellYieldMPa ?? null;
+  const wallShellShear = params.wallShellInterlayerShearMPa ?? null;
   const bulkCriterion     = params.bulkCriterion ?? "von-mises";
 
   const results: FailureModeResult[] = [];
@@ -406,15 +450,21 @@ export function checkFailureModes(params: {
     // More crossings per thread = more delamination risk
     const crossingsPerThread = pitch / layerHeightMm;
     const penalty = threadLayerPenalty(pitch, layerHeightMm);
-    const threadShear = shearStrength * penalty;
+    // Wall-lined holes: the thread is cut into the dense perimeter, so it strips
+    // through the SHELL interlaminar allowable, not the shell/core blend (#175).
+    const threadBaseShear = wallShellShear ?? shearStrength;
+    const threadShear = threadBaseShear * penalty;
     const sf_strip = (threadShear * shearArea) / F;
+    const threadMatNote = wallShellShear != null
+      ? ` Using wall (shell) interlaminar allowable ${threadBaseShear.toFixed(1)} MPa — the thread is cut into the dense perimeter, not the infill core.`
+      : ``;
     results.push({
       mode:       "Thread strip-out",
       sf:          +sf_strip.toFixed(3),
       failForceN:  +(F * sf_strip).toFixed(0),
       checked:     true,
       confidence:  "medium",
-      note:        `${nThreads} threads engaged (${t.toFixed(1)}mm / ${pitch}mm pitch). Each thread crosses ~${crossingsPerThread.toFixed(1)} layer boundaries (lh=${layerHeightMm}mm) — penalty ${(penalty*100).toFixed(0)}%. Strength estimate ±30%.`,
+      note:        `${nThreads} threads engaged (${t.toFixed(1)}mm / ${pitch}mm pitch). Each thread crosses ~${crossingsPerThread.toFixed(1)} layer boundaries (lh=${layerHeightMm}mm) — penalty ${(penalty*100).toFixed(0)}%. Strength estimate ±30%.${threadMatNote}`,
     });
   }
 
@@ -427,10 +477,14 @@ export function checkFailureModes(params: {
     const boltD        = bolt.nominalMm;
     const bearingArea  = boltD * t;
     const sigmaBear    = (F * bearingStressMult) / bearingArea;
-    // Use calibrated bearing strength if available — otherwise conservative estimate
-    const bearingStr   = calibratedBearingStrMPa ?? Sy * 1.0;
+    // Bearing yield: calibrated bearing strength wins; else the SHELL yield for
+    // a wall-lined two-region hole (the shank bears on the dense perimeter, not
+    // the shell/core blend — #175); else the average yield (single-material).
+    const bearingYield = wallShellYield ?? Sy;
+    const bearingStr   = calibratedBearingStrMPa ?? bearingYield * 1.0;
     const sf_bearing   = bearingStr / sigmaBear;
     const isCalibrated = calibratedBearingStrMPa != null;
+    const usesWallYield = !isCalibrated && wallShellYield != null;
     const distLabel    = bearingStressMult > 1.1 ? ` (peak from cosine-bearing distribution)` : ``;
     results.push({
       mode:       "Bearing (hole wall)",
@@ -440,6 +494,8 @@ export function checkFailureModes(params: {
       confidence:  isCalibrated ? "medium" : "low",
       note: isCalibrated
         ? `Bolt shaft (${boltD}mm) bears on hole wall (${t.toFixed(1)}mm). Using CALIBRATED bearing strength ${bearingStr.toFixed(0)} MPa from physical test.${distLabel}`
+        : usesWallYield
+        ? `Bolt shaft (${boltD}mm) bears on hole wall (${t.toFixed(1)}mm). Using wall (shell) yield ${bearingStr.toFixed(0)} MPa — slicers line the hole with dense perimeters, so the shank bears on shell, not the infill-averaged blend. Run bearing coupon to improve confidence.${distLabel}`
         : `Bolt shaft (${boltD}mm) bears on hole wall (${t.toFixed(1)}mm). Bearing strength assumed = yield strength — no FDM data. Run bearing coupon to improve confidence.${distLabel}`,
     });
   } else {
@@ -527,6 +583,14 @@ export interface CalibrationProfile {
   fatigueSeRatio?:   number | null;   // endurance ratio Se/UTS at the endurance life
   fatigueBasquinB?:  number | null;   // fitted Basquin exponent b (negative)
   fatigueUTS_MPa?:   number | null;   // UTS used as the S-N strength basis
+  /**
+   * Fit quality of the S-N regression that produced the fields above (issue
+   * #179). "poor" (logRms > FATIGUE_LOGRMS_MAX) forces estimateFatigue to keep
+   * LOW confidence even though calibrated values are present — the measured
+   * scatter did not earn the LOW→MEDIUM upgrade. Absent/"good"/null = a clean
+   * fit (or a legacy profile) behaves exactly as before.
+   */
+  fatigueFitQuality?: "good" | "poor" | null;
 }
 
 /** One (stress amplitude, cycles-to-failure) point from a fatigue coupon. */
@@ -534,6 +598,19 @@ export interface FatigueCouponPoint {
   stressAmplitudeMPa: number;
   cycles:             number;
 }
+
+/**
+ * Fit-quality gate for the cyclic-coupon S-N fit (issue #179). `logRms` is the
+ * RMS residual of the log-log Basquin regression, i.e. the typical multiplicative
+ * scatter in stress amplitude: logRms 0.15 ≈ e^0.15 ≈ ±16% about the fitted line.
+ * Clean data fits to ~0 (fatigue-calibration.test.ts). Unlike the bond sweep this
+ * endpoint does NOT reject above the bound — S-N scatter is physically inherent,
+ * so a team's own noisy coupons are still their best available data. Instead a
+ * poor fit is ACCEPTED but KEPT AT LOW CONFIDENCE (fitQuality: "poor" carried into
+ * the profile): estimateFatigue still uses the measured Se/b but must not claim
+ * the LOW→MEDIUM upgrade a clean fit earns.
+ */
+export const FATIGUE_LOGRMS_MAX = 0.15;
 
 export interface FatigueFit {
   /** Fitted Basquin exponent b (σ_a = σ_f′·N^b), negative. */
@@ -546,6 +623,8 @@ export interface FatigueFit {
   seRatio:    number;
   /** RMS residual of the log-log fit (fit-quality diagnostic). */
   logRms:     number;
+  /** "good" when logRms ≤ FATIGUE_LOGRMS_MAX, else "poor" (issue #179). */
+  fitQuality: "good" | "poor";
 }
 
 /**
@@ -594,6 +673,7 @@ export function fitFatigueProfile(
     se_MPa:     se,
     seRatio:    utsMPa > 0 ? se / utsMPa : 0,
     logRms,
+    fitQuality: logRms <= FATIGUE_LOGRMS_MAX ? "good" : "poor",
   };
 }
 
@@ -694,11 +774,17 @@ export function backCalculateProfile(params: {
     yieldZ_MPa = zTensileFailN / areaZ;
   }
 
-  // Lap-shear: the single-lap joint concentrates shear at the overlap ends, so
-  // nominal F/A_overlap underestimates the true peak. Multiply by Kt (from the
-  // solver) to get the peak-based interlaminar shear strength S_zs. It stays
-  // an INDEPENDENT allowable (audit A5); only when no Z-tension coupon was
-  // run is it also converted into yieldZ via the legacy Hill τ_z = Z/√3
+  // Lap-shear: the allowable is the APPARENT (average) interlaminar shear
+  // strength F/A_overlap. Kt is ≡ 1.0 BY POLICY (issue #140), not measured: the
+  // end-of-overlap shear peak in a single-lap joint is a geometric singularity
+  // (re-entrant corner) whose FEA "Kt" never converges under mesh refinement,
+  // and STORMFEA evaluates part interlaminar shear on element-AVERAGED stress
+  // (fdmDualCriterion S_zs) — so average-based is the CONSISTENT measure, not a
+  // shortcut. The `ktLapShear` parameter (default 1.0) is retained only as a
+  // manual override escape hatch for a caller with an externally-calibrated
+  // correction; the /api/calibration/kt probe never sets it above 1.0.
+  // It stays an INDEPENDENT allowable (audit A5); only when no Z-tension coupon
+  // was run is it also converted into yieldZ via the legacy Hill τ_z = Z/√3
   // relation (τ/0.58) — flagged so consumers know yieldZ is derived.
   let shearStr_MPa:  number | null = null;
   let interShear_MPa: number | null = null;
@@ -713,7 +799,11 @@ export function backCalculateProfile(params: {
   }
 
   // Bearing: contact at the hole wall concentrates stress at the bore. Nominal
-  // bearing stress F/(d·t) is corrected to peak by Kt.
+  // bearing stress F/(d·t) is lifted to a peak-based allowable by Kt. That Kt
+  // comes from the plate-with-hole FEA probe (buildBearingKtProbe) as the
+  // net-section OPEN-HOLE tension SCF — a first-order proxy for the true bearing
+  // concentration, since the fixture can only apply far-field tension, not a
+  // bolt bearing on the wall (issue #139). Default 1.0 ⇒ plain nominal F/(d·t).
   let bearingStr_MPa: number | null = null;
   if (bearingFailN !== null) {
     bearingStr_MPa = ktBearing * (bearingFailN /
@@ -750,7 +840,7 @@ export function backCalculateProfile(params: {
 // ─── Base properties (solid, 100% infill, isotropic approximation) ─────────
 // densityKgM3: solid (100% dense) mass density in kg/m³ — used with
 // effectiveVolumeFraction() to set massRho for modal analysis (issue #99).
-const MATERIALS: Record<string, { E: number; nu: number; yieldMPa: number; densityKgM3: number; label: string }> = {
+export const MATERIALS: Record<string, { E: number; nu: number; yieldMPa: number; densityKgM3: number; label: string }> = {
   pla:   { E: 3500,  nu: 0.36, yieldMPa: 50,  densityKgM3: 1240, label: "PLA"   },
   petg:  { E: 2100,  nu: 0.38, yieldMPa: 45,  densityKgM3: 1270, label: "PETG"  },
   abs:   { E: 2300,  nu: 0.35, yieldMPa: 40,  densityKgM3: 1050, label: "ABS"   },
@@ -758,6 +848,21 @@ const MATERIALS: Record<string, { E: number; nu: number; yieldMPa: number; densi
   pa12:  { E: 1700,  nu: 0.40, yieldMPa: 48,  densityKgM3: 1010, label: "PA12 (Nylon)" },
   asa:   { E: 2100,  nu: 0.35, yieldMPa: 40,  densityKgM3: 1070, label: "ASA"   },
 };
+
+/**
+ * The supported material ids — the single source of truth (issue #186). Every
+ * other material table (BOND_MATERIALS, DEFAULT_BEAD_PROPS) must stay in sync
+ * with this set; the invariant is locked by material-tables.test.ts. Request
+ * validation rejects any id outside this set BEFORE analysis, so the downstream
+ * `MATERIALS[id] ?? pla` fallbacks are defensive dead code, never a silent
+ * wrong-physics substitution.
+ */
+export const MATERIAL_IDS = Object.keys(MATERIALS);
+
+/** True when `materialId` is a supported material (issue #186). */
+export function isKnownMaterial(materialId: string): boolean {
+  return Object.prototype.hasOwnProperty.call(MATERIALS, materialId);
+}
 
 /** Literature in-plane yield for a material id (bond-sweep fit fallback). */
 export function literatureYieldMPa(materialId: string): number {
@@ -818,6 +923,17 @@ export const INTERSHEAR_OVER_YIELDZ_DEFAULT = 1 / Math.sqrt(3);
  */
 export const CROSS_BEAD_RATIO_LITERATURE = 0.85;
 
+/**
+ * Assumed solid top/bottom layer counts for the two-region model when the
+ * caller supplies none (issue #181). Common slicer defaults are 4 top / 4
+ * bottom layers, giving a 0.8 mm skin at a 0.2 mm layer height — a value with
+ * NO physical relationship to the perimeter wall band (wallCount × line width)
+ * that the code previously borrowed silently. The assumption is surfaced in
+ * materialModel (skinLayersAssumed) and the report so it can be corrected.
+ */
+export const DEFAULT_TOP_LAYERS = 4;
+export const DEFAULT_BOTTOM_LAYERS = 4;
+
 
 /**
  * Fallback SCALAR-SWAP APPROXIMATION for upright prints when no bed is picked
@@ -831,6 +947,26 @@ export const CROSS_BEAD_RATIO_LITERATURE = 0.85;
  * normal after the swap (issue #101). See the "upright_swap" SOURCES entry
  * and server/tests/unit/upright-swap.test.ts.
  *
+ * Poisson ratios are swapped consistently with the moduli (issue #187). The
+ * fabricated material is transversely isotropic about global Z (isotropy
+ * plane = the horizontal XY, now the WEAK plane; axis = vertical Z, now the
+ * STRONG in-layer direction). Modelling BOTH horizontal directions as the
+ * weak through-layer axis means every Poisson coupling that involves a
+ * horizontal direction is the through-layer coupling ν_zx (the minor ratio of
+ * the input, ν_zx = ν_xz·E_z/E_xy by reciprocity):
+ *   - nu_xz_new (horizontal→vertical) = ν_zx  — this exactly preserves the
+ *     physical interlayer cross-coupling compliance entry
+ *     s13 = −ν_xz_new/E_xy_new = −ν_zx/E_z = −ν_xz/E_xy (the input's own s13),
+ *     whereas leaving nu_xz unchanged inflated it by E_xy/E_z.
+ *   - nu_xy_new (horizontal↔horizontal, both weak) = ν_zx as well.
+ * The result is a self-consistent, symmetric-positive-definite compliance
+ * (reciprocity ν_ij/E_i = ν_ji/E_j holds by construction in
+ * buildOrthotropicConstitutiveMatrix) rather than the pre-#187 hybrid that
+ * kept the strong-plane ν_xy and the un-rescaled ν_xz against swapped E's.
+ * The change is a consistency fix, not a loosening: conservatism still lives
+ * in the moduli (both horizontals weak) and the yield swap. Locked by
+ * server/tests/unit/upright-swap.test.ts.
+ *
  * The input must be in the NATURAL frame (weak axis = local Z) and must not
  * carry a weakAxis — swapping an already-rotated material is meaningless.
  */
@@ -840,11 +976,13 @@ export function applyUprightScalarSwap(mat: OrthotropicMaterial): OrthotropicMat
   // does not alter. The swapped material is analysed with the hill-legacy
   // criterion anyway (the interface criterion needs a known weak axis, which
   // the no-bed swap deliberately does not have — see runAnalysis).
+  const nu_zx = mat.nu_xz * mat.E_z / mat.E_xy; // input minor ratio (reciprocity)
   return {
     ...mat,
     E_xy: mat.E_z, E_z: mat.E_xy,
     G_xy: mat.G_xz, G_xz: mat.G_xz,
     yieldXY: mat.yieldZ, yieldZ: mat.yieldXY,
+    nu_xy: nu_zx, nu_xz: nu_zx,
   };
 }
 
@@ -861,6 +999,16 @@ function buildOrthotropicMaterialCLT(
   weakAxis?:       readonly [number, number, number] | null,
   /** Bead-penetration bond multipliers (process settings present); see bond.ts. */
   bondRel?:        BondPrediction | null,
+  /**
+   * Unified in-plane DENSITY knockdown (issue #176): the A-matrix scale for the
+   * CLT laminate. When provided (single-material path), it is the shared
+   * wall-credit + Gibson-Ashby law (lumpedInPlaneStiffnessScale), replacing the
+   * legacy linear-ρ A-scaling so all paths share ONE ρ-law. When omitted (the
+   * buildCoreMaterial base, called at infillPct = 100), it falls back to the
+   * legacy `infillPct/100` — 1.0, a no-op, since the Gibson-Ashby knockdown is
+   * applied per-axis OUTSIDE this call.
+   */
+  inPlaneDensityScale?: number,
 ): OrthotropicMaterial {
   const base = MATERIALS[baseMatId] ?? MATERIALS["pla"]!;
   const lhf  = layerHeightFactor(layerHeightMm);
@@ -906,7 +1054,7 @@ function buildOrthotropicMaterialCLT(
     bead,
     plyStack.angles,
     plyStack.fracs,
-    infillPct / 100,
+    inPlaneDensityScale ?? infillPct / 100,
     E_z,
     nu_xz,
     G_xz,
@@ -948,6 +1096,15 @@ export function buildOrthotropicMaterial(
   weakAxis?:       readonly [number, number, number] | null,
   /** Bead-penetration bond multipliers (process settings present); see bond.ts. */
   bondRel?:        BondPrediction | null,
+  /**
+   * Unified in-plane stiffness knockdown (issue #176): overrides the legacy
+   * `min(1, strengthMul)` E_xy scale with the shared wall-credit + Gibson-Ashby
+   * law (lumpedInPlaneStiffnessScale), so the single-material path uses the SAME
+   * ρ-law as CLT and the two-region core. When omitted (shell build, core base,
+   * tests — all at strengthMul = 1.0 ⇒ min(1,1) = 1), the legacy behavior is
+   * bit-identical, decoupling stiffness density from the strength multiplier.
+   */
+  inPlaneStiffScale?: number,
 ): OrthotropicMaterial {
   const base = MATERIALS[baseMatId] ?? MATERIALS["pla"]!;
   const lhf  = layerHeightFactor(layerHeightMm);
@@ -968,7 +1125,10 @@ export function buildOrthotropicMaterial(
   const bondS = bondRel?.relStrength  ?? 1.0;
   const bondE = bondRel?.relStiffness ?? 1.0;
 
-  const E_xy    = E_xy_base    * Math.min(1.0, strengthMul);
+  // Stiffness density knockdown (issue #176): the unified wall-credit +
+  // Gibson-Ashby law when supplied by the single-material path; else the legacy
+  // min(1, strengthMul) (bit-identical for the strengthMul = 1.0 callers).
+  const E_xy    = E_xy_base    * (inPlaneStiffScale ?? Math.min(1.0, strengthMul));
   const E_z     = E_xy         * E_z_ratio * lhf * bondE;
   const G_xy    = E_xy         / (2 * (1 + base.nu));
   const G_xz    = G_xy         * Gxz_ratio * lhf * bondE;
@@ -1195,7 +1355,12 @@ export function buildCoreMaterial(
 ): OrthotropicMaterial {
   const baseMat = MATERIALS[materialId] ?? MATERIALS["pla"]!;
   const rho = infillPct / 100;
-  const sStr = latticeStrengthFraction(pattern, rho, calibration?.latticeStrengthExp);
+  // Per-axis strength knockdown (issue #177): yieldXY, yieldZ, and yieldZShear
+  // each follow their own Gibson-Ashby strength exponent so the strength
+  // anisotropy tracks the per-axis stiffness anisotropy (a calibration
+  // strengthExp collapses all three to one isotropic law). Applied in the
+  // NATURAL frame below, before any upright swap.
+  const { sXY, sZ, sZS } = latticeStrengthFractions(pattern, rho, calibration?.latticeStrengthExp);
 
   const uprightNoBed = !weakAxis && orientation === "upright";
   const solidAxis: readonly [number, number, number] | null =
@@ -1248,9 +1413,21 @@ export function buildCoreMaterial(
     };
   }
 
-  let framed: OrthotropicMaterial = scaled;
+  // Apply the per-axis strength knockdown in the NATURAL frame (issue #177),
+  // BEFORE the upright scalar swap: the swap relabels yieldXY↔yieldZ, so each
+  // scaled yield must already carry its own physical-axis strength law when the
+  // swap runs (interlaminar shear rides through the swap unchanged, matching the
+  // stiffness treatment where per-axis gXY/gZ scale before framing).
+  const scaledStr: OrthotropicMaterial = {
+    ...scaled,
+    yieldXY: scaled.yieldXY * sXY,
+    yieldZ:  scaled.yieldZ  * sZ,
+    yieldZShear: interlaminarShearOf(scaled) * sZS,
+  };
+
+  let framed: OrthotropicMaterial = scaledStr;
   if (uprightNoBed) {
-    const { weakAxis: _identityAxis, ...swapped } = applyUprightScalarSwap(scaled);
+    const { weakAxis: _identityAxis, ...swapped } = applyUprightScalarSwap(scaledStr);
     framed = swapped;
   }
 
@@ -1273,13 +1450,14 @@ export function buildCoreMaterial(
 
   return {
     ...framed,
-    yieldXY: framed.yieldXY * sStr,
-    yieldZ:  framed.yieldZ  * sStr,
-    // Interlaminar shear follows the same lattice strength fraction as the
-    // other strengths (the bond area thins with density like the walls do).
-    yieldZShear: interlaminarShearOf(framed) * sStr,
     label: `${solid.label} · GA ${pattern} lattice ρ=${infillPct}%`,
     massRho: baseMat.densityKgM3 * rho,
+    // Deshpande–Fleck–Ashby pressure sensitivity of the homogenized foam core
+    // (issue #171). α(ρ) → 0 exactly at ρ=1 (Math.pow(0,1)===0), so the ρ=1
+    // core stays von Mises and the materialsEqual collapse is unaffected; grows
+    // toward ~2.08 as ρ→0 (a sparse lattice yields hydrostatically). The bulk
+    // criterion consumes it; stiffness is untouched (a strength-side change).
+    dfaAlpha: dfaPressureSensitivity(rho),
   };
 }
 
@@ -1347,13 +1525,16 @@ export interface PrintSettings {
    * Number of solid TOP layers (ceiling skin). Consumed by the two-region
    * model to give the top solid skin its own band thickness
    * (topLayers × layerHeightMm), independent of the vertical perimeter band
-   * (wallCount × extrusionWidthMm). Clamped to [0, 64]. Absent → the top skin
-   * falls back to the perimeter band thickness (legacy behavior, unchanged).
+   * (wallCount × extrusionWidthMm). Clamped to [0, 64]. Absent → the two-region
+   * model assumes a slicer-default count (DEFAULT_TOP_LAYERS) and flags the
+   * assumption in materialModel.skinLayersAssumed (issue #181) — it never
+   * borrows the perimeter band thickness.
    */
   topLayers?: number;
   /**
    * Number of solid BOTTOM layers (floor skin); see topLayers. Bottoms are
    * commonly thicker than tops, so the two are independent. Clamped to [0, 64].
+   * Absent → assumes DEFAULT_BOTTOM_LAYERS (flagged in skinLayersAssumed).
    */
   bottomLayers?: number;
   /**
@@ -1425,6 +1606,15 @@ export interface AnalysisSettings {
    */
   twoRegion?:    boolean;
   /**
+   * When true, also return a volumetric stress payload (analysis-mesh node
+   * positions + corner-tet connectivity + per-node stress/utilization arrays)
+   * for the section-view interior heatmap (issue #190). Off by default: the
+   * analysis mesh is much denser than the display mesh, so this payload can
+   * be several MB and would slow down every ordinary analysis if always
+   * included. Opt in only when the user has the section/clip view open.
+   */
+  includeVolumeField?: boolean;
+  /**
    * When true (and twoRegion is also true, and print.wallCount >= 2), also
    * model wall-to-wall (bead-to-bead) bonding as a distinct, criterion-only
    * failure mode: adjacent perimeter loops are fused along a LOCAL radial
@@ -1468,7 +1658,8 @@ export interface AnalysisSettings {
  * One study found optimal at 0.3mm (not 0.1mm) for gyroid+80% infill
  * (Hikmat et al. 2023, ETJ). The relationship depends on infill interaction.
  *
- * Revised calibration — capped at ±15% (down from ±20%):
+ * Revised calibration — capped at -15%/+10% (down from ±20%), asymmetric
+ * because the clamp bounds [0.85, 1.10] are not symmetric about 1.0:
  *   0.1mm → ~1.10× baseline (was 1.15×)
  *   0.2mm → ~1.00× reference
  *   0.3mm → ~0.90× baseline (was 0.87×)
@@ -1641,13 +1832,29 @@ export interface RigidBodyModeWarning {
 export interface SingularityWarning {
   detected:      boolean;
   peakVertexIdx: number;
+  /** World-frame (raw mm) coordinate of the peak-stress vertex. Lets the client
+   *  confirm the flagged singular vertex coincides with the peak-stress
+   *  location and drives the convergence metric choice (issue #147). */
+  peakLocation:  [number, number, number];
   peakStressMPa: number;
-  /** Stress at 1mm radius from peak — if much lower, singularity likely */
+  /** Average stress in the local neighborhood (radius = neighborhoodRadiusMm).
+   *  Name kept for payload back-compat; the radius is no longer a fixed 1mm. */
   stressAt1mmMPa: number;
-  /** Ratio: peakStress / stressAt1mm — >3× suggests singularity */
+  /** Neighborhood radius actually used, mm. Scaled to the LOCAL element size at
+   *  the peak (not an absolute 1mm) so the heuristic is scale-invariant across a
+   *  5mm bracket and a 500mm frame rail alike (issue #148). */
+  neighborhoodRadiusMm: number;
+  /** Local median surface-element edge length at the peak, mm (issue #148). */
+  localElementSizeMm: number;
+  /** Ratio: peakStress / neighborhood average — >3× suggests singularity */
   concentrationRatio: number;
   message:       string;
   confidence:    "high" | "medium" | "low";
+  /** What the flag rests on (issue #148c): the server's single-mesh GEOMETRIC
+   *  heuristic, or (set client-side) scale/unit-independent REFINEMENT
+   *  divergence across a multi-mesh study. The client upgrades this field when
+   *  it corroborates the flag with refinement evidence (issue #147). */
+  evidence:      "single-mesh-heuristic" | "refinement";
 }
 
 export interface TopologySuggestion {
@@ -1676,6 +1883,69 @@ export interface FatigueEstimate {
   loadRatio:          number;
   confidence:         "medium" | "low";
   note:               string;
+  /**
+   * BULK (von Mises amplitude) fatigue SF — the historical scalar estimate,
+   * preserved verbatim so adding the interlayer check never silently changes
+   * the reported bulk number. Equals `fatigueSF` when bulk governs.
+   */
+  bulkFatigueSF:      number;
+  /** BULK Basquin cycles-to-failure (null = infinite life). Preserved from the scalar path. */
+  bulkEstimatedCycles: number | null;
+  /**
+   * ADDITIVE interlayer (through-layer / interlaminar-shear) fatigue check —
+   * present only for orthotropic materials with an interface stress field.
+   * FDM cyclic delamination at the bead interface degrades from a lower
+   * baseline than the bulk, so this term commonly governs cross-layer cyclic
+   * loads even when the bulk estimate looks safe. Null for isotropic
+   * materials or when no interface stress was available.
+   */
+  interlayer:         InterlayerFatigue | null;
+  /**
+   * Which mechanism gives the lower (governing) fatigue SF. The headline
+   * verdict (`fatigueConcern`) is the MIN of the two: a concern if EITHER the
+   * bulk or the interlayer term is a concern.
+   */
+  governingMechanism: "bulk" | "interlayer";
+}
+
+/**
+ * Interlayer (through-layer) fatigue estimate — the cyclic counterpart of the
+ * static interface criterion. The static path decomposes into in-plane bulk vs
+ * tension-only interface traction; this mirrors that at the fatigue level.
+ *
+ * Amplitude: the interface driving stress is the tension-basis equivalent
+ *   σ_iface = sqrt(⟨σzz⟩₊² + (τ_z · S_zt/S_zs)²)
+ * (the static interface utilization × S_zt), so a single Goodman/Basquin runs
+ * on the S_zt-basis endurance.
+ *
+ * Endurance: anchored to the STATIC interface allowable S_zt (≈ Z/Y × in-plane
+ * yield — the "static Z/Y ratio as the zeroth-order default") knocked down by
+ * the FLAT-print endurance ratio (0.37, the weaker of the flat-vs-upright Se/UTS
+ * split), because flat prints already fatigue at the inter-layer bond.
+ * Calibratable via the upright-vs-flat fatigue-coupon pair. Confidence LOW —
+ * FDM interlayer S-N data is sparse.
+ */
+export interface InterlayerFatigue {
+  /** Interlayer fatigue safety factor (modified Goodman on the interface traction). */
+  fatigueSF:          number;
+  /** Basquin cycles-to-failure for the interface (null = below the interlayer endurance limit). */
+  estimatedCycles:    number | null;
+  /** True if the interlayer term itself is a fatigue concern (SF < 1 or < 100k cycles). */
+  fatigueConcern:     boolean;
+  /** Interlayer endurance limit Se (MPa), on the S_zt allowable basis. */
+  enduranceLimitMPa:  number;
+  /** Interface tensile allowable S_zt used as the Goodman ultimate (MPa). */
+  allowTensionMPa:    number;
+  /** Interlaminar shear allowable S_zs (MPa). */
+  allowShearMPa:      number;
+  /** Peak through-layer opening stress ⟨σzz⟩₊ driving the cycle (MPa). */
+  peakTensionMPa:     number;
+  /** Peak driving interlayer shear τ_z (MPa). */
+  peakShearMPa:       number;
+  /** Tension-basis equivalent interface amplitude stress σ_iface used (MPa, = σ_max of the cycle). */
+  peakInterfaceMPa:   number;
+  confidence:         "medium" | "low";
+  note:               string;
 }
 
 /**
@@ -1688,7 +1958,8 @@ export interface FatigueEstimate {
  *     fully reversed (σ_m=0, σ_a=σ_max); R>0 is a tension-biased cycle. A
  *     compressive mean stress (σ_m<0) is clamped to 0 in Goodman to stay
  *     conservative (its life benefit is not credited).
- *   - Endurance limit Se ≈ 0.40 × UTS for FDM PLA (flat print)
+ *   - Endurance limit Se/UTS is orientation-dependent: 0.37 for flat prints
+ *     (inter-layer bonds are the weak link) and 0.43 for upright prints.
  *     Conservative estimate: Juvinall & Marshek, and limited FDM fatigue data
  *     from Wang et al. 2020 (PLA fatigue life study)
  *   - Basquin exponent b ≈ -0.1 (typical for semi-ductile polymers)
@@ -1704,6 +1975,57 @@ export interface FatigueEstimate {
  *
  * Confidence: LOW-MEDIUM. FDM fatigue data is sparse. Treat as order-of-magnitude.
  */
+/**
+ * Modified-Goodman + Basquin core, shared by the bulk (von Mises) and the
+ * interlayer (interface-traction) fatigue paths so the two can never diverge
+ * in their cyclic mechanics — only their stress amplitude, endurance limit,
+ * and ultimate differ. σ_max is the peak stress; Se the endurance limit; uts
+ * the Goodman ultimate; sigmaf the Basquin fatigue-strength coefficient; b the
+ * Basquin exponent; R the load ratio (already clamped).
+ */
+function goodmanBasquin(
+  sigmaMax: number, Se: number, uts: number, sigmaf: number, b: number, R: number,
+): { fatigueSF: number; estimatedCycles: number | null; sigma_a: number; sigma_m_eff: number } {
+  const sigma_a = sigmaMax * (1 - R) / 2;
+  const sigma_m = sigmaMax * (1 + R) / 2;
+  // Compressive mean stress is beneficial; conservatively don't credit it.
+  const sigma_m_eff = Math.max(0, sigma_m);
+  // Modified Goodman: 1/SF = σ_a/Se + σ_m/Su
+  const goodmanDemand = (sigma_a / Se) + (sigma_m_eff / uts);
+  const fatigueSF = goodmanDemand > 0 ? 1 / goodmanDemand : 999;
+  // Basquin cycles: σ_a,eq = σ_a/(1 − σ_m/Su) [Goodman-corrected amplitude]
+  const sigmaEqA = sigma_a / Math.max(0.01, 1 - sigma_m_eff / uts);
+  let estimatedCycles: number | null = null;
+  if (sigmaEqA > Se) estimatedCycles = Math.max(1, Math.round(Math.pow(sigmaEqA / sigmaf, 1 / b)));
+  return { fatigueSF, estimatedCycles, sigma_a, sigma_m_eff };
+}
+
+/**
+ * Peak interface traction driving the interlayer fatigue cycle, plus the static
+ * interface allowables. Mirrors the FEM inputs of the static interface
+ * criterion (⟨σzz⟩₊ and interlaminar shear τ_z at the governing node).
+ */
+export interface InterlayerFatigueInput {
+  /** Peak through-layer opening stress ⟨σzz⟩₊ (MPa) — σ_max of the interface cycle. */
+  peakTensionMPa:  number;
+  /** Peak driving interlayer shear τ_z (MPa). */
+  peakShearMPa:    number;
+  /** Static interface tensile allowable S_zt (MPa) — the Goodman ultimate for the interface. */
+  allowTensionMPa: number;
+  /** Static interlaminar shear allowable S_zs (MPa). */
+  allowShearMPa:   number;
+}
+
+/**
+ * Interlayer endurance ratio Se/S_zt for the through-layer bond under cyclic
+ * load. Anchored to the FLAT-print bulk endurance ratio (0.37 — the weaker of
+ * the flat-vs-upright split, since flat prints already fatigue AT the bond),
+ * applied to the static interface allowable S_zt (which itself carries the
+ * static Z/Y ratio). Calibratable via the upright-vs-flat fatigue coupon pair.
+ * Confidence LOW.
+ */
+const INTERLAYER_ENDURANCE_RATIO_DEFAULT = 0.37;
+
 export function estimateFatigue(
   peakVonMisesMPa: number,
   effectiveYieldMPa: number,
@@ -1717,10 +2039,23 @@ export function estimateFatigue(
    * replaced by the measured values and confidence rises LOW→MEDIUM — mirroring
    * how a bearing coupon lifts the bearing mode.
    */
-  calib?: { fatigueSeRatio?: number | null; fatigueBasquinB?: number | null; fatigueUTS_MPa?: number | null } | null,
+  calib?: { fatigueSeRatio?: number | null; fatigueBasquinB?: number | null; fatigueUTS_MPa?: number | null; fatigueFitQuality?: "good" | "poor" | null; fatigueSeRatioInterlayer?: number | null } | null,
+  /**
+   * Optional interlayer (through-layer / interlaminar-shear) interface stress —
+   * when present the ADDITIVE interlayer fatigue check runs alongside the bulk
+   * scalar path and the governing (min-SF) mechanism drives the verdict. Absent
+   * for isotropic materials or when no interface stress field is available, in
+   * which case the result is the bulk-only estimate (bit-identical to before).
+   */
+  interlayerInput?: InterlayerFatigueInput | null,
 ): FatigueEstimate {
   const R = Math.max(-1, Math.min(0.95, Number.isFinite(loadRatioR) ? loadRatioR : 0));
   const isCalibrated = calib != null && calib.fatigueSeRatio != null && Number.isFinite(calib.fatigueSeRatio);
+  // Fit-quality gate (issue #179): a poor S-N fit still supplies the measured
+  // Se/b (the team's own best data), but does NOT earn the LOW→MEDIUM upgrade —
+  // the scatter is too large to call the estimate calibrated-grade.
+  const calibPoorFit = isCalibrated && calib?.fatigueFitQuality === "poor";
+  const calibratedConfident = isCalibrated && !calibPoorFit;
   // Base material UTS — use literature values, not FDM-reduced yield
   // UTS ≈ 1.15-1.25 × yield for PLA-like polymers
   // For FDM, we use the effective yield as the strength basis
@@ -1745,56 +2080,99 @@ export function estimateFatigue(
   // For Goodman, we need UTS. Use effective yield as a proxy for actual UTS
   // (FDM parts typically fracture near yield for brittle-ish PLA)
   const utsMPa = Math.max(effectiveYieldMPa * 1.15, Se * 1.5);
-
-  // Amplitude / mean from the load ratio R = σ_min/σ_max, with σ_max = peak VM:
-  //   σ_a = σ_max(1−R)/2,  σ_m = σ_max(1+R)/2.  R=0 → σ_m = σ_a = σ_max/2.
-  const sigma_a = peakVonMisesMPa * (1 - R) / 2;
-  const sigma_m = peakVonMisesMPa * (1 + R) / 2;
-  // Compressive mean stress is beneficial; conservatively don't credit it.
-  const sigma_m_eff = Math.max(0, sigma_m);
-
-  // Modified Goodman: 1/SF = σ_a/Se + σ_m/Su
-  const goodmanDemand = (sigma_a / Se) + (sigma_m_eff / utsMPa);
-  const fatigueSF     = goodmanDemand > 0 ? 1 / goodmanDemand : 999;
-
-  // Basquin cycles to failure
-  // σ_a,eq = σ_a / (1 - σ_m/Su)  [Goodman-corrected amplitude]
-  const sigmaEqA = sigma_a / Math.max(0.01, 1 - sigma_m_eff / utsMPa);
   const sigmaf   = 1.5 * baseMaterialUTS;
   const b        = (isCalibrated && calib?.fatigueBasquinB != null) ? calib.fatigueBasquinB : -0.1;
 
-  let estimatedCycles: number | null = null;
-  if (sigmaEqA <= Se) {
-    estimatedCycles = null; // infinite life
-  } else {
-    const N = Math.pow(sigmaEqA / sigmaf, 1 / b);
-    estimatedCycles = Math.max(1, Math.round(N));
+  // ── Bulk (von Mises amplitude) path — the historical scalar estimate ──────
+  // σ_max = peak VM: σ_a = σ_max(1−R)/2, σ_m = σ_max(1+R)/2. R=0 → σ_m=σ_a=σ_max/2.
+  const bulk = goodmanBasquin(peakVonMisesMPa, Se, utsMPa, sigmaf, b, R);
+  const bulkFatigueSF = +bulk.fatigueSF.toFixed(2);
+  const bulkConcern = bulk.fatigueSF < 1.0 || (bulk.estimatedCycles !== null && bulk.estimatedCycles < 100_000);
+
+  const cycleStrOf = (c: number | null): string => c === null
+    ? 'infinite life (below endurance limit)'
+    : c < 1_000
+    ? `~${c.toLocaleString()} cycles — part will fail quickly under cyclic loading`
+    : c < 100_000
+    ? `~${c.toLocaleString()} cycles — fatigue concern for competition use (~${(c/500).toFixed(0)} matches)`
+    : `~${c.toLocaleString()} cycles — adequate for competition use`;
+
+  // ── Interlayer (through-layer / interlaminar-shear) path — ADDITIVE ───────
+  // FDM cyclic delamination at the bead interface degrades from a lower
+  // baseline than the bulk. The static interface criterion already erases the
+  // tension-on-interface information from the scalar VM amplitude, so we run a
+  // parallel Goodman/Basquin on the interface traction against an interlayer
+  // endurance anchored to the static S_zt allowable (which carries the Z/Y
+  // ratio) times the flat-print endurance ratio. Confidence LOW.
+  let interlayer: InterlayerFatigue | null = null;
+  if (interlayerInput && interlayerInput.allowTensionMPa > 0 && interlayerInput.allowShearMPa > 0) {
+    const { peakTensionMPa, peakShearMPa, allowTensionMPa, allowShearMPa } = interlayerInput;
+    // Tension-basis equivalent interface amplitude = S_zt × static interface
+    // utilization = sqrt(⟨σzz⟩₊² + (τ_z·S_zt/S_zs)²). Reduces to ⟨σzz⟩₊ for
+    // pure opening and to τ_z·S_zt/S_zs for pure interlayer shear.
+    const shearOnTensionBasis = peakShearMPa * (allowTensionMPa / allowShearMPa);
+    const sigmaIface = Math.sqrt(peakTensionMPa * peakTensionMPa + shearOnTensionBasis * shearOnTensionBasis);
+    const seRatioIl = (isCalibrated && calib?.fatigueSeRatioInterlayer != null && Number.isFinite(calib.fatigueSeRatioInterlayer))
+      ? calib.fatigueSeRatioInterlayer!
+      : INTERLAYER_ENDURANCE_RATIO_DEFAULT;
+    // Interface Goodman ultimate: the static tensile allowable S_zt (the bond
+    // fractures at its through-layer tensile strength). Se on the same basis.
+    const utsIface = allowTensionMPa;
+    const SeIface  = allowTensionMPa * seRatioIl;
+    const sigmafIface = 1.5 * utsIface;
+    const il = goodmanBasquin(sigmaIface, SeIface, utsIface, sigmafIface, b, R);
+    const ilConcern = il.fatigueSF < 1.0 || (il.estimatedCycles !== null && il.estimatedCycles < 100_000);
+    interlayer = {
+      fatigueSF: +il.fatigueSF.toFixed(2),
+      estimatedCycles: il.estimatedCycles,
+      fatigueConcern: ilConcern,
+      enduranceLimitMPa: +SeIface.toFixed(1),
+      allowTensionMPa: +allowTensionMPa.toFixed(1),
+      allowShearMPa: +allowShearMPa.toFixed(1),
+      peakTensionMPa: +peakTensionMPa.toFixed(2),
+      peakShearMPa: +peakShearMPa.toFixed(2),
+      peakInterfaceMPa: +sigmaIface.toFixed(2),
+      confidence: (isCalibrated && calib?.fatigueSeRatioInterlayer != null) ? "medium" : "low",
+      note: `Interlayer (through-layer) fatigue: ${cycleStrOf(il.estimatedCycles)}. ` +
+            `σ_iface=${sigmaIface.toFixed(1)} MPa (⟨σzz⟩₊=${peakTensionMPa.toFixed(1)}, τ_z=${peakShearMPa.toFixed(1)} MPa) ` +
+            `vs Se_interlayer=${SeIface.toFixed(1)} MPa (${(seRatioIl*100).toFixed(0)}% of S_zt=${allowTensionMPa.toFixed(1)} MPa). ` +
+            `Cyclic delamination at the bead interface — the dominant FDM cyclic failure mode, degrades from a lower baseline than the bulk. ` +
+            ((isCalibrated && calib?.fatigueSeRatioInterlayer != null)
+              ? `Interlayer Se/UTS CALIBRATED from your upright-vs-flat fatigue coupon pair.`
+              : `LOW confidence — interlayer S-N data sparse; anchored to the static Z/Y ratio. Run an upright-vs-flat fatigue coupon pair to calibrate.`),
+    };
   }
 
-  const fatigueConcern = fatigueSF < 1.0 || (estimatedCycles !== null && estimatedCycles < 100_000);
-
-  const cycleStr = estimatedCycles === null
-    ? 'infinite life (below endurance limit)'
-    : estimatedCycles < 1_000
-    ? `~${estimatedCycles.toLocaleString()} cycles — part will fail quickly under cyclic loading`
-    : estimatedCycles < 100_000
-    ? `~${estimatedCycles.toLocaleString()} cycles — fatigue concern for competition use (~${(estimatedCycles/500).toFixed(0)} matches)`
-    : `~${estimatedCycles.toLocaleString()} cycles — adequate for competition use`;
+  // ── Governing verdict: MIN of bulk and interlayer ─────────────────────────
+  // Headline scalars stay the BULK values (never silently changed); the
+  // verdict flag is a concern if EITHER mechanism is a concern.
+  const governingMechanism: "bulk" | "interlayer" =
+    interlayer && interlayer.fatigueSF < bulkFatigueSF ? "interlayer" : "bulk";
+  const fatigueConcern = bulkConcern || (interlayer?.fatigueConcern ?? false);
 
   return {
-    estimatedCycles,
+    estimatedCycles: bulk.estimatedCycles,
     fatigueConcern,
-    fatigueSF: +fatigueSF.toFixed(2),
+    fatigueSF: bulkFatigueSF,
     enduranceLimitMPa: +Se.toFixed(1),
     utsMPa: +utsMPa.toFixed(1),
     loadRatio: R,
-    confidence: isCalibrated ? "medium" : "low",
-    note: `${R === 0 ? "Pulsating load (R=0)" : `Load ratio R=${R.toFixed(2)}`}: ${cycleStr}. ` +
-          `σ_a=${sigma_a.toFixed(1)} MPa, σ_m=${sigma_m_eff.toFixed(1)} MPa. ` +
+    confidence: calibratedConfident ? "medium" : "low",
+    bulkFatigueSF,
+    bulkEstimatedCycles: bulk.estimatedCycles,
+    interlayer,
+    governingMechanism,
+    note: `${R === 0 ? "Pulsating load (R=0)" : `Load ratio R=${R.toFixed(2)}`}: ${cycleStrOf(bulk.estimatedCycles)}. ` +
+          `σ_a=${bulk.sigma_a.toFixed(1)} MPa, σ_m=${bulk.sigma_m_eff.toFixed(1)} MPa. ` +
           `Se=${Se.toFixed(1)} MPa (${(seRatio*100).toFixed(0)}% of ${isCalibrated ? "measured" : "base"} UTS ${baseMaterialUTS.toFixed(0)} MPa, ${orientation} orientation). ` +
-          (isCalibrated
+          (calibratedConfident
             ? `Using CALIBRATED S-N fit from cyclic coupon data (Se/UTS and Basquin b=${b.toFixed(3)} measured on your printer/filament). Goodman criterion + Basquin.`
-            : `FDM fatigue data sparse — treat as order-of-magnitude. Goodman criterion + Basquin b=-0.1. Run a fatigue coupon (POST /api/calibration/fatigue) to raise confidence. Source: Wang et al. 2020.`),
+            : calibPoorFit
+            ? `Using your cyclic-coupon S-N fit (Se/UTS and Basquin b=${b.toFixed(3)}), but the fit quality was POOR (log-log scatter above the threshold) so confidence stays LOW — treat as order-of-magnitude and re-check the coupon data. Goodman criterion + Basquin.`
+            : `FDM fatigue data sparse — treat as order-of-magnitude. Goodman criterion + Basquin b=-0.1. Run a fatigue coupon (POST /api/calibration/fatigue) to raise confidence. Source: Wang et al. 2020.`) +
+          (interlayer
+            ? ` BULK vs INTERLAYER: bulk SF ${bulkFatigueSF}×, interlayer SF ${interlayer.fatigueSF}× → ${governingMechanism.toUpperCase()} governs. ${interlayer.note}`
+            : ``),
   };
 }
 
@@ -2316,16 +2694,27 @@ export interface MaterialModelInfo {
   /** Perimeter wall-band thickness used for classification (wallCount × line width). */
   wallThicknessMm:      number | null;
   /**
-   * Top/bottom solid-skin (floor/ceiling) band thicknesses, mm — present when
-   * the two-region model classified independent skins (topLayers/bottomLayers
-   * supplied). Null when skins were not modeled (fell back to the perimeter band).
+   * Top/bottom solid-skin (floor/ceiling) band thicknesses, mm. Derived from
+   * the solid top/bottom layer COUNT × layer height (issue #181) — a quantity
+   * independent of the perimeter wall band. Always present for a two-region
+   * solve; when the caller supplied no layer counts these use the assumed
+   * defaults (see skinLayersAssumed).
    */
   skinTopThicknessMm?:  number | null;
   skinBotThicknessMm?:  number | null;
+  /** Solid top/bottom layer counts used to derive the skin thicknesses. */
+  skinTopLayers?:       number;
+  skinBotLayers?:       number;
+  /**
+   * True when the top or bottom skin layer count was not supplied and the
+   * slicer-default assumption (DEFAULT_TOP_LAYERS / DEFAULT_BOTTOM_LAYERS) was
+   * used — set the actual slicer values for an accurate skin credit.
+   */
+  skinLayersAssumed?:   boolean;
   /**
    * Build axis the skin classification used. "bed" = the picked bed normal;
    * "assumed-z-up" = no bed picked, so global +Z was assumed (skins may be
-   * misplaced if the part is not modeled Z-up). Absent when skins not modeled.
+   * misplaced if the part is not modeled Z-up).
    */
   skinBuildAxis?:       "bed" | "assumed-z-up";
   /** Shell (dense wall) share of part volume from the geometric classification. */
@@ -2356,6 +2745,15 @@ export interface MaterialModelInfo {
     strengthScale:     number;
     /** True when g(ρ) hit the 1e-3 low-density floor. */
     floored:           boolean;
+    /**
+     * Core BULK yield criterion (issue #171). "deshpande-fleck-ashby" = the
+     * pressure-dependent foam criterion σ̂² = (σ_vm² + α²σ_m²)/(1 + (α/3)²) with
+     * the disclosed dfaAlpha; the core yields hydrostatically. "von-mises" only
+     * when α = 0 (ρ = 1, i.e. the solid limit). Shell bins are always von Mises.
+     */
+    yieldCriterion:    "deshpande-fleck-ashby" | "von-mises";
+    /** DFA pressure-sensitivity α(ρ) of the pure core (0 at ρ=1). LOW confidence. */
+    dfaAlpha:          number;
     confidence:        "LOW";
   };
   /** Set when the two-region request degraded to uniform (why). */
@@ -2367,9 +2765,18 @@ export interface MaterialModelInfo {
   bond?: {
     relStrength:    number;
     relStiffness:   number;
-    interfaceTempC: number;
-    substrateTempC: number;
-    coolTimeConstS: number;
+    /**
+     * False when the material has no bond-table entry (issue #186): the bond
+     * path was refused, so `relStrength`/`relStiffness` are the reference no-op
+     * (1.0) and the thermal diagnostics below are omitted. Absent ⇒ applied.
+     */
+    applied?:       boolean;
+    /** Per-material reference cooling-fan duty the multiplier is anchored to, %
+     *  (#184). Present only when the bond path applied (omitted on the #186 no-op). */
+    coolingFanRefPct?: number;
+    interfaceTempC?: number;
+    substrateTempC?: number;
+    coolTimeConstS?: number;
     clamped:        boolean;
     confidence:     "low" | "medium";
     note:           string;
@@ -2388,12 +2795,58 @@ export interface MaterialModelInfo {
     perimeterLengthMm:    number;
     /** True when the perimeter estimate degenerated and the fallback constant was used. */
     perimeterFallback:    boolean;
+    /**
+     * Basis of the loop-length estimate (#182): "outer-contour" — the
+     * outer-wall loop(s) only, internal hole bores excluded; or "fallback" —
+     * the fixed characteristic length used when the geometric estimate
+     * degenerated.
+     */
+    loopLengthBasis:      "outer-contour" | "fallback";
     note?:                string;
   } | null;
 }
 
+/**
+ * Volumetric stress payload for the section-view interior heatmap (issue
+ * #190). Everything is expressed on the ANALYSIS mesh (mesh.nodes /
+ * mesh.elements), not the display mesh — the client's marching-tet slicer
+ * walks corner tets directly, so mid-side nodes of C3D10 elements are
+ * omitted (linear interpolation across the 4 corners is exact for a linear
+ * element and a documented approximation for a quadratic one; see PR notes).
+ * All arrays are per-node (indexed by nodeIndex, 0..nodeCount-1) except
+ * `tets`, which is 4 node indices per tet (cornerTetCount*4 length).
+ */
+export interface VolumeFieldPayload {
+  nodeCount:    number;
+  cornerTetCount: number;
+  /** Node positions, xyz interleaved, length = nodeCount*3. Base64 Float32. */
+  nodesB64:           string;
+  /** Corner-tet connectivity (4 node indices per tet). Base64 Int32. */
+  tetsB64:            string;
+  /** Per-node von Mises stress (MPa). Base64 Float32. */
+  nodeVonMisesB64:        string;
+  /** Per-node signed von Mises (tension +, compression -). Base64 Float32. */
+  nodeSignedVonMisesB64:  string;
+  /** Per-node principal stresses σ1≥σ2≥σ3. Base64 Float32 each. */
+  nodePrincipal1B64:      string;
+  nodePrincipal2B64:      string;
+  nodePrincipal3B64:      string;
+  /** Per-node anisotropic utilization ratios (0-2ish); null if unavailable (isotropic material with no tensor recovery). */
+  nodeXyUtilB64:          string | null;
+  nodeZUtilB64:            string | null;
+}
+
 export interface AnalysisResult {
   materialModel:           MaterialModelInfo;
+  /**
+   * Per-analysis validation coverage map (issue #191) — which
+   * solver_validation groups and unit-test suites directly exercise THIS
+   * analysis's configuration (element order, material model, criterion,
+   * load types, mesher, opt-in options), and which characteristics have no
+   * direct anchor. See server/validation-coverage.ts for what "covered"
+   * means and doesn't.
+   */
+  validationCoverage:      ValidationCoverageReport;
   vertexStress:            Float32Array;
   vertexPrincipalStress:   Float32Array;
   vertexPrincipalStress2:  Float32Array;
@@ -2419,6 +2872,14 @@ export interface AnalysisResult {
   safetyfactorLow:        number | null;
   /** Optimistic SF using upper bound of literature uncertainty range */
   safetyFactorHigh:       number | null;
+  /**
+   * Human-readable disclosure of which uncertainty terms contributed to the SF
+   * band (issues #172/#173): the interlayer yield-ratio and layer-height-slope
+   * literature ranges, plus — when active — the bond-model LOW-confidence
+   * constants (process path) and the Gibson-Ashby core strength-exponent
+   * spread (low-infill two-region path).
+   */
+  sfBandComposition?:     string | null;
   yielding:               boolean;
   verdict:                string;
   cgIterations:           number;
@@ -2430,6 +2891,16 @@ export interface AnalysisResult {
    * the result must be treated as a rough sanity check only.
    */
   meshFallback:           boolean;
+  /**
+   * Non-null when the model's bounding-box diagonal falls outside the plausible
+   * millimetre range (<1 mm or >2000 mm) — a strong hint the STL/STEP was
+   * exported in the wrong units (metres, inches, microns). STORMFEA does NOT
+   * auto-rescale (that would silently invent a scale); it analyses the numbers
+   * as given and surfaces this actionable warning so the user can re-export in
+   * millimetres. All physical outputs (mm, MPa, N) are only meaningful if the
+   * geometry really is in millimetres (issue #168).
+   */
+  unitsWarning:           string | null;
   solverMs:               number;
   nodeCount:              number;
   elementCount:           number;
@@ -2475,6 +2946,11 @@ export interface AnalysisResult {
     tensileDominated: boolean;
     indeterminate: boolean;
     hasMode: boolean;
+    /** True when the smallest-positive BLF is certified as the global minimum
+     *  (no smaller positive mode skipped); false → treat blf as an estimate. */
+    certified: boolean;
+    /** Lowest positive BLFs (ascending, up to ~3); blf is the first. */
+    positiveBLFs: readonly number[];
   };
   /** CG solver residual checkpoints for convergence visualization */
   residualCheckpoints?:   readonly { iteration: number; relativeResidual: number }[];
@@ -2484,6 +2960,14 @@ export interface AnalysisResult {
   globalRelativeError?:    number;
   /** Top-20 elements with highest error estimates, for refinement guidance */
   topErrorElements?:       Array<{ x: number; y: number; z: number; errorEstimate: number }>;
+  /**
+   * Volumetric stress payload for the section-view interior heatmap (#190).
+   * Present only when req.analysis.includeVolumeField was true. Node
+   * positions and corner-tet connectivity of the ANALYSIS mesh (not the
+   * display mesh), plus per-node stress/utilization values so the client can
+   * linearly interpolate across whichever tet the section plane cuts.
+   */
+  volumeField?: VolumeFieldPayload;
   /** XY in-plane utilization per surface vertex (null if unavailable) */
   vertexXyUtil:            Float32Array | null;
   /** Z inter-layer utilization per surface vertex (null if unavailable) */
@@ -2514,13 +2998,23 @@ export interface AnalysisResult {
  *
  * Detection method:
  *   1. Find peak stress vertex
- *   2. Compute average stress in a 1mm radius neighborhood
- *   3. If peak/neighborhood ratio > 3.0, flag as likely singularity
- *   4. Additional check: if peak stress vertex has very few neighboring triangles
- *      (isolated point), more likely to be a singularity
+ *   2. Measure the LOCAL element size at the peak (median edge length of the
+ *      surface triangles touching it) and set the neighborhood radius to a
+ *      small multiple of it (SINGULARITY_NEIGHBORHOOD_FACTOR × h_local). Using
+ *      an element-relative radius instead of an absolute 1mm makes the test
+ *      scale-invariant: on a 5mm part 1mm spanned much of the geometry (false
+ *      positives); on a 500mm part 1mm was sub-element (missed) — issue #148.
+ *   3. Compute the average stress in that neighborhood; if peak/neighborhood
+ *      ratio > 3.0 (and the peak is well above yield), flag as likely singular.
+ *   4. Additional check: if the peak vertex has NO neighbors within the radius
+ *      (isolated point), that is a strong singularity indicator.
  *
- * This is a heuristic. False positives possible at genuine stress concentrations
- * (e.g. tight hole radii). Confidence is reported accordingly.
+ * This is a SINGLE-MESH GEOMETRIC heuristic (evidence: "single-mesh-heuristic").
+ * The stronger, scale- and unit-independent test — the peak growing
+ * systematically under refinement (p_obs ≈ 0) — needs multi-mesh data and is
+ * applied client-side, which upgrades `evidence` to "refinement" (issue #147).
+ * False positives are still possible at genuine stress concentrations (e.g.
+ * tight hole radii); confidence is reported accordingly.
  */
 /**
  * Detects whether the constraint set leaves a rigid-body rotation mode
@@ -2678,11 +3172,78 @@ export function detectUnconstrainedRigidBodyMode(
   };
 }
 
-function detectSingularity(
+/** Neighborhood radius as a multiple of the local element size (issue #148). */
+export const SINGULARITY_NEIGHBORHOOD_FACTOR = 2.5;
+
+/**
+ * Local characteristic element size at a display-mesh vertex: the median edge
+ * length of the surface triangles that touch it. `positions` is the display
+ * mesh (9 floats per triangle, 3 consecutive vertices per triangle), so
+ * triangle t owns vertices 3t, 3t+1, 3t+2. Coincident vertices (shared corners,
+ * which STL duplicates per-triangle) are gathered with a tolerance RELATIVE to
+ * the owning triangle's smallest edge — scaling every coordinate by s scales
+ * that tolerance and every edge by s, so the SAME triangles are gathered and
+ * the returned length scales by s. That relative construction is what makes the
+ * downstream neighborhood radius scale-invariant. Returns NaN if the peak's
+ * owning triangle is degenerate/out of range.
+ */
+export function localEdgeLengthAtPeak(
+  positions: Float32Array | Float64Array,
+  peakIdx:   number,
+): number {
+  const triCount = Math.floor(positions.length / 9);
+  const ownTri   = Math.floor(peakIdx / 3);
+  if (ownTri < 0 || ownTri >= triCount) return NaN;
+
+  const px = positions[peakIdx * 3]     ?? 0;
+  const py = positions[peakIdx * 3 + 1] ?? 0;
+  const pz = positions[peakIdx * 3 + 2] ?? 0;
+
+  const edgeLensOf = (t: number): number[] => {
+    const v = [t * 3, t * 3 + 1, t * 3 + 2];
+    const pair = (u: number, w: number): number => {
+      const dx = (positions[u * 3]     ?? 0) - (positions[w * 3]     ?? 0);
+      const dy = (positions[u * 3 + 1] ?? 0) - (positions[w * 3 + 1] ?? 0);
+      const dz = (positions[u * 3 + 2] ?? 0) - (positions[w * 3 + 2] ?? 0);
+      return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    };
+    return [pair(v[0]!, v[1]!), pair(v[1]!, v[2]!), pair(v[2]!, v[0]!)];
+  };
+
+  const ownEdges = edgeLensOf(ownTri).filter(e => e > 0);
+  const seed = ownEdges.length ? Math.min(...ownEdges) : 0;
+  // Relative coincidence tolerance → scale-invariant. eps=0 still matches the
+  // exact per-triangle duplicates STL produces at a shared corner.
+  const eps2 = (seed * 0.05) ** 2;
+
+  const edges: number[] = [];
+  for (let t = 0; t < triCount; t++) {
+    let touches = false;
+    for (let k = 0; k < 3; k++) {
+      const vi = t * 3 + k;
+      const dx = (positions[vi * 3]     ?? 0) - px;
+      const dy = (positions[vi * 3 + 1] ?? 0) - py;
+      const dz = (positions[vi * 3 + 2] ?? 0) - pz;
+      if (dx * dx + dy * dy + dz * dz <= eps2) { touches = true; break; }
+    }
+    if (touches) for (const e of edgeLensOf(t)) if (e > 0) edges.push(e);
+  }
+
+  const pool = edges.length ? edges : ownEdges;
+  if (!pool.length) return NaN;
+  pool.sort((a, b) => a - b);
+  return pool[Math.floor(pool.length / 2)]!;
+}
+
+/**
+ * Single-mesh geometric singularity heuristic. `positions` MUST be aligned with
+ * `vertexStress` (both indexed by display-mesh surface vertex) so the peak's
+ * coordinate and its neighborhood are computed in the same index space — the
+ * caller passes req.positions, not the internal FEA node array.
+ */
+export function detectSingularity(
   vertexStress:  Float32Array,
-  positions:     Float64Array,
-  surfaceTris:   Int32Array | null,
-  meshScale:     number,
+  positions:     Float32Array | Float64Array,
 ): SingularityWarning | null {
   if (vertexStress.length === 0) return null;
 
@@ -2700,9 +3261,22 @@ function detectSingularity(
   const px = positions[peakIdx * 3]     ?? 0;
   const py = positions[peakIdx * 3 + 1] ?? 0;
   const pz = positions[peakIdx * 3 + 2] ?? 0;
+  const peakLocation: [number, number, number] = [px, py, pz];
 
-  // Find all vertices within 1mm radius and compute their average stress
-  const radius1mm = 1.0 / meshScale;  // 1mm in model units
+  // Scale the neighborhood radius to the LOCAL element size at the peak (issue
+  // #148) rather than a fixed 1mm. Without a local length scale we can't assess
+  // a singularity, so bail out.
+  const localH = localEdgeLengthAtPeak(positions, peakIdx);
+  if (!(localH > 0) || !isFinite(localH)) return null;
+  const radius  = SINGULARITY_NEIGHBORHOOD_FACTOR * localH;
+  const radius2 = radius * radius;
+  // The display mesh duplicates each shared corner once per incident triangle,
+  // so the peak location appears as several coincident vertices all carrying the
+  // singular stress. They are the SAME physical point, not neighborhood samples,
+  // so exclude anything within a small (element-relative → scale-invariant)
+  // coincidence tolerance of the peak; counting them would deflate the ratio.
+  const coincident2 = (localH * 0.05) ** 2;
+
   let neighborSum = 0, neighborCount = 0;
   const nVerts = vertexStress.length;
 
@@ -2712,7 +3286,8 @@ function detectSingularity(
     const dy = (positions[i * 3 + 1] ?? 0) - py;
     const dz = (positions[i * 3 + 2] ?? 0) - pz;
     const dist2 = dx*dx + dy*dy + dz*dz;
-    if (dist2 < radius1mm * radius1mm) {
+    if (dist2 <= coincident2) continue;   // coincident duplicate of the peak
+    if (dist2 < radius2) {
       neighborSum   += vertexStress[i] ?? 0;
       neighborCount++;
     }
@@ -2723,11 +3298,15 @@ function detectSingularity(
     return {
       detected:           true,
       peakVertexIdx:      peakIdx,
+      peakLocation,
       peakStressMPa:      peakVal,
       stressAt1mmMPa:     0,
+      neighborhoodRadiusMm: +radius.toFixed(3),
+      localElementSizeMm:   +localH.toFixed(3),
       concentrationRatio: 999,
       confidence:         "medium",
-      message: `Peak stress vertex (${peakVal.toFixed(1)} MPa) has no neighbors within 1mm — isolated point stress. This is likely a geometric singularity at a sharp corner. The true stress is lower. Add a fillet radius of ≥0.5mm to resolve.`,
+      evidence:           "single-mesh-heuristic",
+      message: `Peak stress vertex (${peakVal.toFixed(1)} MPa) has no neighbors within ${radius.toFixed(2)}mm (2.5× the local element size) — isolated point stress. This is likely a geometric singularity at a sharp corner. The true stress is lower. Add a fillet radius of ≥0.5mm to resolve.`,
     };
   }
 
@@ -2745,11 +3324,15 @@ function detectSingularity(
   return {
     detected:           true,
     peakVertexIdx:      peakIdx,
+    peakLocation,
     peakStressMPa:      peakVal,
     stressAt1mmMPa:     +avgNeighbor.toFixed(1),
+    neighborhoodRadiusMm: +radius.toFixed(3),
+    localElementSizeMm:   +localH.toFixed(3),
     concentrationRatio: +ratio.toFixed(1),
     confidence,
-    message: `Peak stress ${peakVal.toFixed(1)} MPa is ${ratio.toFixed(1)}× higher than the 1mm neighborhood average (${avgNeighbor.toFixed(1)} MPa). This gradient suggests a geometric singularity at a sharp re-entrant corner. The safety factor may be artificially low. Add a fillet radius ≥0.5mm at this location in your CAD model.`,
+    evidence:           "single-mesh-heuristic",
+    message: `Peak stress ${peakVal.toFixed(1)} MPa is ${ratio.toFixed(1)}× higher than the surrounding neighborhood average (${avgNeighbor.toFixed(1)} MPa, within ${radius.toFixed(2)}mm ≈ 2.5× the local element size). This gradient suggests a geometric singularity at a sharp re-entrant corner. The safety factor may be artificially low. Add a fillet radius ≥0.5mm at this location in your CAD model.`,
   };
 }
 
@@ -3203,6 +3786,15 @@ export function mapErrorEstimateToVertices(
  * not just the post-processing failure check.
  */
 export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult> {
+  // Reject unknown material ids at the boundary (issue #186) rather than let the
+  // downstream `MATERIALS[id] ?? pla` fallbacks silently substitute PLA physics.
+  // The HTTP layer validates this too (with a friendlier 400); this guard also
+  // protects direct library callers so the wrong-physics path cannot be reached.
+  if (!isKnownMaterial(req.print.materialId)) {
+    throw new Error(
+      `Unknown materialId "${req.print.materialId}". Supported materials: ${MATERIAL_IDS.join(", ")}.`);
+  }
+
   const t0 = Date.now();
 
   // ── Progress + cancellation plumbing (issue #109) ──────────────────────────
@@ -3266,6 +3858,21 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // For flat prints: E_z ≈ 0.65 × E_xy, yieldZ ≈ 0.58 × yieldXY.
   // For upright prints: axes are swapped — the strong direction faces the load.
 
+  // Unified in-plane density knockdown (issue #176): ONE ρ-law for the lumped
+  // single-material paths — a wall-credit + Gibson-Ashby volume average
+  // (lumpedInPlaneStiffnessScale), the lumped limit of the two-region core.
+  // The CLT path passes it as the laminate A-matrix scale; the non-CLT path as
+  // the E_xy scale. This replaces the previous three inconsistent laws
+  // (CLT linear-ρ, non-CLT 0.30+0.70ρ·patternMul, core bare Gibson-Ashby) that
+  // swung a 20% part 2–5× across the CLT/two-region toggles. At 100% infill the
+  // knockdown is exactly 1.0, so every path reproduces the solid (anchor).
+  const inPlaneDensityKnockdown = lumpedInPlaneStiffnessScale(
+    req.print.pattern ?? "grid",
+    req.print.infillPct / 100,
+    wallCreditFraction(req.print.wallCount),
+    req.calibration?.latticeStiffExp,
+  );
+
   const builtMaterial: AnyMaterial = req.analysis.useCLT
     ? buildOrthotropicMaterialCLT(
         req.print.materialId,
@@ -3278,6 +3885,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         req.analysis.beadProps,
         weakAxis,
         bondRel,
+        inPlaneDensityKnockdown,
       )
     : buildOrthotropicMaterial(
         req.print.materialId,
@@ -3287,6 +3895,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         req.calibration ?? null,
         weakAxis,
         bondRel,
+        inPlaneDensityKnockdown,
       );
 
   // Effective mass density (issue #99): solid density × first-order solid
@@ -3310,6 +3919,26 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   let surfaceFaces: Int32Array | null = null;
   let gmshResult: import("./gmsh_mesh.js").GmshMeshResult | null = null;
   let meshFallback = false;
+
+  // ── Units sanity check (issue #168) ────────────────────────────────────────
+  // A physically-plausible FDM part has a bounding-box diagonal between ~1 mm
+  // and ~2000 mm. Outside that, the file was almost certainly exported in the
+  // wrong units (metres/inches/microns), which would make every mm/MPa/N output
+  // meaningless. We do NOT auto-rescale — we flag it, additively, so the client
+  // can warn and the user can re-export. The geometry is analysed exactly as
+  // supplied either way.
+  const _bbDiag = Math.sqrt(
+    (req.bounds.maxX - req.bounds.minX) ** 2 +
+    (req.bounds.maxY - req.bounds.minY) ** 2 +
+    (req.bounds.maxZ - req.bounds.minZ) ** 2,
+  );
+  const unitsWarning: string | null =
+    (Number.isFinite(_bbDiag) && (_bbDiag < 1 || _bbDiag > 2000))
+      ? `This model's bounding-box diagonal is ${_bbDiag.toPrecision(4)} units — outside the ` +
+        `typical millimetre range (1–2000 mm). If it was exported in metres, inches, or microns, ` +
+        `the analysis units (mm, MPa, N) are misinterpreted and every result below is off by the ` +
+        `unit scale. STORMFEA does not auto-rescale — re-export the geometry in millimetres and re-run.`
+      : null;
 
   if (req.fileType === "step" && req.stepBuffer) {
     // ── STEP path: Gmsh with curvature-based refinement ──────────────────────
@@ -3337,12 +3966,20 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       _snapAnalysis("before TetGen mesh");
       const tetOrder = (req.analysis.meshOrder ?? 2) as 1 | 2;
       // Map the coarse/standard/fine selector to TetGen's max-volume (-a) switch
-      // so the control actually affects STL mesh density. 'standard' keeps the
-      // historical 10 mm³. (Previously the selector only affected the STEP path.)
-      const tetMaxVol = req.analysis.meshQuality === "fine" ? 3
-                      : req.analysis.meshQuality === "coarse" ? 30
-                      : 10;
-      console.log(`[analysis] meshing with TetGen (order=${tetOrder}, maxVol=${tetMaxVol}mm³, quality=${req.analysis.meshQuality})...`);
+      // so the control actually affects STL mesh density. Derived from the part's
+      // OWN bounding-box volume / a per-tier target element count, so mesh density
+      // is scale-invariant (issue #168): a metre- or cm-scale STL meshes to the
+      // same element count as the equivalent mm part, instead of the old fixed
+      // mm³ values producing ~0 elements off-scale. A typical mm part reproduces
+      // the historical 30/10/3 mm³ (see tetMaxVolumeForTier).
+      const tetTier = (req.analysis.meshQuality === "fine" ? "fine"
+                     : req.analysis.meshQuality === "coarse" ? "coarse"
+                     : "standard") as import("./tetgen.js").MeshTier;
+      const bboxVol = (req.bounds.maxX - req.bounds.minX)
+                    * (req.bounds.maxY - req.bounds.minY)
+                    * (req.bounds.maxZ - req.bounds.minZ);
+      const tetMaxVol = tetMaxVolumeForTier(bboxVol, tetTier);
+      console.log(`[analysis] meshing with TetGen (order=${tetOrder}, maxVol=${tetMaxVol.toPrecision(4)} units³, quality=${req.analysis.meshQuality})...`);
       const tetResult = await meshWithTetGen(req.positions, req.triangleCount, tetOrder, tetMaxVol);
       mesh          = tetResult.mesh;
       surfaceToNode = tetResult.surfaceToNode;
@@ -3402,6 +4039,10 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // working); the field carries the per-element stiffness/yield/density.
   let materialField: ElementMaterialField | undefined;
   let wallBondField: WallBondField | undefined;
+  // Shell (dense perimeter) allowables for wall-lined-hole bolt-region checks
+  // (issue #175). Set only on the two-region path; whole-part consumers keep
+  // reading the volume-averaged `material`.
+  let shellHoleAllowables: { yieldXY: number; interlayerShear: number } | undefined;
   let materialModel: MaterialModelInfo = {
     twoRegion: false,
     wallThicknessMm: null,
@@ -3410,13 +4051,23 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     coreYieldXYMPa: null,
     impliedAvgStrengthMul: null,
     globalModelStrengthMul: strengthMul * orientFallbackMul,
-    ...(bondRel ? { bond: {
+    ...(bondRel ? { bond: bondRel.supported ? {
       relStrength:    +bondRel.relStrength.toFixed(4),
       relStiffness:   +bondRel.relStiffness.toFixed(4),
+      coolingFanRefPct: bondRel.coolingFanRefPct,
       interfaceTempC: +bondRel.interfaceTempC.toFixed(1),
       substrateTempC: +bondRel.substrateTempC.toFixed(1),
       coolTimeConstS: +bondRel.coolTimeConstS.toFixed(2),
       clamped:        bondRel.clamped,
+      confidence:     bondRel.confidence,
+      note:           bondRel.note,
+    } : {
+      // Unknown material (issue #186): bond path refused, reference no-op
+      // multipliers applied. Surface the disclosure; omit the meaningless temps.
+      relStrength:    1,
+      relStiffness:   1,
+      applied:        false,
+      clamped:        false,
       confidence:     bondRel.confidence,
       note:           bondRel.note,
     } } : {}),
@@ -3451,6 +4102,11 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         bondRel,
       );
       const shellMat: OrthotropicMaterial = { ...shellBuilt, massRho: baseMat.densityKgM3 };
+      // Capture the dense-perimeter allowables for wall-lined bolt-region checks
+      // (#175). The shell is built at strengthMul = 1.0 (solid perimeter), so
+      // this is independent of infill — a 20%-infill and a 100%-infill part with
+      // equal wall count get the SAME bearing/thread allowable.
+      shellHoleAllowables = { yieldXY: shellMat.yieldXY, interlayerShear: interlaminarShearOf(shellMat) };
 
       // Core: wall-free homogenized lattice — per-axis Gibson-Ashby power
       // laws applied to the solid lattice base (see buildCoreMaterial: frame
@@ -3474,23 +4130,31 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       );
 
       // Independent floor/ceiling (top/bottom solid skin) bands: their
-      // thickness is layers × layer height, generally different from the
-      // vertical perimeter band. Skins are the SAME solid material as the
-      // perimeters (same weak axis), so only the geometry changes. When the
-      // user supplies no skin layer counts, the skin bands default to tWall and
-      // the classifier reduces bit-identically to the single-band path.
+      // thickness is layers × layer height, generally DIFFERENT from the
+      // vertical perimeter band (wallCount × line width). Skins are the SAME
+      // solid material as the perimeters (same weak axis), so only the geometry
+      // changes. The top/bottom solid-skin count has no physical relationship
+      // to the perimeter wall count, so when the caller supplies none we assume
+      // sensible slicer defaults (4/4) and derive the skin thickness from THEM
+      // — never silently borrowing tWall (issue #181). The assumption is
+      // surfaced in materialModel (skinLayersAssumed) and the report. Skins are
+      // always modeled for a two-region solve; when their thickness equals
+      // tWall the classifier still collapses bit-identically to the single-band
+      // path (skin-band.test.ts).
       const layerH = req.print.layerHeightMm ?? 0.2;
-      const clampLayers = (n: number | undefined): number | undefined =>
-        n === undefined ? undefined : Math.min(64, Math.max(0, n));
-      const topLayers = clampLayers(req.print.topLayers);
-      const botLayers = clampLayers(req.print.bottomLayers);
-      const skinRequested = topLayers !== undefined || botLayers !== undefined;
-      const tSkinTop = topLayers !== undefined ? topLayers * layerH : tWall;
-      const tSkinBot = botLayers !== undefined ? botLayers * layerH : tWall;
+      const clampLayers = (n: number | undefined, dflt: number): number =>
+        n === undefined ? dflt : Math.min(64, Math.max(0, n));
+      const topAssumed = req.print.topLayers === undefined;
+      const botAssumed = req.print.bottomLayers === undefined;
+      const topLayers = clampLayers(req.print.topLayers, DEFAULT_TOP_LAYERS);
+      const botLayers = clampLayers(req.print.bottomLayers, DEFAULT_BOTTOM_LAYERS);
+      const skinLayersAssumed = topAssumed || botAssumed;
+      const tSkinTop = topLayers * layerH;
+      const tSkinBot = botLayers * layerH;
       // Build axis for skin geometry: the picked bed normal, else assume Z-up.
       const skinBuildAxis: "bed" | "assumed-z-up" = weakAxis ? "bed" : "assumed-z-up";
       const buildAxis = weakAxis ?? ([0, 0, 1] as const);
-      const skin = skinRequested ? { buildAxis, tSkinTop, tSkinBot } : undefined;
+      const skin = { buildAxis, tSkinTop, tSkinBot };
 
       const tr = buildTwoRegionField(mesh, surfaceFaces, shellMat, coreMat, tWall, skin);
       material = tr.averageMaterial;
@@ -3506,13 +4170,21 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         // printed back-to-back within the same layer, so the relevant
         // "return" is roughly the time to finish one full perimeter loop —
         // perimeterLengthMm / printSpeed — not a fixed toolpath constant.
-        // Estimated from the classified perimeter-face area (exact for a
-        // prismatic part); degenerates (near-zero height, no perimeter
-        // faces) fall back to a fixed characteristic length.
+        // Estimated from the OUTER-contour perimeter-face area (exact for a
+        // prismatic part; internal hole bores excluded — #182); degenerates
+        // (near-zero height, no perimeter faces) fall back to a fixed length.
         const perimeterEstimate = estimateWallLoopPerimeterMm(mesh, surfaceFaces, buildAxis);
         const perimeterFallback = !(perimeterEstimate > 1e-6);
         const passLengthMmWall = perimeterFallback ? WALL_BOND_PASS_LENGTH_FALLBACK_MM : perimeterEstimate;
 
+        // Wall-to-wall weld: the road's thermal DEPTH is the bead LINE WIDTH
+        // (adjacent beads cool laterally toward each other through their sides),
+        // not the layer height — so pass lineWidth as the thermal depth WITH the
+        // width-appropriate clamp, instead of silently repurposing the layer-
+        // height slot and its layer-height clamp (issue #185; τc π/8 transfer
+        // derivation in WALL_THERMAL_DEPTH_CLAMP_MM's docs). Same value for
+        // in-clamp widths (≤1.0 mm) as before, so results are bit-identical
+        // there; a >1.0 mm wide bead is now honored instead of clamped to 1.0.
         const bondRelWall: BondPrediction | null = hasProcessSettings(req.print.process)
           ? predictBondMultipliers(
               req.print.materialId,
@@ -3520,6 +4192,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
               req.print.process,
               req.calibration?.bondCoeffs ?? null,
               passLengthMmWall,
+              WALL_THERMAL_DEPTH_CLAMP_MM,
             )
           : null;
 
@@ -3546,6 +4219,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
             yieldWallShearMPa: +yieldWallShearMPa.toFixed(3),
             perimeterLengthMm: +passLengthMmWall.toFixed(1),
             perimeterFallback,
+            loopLengthBasis: perimeterFallback ? "fallback" : "outer-contour",
             ...(bondRelWall ? { note: bondRelWall.note } : {}),
           } : null,
         };
@@ -3563,9 +4237,12 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         ...materialModel,
         twoRegion: true,
         wallThicknessMm: tWall,
-        skinTopThicknessMm: skinRequested ? tSkinTop : null,
-        skinBotThicknessMm: skinRequested ? tSkinBot : null,
-        ...(skinRequested ? { skinBuildAxis } : {}),
+        skinTopThicknessMm: tSkinTop,
+        skinBotThicknessMm: tSkinBot,
+        skinTopLayers: topLayers,
+        skinBotLayers: botLayers,
+        skinLayersAssumed,
+        skinBuildAxis,
         shellVolumeFraction: Vf,
         shellYieldXYMPa: shellMat.yieldXY,
         coreYieldXYMPa: coreMat.yieldXY,
@@ -3574,18 +4251,21 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
           model: "gibson-ashby",
           patternFamily: family,
           stiffnessExponent: req.calibration?.latticeStiffExp ?? LATTICE_PARAMS[family].stiffExpXY,
-          strengthExponent:  req.calibration?.latticeStrengthExp ?? LATTICE_PARAMS[family].strengthExp,
+          // Representative (in-plane) strength exponent; the through-layer and
+          // interlaminar-shear axes now follow their own exponents (issue #177).
+          strengthExponent:  req.calibration?.latticeStrengthExp ?? LATTICE_PARAMS[family].strengthExpXY,
           stiffnessScale: gStiff,
           strengthScale:  sStr,
           floored: gStiff <= LATTICE_STIFFNESS_FLOOR,
+          yieldCriterion: coreMat.dfaAlpha && coreMat.dfaAlpha > 0 ? "deshpande-fleck-ashby" : "von-mises",
+          dfaAlpha: +(coreMat.dfaAlpha ?? 0).toFixed(4),
           confidence: "LOW",
         },
       };
       console.log(
         `[analysis] two-region model: tWall=${tWall.toFixed(2)}mm, ` +
-        (skinRequested
-          ? `skins top=${tSkinTop.toFixed(2)}mm bot=${tSkinBot.toFixed(2)}mm (${skinBuildAxis}), `
-          : ``) +
+        `skins top=${tSkinTop.toFixed(2)}mm (${topLayers}L) bot=${tSkinBot.toFixed(2)}mm (${botLayers}L) ` +
+        `${skinBuildAxis}${skinLayersAssumed ? " assumed-default" : ""}, ` +
         `shell Vf=${(Vf * 100).toFixed(1)}%, ` +
         `bins=${tr.field ? tr.field.binCount : "collapsed-to-uniform"}, ` +
         `impliedAvgMul=${impliedAvgStrengthMul.toFixed(3)} vs globalMul=${strengthMul.toFixed(3)}`
@@ -3655,6 +4335,21 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       } else if (isBottomForce && gmshResult.bottomFaceNodes.length > 0) {
         faceNodes = gmshResult.bottomFaceNodes;
       } else {
+        // A ±Z-directed force was requested but Gmsh classified NO matching
+        // top/bottom face (issue #169). This used to fall through silently; make
+        // it loud so a misclassification (e.g. an origin-centred or very thin
+        // STEP part whose flat faces were not recognised) is visible instead of
+        // the load quietly landing on a geometric best-guess face.
+        if (isTopForce || isBottomForce) {
+          console.warn(
+            `[analysis] ${isTopForce ? 'top' : 'bottom'}-directed force ${f.magnitude}N ` +
+            `(dir ${dx},${dy},${dz}) requested, but Gmsh classified no ` +
+            `${isTopForce ? 'top_face' : 'bottom_face'} (top=${gmshResult.topFaceNodes.length} ` +
+            `bottom=${gmshResult.bottomFaceNodes.length} nodes). Falling back to the geometric ` +
+            `extreme face. If the load lands wrong, the STEP part is likely origin-centred or ` +
+            `thinner than expected — check the flat-face classification.`
+          );
+        }
         // Find extreme face in force direction
         let maxProj = -Infinity;
         for (let n = 0; n < mesh.nodeCount; n++) {
@@ -3826,6 +4521,33 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
 
         const isLoaded = selectPressureRegion(mesh.nodes, surfaceFaces, [ux, uy, uz], region);
         const nLoaded = isLoaded.reduce((s, on) => s + (on ? 1 : 0), 0);
+        // Loud failure instead of a silent no-load solve (issue #157). A finite
+        // non-zero pressure that selects ZERO triangles would otherwise proceed
+        // with an unloaded model presented as a normal result. 'face' now
+        // always returns the extreme triangle, so an empty selection here means
+        // the region genuinely has no windward surface — a modelling error the
+        // user must see.
+        if (nLoaded === 0 && region !== "all") {
+          throw new Error(
+            `Pressure of ${p.magnitude} MPa (region='${region}', direction ` +
+            `(${ux.toFixed(2)},${uy.toFixed(2)},${uz.toFixed(2)})) selected NO surface triangles, ` +
+            `so it would apply zero load. Check the pressure direction/region against the model — ` +
+            `a '${region}' region needs a surface facing that direction.`
+          );
+        }
+        // Report the loaded area so total force = pressure × area is verifiable.
+        let loadedAreaMm2 = 0;
+        for (let t = 0; t < isLoaded.length; t++) {
+          if (!isLoaded[t]) continue;
+          const a = surfaceFaces[t*3] ?? 0, b = surfaceFaces[t*3+1] ?? 0, c = surfaceFaces[t*3+2] ?? 0;
+          const ax = mesh.nodes[a*3]??0, ay = mesh.nodes[a*3+1]??0, az = mesh.nodes[a*3+2]??0;
+          const bx = mesh.nodes[b*3]??0, by = mesh.nodes[b*3+1]??0, bz = mesh.nodes[b*3+2]??0;
+          const cx = mesh.nodes[c*3]??0, cy = mesh.nodes[c*3+1]??0, cz = mesh.nodes[c*3+2]??0;
+          const nx = (by-ay)*(cz-az)-(bz-az)*(cy-ay);
+          const ny = (bz-az)*(cx-ax)-(bx-ax)*(cz-az);
+          const nz = (bx-ax)*(cy-ay)-(by-ay)*(cx-ax);
+          loadedAreaMm2 += 0.5 * Math.hypot(nx, ny, nz);
+        }
         // A positive pressure pushes INWARD on the selected face (compression) —
         // the intuitive "pressure on this face" and the compressive pre-stress
         // buckling needs. Negative magnitude → outward (tension).
@@ -3834,8 +4556,8 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         //   Normal:  each loaded triangle uses its own outward normal n̂, so the
         //   inward push is −magnitude·n̂ per triangle (physical on curved faces).
         const pf = p.normal
-          ? assembleSurfaceTractionNormal(mesh.nodes, surfaceFaces, isLoaded, -p.magnitude)
-          : assembleSurfaceTraction(mesh.nodes, surfaceFaces, isLoaded,
+          ? assembleSurfaceTractionNormal(mesh, surfaceFaces, isLoaded, -p.magnitude)
+          : assembleSurfaceTraction(mesh, surfaceFaces, isLoaded,
               [-p.magnitude*ux, -p.magnitude*uy, -p.magnitude*uz]);
         let resN = 0;
         for (let n = 0; n < mesh.nodeCount; n++) {
@@ -3846,7 +4568,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
           }
         }
         console.log(`[analysis] pressure ${p.magnitude}MPa ${p.normal ? "normal-to-surface" : `in (${ux.toFixed(2)},${uy.toFixed(2)},${uz.toFixed(2)})`} region=${region}: ` +
-          `${nLoaded} loaded triangles, |resultant|~${resN.toFixed(2)}N`);
+          `${nLoaded} loaded triangles over ${loadedAreaMm2.toFixed(2)} mm², |resultant|~${resN.toFixed(2)}N`);
       }
     }
   }
@@ -3938,7 +4660,13 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
           diagIdx: intermediate.diagIdx,
         } : undefined,
       });
-      console.log(`[analyse] modal: ${modalResult.modes.length} modes, f1=${modalResult.modes.find(m => m.frequencyHz > 1)?.frequencyHz.toFixed(1) ?? '?'}Hz`);
+      console.log(`[analyse] modal: ${modalResult.modes.length} modes, f1=${modalResult.modes.find(m => m.frequencyHz > 1)?.frequencyHz.toFixed(1) ?? '?'}Hz, certified=${modalResult.certified}`);
+      // Surface eigensolver advisories (partial rigid modes, un-certified band,
+      // non-convergence) to the caller — #160.1/.4. These are non-fatal; the
+      // static result and modal frequencies are preserved either way.
+      if (modalResult.warnings && modalResult.warnings.length > 0) {
+        for (const w of modalResult.warnings) console.warn(`[analyse] modal warning: ${w}`);
+      }
     } catch (err) {
       console.warn(`[analyse] modal solve failed (static result preserved): ${err}`);
       modalResult = undefined;
@@ -3954,6 +4682,8 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   let bucklingConverged = false;
   let bucklingTensile   = false;
   let bucklingIndeterminate = false;
+  let bucklingCertified = false;
+  let bucklingPositiveBLFs: number[] = [];
   let bucklingMode: Float64Array | undefined;
   if (mayBuckle && result.elemStress6) {
     try {
@@ -3976,18 +4706,27 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       const fDummy = assembleForceVector(mesh.nodeCount, effectiveForces);
       applyDirichletBC(Kbuck, fDummy, buckDiagIdx, constraints);
 
-      const Ksigma = assembleKsigma(mesh, result.elemStress6, Kbuck.rowPtr, Kbuck.colIdx);
+      // For C3D10, recover σ per Gauss point (issue #164) so the linear stress
+      // gradient of bending members enters Kσ instead of being averaged away.
+      const Ksigma = assembleKsigma(
+        mesh, result.elemStress6, Kbuck.rowPtr, Kbuck.colIdx,
+        mesh.nodesPerElem === 10
+          ? { displacement: result.displacement, material, field: materialField ?? null }
+          : undefined,
+      );
       const bResult = await runLinearBuckling(Kbuck, Ksigma, buckDiagIdx);
       bucklingConverged     = bResult.converged;
       bucklingTensile       = bResult.tensileDominated;
       bucklingIndeterminate = bResult.indeterminate;
+      bucklingCertified     = bResult.certified;
+      bucklingPositiveBLFs  = bResult.positiveBLFs.map(v => +v.toFixed(4));
       // Do NOT surface a non-physical (indeterminate) eigenvalue as a BLF.
       if (!bResult.indeterminate) bucklingBLF = bResult.blf;
       // Keep the mode shape only when a physical positive BLF was found.
       if (!bResult.indeterminate && !bResult.tensileDominated && bResult.blf > 0) {
         bucklingMode = bResult.modeShape;
       }
-      console.log(`[buckling] BLF=${bResult.blf.toFixed(3)} converged=${bResult.converged} iters=${bResult.iterations} tensile=${bResult.tensileDominated} indeterminate=${bResult.indeterminate}`);
+      console.log(`[buckling] BLF=${bResult.blf.toFixed(3)} converged=${bResult.converged} certified=${bResult.certified} iters=${bResult.iterations} tensile=${bResult.tensileDominated} indeterminate=${bResult.indeterminate} modes=[${bucklingPositiveBLFs.join(', ')}]`);
     } catch (err) {
       console.warn(`[buckling] Analysis failed (non-fatal): ${err}`);
     }
@@ -4596,6 +5335,15 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       layerHeightMm:     req.print.layerHeightMm ?? 0.2,
       calibratedBearingStrMPa: req.calibration?.bearingStr_MPa ?? null,
       interlayerShearMPa: isOrthotropicLike(material) ? interlaminarShearOf(material) : null,
+      // Wall-lined-hole shell selection (#175): only when a genuine two-region
+      // field is active AND walls line the hole (wallCount ≥ 1). Slicers line
+      // holes with perimeters, so bearing/thread are carried by the shell, not
+      // the volume-averaged blend. Single-material / no-wall path passes null →
+      // bit-identical to the average material.
+      ...(materialField && req.print.wallCount >= 1 && shellHoleAllowables ? {
+        wallShellYieldMPa:           shellHoleAllowables.yieldXY,
+        wallShellInterlayerShearMPa: shellHoleAllowables.interlayerShear,
+      } : {}),
       ...(bearingStressMult > 1.0 ? { bearingStressMult } : {}),
     });
 
@@ -4645,6 +5393,8 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       const blfVerdict = blf < BLF_FAIL_THRESHOLD     ? "FAIL"
                        : blf < BLF_MARGINAL_THRESHOLD ? "MARGINAL" : "PASS";
       const convergeNote = bucklingConverged ? "" : " (iteration did not converge — treat as estimate)";
+      const certifyNote = bucklingCertified ? "" :
+        " (smallest-positive mode NOT certified — the block did not bracket it; a lower BLF may exist, treat as an upper estimate)";
       const adjustedBLF = blf * BLF_IMPERFECTION_KNOCKDOWN;
       allFailureModes.push({
         mode:       "Linear buckling (BLF)",
@@ -4658,12 +5408,13 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
                      `geometry imperfections and load eccentricity knock ~10–40% off that ideal value ` +
                      `(imperfection-adjusted ≈ ${adjustedBLF.toFixed(2)}×) — an empirical de-rating that needs ` +
                      `physical buckling coupons to pin down. Critical for thin walls, channels, and gussets. Verdict ` +
-                     `thresholds (FAIL <1.5×, MARGINAL <3.0×) already embed this knockdown — see SOURCES tab.${convergeNote}`,
+                     `thresholds (FAIL <1.5×, MARGINAL <3.0×) already embed this knockdown — see SOURCES tab.${convergeNote}${certifyNote}`,
       });
     } else if (bucklingIndeterminate) {
-      // Eigensolver converged only to a negative (tension-driven) eigenvalue,
-      // even after a deflated restart — a positive BLF may exist but was not
-      // found. Report indeterminate rather than a misleading number.
+      // The block subspace eigensolver captured the low spectrum but found NO
+      // positive eigenvalue — every low mode is tension-driven. A physical
+      // buckling factor may still exist outside the captured window; report
+      // indeterminate rather than a misleading number.
       allFailureModes.push({
         mode:       "Linear buckling (BLF)",
         sf:          0,
@@ -4671,8 +5422,8 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         checked:     false,
         confidence:  "unchecked",
         note:        "Buckling factor indeterminate: mixed tension/compression pre-stress — " +
-                     "the eigensolver found only a non-physical (negative) mode. " +
-                     "Treat buckling as UNCHECKED for this load case.",
+                     "the eigensolver's low-mode block contained only non-physical (negative) " +
+                     "eigenvalues. Treat buckling as UNCHECKED for this load case.",
       });
     } else {
       // Buckling not available (C3D10 mesh, or solver failure)
@@ -4774,10 +5525,15 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     // factor cannot be trusted in either direction — never report "Safe".
     ? `Inconclusive — solver did not converge (${result.cgIterations} iters). ` +
       `SF ${lowestSF.toFixed(2)}× shown for reference only; re-run with a finer mesh or check constraints.`
-    : lowestSF < 1.0
+    : lowestSF < FAIL_SF_THRESHOLD
     ? `Fails — predicted to yield at ${(totalForce2 * lowestSF).toFixed(0)} N (${governingMode2?.mode ?? "bulk yield"})`
-    : lowestSF < 1.5
+    : lowestSF < ACCEPTABLE_SF_THRESHOLD
     ? `Marginal — limited margin (SF ${lowestSF.toFixed(2)}×, governed by ${governingMode2?.mode ?? "bulk yield"})`
+    : lowestSF < SAFE_SF_THRESHOLD
+    // Real positive margin, but below the tool's recommended 2× minimum —
+    // must never say "Safe" (issue #141: this used to fall into the "Safe —
+    // adequate margin" branch below, contradicting the client's 2× threshold).
+    ? `Acceptable — below recommended 2× margin (SF ${lowestSF.toFixed(2)}×, governed by ${governingMode2?.mode ?? "bulk yield"})`
     : lowestSF < 2.5
     ? `Safe — adequate margin (SF ${lowestSF.toFixed(2)}×)`
     : `Safe — large margin (SF ${lowestSF.toFixed(2)}×)`;
@@ -4793,11 +5549,13 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   const currentMul  = strengthMul;
 
   // ── Singularity detection ─────────────────────────────────────────────────
+  // Pass req.positions (the display-mesh surface vertices) — NOT mesh.nodes —
+  // so the peak's coordinate and its neighborhood are read in the SAME index
+  // space as vertexStress (both indexed by display vertex). The radius is scaled
+  // to the local element size inside detectSingularity (issue #148).
   const singularity = detectSingularity(
     vertexStress,
-    mesh.nodes,
-    null,
-    1.0,
+    req.positions,
   );
 
   // ── Topology suggestions ──────────────────────────────────────────────────
@@ -4894,6 +5652,23 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     fatigueStress = result.vonMises[ge] ?? maxVM;
     fatigueYield  = materialField.yieldXY[bin] ?? effectiveYield;
   }
+  // Interlayer fatigue input: the peak interface traction (⟨σzz⟩₊ and driving
+  // interlayer shear τ_z) against its static allowables, so the ADDITIVE
+  // through-layer fatigue check can run alongside the bulk scalar. Only defined
+  // for orthotropic materials with an interface stress field; null otherwise,
+  // in which case the fatigue result is the bulk-only estimate as before.
+  let interlayerFatigueInput: InterlayerFatigueInput | null = null;
+  if (result.elemStress6 && isOrthotropic(material)) {
+    const ifp = computeInterfaceModePeaks(mesh, result.elemStress6, material, materialField ?? null);
+    if (ifp) {
+      interlayerFatigueInput = {
+        peakTensionMPa:  ifp.peakTensionMPa,
+        peakShearMPa:    ifp.peakShearMPa,
+        allowTensionMPa: ifp.allowTensionMPa,
+        allowShearMPa:   ifp.allowShearMPa,
+      };
+    }
+  }
   const fatigue = estimateFatigue(
     fatigueStress,
     fatigueYield,
@@ -4901,6 +5676,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     req.print.orientation,
     req.fatigueLoadRatio ?? 0,
     req.calibration ?? null,
+    interlayerFatigueInput,
   );
 
   // ── Isotropic comparison ─────────────────────────────────────────────────
@@ -5054,8 +5830,75 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       );
     }
   }
-  const sfLow  = +(bandScalesSF ? sf * yieldMul_low  * lhMul_low  : sf).toFixed(2);
-  const sfHigh = +(bandScalesSF ? sf * yieldMul_high * lhMul_high : sf).toFixed(2);
+  // ── Bond-model LOW-confidence band term (#172) ────────────────────────────
+  // The bead-penetration bond model scales the INTERFACE allowables via
+  // constants the repo labels LOW confidence (bond.ts). When the process path
+  // is active AND the interface governs, propagate their uncertainty as an
+  // extra multiplicative widening. bondBandExcursion is exactly {1,1} at the
+  // reference process condition (relStrength is a ratio to reference at the
+  // same constants), so the anchor is preserved and the width grows with the
+  // distance off-reference. Interface-only, gated on bandScalesSF like the
+  // yield/lh terms (bond does not move the bulk-governed SF).
+  let bondBandLow = 1, bondBandHigh = 1;
+  if (bondRel && bandScalesSF && hasProcessSettings(req.print.process)) {
+    const exc = bondBandExcursion(
+      req.print.materialId,
+      req.print.layerHeightMm ?? 0.2,
+      req.print.process,
+      req.calibration?.bondCoeffs ?? null,
+    );
+    bondBandLow  = exc.low;
+    bondBandHigh = exc.high;
+  }
+
+  // ── Gibson-Ashby exponent band term (#173) ────────────────────────────────
+  // On the two-region path the core strength rides on ρ^m with LOW-confidence
+  // exponents. When the GOVERNING element is core-classified, propagate the
+  // exponent uncertainty so low-infill core-governed parts get a wider band,
+  // scaling with (1−ρ). Weighted by the governing bin's CORE fraction (1−shell)
+  // so shell-governed parts inherit none of it. Applies regardless of
+  // interface/bulk (the core knockdown hits both in-plane and through-layer
+  // strength), and is exactly {1,1} at ρ=1 (solid anchor).
+  let coreBandLow = 1, coreBandHigh = 1;
+  if (materialField && result.governingElement !== undefined) {
+    const gBinC = materialField.binOfElement[result.governingElement] ?? 0;
+    const shellFracG = materialField.shellFrac[gBinC] ?? 1;
+    const coreFracG = Math.min(1, Math.max(0, 1 - shellFracG));
+    if (coreFracG > 1e-9) {
+      const exc = latticeStrengthExpExcursion(
+        req.print.pattern ?? "grid",
+        req.print.infillPct / 100,
+        req.calibration?.latticeStrengthExp,
+      );
+      coreBandLow  = 1 + coreFracG * (exc.low  - 1);
+      coreBandHigh = 1 + coreFracG * (exc.high - 1);
+    }
+  }
+
+  // Interface-governed terms (yield ratio, layer-height slope, bond) apply only
+  // when the interface governs; the core GA term applies whenever the governing
+  // element is core-classified. All terms are exactly 1.0 at their anchors
+  // (100% infill, reference process, solid), so uniform / on-reference parts
+  // reproduce the prior band bit-for-bit.
+  const ifLow  = bandScalesSF ? yieldMul_low  * lhMul_low  * bondBandLow  : 1;
+  const ifHigh = bandScalesSF ? yieldMul_high * lhMul_high * bondBandHigh : 1;
+  const sfLow  = +(sf * ifLow  * coreBandLow ).toFixed(2);
+  const sfHigh = +(sf * ifHigh * coreBandHigh).toFixed(2);
+
+  // Disclose which terms actually contributed to the band (#172/#173).
+  const bandTerms: string[] = [];
+  if (bandScalesSF) {
+    bandTerms.push("interlayer yield-ratio (0.48–0.68)", "layer-height slope (−0.7…−1.3/mm)");
+    if (bondBandLow !== 1 || bondBandHigh !== 1) {
+      bandTerms.push(`bond-model LOW-confidence constants (×${bondBandLow.toFixed(2)}…${bondBandHigh.toFixed(2)}, off-reference process)`);
+    }
+  }
+  if (coreBandLow !== 1 || coreBandHigh !== 1) {
+    bandTerms.push(`Gibson-Ashby core strength-exponent spread (×${coreBandLow.toFixed(2)}…${coreBandHigh.toFixed(2)}, low-infill core-governed)`);
+  }
+  const sfBandComposition = bandTerms.length > 0
+    ? `SF band from: ${bandTerms.join("; ")}.`
+    : "SF band collapses to the central value (bulk in-plane governs; no banded constant applies).";
 
   // ── Governing utilization direction ──────────────────────────────────────
   let governingDirection: 'xy' | 'z' | null = null;
@@ -5075,8 +5918,110 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     if (sv > maxSignedVM) maxSignedVM = sv;
   }
 
+  // ── Volumetric stress payload (issue #190, opt-in) ──────────────────────────
+  // Built from the ANALYSIS mesh (mesh.nodes/mesh.elements), not the display
+  // mesh — the client's marching-tet slicer walks corner tets directly against
+  // whatever cut plane the section view is using. Only computed when the
+  // client asked for it (includeVolumeField), so ordinary analyses (section
+  // view closed) don't pay the extra payload size / encode time.
+  let volumeField: VolumeFieldPayload | undefined;
+  if (req.analysis.includeVolumeField && !meshFallback) {
+    const npeV = mesh.nodesPerElem ?? 4;
+    const cornerTetCount = mesh.elementCount;
+    const nodesArr = new Float32Array(mesh.nodeCount * 3);
+    for (let i = 0; i < mesh.nodeCount * 3; i++) nodesArr[i] = mesh.nodes[i] ?? 0;
+    const tetsArr = new Int32Array(cornerTetCount * 4);
+    for (let e = 0; e < cornerTetCount; e++) {
+      const base = e * npeV;
+      tetsArr[e*4]   = mesh.elements[base]   ?? 0;
+      tetsArr[e*4+1] = mesh.elements[base+1] ?? 0;
+      tetsArr[e*4+2] = mesh.elements[base+2] ?? 0;
+      tetsArr[e*4+3] = mesh.elements[base+3] ?? 0;
+    }
+    const nVM  = new Float32Array(mesh.nodeCount);
+    const nSVM = new Float32Array(mesh.nodeCount);
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      nVM[n]  = nodeStress[n] ?? 0;
+      nSVM[n] = nodeSignedStress[n] ?? 0;
+    }
+    const np = result.nodePrincipalStress;
+    const nP1 = new Float32Array(mesh.nodeCount);
+    const nP2 = new Float32Array(mesh.nodeCount);
+    const nP3 = new Float32Array(mesh.nodeCount);
+    if (np) {
+      for (let n = 0; n < mesh.nodeCount; n++) {
+        nP1[n] = np[n*3]   ?? 0;
+        nP2[n] = np[n*3+1] ?? 0;
+        nP3[n] = np[n*3+2] ?? 0;
+      }
+    }
+    let nXyUtilB64: string | null = null;
+    let nZUtilB64:  string | null = null;
+    if (nodeUtilXY && nodeUtilZ) {
+      const nXY = new Float32Array(mesh.nodeCount);
+      const nZ  = new Float32Array(mesh.nodeCount);
+      for (let n = 0; n < mesh.nodeCount; n++) {
+        nXY[n] = nodeUtilXY[n] ?? 0;
+        nZ[n]  = nodeUtilZ[n]  ?? 0;
+      }
+      nXyUtilB64 = Buffer.from(nXY.buffer).toString("base64");
+      nZUtilB64  = Buffer.from(nZ.buffer).toString("base64");
+    }
+    volumeField = {
+      nodeCount: mesh.nodeCount,
+      cornerTetCount,
+      nodesB64:              Buffer.from(nodesArr.buffer).toString("base64"),
+      tetsB64:               Buffer.from(tetsArr.buffer).toString("base64"),
+      nodeVonMisesB64:       Buffer.from(nVM.buffer).toString("base64"),
+      nodeSignedVonMisesB64: Buffer.from(nSVM.buffer).toString("base64"),
+      nodePrincipal1B64:     Buffer.from(nP1.buffer).toString("base64"),
+      nodePrincipal2B64:     Buffer.from(nP2.buffer).toString("base64"),
+      nodePrincipal3B64:     Buffer.from(nP3.buffer).toString("base64"),
+      nodeXyUtilB64: nXyUtilB64,
+      nodeZUtilB64:  nZUtilB64,
+    };
+    // Payload-size visibility (issue #190 acceptance criterion: "payload size
+    // impact measured"). Opt-in only, so this never fires on an ordinary
+    // analysis — logged here rather than asserted in a test because the
+    // number is mesh-density-dependent, not a solver invariant.
+    const approxBytes =
+      volumeField.nodesB64.length + volumeField.tetsB64.length +
+      volumeField.nodeVonMisesB64.length + volumeField.nodeSignedVonMisesB64.length +
+      volumeField.nodePrincipal1B64.length + volumeField.nodePrincipal2B64.length +
+      volumeField.nodePrincipal3B64.length +
+      (volumeField.nodeXyUtilB64?.length ?? 0) + (volumeField.nodeZUtilB64?.length ?? 0);
+    console.log(
+      `[analyse] volumeField: ${mesh.nodeCount} nodes, ${cornerTetCount} tets, ` +
+      `~${(approxBytes / 1024).toFixed(0)} KB base64 (opt-in, includeVolumeField=true)`
+    );
+  }
+  // ── Per-analysis validation coverage map (issue #191) ───────────────────────
+  // Reuses characteristics already computed above rather than re-deriving them
+  // — sfCriterion (bulk.criterion) is the authoritative record of which
+  // criterion actually governed this solve, not a re-guess from settings.
+  const coverageCriterion: CoverageCriterionValue =
+    bulk.criterion === "hill" ? "hill-legacy" : bulk.criterion;
+  const fingerprint = computeFingerprint({
+    nodesPerElem: mesh.nodesPerElem,
+    twoRegionActive: !!materialField,
+    orthotropic: isOrthotropic(material),
+    criterion: coverageCriterion,
+    hasForces: req.forces.length > 0,
+    hasPressures: !!(req.pressures && req.pressures.length > 0),
+    hasBoltHoles: req.boltHoleIds.length > 0,
+    isModal: !!modalResult,
+    computesBuckling: mayBuckle,
+    fileType: req.fileType,
+    meshFallback,
+    bondProcessActive: !!bondRel,
+    inPlaneAnisotropyActive: !!inPlaneAniso,
+    wallBondActive: !!wallBondField,
+  });
+  const validationCoverage: ValidationCoverageReport = computeValidationCoverage(fingerprint);
+
   return {
     materialModel,
+    validationCoverage,
     vertexStress,
     vertexSignedVonMises,
     vertexXyUtil,
@@ -5094,12 +6039,14 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     vonMisesSafetyFactor: meshFallback ? null : sfVonMises,
     safetyfactorLow:    meshFallback ? null : sfLow,
     safetyFactorHigh:   meshFallback ? null : sfHigh,
+    sfBandComposition:  meshFallback ? null : sfBandComposition,
     estimatedFailForce,
     yielding,
     verdict:            governingVerdict,
     cgIterations:       result.cgIterations,
     converged:          result.converged,
     meshFallback,
+    unitsWarning,
     safetyFactorAvailable: !meshFallback,
     solverMs,
     nodeCount:          mesh.nodeCount,
@@ -5136,10 +6083,13 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       tensileDominated: bucklingTensile,
       indeterminate: bucklingIndeterminate,
       hasMode: !!vertexBucklingModeB64,
+      certified: bucklingCertified,
+      positiveBLFs: bucklingPositiveBLFs,
     } : undefined,
     residualCheckpoints: result.residualCheckpoints,
     vertexErrorEstimateB64: vertexErrorEstimate ? Buffer.from(vertexErrorEstimate.buffer).toString("base64") : undefined,
     globalRelativeError: result.globalRelativeError,
     topErrorElements: result.topErrorElements ? [...result.topErrorElements] : undefined,
+    volumeField,
   };
 }

@@ -1,22 +1,40 @@
 /**
  * element.ts
  * ----------
- * C3D4 linear tetrahedral element stiffness matrix.
+ * Element-level kernels shared by both tetrahedral element types, the
+ * constitutive-matrix builders for every material model, and the 6×6
+ * tensor-rotation (Bond transform) utilities several other modules import.
+ * ~850 lines, organized bottom-to-top by the section markers below:
  *
- * MATHEMATICAL DERIVATION
- * =======================
- * C3D4: 4-node, 12-DOF, constant-strain tetrahedral element.
- * Shape functions are linear → B matrix is constant → no numerical integration.
- * Element stiffness: k_e = V · Bᵀ · C · B  (single evaluation at centroid).
+ *   1. Constitutive matrices — `buildConstitutiveMatrix` (isotropic),
+ *      `buildOrthotropicConstitutiveMatrix` (transversely isotropic FDM
+ *      model), `buildGyroidConstitutiveMatrix`, and the dispatching
+ *      `buildAnyConstitutiveMatrix`.
+ *   2. Tensor rotation utilities — `rotationAligningZTo`, `rotateC6`,
+ *      `rotateStress6ToLocal`: the exact 4th-order Bond transform that
+ *      rotates a material's weak axis to an arbitrary layer normal (upright/
+ *      angled prints), used by both element types and the failure criterion.
+ *   3. C3D4 — 4-node, 12-DOF, constant-strain linear tetrahedron.
+ *      `computeGeometry`, `buildB`, `elementStiffness`,
+ *      `elementGeometricStiffness` (for linear buckling). Shape functions
+ *      are linear → B is constant → single centroid evaluation, no
+ *      numerical integration. Offered only as a speed option; NOT the
+ *      default element (see C3D10 below).
+ *   4. C3D10 — 10-node, 30-DOF quadratic tetrahedron, **the default
+ *      element**. `c3d10ShapeFunctions`, `c3d10ShapeDerivatives`,
+ *      `buildB_c3d10`, `c3d10ElementStiffness`,
+ *      `c3d10ElementGeometricStiffness`. Second-order shape functions
+ *      eliminate the shear locking that undersizes C3D4's bending stress;
+ *      integrated at the 4-point Gauss rule (`C3D10_GAUSS`).
  *
- * Voigt strain ordering:  [εxx, εyy, εzz, γxy, γyz, γxz]
- * DOF ordering per node:  [ux, uy, uz]
- * Full DOF ordering:      [u0x,u0y,u0z, u1x,u1y,u1z, u2x,u2y,u2z, u3x,u3y,u3z]
+ * Common conventions across both elements:
+ *   Voigt strain ordering:  [εxx, εyy, εzz, γxy, γyz, γxz]
+ *   DOF ordering per node:  [ux, uy, uz]
  *
- * Shape function derivatives for node i:
+ * C3D4 shape function derivatives for node i:
  *   ∂Ni/∂x = bi/(6V),  ∂Ni/∂y = ci/(6V),  ∂Ni/∂z = di/(6V)
  *
- * B matrix (6×12), node-i 3-column block:
+ * C3D4 B matrix (6×12), node-i 3-column block:
  *   row 0 (εxx):  [bi,  0,   0 ]
  *   row 1 (εyy):  [0,   ci,  0 ]
  *   row 2 (εzz):  [0,   0,   di]
@@ -24,6 +42,10 @@
  *   row 4 (γyz):  [0,   di,  ci]
  *   row 5 (γxz):  [di,  0,   bi]
  * (all scaled by 1/(6V))
+ *
+ * C3D10 uses the analogous but position-dependent B matrix built by
+ * `buildB_c3d10` from the quadratic shape-function gradients at each Gauss
+ * point — see that function for its derivation.
  */
 
 import type { IsotropicMaterial, OrthotropicMaterial, GyroidOrthotropic, AnyMaterial } from "./types.js";
@@ -632,10 +654,35 @@ export function elementGeometricStiffness(
  *
  * Exported so stress recovery (stress.ts) uses the identical point set —
  * do not duplicate these constants elsewhere.
+ *
+ * ┌── INTEGRATION-ORDER LIMITATION (issue #163) ─────────────────────────────┐
+ * │ This degree-2 rule integrates the C3D10 STIFFNESS integrand BᵀCB·detJ    │
+ * │ EXACTLY only for AFFINE (straight-edged, midside-at-midpoint) elements:  │
+ * │ there the Jacobian is constant, B is linear in the reference coords, and │
+ * │ BᵀCB is degree-2. TetGen output is entirely affine, and STORMFEA's own   │
+ * │ box/coupon meshers place midsides at exact midpoints — so every VALIDATED│
+ * │ result (including the Kirsch hole benchmark, group [24], whose curved     │
+ * │ boundary is approximated with straight-edged C3D10) is exact under this   │
+ * │ rule and is bit-identical to a higher-order rule.                        │
+ * │                                                                          │
+ * │ For a genuinely CURVED isoparametric element (Gmsh second-order output   │
+ * │ on a curved STEP face: fillets, cylindrical holes) detJ and J⁻¹ vary, so │
+ * │ the integrand is no longer degree ≤2 and the 4-point rule UNDER-         │
+ * │ integrates — softening the element and adding a silent, mesh-dependent   │
+ * │ error on exactly the boundary-layer elements where stress governs.       │
+ * │                                                                          │
+ * │ A higher-order opt-in rule (C3D10_GAUSS_HIGH_ORDER) is provided; pass it │
+ * │ to c3d10ElementStiffness to integrate curved elements more accurately.   │
+ * │ The DEFAULT stays the 4-point rule so all validated (affine) results are │
+ * │ unchanged bit-for-bit. See the measured curved-element error in          │
+ * │ tests/unit/c3d10-quadrature.test.ts and PR #(issue 163).                 │
+ * └──────────────────────────────────────────────────────────────────────────┘
  */
 const TET4_GP_A = (5 - Math.sqrt(5)) / 20;
 const TET4_GP_B = (5 + 3 * Math.sqrt(5)) / 20;
 const TET4_GP_W = 1 / 24;
+
+export interface TetGaussPoint { readonly xi: number; readonly eta: number; readonly zeta: number; readonly w: number; }
 
 export const C3D10_GAUSS = [
   { xi: TET4_GP_A, eta: TET4_GP_A, zeta: TET4_GP_A, w: TET4_GP_W },
@@ -643,6 +690,37 @@ export const C3D10_GAUSS = [
   { xi: TET4_GP_A, eta: TET4_GP_B, zeta: TET4_GP_A, w: TET4_GP_W },
   { xi: TET4_GP_A, eta: TET4_GP_A, zeta: TET4_GP_B, w: TET4_GP_W },
 ] as const;
+
+/**
+ * Higher-order (opt-in) tetrahedron quadrature for CURVED C3D10 elements
+ * (issue #163) — 64 points via a 4×4×4 Gauss–Legendre rule mapped onto the
+ * reference tet by the Duffy (collapsed-hex) transform:
+ *   ξ = a,  η = b(1−a),  ζ = c(1−a)(1−b),   |∂(ξ,η,ζ)/∂(a,b,c)| = (1−a)²(1−b)
+ * Each 1D 4-point rule is degree-7 exact, so this integrates the affine
+ * stiffness integrand exactly (matching C3D10_GAUSS to round-off — the
+ * regression anchor) and integrates curved elements with far smaller error.
+ * Σ weights = ∫(1−a)²(1−b) = 1/6 = reference-tet volume.
+ *
+ * Not wired into the default assembly path: it is a strictly opt-in argument to
+ * c3d10ElementStiffness, so the validated affine results remain bit-identical.
+ */
+const GL4_NODES_01   = [0.0694318442029737, 0.3300094782075719, 0.6699905217924281, 0.9305681557970263];
+const GL4_WEIGHTS_01 = [0.1739274225687269, 0.3260725774312730, 0.3260725774312730, 0.1739274225687269];
+
+export const C3D10_GAUSS_HIGH_ORDER: readonly TetGaussPoint[] = (() => {
+  const pts: TetGaussPoint[] = [];
+  for (let ia = 0; ia < 4; ia++) for (let ib = 0; ib < 4; ib++) for (let ic = 0; ic < 4; ic++) {
+    const a = GL4_NODES_01[ia]!, b = GL4_NODES_01[ib]!, c = GL4_NODES_01[ic]!;
+    const w = GL4_WEIGHTS_01[ia]! * GL4_WEIGHTS_01[ib]! * GL4_WEIGHTS_01[ic]!;
+    pts.push({
+      xi:   a,
+      eta:  b * (1 - a),
+      zeta: c * (1 - a) * (1 - b),
+      w:    w * (1 - a) * (1 - a) * (1 - b),
+    });
+  }
+  return pts;
+})();
 
 /**
  * Evaluate C3D10 shape functions at point (xi, eta, zeta).
@@ -716,6 +794,12 @@ export function buildB_c3d10(
   }
 
   const detJ = J00*(J11*J22-J12*J21) - J01*(J10*J22-J12*J20) + J02*(J10*J21-J11*J20);
+  // Only a numerically SINGULAR Jacobian is fatal here (1/detJ below would be
+  // Inf). A NEGATIVE detJ is NOT thrown on — a folded curved mapping is surfaced
+  // as a per-element flag by the mesh-quality pipeline instead of aborting
+  // mid-assembly (issue #162; see c3d10GaussDetJ). The gate (#166) then blocks
+  // or repairs before assembly, so a flagged element is never integrated with
+  // Math.abs(detJ).
   if (Math.abs(detJ) < 1e-15) throw new Error(`C3D10: degenerate Jacobian det=${detJ}`);
 
   // Inverse Jacobian
@@ -755,19 +839,50 @@ export function buildB_c3d10(
 }
 
 /**
- * Compute the 30×30 element stiffness matrix for C3D10.
- * Uses 4-point Gauss quadrature.
+ * Per-Gauss-point Jacobian determinants for a C3D10 element (issue #162).
  *
+ * Reuses buildB_c3d10's (tested) Jacobian at each of the 4 integration points,
+ * returned in C3D10_GAUSS order. A curved element folded by bad midside-node
+ * placement has a detJ whose SIGN disagrees with the element's corner
+ * orientation at one or more Gauss points — the mesh-quality pipeline flags such
+ * an element as degenerate so it is never integrated with Math.abs(detJ).
+ *
+ * A numerically singular Gauss point (buildB_c3d10 throws) is reported as 0 so
+ * the caller treats it as a zero-volume fold rather than crashing mid-scan.
+ */
+export function c3d10GaussDetJ(nodes: Float64Array): Float64Array {
+  const out = new Float64Array(C3D10_GAUSS.length);
+  let g = 0;
+  for (const gp of C3D10_GAUSS) {
+    try {
+      out[g] = buildB_c3d10(nodes, gp.xi, gp.eta, gp.zeta).detJ;
+    } catch {
+      out[g] = 0; // near-singular Jacobian → treat as zero-volume fold
+    }
+    g++;
+  }
+  return out;
+}
+
+/**
+ * Compute the 30×30 element stiffness matrix for C3D10.
  * Ke = ∫ Bᵀ C B dV ≈ Σ_g (Bᵀ C B × detJ × w_g)
+ *
+ * Quadrature: defaults to the 4-point rule (C3D10_GAUSS), which is EXACT for
+ * affine elements (see the limitation note at C3D10_GAUSS). Pass
+ * C3D10_GAUSS_HIGH_ORDER (or any TetGaussPoint[]) to integrate genuinely curved
+ * isoparametric elements more accurately (issue #163); the default is unchanged
+ * so validated affine results stay bit-identical.
  */
 export function c3d10ElementStiffness(
   nodes: Float64Array,  // 10×3 node coordinates
   C:     Float64Array,  // 6×6 constitutive matrix
+  gauss: readonly TetGaussPoint[] = C3D10_GAUSS,
 ): Float64Array {
   const Ke = new Float64Array(30*30);
   const CB = new Float64Array(6 * 30);
 
-  for (const gp of C3D10_GAUSS) {
+  for (const gp of gauss) {
     const { B, detJ } = buildB_c3d10(nodes, gp.xi, gp.eta, gp.zeta);
     const vol = Math.abs(detJ) * gp.w;
 
@@ -806,20 +921,32 @@ export function c3d10ElementStiffness(
  * dNᵢ/dz] are read from the B matrix already assembled by buildB_c3d10, so the
  * (tested) Jacobian inversion is reused rather than duplicated.
  *
+ * C3D10 stress is LINEAR across the element, so a single element-constant stress
+ * used at every Gauss point washes the ± bending stress of a bending member
+ * toward zero and under-builds Kσ (non-conservative BLF — issue #164). Pass the
+ * per-Gauss-point stress to integrate the true stress gradient.
+ *
  * @param nodes 10×3 node coordinates for this element
- * @param sig   Element Cauchy stress [σxx, σyy, σzz, τxy, τyz, τxz] in MPa
+ * @param sig   Cauchy stress in MPa [σxx, σyy, σzz, τxy, τyz, τxz]. Length 6 =
+ *              element-constant (legacy: the same 6-vector is applied at every
+ *              Gauss point, reproducing the old behaviour bit-for-bit). Length
+ *              ≥24 = the four per-Gauss-point stresses laid out [σ(gp0)…σ(gp3)]
+ *              in the C3D10_GAUSS point order.
  */
 export function c3d10ElementGeometricStiffness(
   nodes: Float64Array,
   sig:   Float64Array,
 ): Float64Array {
-  const sxx = sig[0]??0, syy = sig[1]??0, szz = sig[2]??0;
-  const txy = sig[3]??0, tyz = sig[4]??0, txz = sig[5]??0;
+  const perGP = sig.length >= 24;
 
   const ksg  = new Float64Array(30 * 30);
   const grad = new Float64Array(10 * 3);  // per-node [dN/dx, dN/dy, dN/dz]
 
+  let g = 0;
   for (const gp of C3D10_GAUSS) {
+    const o = perGP ? g * 6 : 0;
+    const sxx = sig[o]??0, syy = sig[o+1]??0, szz = sig[o+2]??0;
+    const txy = sig[o+3]??0, tyz = sig[o+4]??0, txz = sig[o+5]??0;
     const { B, detJ } = buildB_c3d10(nodes, gp.xi, gp.eta, gp.zeta);
     const vol = Math.abs(detJ) * gp.w;
 
@@ -845,7 +972,159 @@ export function c3d10ElementGeometricStiffness(
         ksg[(3*i+2)*30 + (3*j+2)] = (ksg[(3*i+2)*30 + (3*j+2)] ?? 0) + s;
       }
     }
+    g++;
   }
 
   return ksg;
+}
+
+// ─── C3D10 consistent mass — isoparametric integration (issue #158) ────────────
+//
+// The stiffness path integrates isoparametrically (C3D10_GAUSS), so a curved
+// (Gmsh high-order) element's stiffness follows its geometry — but the mass path
+// used a fixed reference matrix scaled by the CORNER-tet volume, which assumes a
+// straight-sided (affine) element. For a curved element that is wrong: the true
+// mass integrand is ∫ ρ Nᵢ Nⱼ |detJ| dV, and |detJ| varies across a curved
+// element (up to tens of percent of total-mass error — measured).
+//
+// The mass integrand degree is higher than stiffness's: Nᵢ Nⱼ is degree 4 and
+// |detJ| for the quadratic geometry map is degree 3, so the product is degree 7.
+// The 4-point C3D10_GAUSS rule is only degree-2 exact and would introduce ~7%
+// error EVEN ON AFFINE ELEMENTS — so mass needs its own higher-order rule.
+//
+// C3D10_MASS_GAUSS below is a 125-point collapsed-coordinate (Duffy) tensor
+// Gauss rule, exact for degree-7 polynomials on the reference tetrahedron
+// (verified against the analytic barycentric monomial integrals). For a curved
+// element it integrates the mass exactly; an AFFINE element is handled by the
+// closed-form path in mass.ts instead (bit-identical regression anchor), so this
+// rule is only ever evaluated on genuinely curved elements.
+
+// 5-point Gauss–Legendre on [0,1] (nodes/weights mapped from [-1,1]).
+const GL5_01: readonly { x: number; w: number }[] = ([
+  [ 0.0,                0.5688888888888889 ],
+  [ 0.5384693101056831, 0.4786286704993665 ],
+  [-0.5384693101056831, 0.4786286704993665 ],
+  [ 0.9061798459386640, 0.2369268850561891 ],
+  [-0.9061798459386640, 0.2369268850561891 ],
+] as const).map(([x, w]) => ({ x: 0.5 * (x + 1), w: 0.5 * w }));
+
+/**
+ * 125-point Duffy (collapsed-coordinate) Gauss rule for the reference
+ * tetrahedron {ξ,η,ζ ≥ 0, ξ+η+ζ ≤ 1}. Exact for polynomials of degree ≤ 7,
+ * so it integrates the isoparametric C3D10 mass integral Nᵢ Nⱼ |detJ| exactly.
+ * Σ weights = 1/6 (reference-tet volume).
+ */
+export const C3D10_MASS_GAUSS: readonly { xi: number; eta: number; zeta: number; w: number }[] =
+  (() => {
+    const pts: { xi: number; eta: number; zeta: number; w: number }[] = [];
+    for (const u of GL5_01) {
+      for (const v of GL5_01) {
+        for (const t of GL5_01) {
+          const xi   = u.x;
+          const eta  = v.x * (1 - u.x);
+          const zeta = t.x * (1 - u.x) * (1 - v.x);
+          const jac  = (1 - u.x) * (1 - u.x) * (1 - v.x); // Duffy collapse Jacobian
+          pts.push({ xi, eta, zeta, w: u.w * v.w * t.w * jac });
+        }
+      }
+    }
+    return pts;
+  })();
+
+/**
+ * Determinant of the C3D10 isoparametric Jacobian J = ∂x/∂ξ at (ξ,η,ζ).
+ * Lightweight companion to buildB_c3d10 (same Jacobian formulation) for the mass
+ * integral, which needs |detJ| but not the full strain-displacement matrix.
+ *
+ * @param nodes 10×3 node coordinates for the element (length 30)
+ */
+export function c3d10DetJ(nodes: Float64Array, xi: number, eta: number, zeta: number): number {
+  const [dNdxi, dNdeta, dNdzeta] = c3d10ShapeDerivatives(xi, eta, zeta);
+  let J00=0,J01=0,J02=0, J10=0,J11=0,J12=0, J20=0,J21=0,J22=0;
+  for (let i = 0; i < 10; i++) {
+    const x = nodes[i*3] ?? 0, y = nodes[i*3+1] ?? 0, z = nodes[i*3+2] ?? 0;
+    J00 += dNdxi[i]!*x;   J01 += dNdxi[i]!*y;   J02 += dNdxi[i]!*z;
+    J10 += dNdeta[i]!*x;  J11 += dNdeta[i]!*y;  J12 += dNdeta[i]!*z;
+    J20 += dNdzeta[i]!*x; J21 += dNdzeta[i]!*y; J22 += dNdzeta[i]!*z;
+  }
+  return J00*(J11*J22-J12*J21) - J01*(J10*J22-J12*J20) + J02*(J10*J21-J11*J20);
+}
+
+/**
+ * True volume of a (possibly curved) C3D10 element, ∫|detJ| dV over the
+ * reference tet using {@link C3D10_MASS_GAUSS}. Equals the corner-tet volume for
+ * a straight-sided element; larger/smaller for a curved one.
+ *
+ * @param nodes 10×3 node coordinates (length 30)
+ */
+export function c3d10Volume(nodes: Float64Array): number {
+  let V = 0;
+  for (const gp of C3D10_MASS_GAUSS) V += Math.abs(c3d10DetJ(nodes, gp.xi, gp.eta, gp.zeta)) * gp.w;
+  return V;
+}
+
+// Edge → (corner,corner) map for the six C3D10 midside nodes.
+const C3D10_EDGE_PAIRS: readonly [number, number][] = [
+  [0,1], [1,2], [0,2], [0,3], [1,3], [2,3],
+];
+
+/**
+ * True when a C3D10 element is straight-sided (affine): every midside node lies
+ * on the midpoint of its edge, within a tight relative tolerance. Straight-sided
+ * elements (TetGen output, box meshes, planar-face Gmsh elements) take the exact
+ * closed-form mass in mass.ts; only genuinely curved elements need isoparametric
+ * integration. Gmsh curvature displaces boundary midnodes by percent-of-edge —
+ * far above the 1e-6 relative tolerance — so classification is unambiguous.
+ *
+ * @param nodes 10×3 node coordinates (length 30)
+ */
+export function isAffineC3D10(nodes: Float64Array): boolean {
+  // Characteristic length: bounding-box extent of the four corner nodes.
+  let lo0 = Infinity, lo1 = Infinity, lo2 = Infinity;
+  let hi0 = -Infinity, hi1 = -Infinity, hi2 = -Infinity;
+  for (let c = 0; c < 4; c++) {
+    const x = nodes[c*3] ?? 0, y = nodes[c*3+1] ?? 0, z = nodes[c*3+2] ?? 0;
+    if (x < lo0) lo0 = x; if (x > hi0) hi0 = x;
+    if (y < lo1) lo1 = y; if (y > hi1) hi1 = y;
+    if (z < lo2) lo2 = z; if (z > hi2) hi2 = z;
+  }
+  const charLen = Math.max(hi0 - lo0, hi1 - lo1, hi2 - lo2, 1e-300);
+  const tol = 1e-6 * charLen;
+  const tol2 = tol * tol;
+  for (let ep = 0; ep < 6; ep++) {
+    const [a, b] = C3D10_EDGE_PAIRS[ep]!;
+    const m = 4 + ep;
+    const dx = (nodes[m*3]   ?? 0) - 0.5 * ((nodes[a*3]   ?? 0) + (nodes[b*3]   ?? 0));
+    const dy = (nodes[m*3+1] ?? 0) - 0.5 * ((nodes[a*3+1] ?? 0) + (nodes[b*3+1] ?? 0));
+    const dz = (nodes[m*3+2] ?? 0) - 0.5 * ((nodes[a*3+2] ?? 0) + (nodes[b*3+2] ?? 0));
+    if (dx*dx + dy*dy + dz*dz > tol2) return false;
+  }
+  return true;
+}
+
+/**
+ * Consistent C3D10 element mass block for UNIT density (per translational
+ * direction): Mblock[a·10+b] = ∫ Nₐ N_b |detJ| dV, integrated isoparametrically
+ * with {@link C3D10_MASS_GAUSS}. The physical per-direction element mass is
+ * ρ · Mblock, and Σ over all entries = ρ · (true element volume).
+ *
+ * Use only for curved elements — affine elements use the exact closed form in
+ * mass.ts (bit-identical regression anchor).
+ *
+ * @param nodes 10×3 node coordinates (length 30)
+ */
+export function c3d10IsoparametricMass(nodes: Float64Array): Float64Array {
+  const M = new Float64Array(100);
+  for (const gp of C3D10_MASS_GAUSS) {
+    const N = c3d10ShapeFunctions(gp.xi, gp.eta, gp.zeta);
+    const w = Math.abs(c3d10DetJ(nodes, gp.xi, gp.eta, gp.zeta)) * gp.w;
+    for (let a = 0; a < 10; a++) {
+      const Na = (N[a] ?? 0) * w;
+      const rowBase = a * 10;
+      for (let b = 0; b < 10; b++) {
+        M[rowBase + b] = (M[rowBase + b] ?? 0) + Na * (N[b] ?? 0);
+      }
+    }
+  }
+  return M;
 }

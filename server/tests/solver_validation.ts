@@ -10,17 +10,33 @@
 
 import { runLinearStatic }      from "../solver/pipeline.js";
 import { generateBoxMesh, generateBoxMeshC3D10 } from "../solver/meshgen.js";
-import { sprSmoothedStress, nodeAveragedStress } from "../solver/stress.js";
+import {
+  sprSmoothedStress, nodeAveragedStress, sprSmoothedStress6,
+  recoverElementStress, computeZZErrorEstimate, invert6x6, stressEnergyDensity,
+} from "../solver/stress.js";
+import type { TetMesh, ElementMaterialField } from "../solver/types.js";
 import {
   buildConstitutiveMatrix,
   buildOrthotropicConstitutiveMatrix,
   c3d10ShapeFunctions,
   c3d10ElementStiffness,
 } from "../solver/element.js";
+import fs   from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let passed = 0, failed = 0;
+const groupsSeen = new Set<number>();
 
 function test(name: string, condition: boolean, detail = "") {
+  // Test names are conventionally prefixed "[N]" or "[N.M...]" — track the
+  // leading group number so the JSON summary's group count is derived from
+  // what actually ran, not hand-counted from source comments.
+  const groupMatch = /^\[(\d+)/.exec(name);
+  if (groupMatch) groupsSeen.add(Number(groupMatch[1]));
+
   if (condition) {
     console.log(`  ✓ ${name}`);
     passed++;
@@ -835,43 +851,99 @@ console.log("\n[15] Mesh quality metrics and degenerate element detection");
     invertedQuality.degenerateCount > 0 || invertedQuality.worstJacobianMin < 0.01,
     `jacobian=${invertedQuality.worstJacobianMin.toFixed(6)}`);
 
-  // Solver should throw on >5% degenerate elements
-  const allInvertedMesh = generateBoxMesh(0, 0, 0, 10, 10, 10, 2, 2, 2);
-  // Corrupt all elements to have inverted node order
-  for (let e = 0; e < allInvertedMesh.elementCount; e++) {
+  // Issue #165/#166: a MIRRORED mesh (negative Jacobian but well-shaped) is NOT
+  // degenerate — the assembler auto-orients it via Math.abs(sixV). The metric
+  // must classify it as normal, and the solver must run it without a
+  // mesh-quality error.
+  const mirrorMesh = generateBoxMesh(0, 0, 0, 10, 10, 10, 2, 2, 2);
+  for (let e = 0; e < mirrorMesh.elementCount; e++) {
     const idx = e * 4;
-    const tmp = allInvertedMesh.elements[idx + 1];
-    const val2 = allInvertedMesh.elements[idx + 2];
+    const tmp = mirrorMesh.elements[idx + 1];
+    const val2 = mirrorMesh.elements[idx + 2];
     if (tmp !== undefined && val2 !== undefined) {
-      allInvertedMesh.elements[idx + 1] = val2;
-      allInvertedMesh.elements[idx + 2] = tmp;
+      mirrorMesh.elements[idx + 1] = val2;
+      mirrorMesh.elements[idx + 2] = tmp;
     }
   }
+  const mirrorQuality = computeMeshQuality(mirrorMesh);
+  test("[15.6] Mirror-oriented well-shaped mesh is not counted degenerate",
+    mirrorQuality.degenerateCount === 0 && mirrorQuality.hardViolationCount === 0,
+    `degenerate=${mirrorQuality.degenerateCount}, hard=${mirrorQuality.hardViolationCount}`);
 
-  const mat = { E: 3500, nu: 0.36, yieldStrength: 50, label: "pla" };
-  const bottom: number[] = [], top: number[] = [];
-  for (let n = 0; n < allInvertedMesh.nodeCount; n++) {
-    const z = allInvertedMesh.nodes[n * 3 + 2] ?? 0;
-    if (z < 0.01) bottom.push(n);
-    if (z > 9.99) top.push(n);
+  // Scale invariance (#165): the SAME physical sliver classified identically at
+  // 0.1×/1×/10×; a well-shaped small element flagged at none.
+  const sliverCoords = [0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0.02];
+  const regularCoords = [0, 0, 0, 1, 0, 0, 0.5, Math.sqrt(3) / 2, 0,
+    0.5, Math.sqrt(3) / 6, Math.sqrt(2 / 3)];
+  const mkTet = (coords: number[], s: number) => ({
+    nodeCount: 4, elementCount: 1, nodesPerElem: 4,
+    nodes: new Float64Array(coords.map((c) => c * s)),
+    elements: new Int32Array([0, 1, 2, 3]),
+  });
+  const sliverScales = [0.1, 1, 10].map((s) => computeMeshQuality(mkTet(sliverCoords, s)));
+  test("[15.7] Genuine sliver flagged degenerate at every scale",
+    sliverScales.every((q) => q.degenerateCount === 1),
+    `degenerate counts=${sliverScales.map((q) => q.degenerateCount).join(",")}`);
+  const regularScales = [0.02, 0.1, 10].map((s) => computeMeshQuality(mkTet(regularCoords, s)));
+  test("[15.8] Small well-shaped element flagged at no scale",
+    regularScales.every((q) => q.normalCount === 1 && q.degenerateCount === 0 && q.poorQualityCount === 0),
+    `normal=${regularScales.map((q) => q.normalCount).join(",")}`);
+
+  // True dihedral over [0,180] (#165): the obtuse sliver reports its real,
+  // near-180° angle (the old collapse could not exceed 90°).
+  const obtuse = computeMeshQuality(mkTet(sliverCoords, 1));
+  test("[15.9] Obtuse sliver reports true dihedral > 90°",
+    obtuse.worstMaxDihedralDeg > 90 && obtuse.worstMaxDihedralDeg <= 180,
+    `maxDihedral=${obtuse.worstMaxDihedralDeg.toFixed(1)}°`);
+
+  // ── Issue #166: gate re-keyed on shape, not Jacobian sign ──
+  const gateMat = { E: 3500, nu: 0.36, yieldStrength: 50, label: "pla" };
+
+  // A few extreme slivers (< 5%) must BLOCK the solve, not be warned past. Build
+  // a good box mesh and collapse a handful of elements to zero volume.
+  const sliverMesh = generateBoxMesh(0, 0, 0, 10, 10, 10, 3, 3, 3); // 135 elements
+  const nSlivers = 3; // 2.2 % < 5 %
+  for (let e = 0; e < nSlivers; e++) sliverMesh.elements[e * 4 + 3] = sliverMesh.elements[e * 4]!;
+  const sliverQ = computeMeshQuality(sliverMesh);
+  test("[15.10] A few extreme slivers (<5%) register as hard violations",
+    sliverQ.hardViolationCount === nSlivers && sliverQ.hardViolationCount / sliverQ.totalElements < 0.05,
+    `hard=${sliverQ.hardViolationCount}/${sliverQ.totalElements}`);
+
+  const sBottom: number[] = [], sTop: number[] = [];
+  for (let n = 0; n < sliverMesh.nodeCount; n++) {
+    const z = sliverMesh.nodes[n * 3 + 2] ?? 0;
+    if (z < 0.01) sBottom.push(n);
+    if (z > 9.99) sTop.push(n);
   }
-
-  let solverThrew = false;
-  let errorMsg = "";
+  let sliverThrew = false, sliverMsg = "";
   try {
-    await runLinearStatic({
-      mesh: allInvertedMesh,
-      material: mat,
-      constraints: [{ nodeIndices: bottom }],
-      forces: top.map(n => ({ nodeIndex: n, forceN: [0, 0, 1] })),
-    });
-  } catch (e) {
-    solverThrew = true;
-    errorMsg = (e as Error).message || String(e);
-  }
+    await runLinearStatic({ mesh: sliverMesh, material: gateMat,
+      constraints: [{ nodeIndices: sBottom }],
+      forces: sTop.map(n => ({ nodeIndex: n, forceN: [0, 0, 1] as [number, number, number] })) });
+  } catch (e) { sliverThrew = true; sliverMsg = (e as Error).message || String(e); }
+  test("[15.11] Solver blocks a mesh with a few extreme slivers",
+    sliverThrew && sliverMsg.includes("Mesh quality error"),
+    `threw=${sliverThrew}, msg='${sliverMsg.slice(0, 60)}'`);
+  test("[15.12] Gate message names worst-element coordinates (mm)",
+    sliverThrew && /\(-?\d+\.\d+, -?\d+\.\d+, -?\d+\.\d+\) mm/.test(sliverMsg),
+    `msg='${sliverMsg.replace(/\n/g, " ").slice(0, 120)}'`);
 
-  test("[15.6] Solver throws on >5% degenerate elements", solverThrew && errorMsg.includes("Mesh quality"),
-    `threw=${solverThrew}, msg='${errorMsg.slice(0, 50)}'`);
+  // The mirror-oriented well-shaped mesh must SOLVE without tripping the gate.
+  const mBottom: number[] = [], mTop: number[] = [];
+  for (let n = 0; n < mirrorMesh.nodeCount; n++) {
+    const z = mirrorMesh.nodes[n * 3 + 2] ?? 0;
+    if (z < 0.01) mBottom.push(n);
+    if (z > 9.99) mTop.push(n);
+  }
+  let mirrorSolved = false, mirrorErr = "";
+  try {
+    await runLinearStatic({ mesh: mirrorMesh, material: gateMat,
+      constraints: [{ nodeIndices: mBottom }],
+      forces: mTop.map(n => ({ nodeIndex: n, forceN: [0, 0, 1] as [number, number, number] })) });
+    mirrorSolved = true;
+  } catch (e) { mirrorErr = (e as Error).message || String(e); }
+  test("[15.13] Mirror-oriented mesh solves without a mesh-quality error",
+    mirrorSolved, `err='${mirrorErr.slice(0, 60)}'`);
 }
 
 // ── Test group 16: Linear buckling — Euler column (clamped-free) ─────────────
@@ -980,7 +1052,9 @@ console.log("\n[16] Linear buckling — Euler column (clamped-free cantilever)")
     const { K: KbuckQ, diagIdx: diagIdxQ } = await assembleK(meshQ, mat);
     const fDummyQ = assembleForceVector(meshQ.nodeCount, forces16Q);
     applyDirichletBC(KbuckQ, fDummyQ, diagIdxQ, [{ nodeIndices: fixedQ }]);
-    const KsigmaQ = assembleKsigma(meshQ, elemStress6Q, KbuckQ.rowPtr, KbuckQ.colIdx);
+    // Per-Gauss-point Kσ (issue #164) + block subspace eigensolver (issue #138).
+    const KsigmaQ = assembleKsigma(meshQ, elemStress6Q, KbuckQ.rowPtr, KbuckQ.colIdx,
+      { displacement: interQ.result.displacement, material: mat });
     const bResultQ = await runLinearBuckling(KbuckQ, KsigmaQ, diagIdxQ);
     const relErrQ = Math.abs(bResultQ.blf - 1.0);
     test("[16.5] C3D10 buckling converged",       bResultQ.converged,        `iters=${bResultQ.iterations}`);
@@ -989,12 +1063,90 @@ console.log("\n[16] Linear buckling — Euler column (clamped-free cantilever)")
       `BLF=${bResultQ.blf.toFixed(4)} relErr=${(relErrQ*100).toFixed(2)}%`);
     test("[16.8] C3D10 mode shape returned",      bResultQ.modeShape.length === meshQ.nodeCount * 3,
       `len=${bResultQ.modeShape.length} expected=${meshQ.nodeCount*3}`);
-    console.log(`    C3D10 nx=12: BLF=${bResultQ.blf.toFixed(4)}, error=${(relErrQ*100).toFixed(2)}%`);
+    test("[16.8b] C3D10 smallest-positive certified", bResultQ.certified,
+      `certified=${bResultQ.certified} modes=[${bResultQ.positiveBLFs.map(v=>v.toFixed(3)).join(', ')}]`);
+    console.log(`    C3D10 nx=12: BLF=${bResultQ.blf.toFixed(4)}, error=${(relErrQ*100).toFixed(2)}%, certified=${bResultQ.certified}`);
   } catch (err) {
     test("[16.5] C3D10 buckling did not throw", false, String(err));
     test("[16.6] C3D10 BLF positive", false);
     test("[16.7] C3D10 BLF within 3% of Euler", false);
     test("[16.8] C3D10 mode shape returned", false);
+    test("[16.8b] C3D10 smallest-positive certified", false);
+  }
+
+  // ── Bending-dominated buckling: per-Gauss-point Kσ vs element-averaged ──────
+  // Deep thin cantilever (h≫b) loaded by a pure end MOMENT (a tip couple), so
+  // the pre-stress is bending: σxx = M·(z−z_c)/I, linear through the depth and
+  // ZERO-MEAN about the neutral axis. A C3D10 element that straddles that axis
+  // has its ± bending stress averaged toward zero (issue #164), so element-
+  // averaged Kσ is under-built and OVER-predicts the buckling factor (non-
+  // conservative). Per-Gauss-point Kσ integrates the true gradient.
+  //
+  // Reference = refined (nz=4 through-depth) per-Gauss BLF: with the depth well
+  // resolved the wash-out vanishes and the two Kσ schemes converge together, so
+  // the refined per-Gauss value is the physical target. On the coarse (nz=1)
+  // mesh the two schemes straddle it: per-Gauss stays on the safe (lower) side,
+  // element-averaged overshoots it (non-conservative). This is the regression
+  // that would silently pass a part that buckles.
+  {
+    const Lb = 48, bb = 4, hb = 12, Fcouple = 4000, zc = hb / 2;
+    const buildCantileverBending = (nx: number, ny: number, nz: number) => {
+      const m = generateBoxMeshC3D10(0, 0, 0, Lb, bb, hb, nx, ny, nz);
+      const fixedB: number[] = [], hiB: number[] = [], loB: number[] = [];
+      for (let nn = 0; nn < m.nodeCount; nn++) {
+        const x = m.nodes[nn*3] ?? 0, z = m.nodes[nn*3+2] ?? 0;
+        if (x < 0.01) fixedB.push(nn);
+        if (x > Lb - 0.01) { if (z > zc + 0.01) hiB.push(nn); else if (z < zc - 0.01) loB.push(nn); }
+      }
+      const forcesB = [
+        ...hiB.map(nn => ({ nodeIndex: nn, forceN: [ Fcouple / hiB.length, 0, 0] as [number,number,number] })),
+        ...loB.map(nn => ({ nodeIndex: nn, forceN: [-Fcouple / loB.length, 0, 0] as [number,number,number] })),
+      ];
+      return { m, fixedB, forcesB };
+    };
+    const blfOf = async (nx: number, ny: number, nz: number, perGP: boolean) => {
+      const { m, fixedB, forcesB } = buildCantileverBending(nx, ny, nz);
+      const inter = await runLinearStaticWithK({ mesh: m, material: mat, constraints: [{ nodeIndices: fixedB }], forces: forcesB });
+      const es = inter.result.elemStress6;
+      if (!es) throw new Error("elemStress6 not returned (bending)");
+      const { K: Kb2, diagIdx: di2 } = await assembleK(m, mat);
+      const fd2 = assembleForceVector(m.nodeCount, forcesB);
+      applyDirichletBC(Kb2, fd2, di2, [{ nodeIndices: fixedB }]);
+      const Ks2 = assembleKsigma(m, es, Kb2.rowPtr, Kb2.colIdx,
+        perGP ? { displacement: inter.result.displacement, material: mat } : undefined);
+      return runLinearBuckling(Kb2, Ks2, di2);
+    };
+    try {
+      const coarseAvg = await blfOf(8, 2, 1, false);
+      const coarseGP  = await blfOf(8, 2, 1, true);
+      const refGP     = await blfOf(12, 2, 4, true);   // reference (depth-resolved)
+
+      const allGood = coarseAvg.converged && coarseGP.converged && refGP.converged
+        && coarseAvg.certified && coarseGP.certified && refGP.certified;
+      test("[16.9] bending buckling converged+certified (all 3 meshes)", allGood,
+        `avg=${coarseAvg.blf.toFixed(4)} gp=${coarseGP.blf.toFixed(4)} ref=${refGP.blf.toFixed(4)}`);
+      test("[16.10] all BLFs positive",
+        coarseAvg.blf > 0 && coarseGP.blf > 0 && refGP.blf > 0);
+      // The fix is active: per-Gauss and averaged differ materially for bending.
+      const washGap = (coarseAvg.blf - coarseGP.blf) / coarseGP.blf;
+      test("[16.11] per-Gauss ≠ element-averaged for bending (>15%)", washGap > 0.15,
+        `washGap=${(washGap*100).toFixed(1)}%`);
+      // Element-averaged OVER-predicts the reference → non-conservative (the bug).
+      test("[16.12] element-averaged over-predicts reference (non-conservative)",
+        coarseAvg.blf > refGP.blf,
+        `avg=${coarseAvg.blf.toFixed(4)} > ref=${refGP.blf.toFixed(4)}`);
+      // Per-Gauss stays on the safe side of the reference (does not over-predict).
+      test("[16.13] per-Gauss does not over-predict reference (conservative)",
+        coarseGP.blf <= refGP.blf * 1.02,
+        `gp=${coarseGP.blf.toFixed(4)} ≤ ref=${refGP.blf.toFixed(4)}`);
+      console.log(`    bending: coarse avg=${coarseAvg.blf.toFixed(4)} (non-cons), coarse perGP=${coarseGP.blf.toFixed(4)}, refined perGP=${refGP.blf.toFixed(4)} [reference]`);
+    } catch (err) {
+      test("[16.9] bending buckling converged+certified (all 3 meshes)", false, String(err));
+      test("[16.10] all BLFs positive", false);
+      test("[16.11] per-Gauss ≠ element-averaged for bending (>15%)", false);
+      test("[16.12] element-averaged over-predicts reference (non-conservative)", false);
+      test("[16.13] per-Gauss does not over-predict reference (conservative)", false);
+    }
   }
 }
 
@@ -1378,7 +1530,7 @@ console.log("\n[22] Surface pressure — consistent traction resultant + patch t
     const a=faces[t*3]!, b=faces[t*3+1]!, c=faces[t*3+2]!;
     isLoaded[t] = (mesh.nodes[a*3+2]!>L-1e-6)&&(mesh.nodes[b*3+2]!>L-1e-6)&&(mesh.nodes[c*3+2]!>L-1e-6);
   }
-  const pf = assembleSurfaceTraction(mesh.nodes, faces, isLoaded, [0,0,P]);
+  const pf = assembleSurfaceTraction(mesh, faces, isLoaded, [0,0,P]);
   let sz=0; for(let n=0;n<mesh.nodeCount;n++) sz+=pf[n*3+2]??0;
   test("[22.1] traction resultant = P·A", Math.abs(sz - P*L*L) < 1e-6*(P*L*L),
     `Σfz=${sz.toFixed(4)} expected=${(P*L*L).toFixed(4)}`);
@@ -1398,6 +1550,98 @@ console.log("\n[22] Surface pressure — consistent traction resultant + patch t
     console.log(`    resultant=${sz.toFixed(2)}N, mean σ_zz=${meanSzz.toFixed(4)} MPa`);
   } catch (err) {
     test("[22.2] patch test did not throw", false, String(err));
+  }
+
+  // ── C3D10 (quadratic) — consistent T6 surface load (issue #137) ─────────────
+  // Corner-only lumping is the exact INVERSE of the correct quadratic face load:
+  // the T6 corner integral ∫N_corner dA = 0 and the mid-side integral = A/3, so a
+  // uniform traction must land on the three mid-side nodes, not the corners.
+  {
+    const Lq=10, Pq=2.0;
+    const meshQ = generateBoxMeshC3D10(0,0,0, Lq,Lq,Lq, 3,3,3);
+    const facesQ = boundaryFaces(meshQ);
+    const triCountQ = facesQ.length/3;
+    const loadedQ:boolean[] = new Array(triCountQ);
+    for (let t=0;t<triCountQ;t++){
+      const a=facesQ[t*3]!, b=facesQ[t*3+1]!, c=facesQ[t*3+2]!;
+      loadedQ[t] = (meshQ.nodes[a*3+2]!>Lq-1e-6)&&(meshQ.nodes[b*3+2]!>Lq-1e-6)&&(meshQ.nodes[c*3+2]!>Lq-1e-6);
+    }
+    const pfQ = assembleSurfaceTraction(meshQ, facesQ, loadedQ, [0,0,Pq]);
+
+    // (a) Resultant still exact.
+    let szQ=0; for(let n=0;n<meshQ.nodeCount;n++) szQ+=pfQ[n*3+2]??0;
+    test("[22.3] C3D10 traction resultant = P·A", Math.abs(szQ - Pq*Lq*Lq) < 1e-6*(Pq*Lq*Lq),
+      `Σfz=${szQ.toFixed(4)} expected=${(Pq*Lq*Lq).toFixed(4)}`);
+
+    // (b) Distribution: build the reference T6 load INDEPENDENTLY of the solver
+    // (locate each mid-side node by its midpoint coordinates) and require corners
+    // ≈ 0 and every loaded node = Σ (A/3)·t over the faces it belongs to.
+    const midOf = (p:number,q:number):number => {
+      const mx=(meshQ.nodes[p*3]!+meshQ.nodes[q*3]!)/2;
+      const my=(meshQ.nodes[p*3+1]!+meshQ.nodes[q*3+1]!)/2;
+      const mz=(meshQ.nodes[p*3+2]!+meshQ.nodes[q*3+2]!)/2;
+      for (let n=0;n<meshQ.nodeCount;n++)
+        if (Math.abs(meshQ.nodes[n*3]!-mx)<1e-9 && Math.abs(meshQ.nodes[n*3+1]!-my)<1e-9 && Math.abs(meshQ.nodes[n*3+2]!-mz)<1e-9) return n;
+      return -1;
+    };
+    const expect = new Float64Array(meshQ.nodeCount*3);
+    const cornerSet = new Set<number>();
+    for (let t=0;t<triCountQ;t++){
+      if(!loadedQ[t]) continue;
+      const a=facesQ[t*3]!, b=facesQ[t*3+1]!, c=facesQ[t*3+2]!;
+      cornerSet.add(a); cornerSet.add(b); cornerSet.add(c);
+      const ax=meshQ.nodes[a*3]!,ay=meshQ.nodes[a*3+1]!,az=meshQ.nodes[a*3+2]!;
+      const bx=meshQ.nodes[b*3]!,by=meshQ.nodes[b*3+1]!,bz=meshQ.nodes[b*3+2]!;
+      const cx=meshQ.nodes[c*3]!,cy=meshQ.nodes[c*3+1]!,cz=meshQ.nodes[c*3+2]!;
+      const area=0.5*Math.hypot((by-ay)*(cz-az)-(bz-az)*(cy-ay),(bz-az)*(cx-ax)-(bx-ax)*(cz-az),(bx-ax)*(cy-ay)-(by-ay)*(cx-ax));
+      for (const m of [midOf(a,b),midOf(b,c),midOf(c,a)]) expect[m*3+2]! += Pq*area/3;
+    }
+    let maxCorner=0; for (const cN of cornerSet) maxCorner=Math.max(maxCorner, Math.abs(pfQ[cN*3+2]??0));
+    test("[22.4] C3D10 corner nodes carry ≈ 0 (bug was A/3 on corners)", maxCorner < 1e-9*(Pq*Lq*Lq),
+      `max|f_corner|=${maxCorner.toExponential(3)}`);
+    let maxErr=0; for (let i=0;i<expect.length;i++) maxErr=Math.max(maxErr, Math.abs((pfQ[i]??0)-(expect[i]??0)));
+    test("[22.5] C3D10 mid-side loads = ΣA/3·t (T6 consistent)", maxErr < 1e-9*(Pq*Lq*Lq),
+      `max|f−f_ref|=${maxErr.toExponential(3)}`);
+
+    // (c) Symmetry-plane patch test → constant σ_zz = P to near machine precision.
+    // x=0,y=0,z=0 are symmetry planes of the uniaxial field
+    // u = (−νP/E·x, −νP/E·y, P/E·z), so constraining the normal DOF on each
+    // reproduces the exact constant-stress state. Corner lumping (the #137 bug)
+    // is NOT the consistent quadratic load and perturbs σ near the loaded face.
+    const matQ = { E:3500, nu:0.36, yieldStrength:50, label:"pla" };
+    const fx0:number[]=[], fy0:number[]=[], fz0:number[]=[];
+    for(let n=0;n<meshQ.nodeCount;n++){
+      if((meshQ.nodes[n*3]??0)<1e-6) fx0.push(n);
+      if((meshQ.nodes[n*3+1]??0)<1e-6) fy0.push(n);
+      if((meshQ.nodes[n*3+2]??0)<1e-6) fz0.push(n);
+    }
+    const forcesQ:{nodeIndex:number;forceN:[number,number,number]}[]=[];
+    for(let n=0;n<meshQ.nodeCount;n++){ const fz=pfQ[n*3+2]??0; if(fz!==0) forcesQ.push({nodeIndex:n,forceN:[0,0,fz]}); }
+    try {
+      const interQ = await runLinearStaticWithK({
+        mesh:meshQ, material:matQ, cgTolerance:1e-12,
+        constraints:[
+          {nodeIndices:fx0, fixedAxes:[true,false,false] as const},
+          {nodeIndices:fy0, fixedAxes:[false,true,false] as const},
+          {nodeIndices:fz0, fixedAxes:[false,false,true] as const},
+        ],
+        forces:forcesQ,
+      });
+      const es6=interQ.result.elemStress6!;
+      let maxRelZZ=0, maxOff=0;
+      for(let e=0;e<meshQ.elementCount;e++){
+        maxRelZZ=Math.max(maxRelZZ, Math.abs((es6[e*6+2]??0)-Pq)/Pq);
+        maxOff=Math.max(maxOff, Math.abs(es6[e*6]??0), Math.abs(es6[e*6+1]??0),
+          Math.abs(es6[e*6+3]??0), Math.abs(es6[e*6+4]??0), Math.abs(es6[e*6+5]??0));
+      }
+      test("[22.6] C3D10 patch: σ_zz = P at every element (near machine precision)",
+        maxRelZZ < 1e-6, `maxRel σ_zz err=${maxRelZZ.toExponential(3)}`);
+      test("[22.7] C3D10 patch: off-axis stresses ≈ 0", maxOff < 1e-5*Pq,
+        `max|σ_off|=${maxOff.toExponential(3)} MPa`);
+      console.log(`    C3D10 patch: maxRelZZ=${maxRelZZ.toExponential(2)}, maxOff=${maxOff.toExponential(2)} MPa`);
+    } catch (err) {
+      test("[22.6] C3D10 patch test did not throw", false, String(err));
+    }
   }
 }
 
@@ -1469,6 +1713,76 @@ console.log("\n[24] Hole-in-plate stress concentration — Kirsch Kt ≈ 3.0");
       `nomVM=${kt.nominalVonMisesMPa.toFixed(2)}MPa (${mesh.elementCount} C3D10 elems)`);
   } catch (err) {
     test("[24] hole-in-plate benchmark did not throw", false, String(err));
+  }
+}
+
+// ── Test group 24b: calibration Kt fixtures (issues #139 / #140) ──────────────
+console.log("\n[24b] Calibration Kt fixtures — bearing plate-with-hole + lap-shear policy");
+{
+  try {
+    const { solveCouponKt, buildBearingKtProbe } = await import("../coupon_fea.js");
+    const { COUPON_DIMS, backCalculateProfile } = await import("../analysis.js");
+
+    // Representative orthotropic PLA (same profile the /kt endpoint solves with).
+    const mat = {
+      kind: "orthotropic" as const,
+      E_xy: 3500, E_z: 3500 * 0.65, nu_xy: 0.36, nu_xz: 0.30,
+      G_xz: (3500 / (2 * 1.36)) * 0.4, yieldXY: 50, yieldZ: 29, label: "pla-cal",
+    };
+
+    // ── #139: bearing Kt is now the net-section open-hole SCF of the plate-with-
+    //    hole fixture at the COUPON_DIMS.bearing geometry — NOT the old hole-less
+    //    bar whose Kt ≈ 1 made the correction a silent no-op. Geometry is sourced
+    //    from COUPON_DIMS (single source of truth), never hard-coded here.
+    const stdProbe = buildBearingKtProbe(COUPON_DIMS.bearing);
+    const ktStd = await solveCouponKt(stdProbe.mesh, mat, stdProbe.loadCase);
+    test("[24b] bearing Kt probe converged", ktStd.converged, `converged=${ktStd.converged}`);
+    // d/W ≈ 0.16 ⇒ net-section open-hole SCF ≈ 2.8, comfortably above the ~1.06
+    // noise floor and the ≥1.5 acceptance bound. Band [2.2, 3.2] is the justified
+    // window (finite-width open-hole tension SCF for this ratio, ±mesh residual).
+    test("[24b] bearing Kt materially above noise floor (2.2 ≤ Kt ≤ 3.2)",
+      ktStd.converged && ktStd.Kt >= 2.2 && ktStd.Kt <= 3.2,
+      `Kt=${ktStd.Kt.toFixed(3)} (expect net-section open-hole SCF ≈ 2.8)`);
+    test("[24b] bearing Kt >> 1.5 (correction is no longer a no-op)",
+      ktStd.Kt > 1.5, `Kt=${ktStd.Kt.toFixed(3)}`);
+
+    // Mesh stability: the standard tier must agree with a finer tier within the
+    // coupon-FEA noise floor (~10%). Measured drift standard→fine is ~2%.
+    const fineProbe = buildBearingKtProbe(COUPON_DIMS.bearing, { nTheta: 64, ns: 16, nThick: 3 });
+    const ktFine = await solveCouponKt(fineProbe.mesh, mat, fineProbe.loadCase);
+    const drift = Math.abs(ktStd.Kt - ktFine.Kt) / ktFine.Kt;
+    test("[24b] bearing Kt stable across mesh tiers (<10% drift)",
+      ktFine.converged && drift < 0.10,
+      `std=${ktStd.Kt.toFixed(3)} fine=${ktFine.Kt.toFixed(3)} drift=${(drift * 100).toFixed(1)}%`);
+
+    // The probe nominal is the NET ligament section (W−d)·t, so nominalVM = F/A_net.
+    const netArea = (COUPON_DIMS.bearing.plateWidthMm - COUPON_DIMS.bearing.holeDiamMm)
+      * COUPON_DIMS.bearing.plateThickMm;
+    test("[24b] bearing probe nominal is referenced to the net section",
+      near(ktStd.nominalVonMisesMPa, stdProbe.loadCase.totalForceN / netArea, 1e-6),
+      `nomVM=${ktStd.nominalVonMisesMPa.toFixed(3)} expect=${(stdProbe.loadCase.totalForceN / netArea).toFixed(3)}`);
+
+    // ── #140: lap-shear allowable is the apparent (average) F/A_overlap, Kt ≡ 1
+    //    by policy. Locking the policy: the default profile (no ktLapShear) must
+    //    equal plain nominal F/A, and an explicit ktLapShear:1 must be identical.
+    const lapFail = 1600;
+    const nominalShear = lapFail
+      / (COUPON_DIMS.lapShear.overlapWidthMm * COUPON_DIMS.lapShear.overlapLengthMm);
+    const polDefault = backCalculateProfile({
+      id: "lap-default", label: "lap-default", materialId: "pla", layerHeightMm: 0.2,
+      tensileFailN: null, lapShearFailN: lapFail, bearingFailN: null, tensileDeflMm: null,
+    });
+    const polExplicit1 = backCalculateProfile({
+      id: "lap-kt1", label: "lap-kt1", materialId: "pla", layerHeightMm: 0.2,
+      tensileFailN: null, lapShearFailN: lapFail, bearingFailN: null, tensileDeflMm: null,
+      ktLapShear: 1.0,
+    });
+    test("[24b] lap-shear allowable is nominal F/A (Kt ≡ 1 policy)",
+      near(polDefault.shearStr_MPa ?? -1, nominalShear, 1e-9)
+      && near(polExplicit1.shearStr_MPa ?? -1, nominalShear, 1e-9),
+      `default=${polDefault.shearStr_MPa} explicit1=${polExplicit1.shearStr_MPa} nominal=${nominalShear}`);
+  } catch (err) {
+    test("[24b] calibration Kt fixtures did not throw", false, String(err));
   }
 }
 
@@ -1688,6 +2002,796 @@ console.log("\n[26] Numerical homogenization — perforated-plate cell vs isolat
   }
 }
 
+// ── Test group 27: C3D10 node-order self-check + quadrature limit (#167/#163) ─
+console.log("\n[27] C3D10 midside self-check + affine-exact / curved-under-integrated quadrature");
+{
+  const { analyzeC3D10MidsideOrdering, verifyC3D10MidsideOrdering, C3D10_MIDSIDE_EDGES } =
+    await import("../c3d10_ordering.js");
+  const { c3d10ElementStiffness, C3D10_GAUSS, C3D10_GAUSS_HIGH_ORDER, buildConstitutiveMatrix } =
+    await import("../solver/element.js");
+
+  // Correctly-ordered straight element (STORMFEA convention) → accepted.
+  const corners = [[2,0,0],[0,2,0],[0,0,2],[0,0,0]] as const;
+  const coords: number[] = [];
+  for (const c of corners) coords.push(c[0], c[1], c[2]);
+  for (const [a, b] of C3D10_MIDSIDE_EDGES)
+    coords.push((corners[a]![0]+corners[b]![0])/2, (corners[a]![1]+corners[b]![1])/2, (corners[a]![2]+corners[b]![2])/2);
+  const nodes = Float64Array.from(coords);
+  const elems = Int32Array.from([0,1,2,3,4,5,6,7,8,9]);
+  const good = analyzeC3D10MidsideOrdering(nodes, elems, 1);
+  test("[27.1] correct midside ordering accepted (affine witness)", good.ok && good.affineWitnesses === 1,
+    `ok=${good.ok} witnesses=${good.affineWitnesses}`);
+
+  // Scrambled ordering (rotate the 6 midside slots) → rejected loudly.
+  const scrambled = Int32Array.from(elems);
+  const mids = [4,5,6,7,8,9].map(k => elems[k]!);
+  for (let k = 0; k < 6; k++) scrambled[4 + k] = mids[(k + 1) % 6]!;
+  const bad = analyzeC3D10MidsideOrdering(nodes, scrambled, 1);
+  let threw = false;
+  try { verifyC3D10MidsideOrdering(nodes, scrambled, 1, 10, "test-mesher"); } catch { threw = true; }
+  test("[27.2] scrambled midside ordering rejected (no witnesses, throws)",
+    !bad.ok && bad.affineWitnesses === 0 && threw, `ok=${bad.ok} threw=${threw}`);
+
+  // Quadrature: 4-pt EXACT for affine, under-integrates curved.
+  const C = buildConstitutiveMatrix({ E: 3500, nu: 0.36, yieldStrength: 50, label: "pla" });
+  const relFro = (a: Float64Array, b: Float64Array) => {
+    let d = 0, n = 0; for (let i = 0; i < a.length; i++) { const e = a[i]!-b[i]!; d += e*e; n += b[i]!*b[i]!; }
+    return Math.sqrt(d) / Math.sqrt(n);
+  };
+  const k4a = c3d10ElementStiffness(nodes, C, C3D10_GAUSS);
+  const kHa = c3d10ElementStiffness(nodes, C, C3D10_GAUSS_HIGH_ORDER);
+  const affErr = relFro(k4a, kHa);
+  test("[27.3] affine C3D10: 4-pt == high-order (rule exact → validated results unaffected)",
+    affErr < 1e-12, `relErr=${affErr.toExponential(2)}`);
+
+  const curved = Float64Array.from(nodes);
+  curved[4*3] = (curved[4*3] ?? 0) + 0.4; curved[5*3+1] = (curved[5*3+1] ?? 0) + 0.4; curved[6*3+2] = (curved[6*3+2] ?? 0) + 0.4;
+  const curvedErr = relFro(c3d10ElementStiffness(curved, C, C3D10_GAUSS), c3d10ElementStiffness(curved, C, C3D10_GAUSS_HIGH_ORDER));
+  test("[27.4] curved C3D10: 4-pt under-integrates (measurable vs high-order)",
+    curvedErr > 0.005 && curvedErr < 0.1, `relErr=${(curvedErr*100).toFixed(2)}%`);
+  console.log(`    quadrature: affine relErr=${affErr.toExponential(1)} (exact); curved (~20% midside offset) relErr=${(curvedErr*100).toFixed(2)}%`);
+}
+
+// ── Test group 28: Face pressure selection — coarse mesh, no silent zero-load ─
+// Issue #157: 'face' pressure selection used an absolute 0.5 mm proximity band,
+// so a COARSE mesh (large triangles) could select zero triangles → zero load
+// applied → a silently unstressed model. The band is now 0.5 × median boundary
+// edge (scale-relative) with an extreme-triangle fallback, so selection is
+// non-empty and total applied force = pressure × selected area.
+console.log("\n[28] Face pressure selection — coarse mesh non-empty + force = P·A (issue #157)");
+{
+  const { generateBoxMeshC3D4, extractSurfaceFaces } = await import("../solver/meshgen.js");
+  const { selectPressureRegion, assembleSurfaceTraction } = await import("../solver/load.js");
+
+  // A deliberately COARSE, large box — the exact failure geometry: 60 mm cube,
+  // one element per side, so boundary triangles are ~60 mm across (≫ 0.5 mm).
+  const S = 60, P = 2.0;
+  const mesh = generateBoxMeshC3D4(0, 0, 0, S, S, S, 1, 1, 1);
+  const faces = extractSurfaceFaces(mesh);
+  const triCount = faces.length / 3;
+  const sel = selectPressureRegion(mesh.nodes, faces, [0, 0, 1], "face");
+  const nSel = sel.reduce((s, on) => s + (on ? 1 : 0), 0);
+  // Core fix: an old absolute 0.5 mm band would have selected ZERO triangles
+  // here (all centroids sit ≥10 mm below the top vertex) → a silent zero-load.
+  test("[28.1] coarse mesh selects a NON-empty face (old 0.5 mm band → 0)", nSel > 0, `nSel=${nSel}`);
+
+  // The flat top face (both triangles with all corners at z = S) must be caught.
+  let topTris = 0, topSelected = 0;
+  for (let t = 0; t < triCount; t++) {
+    const allTop = [0,1,2].every(k => Math.abs(mesh.nodes[faces[t*3+k]!*3+2]! - S) < 1e-9);
+    if (allTop) { topTris++; if (sel[t]) topSelected++; }
+  }
+  test("[28.2] the flat extreme face is fully captured", topTris > 0 && topSelected === topTris,
+    `topSelected=${topSelected}/${topTris}`);
+
+  // Reported selected area, and the consistency the client shows the user:
+  // total applied force = pressure × selected area (issue #157 metadata).
+  let area = 0;
+  for (let t = 0; t < triCount; t++) {
+    if (!sel[t]) continue;
+    const a = faces[t*3]!, b = faces[t*3+1]!, c = faces[t*3+2]!;
+    const ux = mesh.nodes[b*3]!-mesh.nodes[a*3]!, uy = mesh.nodes[b*3+1]!-mesh.nodes[a*3+1]!, uz = mesh.nodes[b*3+2]!-mesh.nodes[a*3+2]!;
+    const vx = mesh.nodes[c*3]!-mesh.nodes[a*3]!, vy = mesh.nodes[c*3+1]!-mesh.nodes[a*3+1]!, vz = mesh.nodes[c*3+2]!-mesh.nodes[a*3+2]!;
+    area += 0.5 * Math.hypot(uy*vz-uz*vy, uz*vx-ux*vz, ux*vy-uy*vx);
+  }
+  // #206 changed assembleSurfaceTraction to take the full TetMesh (it needs the
+  // parent element/face map for the C3D10 T6 consistent load); this test came
+  // from #226 which predated that, so pass `mesh`, not `mesh.nodes`.
+  const pf = assembleSurfaceTraction(mesh, faces, sel, [0, 0, P]);
+  let fz = 0; for (let n = 0; n < mesh.nodeCount; n++) fz += pf[n*3+2] ?? 0;
+  test("[28.3] total force = P × selected area", Math.abs(fz - P*area) < 1e-6*(P*area),
+    `Σfz=${fz.toFixed(3)} P·A=${(P*area).toFixed(3)} (A=${area.toFixed(1)} mm²)`);
+
+  // Scale invariance: the same box ×0.1 selects the same triangle count.
+  const small = generateBoxMeshC3D4(0, 0, 0, S*0.1, S*0.1, S*0.1, 1, 1, 1);
+  const sf = extractSurfaceFaces(small);
+  const selS = selectPressureRegion(small.nodes, sf, [0, 0, 1], "face");
+  const nSmall = selS.reduce((s, on) => s + (on ? 1 : 0), 0);
+  test("[28.4] ×0.1-scale selects the same face-triangle count", nSmall === nSel, `${nSmall} vs ${nSel}`);
+}
+
+// ── Test group 29: True energy-norm ZZ error estimator (#143/#144/#145) ───────
+console.log("\n[29] Energy-norm ZZ estimator — full tensor, volume-weighted, shape-fn interp");
+{
+  const iso = { E: 3500, nu: 0.36, yieldStrength: 50, label: "pla" };
+
+  // [27.1/27.2] Compliance inversion is exact: C · C⁻¹ = I (iso + ortho).
+  const checkInverse = (C: Float64Array): number => {
+    const S = invert6x6(C);
+    let maxErr = 0;
+    for (let i = 0; i < 6; i++) for (let j = 0; j < 6; j++) {
+      let p = 0; for (let k = 0; k < 6; k++) p += (C[i*6+k] ?? 0) * (S[k*6+j] ?? 0);
+      maxErr = Math.max(maxErr, Math.abs(p - (i === j ? 1 : 0)));
+    }
+    return maxErr;
+  };
+  const Ciso = buildConstitutiveMatrix(iso);
+  const Cortho = buildOrthotropicConstitutiveMatrix({
+    kind: "orthotropic", E_xy: 3500, E_z: 350, nu_xy: 0.36, nu_xz: 0.30,
+    G_xz: 300, yieldXY: 50, yieldZ: 20, label: "ortho-soft-z",
+  });
+  test("[29.1] invert6x6 isotropic: C·C⁻¹ = I (err < 1e-9)", checkInverse(Ciso) < 1e-9,
+    `err=${checkInverse(Ciso).toExponential(2)}`);
+  test("[29.2] invert6x6 orthotropic: C·C⁻¹ = I (err < 1e-9)", checkInverse(Cortho) < 1e-9,
+    `err=${checkInverse(Cortho).toExponential(2)}`);
+
+  // [29.3] Energy weighting is real (#143): with E_z ≪ E_xy, an equal-magnitude
+  // through-thickness (σzz) stress error carries MORE energy than an in-plane
+  // (σxx) one, by exactly the compliance ratio S33/S11 = E_xy/E_z. A scalar
+  // von-Mises L2 norm (the old estimator) would rank them equal.
+  {
+    const S = invert6x6(Cortho);
+    const sig = 10;
+    const eZ = stressEnergyDensity([0, 0, sig, 0, 0, 0], S); // σzz only
+    const eX = stressEnergyDensity([sig, 0, 0, 0, 0, 0], S); // σxx only
+    const ratio = eZ / eX;
+    const expected = 3500 / 350; // E_xy / E_z = 10
+    test("[29.3] energy norm ranks through-thickness error above in-plane", eZ > eX,
+      `eZ=${eZ.toExponential(3)} eX=${eX.toExponential(3)}`);
+    test("[29.3b] energy ratio == E_xy/E_z (compliance-weighted)", near(ratio, expected, 1e-6),
+      `ratio=${ratio.toFixed(4)} expected=${expected.toFixed(4)}`);
+  }
+
+  // Manufactured nodal displacement fields (kinematic — no equilibrium needed;
+  // recoverElementStress computes σ = C·B·u for any u).
+  const setDisp = (mesh: TetMesh, f: (x: number, y: number, z: number) => [number, number, number]) => {
+    const d = new Float64Array(mesh.nodeCount * 3);
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      const [ux, uy, uz] = f(mesh.nodes[n*3] ?? 0, mesh.nodes[n*3+1] ?? 0, mesh.nodes[n*3+2] ?? 0);
+      d[n*3] = ux; d[n*3+1] = uy; d[n*3+2] = uz;
+    }
+    return d;
+  };
+
+  // [27.4/27.5] Constant stress ⇒ SPR exact ⇒ η ≈ 0 (#tight), both element types.
+  // A linear displacement field gives constant strain ⇒ constant stress; SPR6
+  // reproduces a constant exactly, so σ* = σ_h everywhere.
+  const linField = (x: number, y: number, z: number): [number, number, number] =>
+    [1e-3*x + 4e-4*y - 2e-4*z + 0.05, -3e-4*x + 6e-4*y + 1e-4*z, 2e-4*x - 1e-4*y + 5e-4*z - 0.02];
+  for (const [label, mesh] of [
+    ["C3D4",  generateBoxMesh(0, 0, 0, 6, 6, 6, 3, 3, 3)],
+    ["C3D10", generateBoxMeshC3D10(0, 0, 0, 6, 6, 6, 3, 3, 3)],
+  ] as const) {
+    const disp = setDisp(mesh, linField);
+    const { elemStress6 } = recoverElementStress(mesh, disp, iso);
+    const { globalRelativeError, errorEstimate } = computeZZErrorEstimate(mesh, disp, elemStress6, iso);
+    const maxEE = Math.max(...Array.from(errorEstimate));
+    test(`[29.4] ${label}: constant stress ⇒ globalRelativeError ≈ 0`, globalRelativeError < 1e-9,
+      `gre=${globalRelativeError.toExponential(2)}`);
+    test(`[29.5] ${label}: constant stress ⇒ all η ≈ 0`, maxEE < 1e-9,
+      `maxEE=${maxEE.toExponential(2)}`);
+  }
+
+  // [29.6] Scale invariance (#145): a mesh uniformly scaled ×1000 (with the
+  // displacement scaled ×1000 so strains — hence stresses — are identical)
+  // must produce an IDENTICAL normalized error field. The old estimator's
+  // 1/(1+dist²) weight (dist in mm²) broke this.
+  {
+    const quad = (x: number, y: number, z: number): [number, number, number] =>
+      [1e-4*x*x + 5e-5*y*z, 3e-5*y*y, 2e-5*z*x]; // nonlinear ⇒ nonzero recovery error
+    const mesh = generateBoxMesh(0, 0, 0, 6, 6, 6, 4, 4, 4);
+    const disp = setDisp(mesh, quad);
+    const { elemStress6 } = recoverElementStress(mesh, disp, iso);
+    const r1 = computeZZErrorEstimate(mesh, disp, elemStress6, iso);
+
+    const s = 1000;
+    const meshS: TetMesh = {
+      nodes: Float64Array.from(mesh.nodes, v => v * s),
+      elements: mesh.elements, nodeCount: mesh.nodeCount,
+      elementCount: mesh.elementCount, nodesPerElem: mesh.nodesPerElem,
+    };
+    const dispS = Float64Array.from(disp, v => v * s);
+    const { elemStress6: es6S } = recoverElementStress(meshS, dispS, iso);
+    const r2 = computeZZErrorEstimate(meshS, dispS, es6S, iso);
+
+    let maxDelta = 0;
+    for (let e = 0; e < mesh.elementCount; e++)
+      maxDelta = Math.max(maxDelta, Math.abs((r1.errorEstimate[e] ?? 0) - (r2.errorEstimate[e] ?? 0)));
+    const meaningful = Math.max(...Array.from(r1.errorEstimate));
+    test("[29.6] scale ×1000 ⇒ identical η ranking (no dimensional constants)",
+      maxDelta < 1e-7 && meaningful > 1e-3,
+      `maxΔ=${maxDelta.toExponential(2)} peakη=${meaningful.toExponential(2)}`);
+    test("[29.6b] scale ×1000 ⇒ identical global relative error",
+      near(r1.globalRelativeError, r2.globalRelativeError, 1e-6),
+      `gre1=${r1.globalRelativeError.toExponential(4)} gre2=${r2.globalRelativeError.toExponential(4)}`);
+  }
+
+  // [29.7] Volume weighting (#144): on a graded bar (element size grows with x)
+  // under a field whose true stress is LINEAR in x, every element sees the same
+  // stress slope, so the ONLY thing distinguishing per-element error is size.
+  // A true volume-weighted energy integral makes the coarse (under-resolved)
+  // elements rank highest; the old point-value estimator (σ* − σ_h at the
+  // centroid) reports ≈0 for a linear field and would invert this ranking.
+  {
+    // Bar of unit-cross-section cubes with increasing width; conforming shared
+    // interface nodes (4 per x-plane). Each cube → 6 Kuhn tets.
+    const widths = [0.5, 1, 2, 4];
+    const X = [0]; for (const w of widths) X.push(X[X.length - 1]! + w);
+    const nodesArr: number[] = [];
+    const nIdx = (plane: number, b: number, c: number) => plane*4 + b*2 + c;
+    for (let k = 0; k <= widths.length; k++)
+      for (let b = 0; b < 2; b++) for (let c = 0; c < 2; c++) nodesArr.push(X[k]!, b, c);
+    const paths = [
+      [[1,0,0],[1,1,0]], [[1,0,0],[1,0,1]], [[0,1,0],[1,1,0]],
+      [[0,1,0],[0,1,1]], [[0,0,1],[1,0,1]], [[0,0,1],[0,1,1]],
+    ];
+    const elemsArr: number[] = [];
+    for (let i = 0; i < widths.length; i++) {
+      const corner = (a: number, b: number, c: number) => nIdx(i + a, b, c);
+      const c000 = corner(0,0,0), c111 = corner(1,1,1);
+      for (const [m, p] of paths)
+        elemsArr.push(c000, corner(m![0]!, m![1]!, m![2]!), corner(p![0]!, p![1]!, p![2]!), c111);
+    }
+    const bar: TetMesh = {
+      nodes: Float64Array.from(nodesArr), elements: Int32Array.from(elemsArr),
+      nodeCount: nodesArr.length / 3, elementCount: elemsArr.length / 4, nodesPerElem: 4,
+    };
+    // u_x = k·x² ⇒ σxx = C11·(2k·x): linear in x, constant slope everywhere.
+    const disp = setDisp(bar, (x) => [1e-3 * x * x, 0, 0]);
+    const { elemStress6 } = recoverElementStress(bar, disp, iso);
+    const { errorEstimate, globalRelativeError, topErrorElements } =
+      computeZZErrorEstimate(bar, disp, elemStress6, iso);
+
+    // Per-element centroid x → segment. Widest segment is the last (x ≥ X[3]).
+    const segMax: number[] = new Array(widths.length).fill(0);
+    for (let e = 0; e < bar.elementCount; e++) {
+      let cx = 0;
+      for (let ni = 0; ni < 4; ni++) cx += bar.nodes[(bar.elements[e*4+ni] ?? 0)*3] ?? 0;
+      cx /= 4;
+      let seg = 0; for (let k = 0; k < widths.length; k++) if (cx >= X[k]!) seg = k;
+      segMax[seg] = Math.max(segMax[seg]!, errorEstimate[e] ?? 0);
+    }
+    const coarsePeak = segMax[widths.length - 1]!; // widest segment
+    const finePeak   = segMax[0]!;                 // narrowest segment
+    const topX = topErrorElements[0]!.x;
+    test("[29.7] volume weighting: top-error element is in the coarsest region",
+      topX >= X[widths.length - 1]!, `topX=${topX.toFixed(3)} coarseStart=${X[widths.length-1]!.toFixed(3)}`);
+    test("[29.7b] coarse-region peak error ≫ fine-region peak (>10×)",
+      coarsePeak > 10 * finePeak, `coarse=${coarsePeak.toExponential(2)} fine=${finePeak.toExponential(2)}`);
+    test("[29.7c] linear-field discretization error is captured (gre > 0)",
+      globalRelativeError > 1e-3, `gre=${globalRelativeError.toExponential(2)}`);
+  }
+
+  // [29.8] Independent cross-check of the whole C3D4 integral (#143+#144+#145):
+  // re-derive the global relative error with the EXACT tet mass-matrix integral
+  // ∫N_iN_j dV = V/20·(1+δ_ij) (a different integration method than the code's
+  // 4-point Gauss rule) and confirm they agree. This validates the compliance
+  // weighting, the shape-function interpolation, and the volume factor at once.
+  {
+    const quad = (x: number, y: number, z: number): [number, number, number] =>
+      [8e-4*x*x + 3e-5*y*y, 2e-5*z*z + 1e-5*x*y, 4e-5*y*z];
+    const mesh = generateBoxMesh(0, 0, 0, 5, 5, 5, 3, 3, 3);
+    const disp = setDisp(mesh, quad);
+    const { elemStress6 } = recoverElementStress(mesh, disp, iso);
+    const nodeStress6 = sprSmoothedStress6(mesh, elemStress6);
+    const { globalRelativeError } = computeZZErrorEstimate(mesh, disp, elemStress6, iso);
+
+    const S = invert6x6(Ciso);
+    const tetVol = (a: number, b: number, c: number, d: number): number => {
+      const nd = mesh.nodes;
+      const ax = nd[a*3]!, ay = nd[a*3+1]!, az = nd[a*3+2]!;
+      const e1x = nd[b*3]!-ax, e1y = nd[b*3+1]!-ay, e1z = nd[b*3+2]!-az;
+      const e2x = nd[c*3]!-ax, e2y = nd[c*3+1]!-ay, e2z = nd[c*3+2]!-az;
+      const e3x = nd[d*3]!-ax, e3y = nd[d*3+1]!-ay, e3z = nd[d*3+2]!-az;
+      const triple = e1x*(e2y*e3z - e2z*e3y) - e1y*(e2x*e3z - e2z*e3x) + e1z*(e2x*e3y - e2y*e3x);
+      return Math.abs(triple) / 6;
+    };
+    // Analytic tet-integral reference (mass-matrix formula for linear fields).
+    let errSum = 0, normSum = 0;
+    const dnode = new Float64Array(4 * 6); // per-corner σ* − σ_h
+    for (let e = 0; e < mesh.elementCount; e++) {
+      const n0 = mesh.elements[e*4] ?? 0, n1 = mesh.elements[e*4+1] ?? 0,
+            n2 = mesh.elements[e*4+2] ?? 0, n3 = mesh.elements[e*4+3] ?? 0;
+      const V = tetVol(n0, n1, n2, n3);
+      const sigH = elemStress6.subarray(e*6, e*6+6);
+      const corners = [n0, n1, n2, n3];
+      for (let ci = 0; ci < 4; ci++)
+        for (let k = 0; k < 6; k++)
+          dnode[ci*6+k] = (nodeStress6[corners[ci]!*6+k] ?? 0) - (sigH[k] ?? 0);
+      // ∫ dᵀ S d dV = Σ_ab S_ab ∫ d^a d^b dV, with linear d^a (nodal values):
+      //   ∫ d^a d^b dV = V/20·[ (Σ_i d^a_i)(Σ_j d^b_j) + Σ_i d^a_i d^b_i ]
+      for (let a = 0; a < 6; a++) for (let b = 0; b < 6; b++) {
+        let sumA = 0, sumB = 0, sumAB = 0;
+        for (let i = 0; i < 4; i++) {
+          sumA += dnode[i*6+a]!; sumB += dnode[i*6+b]!; sumAB += dnode[i*6+a]! * dnode[i*6+b]!;
+        }
+        errSum += (S[a*6+b] ?? 0) * (V/20) * (sumA*sumB + sumAB);
+      }
+      // ‖σ_h‖²_e = σ_hᵀ S σ_h · V  (σ_h constant)
+      normSum += stressEnergyDensity(sigH, S) * V;
+    }
+    const refGRE = Math.sqrt(errSum) / Math.sqrt(normSum);
+    test("[29.8] C3D4 global error matches independent mass-matrix tet integral",
+      near(globalRelativeError, refGRE, 1e-6),
+      `code=${globalRelativeError.toExponential(6)} ref=${refGRE.toExponential(6)}`);
+  }
+
+  // [29.9] Two-region per-bin compliance (criterion #6): the estimator selects
+  // C⁻¹ per element by bin. (a) Two identical bins collapse to the single-
+  // material estimate bit-for-bit; (b) a genuinely stiffer second bin changes
+  // the outcome — proving per-bin C is consulted per element, not the average.
+  {
+    const mesh = generateBoxMesh(0, 0, 0, 6, 6, 6, 3, 3, 3);
+    const disp = setDisp(mesh, (x, y, z) => [1e-4*x*x + 5e-5*y*z, 3e-5*y*y, 2e-5*z*x]);
+    const nEl = mesh.elementCount;
+
+    const makeField = (C0: Float64Array, C1: Float64Array): ElementMaterialField => {
+      const C = new Float64Array(72);
+      C.set(C0, 0); C.set(C1, 36);
+      const binOfElement = new Int32Array(nEl);
+      for (let e = 0; e < nEl; e++) binOfElement[e] = e < nEl / 2 ? 0 : 1;
+      return {
+        binCount: 2, binOfElement, C,
+        yieldXY: new Float64Array([50, 50]), yieldZ: new Float64Array([30, 30]),
+        yieldZShear: new Float64Array([17, 17]), massRho: new Float64Array([1240, 1240]),
+        shellFrac: new Float64Array([1, 0.3]),
+      };
+    };
+
+    // (a) identical bins ⇒ exact collapse to the no-field path.
+    const fieldSame = makeField(Ciso, Ciso);
+    const es6Same = recoverElementStress(mesh, disp, iso, fieldSame).elemStress6;
+    const rSame = computeZZErrorEstimate(mesh, disp, es6Same, iso, fieldSame);
+    const es6No = recoverElementStress(mesh, disp, iso).elemStress6;
+    const rNo = computeZZErrorEstimate(mesh, disp, es6No, iso);
+    let maxD = 0;
+    for (let e = 0; e < nEl; e++)
+      maxD = Math.max(maxD, Math.abs((rSame.errorEstimate[e] ?? 0) - (rNo.errorEstimate[e] ?? 0)));
+    test("[29.9] two identical bins collapse to single-material estimate (bit-identical)",
+      maxD < 1e-12 && near(rSame.globalRelativeError, rNo.globalRelativeError, 1e-12),
+      `maxΔ=${maxD.toExponential(2)}`);
+
+    // (b) a distinct stiffer second bin is actually consulted per element.
+    const Cstiff = buildConstitutiveMatrix({ E: 7000, nu: 0.36, yieldStrength: 50, label: "stiff" });
+    const fieldMixed = makeField(Ciso, Cstiff);
+    const es6Mix = recoverElementStress(mesh, disp, iso, fieldMixed).elemStress6;
+    const rMix = computeZZErrorEstimate(mesh, disp, es6Mix, iso, fieldMixed);
+    const finite = Array.from(rMix.errorEstimate).every(v => isFinite(v)) && isFinite(rMix.globalRelativeError);
+    test("[29.9b] a distinct second bin changes the estimate (per-bin C used per element)",
+      finite && Math.abs(rMix.globalRelativeError - rSame.globalRelativeError) > 1e-6,
+      `mixed=${rMix.globalRelativeError.toExponential(4)} same=${rSame.globalRelativeError.toExponential(4)}`);
+  }
+}
+
+// ── Test group 28: MMS effectivity index — ZZ estimator MAGNITUDE lock (#150) ─
+// Groups 14 & 27 validate the estimator's BEHAVIOR (monotonicity, η∈[0,1], scale
+// invariance, tensor weighting). This group locks the estimator's MAGNITUDE
+// against a manufactured solution with a KNOWN exact stress field, measuring the
+// effectivity index θ = η_ZZ / ‖σ_exact − σ_h‖ (both in the energy norm).
+console.log("\n[30] Manufactured-solution effectivity index θ = η_ZZ / ‖σ_exact−σ_h‖ (#150)");
+{
+  // Manufactured EXACT solution — pure-bending stress σ_exact = (α·z, 0,0,0,0,0):
+  //   • self-equilibrated (div σ = 0 ⇒ NO body force needed), and
+  //   • for the isotropic compliance below it derives from the QUADRATIC field
+  //       uₓ = (α/E)·x·z,  u_y = −(ν α/E)·y·z,
+  //       u_z = (α/2E)·(−x² + ν y² − ν z²).
+  // We SOLVE the real FE problem with u_exact prescribed on the ENTIRE boundary
+  // (Dirichlet MMS, zero body force); the interior is the genuine Galerkin
+  // approximation. A C3D4 constant-strain element CANNOT represent this quadratic
+  // field, so σ_h carries a real, refinement-converging discretization error —
+  // exactly what the ZZ estimator must reproduce in magnitude.
+  //
+  // The TRUE energy-norm error ‖σ_exact − σ_h‖ and the norm ‖σ_h‖ are integrated
+  // INDEPENDENTLY of the estimator under test: σ_exact − σ_h is affine over each
+  // straight tet, so the exact tet mass-matrix rule ∫ dᵃdᵇ dV = V/20·(ΣᵃΣᵇ + Σᵃᵇ)
+  // integrates the quadratic energy integrand exactly — it never touches the
+  // estimator's own Gauss loop.
+  //
+  // A consistent ZZ/SPR estimator is asymptotically exact: θ → 1 under refinement.
+  // Measured here: θ = 1.182 → 1.129 → 1.080 at div = 6, 8, 12 (monotone → 1,
+  // conservative side θ > 1). Asserted band [0.7, 1.3] is the classic effectivity
+  // window (Zienkiewicz–Zhu 1992); the conservative direction (θ ≥ 1, never
+  // under-predicting) is the safety-critical one for FDM surface peak stress.
+  const E = 3500, nu = 0.36, alpha = 1.0, L = 10;
+  const iso = { E, nu, yieldStrength: 1e9, label: "mms" };
+  const Cmms = buildConstitutiveMatrix(iso);
+  const Smms = invert6x6(Cmms);
+  const uex = (x: number, y: number, z: number): [number, number, number] =>
+    [ (alpha/E)*x*z, -(nu*alpha/E)*y*z, (alpha/(2*E))*(-x*x + nu*y*y - nu*z*z) ];
+
+  const tetVolume = (nodes: Float64Array, a: number, b: number, c: number, d: number): number => {
+    const ax = nodes[a*3]!, ay = nodes[a*3+1]!, az = nodes[a*3+2]!;
+    const e1x = nodes[b*3]!-ax, e1y = nodes[b*3+1]!-ay, e1z = nodes[b*3+2]!-az;
+    const e2x = nodes[c*3]!-ax, e2y = nodes[c*3+1]!-ay, e2z = nodes[c*3+2]!-az;
+    const e3x = nodes[d*3]!-ax, e3y = nodes[d*3+1]!-ay, e3z = nodes[d*3+2]!-az;
+    const t = e1x*(e2y*e3z - e2z*e3y) - e1y*(e2x*e3z - e2z*e3x) + e1z*(e2x*e3y - e2y*e3x);
+    return Math.abs(t) / 6;
+  };
+
+  const levels = [6, 8, 12];
+  const thetas: number[] = [], trueRels: number[] = [];
+  for (const nDiv of levels) {
+    const mesh = generateBoxMesh(0, 0, 0, L, L, L, nDiv, nDiv, nDiv);
+    const eps = 1e-6;
+    const bnodes: number[] = [], pd: [number, number, number][] = [];
+    for (let node = 0; node < mesh.nodeCount; node++) {
+      const x = mesh.nodes[node*3] ?? 0, y = mesh.nodes[node*3+1] ?? 0, z = mesh.nodes[node*3+2] ?? 0;
+      if (x<eps||x>L-eps||y<eps||y>L-eps||z<eps||z>L-eps) { bnodes.push(node); pd.push(uex(x,y,z)); }
+    }
+    // Tight CG tolerance: the Dirichlet PENALTY (kMax·1e8) makes K stiff, so the
+    // small interior bending signal is only resolved once the CG residual is
+    // driven far below the discretization error. At the default 1e-8 tol θ would
+    // measure CG non-convergence (true error would spuriously GROW under
+    // refinement), not the estimator — see the #150 investigation.
+    const r = await runLinearStatic({
+      mesh, material: iso,
+      constraints: [{ nodeIndices: bnodes, prescribedDisplacement: pd }],
+      forces: [], cgTolerance: 1e-13, cgMaxIter: 20000,
+    });
+    const disp = r.displacement;
+    const { elemStress6 } = recoverElementStress(mesh, disp, iso);
+    const { globalRelativeError } = computeZZErrorEstimate(mesh, disp, elemStress6, iso);
+
+    // Independent energy norms (analytic affine-tet integral; NOT the estimator's).
+    let normSq = 0, trueSq = 0;
+    const dn = new Float64Array(4 * 6);
+    for (let e = 0; e < mesh.elementCount; e++) {
+      const n0 = mesh.elements[e*4] ?? 0, n1 = mesh.elements[e*4+1] ?? 0,
+            n2 = mesh.elements[e*4+2] ?? 0, n3 = mesh.elements[e*4+3] ?? 0;
+      const V = tetVolume(mesh.nodes, n0, n1, n2, n3);
+      const sh = elemStress6.subarray(e*6, e*6+6);
+      normSq += stressEnergyDensity(sh, Smms) * V;
+      const corners = [n0, n1, n2, n3];
+      for (let ci = 0; ci < 4; ci++) {
+        const nn = corners[ci]!;
+        const zc = mesh.nodes[nn*3+2] ?? 0;
+        dn[ci*6] = alpha*zc - (sh[0] ?? 0);            // σ_exact,xx − σ_h,xx (affine in z)
+        for (let k = 1; k < 6; k++) dn[ci*6+k] = -(sh[k] ?? 0); // other components: σ_exact = 0
+      }
+      for (let a = 0; a < 6; a++) for (let b = 0; b < 6; b++) {
+        let sA = 0, sB = 0, sAB = 0;
+        for (let i = 0; i < 4; i++) { sA += dn[i*6+a]!; sB += dn[i*6+b]!; sAB += dn[i*6+a]! * dn[i*6+b]!; }
+        trueSq += (Smms[a*6+b] ?? 0) * (V/20) * (sA*sB + sAB);
+      }
+    }
+    const etaZZ   = globalRelativeError * Math.sqrt(normSq);
+    const trueErr = Math.sqrt(trueSq);
+    const theta   = etaZZ / trueErr;
+    const trueRel = trueErr / Math.sqrt(normSq);
+    thetas.push(theta); trueRels.push(trueRel);
+    test(`[30.1] div=${nDiv}: effectivity index θ ∈ [0.7, 1.3]`, theta >= 0.7 && theta <= 1.3,
+      `θ=${theta.toFixed(4)} trueRelErr=${trueRel.toExponential(3)} etaZZ=${etaZZ.toExponential(3)} trueErr=${trueErr.toExponential(3)}`);
+  }
+  // Consistency of the MMS: the genuine FE stress error must FALL under refinement
+  // (guards against the CG-non-convergence artifact that inflates θ when the
+  // penalty system is under-solved).
+  test("[30.2] manufactured FE error decreases under refinement (consistent MMS)",
+    trueRels[0]! > trueRels[1]! && trueRels[1]! > trueRels[2]!,
+    `trueRelErr=${trueRels.map(v => v.toExponential(3)).join(" → ")}`);
+  // Asymptotic exactness: θ → 1 monotonically, from the conservative (θ > 1) side.
+  test("[30.3] effectivity index converges monotonically toward 1 (θ→1, θ>1)",
+    thetas[0]! > thetas[1]! && thetas[1]! > thetas[2]! && thetas[2]! > 1 &&
+    Math.abs(thetas[2]! - 1) < Math.abs(thetas[0]! - 1),
+    `θ=${thetas.map(v => v.toFixed(4)).join(" → ")}`);
+}
+
+// ── Test group 29: SPR boundary-patch robustness + known-answer (#156) ────────
+// SPR fits p(x) = [1, x, y, z] by least squares over each nodal patch; its moment
+// matrix M = PᵀP = Σ_e p(x_e)p(x_e)ᵀ is more ill-conditioned at BOUNDARY nodes
+// (one-sided, fewer, clustered patch centroids) — the concern in #156, since FDM
+// stress peaks live on surfaces. This group CHARACTERIZES that conditioning and
+// LOCKS the boundary recovery against a known analytic answer.
+//
+// Finding (no SPR code change warranted): SPR is already robust at the boundary.
+//   • Boundary moment matrices are only ~5× more ill-conditioned than interior
+//     ones and stay bounded (~1e5–1e6); the genuinely rank-deficient corner
+//     patches are caught by the existing length<4 / pivot<1e-12 averaging
+//     fallback, never reaching the solver as a near-singular system.
+//   • A REPRESENTABLE (linear) stress field is recovered to ~roundoff at boundary
+//     nodes — even for a part positioned 1000 mm from the origin (the basis uses
+//     raw global coords, yet κ·ε_mach stays ≪ any engineering tolerance).
+//   • A NON-representable (quadratic) field degrades GRACEFULLY at the boundary:
+//     the recovery error is comparable to the interior (no extrapolation
+//     overshoot) and converges at the interior's O(h²) rate.
+console.log("\n[31] SPR boundary-patch conditioning + boundary known-answer (#156)");
+{
+  // Symmetric 4×4 eigenvalues via cyclic Jacobi → condition number κ₂ = λmax/λmin.
+  const symEig4 = (A0: number[][]): number[] => {
+    const a = A0.map(r => r.slice());
+    for (let sweep = 0; sweep < 100; sweep++) {
+      let off = 0;
+      for (let p = 0; p < 4; p++) for (let q = p+1; q < 4; q++) off += a[p]![q]! * a[p]![q]!;
+      if (off < 1e-30) break;
+      for (let p = 0; p < 4; p++) for (let q = p+1; q < 4; q++) {
+        if (Math.abs(a[p]![q]!) < 1e-300) continue;
+        const phi = 0.5 * Math.atan2(2*a[p]![q]!, a[q]![q]! - a[p]![p]!);
+        const c = Math.cos(phi), s = Math.sin(phi);
+        for (let k = 0; k < 4; k++) { const kp = a[k]![p]!, kq = a[k]![q]!; a[k]![p] = c*kp - s*kq; a[k]![q] = s*kp + c*kq; }
+        for (let k = 0; k < 4; k++) { const pk = a[p]![k]!, qk = a[q]![k]!; a[p]![k] = c*pk - s*qk; a[q]![k] = s*pk + c*qk; }
+      }
+    }
+    return [a[0]![0]!, a[1]![1]!, a[2]![2]!, a[3]![3]!];
+  };
+
+  // Centroids + node→element patches for a box mesh (matches SPR's own build).
+  const buildPatches = (mesh: TetMesh) => {
+    const npe = mesh.nodesPerElem ?? 4;
+    const cx = new Float64Array(mesh.elementCount), cy = new Float64Array(mesh.elementCount), cz = new Float64Array(mesh.elementCount);
+    for (let e = 0; e < mesh.elementCount; e++) {
+      let x = 0, y = 0, z = 0;
+      for (let ni = 0; ni < 4; ni++) { const n = mesh.elements[e*npe+ni] ?? 0; x += mesh.nodes[n*3]!; y += mesh.nodes[n*3+1]!; z += mesh.nodes[n*3+2]!; }
+      cx[e] = x/4; cy[e] = y/4; cz[e] = z/4;
+    }
+    const patches: number[][] = Array.from({ length: mesh.nodeCount }, () => []);
+    for (let e = 0; e < mesh.elementCount; e++) for (let ni = 0; ni < npe; ni++) patches[mesh.elements[e*npe+ni] ?? 0]!.push(e);
+    return { cx, cy, cz, patches };
+  };
+  const patchCond = (patch: number[], cx: Float64Array, cy: Float64Array, cz: Float64Array): number => {
+    const A = [[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]];
+    for (const e of patch) { const p = [1, cx[e]!, cy[e]!, cz[e]!]; for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) A[i]![j]! += p[i]! * p[j]!; }
+    const ev = symEig4(A).map(Math.abs).sort((u, v) => u - v);
+    return ev[3]! / Math.max(ev[0]!, 1e-300);
+  };
+  const median = (v: number[]): number => { const s = v.slice().sort((a, b) => a - b); return s[Math.floor(s.length/2)] ?? 0; };
+  const isBoundary = (x: number, y: number, z: number, x0: number, x1: number): boolean => {
+    const eps = 1e-6;
+    return x < x0+eps || x > x1-eps || y < x0+eps || y > x1-eps || z < x0+eps || z > x1-eps;
+  };
+
+  // [29.1/29.2] Conditioning characterization: boundary vs interior patches.
+  {
+    const L = 10;
+    const mesh = generateBoxMesh(0, 0, 0, L, L, L, 6, 6, 6);
+    const { cx, cy, cz, patches } = buildPatches(mesh);
+    const intC: number[] = [], bndC: number[] = [];
+    let bndFinite = true;
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      const patch = patches[n]!;
+      if (patch.length < 4) continue; // rank-deficient corners → averaging fallback (bounded, tested in 29.5)
+      const cnd = patchCond(patch, cx, cy, cz);
+      const x = mesh.nodes[n*3] ?? 0, y = mesh.nodes[n*3+1] ?? 0, z = mesh.nodes[n*3+2] ?? 0;
+      if (isBoundary(x, y, z, 0, L)) { bndC.push(cnd); if (!isFinite(cnd)) bndFinite = false; } else intC.push(cnd);
+    }
+    const intMed = median(intC), bndMed = median(bndC), bndMax = Math.max(...bndC);
+    test("[31.1] boundary SPR patches are more ill-conditioned than interior (the #156 phenomenon)",
+      bndMed > intMed, `κ_med interior=${intMed.toExponential(2)} boundary=${bndMed.toExponential(2)} (ratio=${(bndMed/intMed).toFixed(1)}×)`);
+    // Bounded, not singular: every well-posed (length≥4) boundary patch stays far
+    // below 1/ε_mach (~1e16) where a double-precision LS solve would fail — the
+    // genuinely singular corner patches are the ones diverted to the averaging
+    // fallback by length<4 / pivot<1e-12, so no near-singular system is solved.
+    test("[31.2] boundary patch conditioning is bounded (κ < 1e9) and finite",
+      bndFinite && bndMax < 1e9, `κ_max boundary=${bndMax.toExponential(2)}`);
+  }
+
+  // [29.3/29.4] Boundary KNOWN-ANSWER: a REPRESENTABLE (linear) stress field must
+  // be recovered by SPR at boundary nodes to ~roundoff, because a linear field
+  // lies exactly in the [1,x,y,z] span — the least-squares fit is exact up to
+  // κ·ε_mach regardless of the one-sided patch. Tested at the origin and at a
+  // realistic 1000 mm offset (the basis uses raw global coords).
+  {
+    const a0 = 5, ax = 0.3, ay = -0.2, az = 0.7;
+    for (const [label, off] of [["origin", 0], ["offset 1000 mm", 1000]] as const) {
+      const L = 10;
+      const mesh = generateBoxMesh(off, off, off, off+L, off+L, off+L, 6, 6, 6);
+      const { cx, cy, cz, patches } = buildPatches(mesh);
+      const es6 = new Float64Array(mesh.elementCount * 6);
+      for (let e = 0; e < mesh.elementCount; e++) es6[e*6] = a0 + ax*cx[e]! + ay*cy[e]! + az*cz[e]!;
+      const spr = sprSmoothedStress6(mesh, es6);
+      let maxBndRel = 0;
+      for (let n = 0; n < mesh.nodeCount; n++) {
+        if (patches[n]!.length < 4) continue;
+        const x = mesh.nodes[n*3] ?? 0, y = mesh.nodes[n*3+1] ?? 0, z = mesh.nodes[n*3+2] ?? 0;
+        if (!isBoundary(x, y, z, off, off+L)) continue;
+        const exact = a0 + ax*x + ay*y + az*z;
+        maxBndRel = Math.max(maxBndRel, Math.abs((spr[n*6] ?? 0) - exact) / Math.max(1, Math.abs(exact)));
+      }
+      test(`[31.3] boundary known-answer (linear σ, ${label}): SPR recovers to < 1e-6`,
+        maxBndRel < 1e-6, `maxBoundaryRelErr=${maxBndRel.toExponential(2)}`);
+    }
+  }
+
+  // [31.5] Graceful degradation on a NON-representable (quadratic) field: SPR fits
+  // a linear polynomial and must EXTRAPOLATE to boundary nodes (outside the patch
+  // hull). A fragile estimator would overshoot there; a robust one keeps the
+  // boundary error comparable to the interior and convergent at the same rate.
+  {
+    const L = 10;
+    const f = (x: number, y: number, z: number) => 0.05*x*x + 0.03*y*y + 0.02*z*z;
+    let prevBnd = Infinity, converges = true, maxRatio = 0;
+    for (const nDiv of [4, 8, 16]) {
+      const mesh = generateBoxMesh(0, 0, 0, L, L, L, nDiv, nDiv, nDiv);
+      const { cx, cy, cz, patches } = buildPatches(mesh);
+      const es6 = new Float64Array(mesh.elementCount * 6);
+      for (let e = 0; e < mesh.elementCount; e++) es6[e*6] = f(cx[e]!, cy[e]!, cz[e]!);
+      const spr = sprSmoothedStress6(mesh, es6);
+      let maxInt = 0, maxBnd = 0;
+      for (let n = 0; n < mesh.nodeCount; n++) {
+        if (patches[n]!.length < 4) continue;
+        const x = mesh.nodes[n*3] ?? 0, y = mesh.nodes[n*3+1] ?? 0, z = mesh.nodes[n*3+2] ?? 0;
+        const err = Math.abs((spr[n*6] ?? 0) - f(x, y, z));
+        if (isBoundary(x, y, z, 0, L)) maxBnd = Math.max(maxBnd, err); else maxInt = Math.max(maxInt, err);
+      }
+      maxRatio = Math.max(maxRatio, maxBnd / Math.max(maxInt, 1e-300));
+      if (maxBnd >= prevBnd) converges = false;
+      prevBnd = maxBnd;
+    }
+    // No boundary overshoot: worst boundary error stays within 3× the interior
+    // (measured ~1.1×), and boundary error falls monotonically under refinement.
+    test("[31.5] non-representable field degrades gracefully at boundary (no overshoot, ratio<3, convergent)",
+      maxRatio < 3 && converges, `worst boundary/interior ratio=${maxRatio.toFixed(2)}, boundary error convergent=${converges}`);
+  }
+}
+
+// ── Test group 32: Lekhnitskii orthotropic open-hole Kt (ANISOTROPIC anchor) ──
+// The FIRST anisotropic known-answer anchor in this suite. Every other analytic
+// anchor here (Kirsch Kt≈3 [24], Euler buckling [16], isotropic beams, patch
+// tests) is ISOTROPIC, yet the whole product is an anisotropy tool — the
+// orthotropic constitutive build + weak-axis Bond rotation + anisotropic stress
+// recovery were validated only by isotropic-limit collapse and directional-
+// stiffness sanity checks, never against a known anisotropic STRESS FIELD.
+//
+// CLOSED FORM (Lekhnitskii, "Anisotropic Plates", 1968; also Daniel & Ishai,
+// "Engineering Mechanics of Composite Materials", 2nd ed., §4.6): an infinite
+// orthotropic plate with a circular hole under remote uniaxial tension σ applied
+// ALONG A MATERIAL PRINCIPAL AXIS has, at the hole edge on the axis PERPENDICULAR
+// to the load, tangential-stress concentration
+//
+//     Kt = σθ_max/σ = 1 + sqrt( 2·(sqrt(E_L/E_T) − ν_LT) + E_L/G_LT )
+//
+// where E_L = modulus in the load direction, E_T = transverse in-plane modulus,
+// G_LT = in-plane shear modulus, ν_LT = major Poisson ratio (−ε_T/ε_L under σ_L).
+// ISOTROPIC COLLAPSE (built-in self-check, consistency with group [24]):
+// E_L=E_T=E, G=E/(2(1+ν)) ⇒ 1 + sqrt(2(1−ν) + 2(1+ν)) = 1 + sqrt(4) = 3.0 exactly.
+//
+// PLATE FRAME: buildPlateWithHoleMesh lays the plate in the x–z plane (thickness
+// y, thin ⇒ plane stress), loads uniaxially along z, hole axis along y. So the
+// in-plane load direction is z and the in-plane transverse direction is x. For a
+// transversely-isotropic FDM material (isotropic plane x–y, weak axis z):
+//   • load ∥ WEAK axis  (default weakAxis ≈ +z): E_L=E_z, E_T=E_xy,
+//       ν_LT = ν_zx = ν_xz·E_z/E_xy (reciprocity), G_LT = G_xz.
+//   • load ∥ STRONG axis (weakAxis = +x, so z lies in the isotropic plane —
+//       this is the ROTATED-frame variant that exercises rotateC6):
+//       E_L=E_xy, E_T=E_z, ν_LT = ν_xz, G_LT = G_xz.
+// Both z and x are material principal axes in each case, so the orthotropic
+// closed form applies directly.
+//
+// ELEMENT TYPE: C3D10 (quadratic) only. This benchmark is gradient-dominated
+// (steep σθ decay from the hole edge); linear C3D4 shear-locks and its constant-
+// strain recovery badly under-reads the edge peak, so it is not a meaningful
+// anchor here — the same reason group [24] uses C3D10.
+//
+// TOLERANCE (5%, defensible, NOT fitted to the solver output):
+//   1. Discretization — a fixed-geometry (d/W=0.15) mesh-refinement study spans
+//      centroidal-peak Kt of {2.89, 3.00, 3.04} for the isotropic case across
+//      {1536, 3456, 6144} C3D10 elements; the benchmark mesh (nTheta=48, ns=12,
+//      3456 elems — identical density to group [24]) lands within ≈1% of the
+//      closed form for all three orientations, with the full refinement envelope
+//      bounded by ≈4.2%.
+//   2. Finite size — d/W=0.15; decreasing d/W to 0.10 did NOT reduce the error
+//      (mesh-quality-limited), so the infinite-plate/finite-width correction is
+//      demonstrably below the discretization floor (≲1–2%).
+//   3. Method noise floor — coupon_fea.ts documents ≈5% Kt noise floor for this
+//      centroidal-peak extraction (load-application + discretization).
+// 5% is the documented method floor: the measured benchmark-mesh errors (<0.71%)
+// sit inside it with >6× margin, while the anisotropic Kt values (3.38, 3.95)
+// sit 12.5% and 31.5% away from the isotropic 3.0 — so 5% genuinely discriminates
+// the anisotropic path rather than rubber-stamping ≈3.
+console.log("\n[32] Lekhnitskii orthotropic open-hole Kt — anisotropic known-answer anchor");
+{
+  // σθ_max/σ for remote uniaxial tension along a principal axis (see header).
+  const lekhnitskiiKt = (E_L: number, E_T: number, G_LT: number, nu_LT: number): number =>
+    1 + Math.sqrt(2 * (Math.sqrt(E_L / E_T) - nu_LT) + E_L / G_LT);
+
+  // Transversely-isotropic FDM set (E_xy/E_z ≈ 1.54, deliberately low G_xz so Kt
+  // lands well away from 3 in both orientations).
+  const E_xy = 3500, E_z = 2275, nu_xy = 0.36, nu_xz = 0.30;
+  const G_xy = E_xy / (2 * (1 + nu_xy));
+  const G_xz = 0.4 * G_xy;                 // low out-of-plane shear (typical FDM)
+  const nu_zx = nu_xz * E_z / E_xy;        // reciprocity
+
+  const ktWeak   = lekhnitskiiKt(E_z,  E_xy, G_xz, nu_zx); // load ∥ z = weak   ⇒ ≈3.375
+  const ktStrong = lekhnitskiiKt(E_xy, E_z,  G_xz, nu_xz); // load ∥ z = strong ⇒ ≈3.946
+  const ktIsoCF  = lekhnitskiiKt(E_xy, E_xy, G_xy, nu_xy); // isotropic self-check ⇒ 3.000
+
+  // [32.1] Formula self-check: isotropic parameters collapse to Kirsch Kt = 3
+  // (pure closed-form arithmetic — independent of the solver).
+  test("[32.1] Lekhnitskii formula collapses to Kt=3.0 in the isotropic limit",
+    Math.abs(ktIsoCF - 3.0) < 1e-12, `ktIsoCF=${ktIsoCF.toFixed(6)}`);
+
+  try {
+    const { buildPlateWithHoleMesh, solveCouponKt } = await import("../coupon_fea.js");
+
+    // Benchmark mesh: d/W = 0.15, nTheta=48, ns=12 (group [24]'s density).
+    const meshOf = (nTheta: number, ns: number) => buildPlateWithHoleMesh({
+      widthMm: 40, thickMm: 2, lengthMm: 100, holeR: 3,
+      nTheta, ns, nThick: 1, radialGrade: 2.0,
+    });
+    const solveKt = async (
+      nTheta: number, ns: number,
+      mat: Parameters<typeof solveCouponKt>[1],
+    ) => {
+      const mesh = meshOf(nTheta, ns);
+      const kt = await solveCouponKt(mesh, mat, {
+        totalForceN: 1000, axis: 2, nominalAreaMm2: 40 * 2, // gross section
+        gripFraction: 0.30, shear: false,
+      });
+      return { kt, elems: mesh.elementCount };
+    };
+    // At a traction-free hole edge only the tangential (hoop) stress is nonzero,
+    // so peak von Mises over the gauge = peak hoop stress; Kt = peak/σ∞ matches
+    // the Lekhnitskii σθ_max/σ directly (σ∞ = gross-section stress).
+    const TOL = 0.05;
+
+    const matWeak = {
+      kind: "orthotropic" as const, E_xy, E_z, nu_xy, nu_xz, G_xz,
+      yieldXY: 50, yieldZ: 29, label: "lek-weak",
+    };
+    const matStrong = { ...matWeak, weakAxis: [1, 0, 0] as const, label: "lek-strong" };
+    const matIso = { E: E_xy, nu: nu_xy, yieldStrength: 50, label: "lek-iso" };
+
+    // [32.2] Isotropic-parameter run of the SAME fixture reproduces Kirsch 3.0
+    // (consistency with group [24], and proof the fixture/recovery is unbiased).
+    {
+      const { kt, elems } = await solveKt(48, 12, matIso);
+      const relErr = Math.abs(kt.Kt - 3.0) / 3.0;
+      test("[32.2] isotropic fixture reproduces Kirsch Kt=3.0 (within 5%)",
+        kt.converged && relErr < TOL,
+        `Kt=${kt.Kt.toFixed(4)} relErr=${(relErr * 100).toFixed(2)}% elems=${elems}`);
+    }
+
+    // [32.3] Load ∥ weak axis (default frame): Kt ≈ 3.375.
+    {
+      const { kt, elems } = await solveKt(48, 12, matWeak);
+      const relErr = Math.abs(kt.Kt - ktWeak) / ktWeak;
+      test("[32.3] load∥weak: solver Kt matches Lekhnitskii (within 5%)",
+        kt.converged && relErr < TOL,
+        `Kt=${kt.Kt.toFixed(4)} vs ${ktWeak.toFixed(4)} relErr=${(relErr * 100).toFixed(2)}% elems=${elems}`);
+      console.log(`    weak-load: solver Kt=${kt.Kt.toFixed(4)} Lekhnitskii=${ktWeak.toFixed(4)} (E_L=E_z)`);
+    }
+
+    // [32.4] Load ∥ strong axis (weakAxis=+x ⇒ ROTATED material frame, exercises
+    // rotateC6): Kt ≈ 3.946. Pins the E-ratio dependence in the opposite sense.
+    {
+      const { kt, elems } = await solveKt(48, 12, matStrong);
+      const relErr = Math.abs(kt.Kt - ktStrong) / ktStrong;
+      test("[32.4] load∥strong (rotated frame, rotateC6): Kt matches Lekhnitskii (within 5%)",
+        kt.converged && relErr < TOL,
+        `Kt=${kt.Kt.toFixed(4)} vs ${ktStrong.toFixed(4)} relErr=${(relErr * 100).toFixed(2)}% elems=${elems}`);
+      console.log(`    strong-load: solver Kt=${kt.Kt.toFixed(4)} Lekhnitskii=${ktStrong.toFixed(4)} (E_L=E_xy, rotated)`);
+    }
+
+    // [32.5] Two-mesh-density convergence (weak orientation, geometry fixed):
+    // separates discretization from model error. The coarser 1536-element mesh
+    // under-reads (centroidal peak sits inside the edge); refining to 3456 elems
+    // pulls it onto the closed form — a monotone approach, confirming the residual
+    // is discretization, not a model/anisotropy error. Coarse asserted only within
+    // a looser band (it is a convergence demonstrator, not the anchor).
+    {
+      const coarse = await solveKt(32, 8,  matWeak);
+      const fine   = await solveKt(48, 12, matWeak);
+      const eCoarse = Math.abs(coarse.kt.Kt - ktWeak) / ktWeak;
+      const eFine   = Math.abs(fine.kt.Kt   - ktWeak) / ktWeak;
+      test("[32.5] weak-load refinement converges toward Lekhnitskii (fine ≤ coarse error, fine <5%)",
+        fine.kt.converged && eFine < TOL && eFine <= eCoarse + 1e-6 && eCoarse < 0.08,
+        `coarse Kt=${coarse.kt.Kt.toFixed(4)} (err ${(eCoarse*100).toFixed(2)}%, ${coarse.elems} el) → ` +
+        `fine Kt=${fine.kt.Kt.toFixed(4)} (err ${(eFine*100).toFixed(2)}%, ${fine.elems} el)`);
+      console.log(`    convergence: ${coarse.elems}el err=${(eCoarse*100).toFixed(2)}% → ${fine.elems}el err=${(eFine*100).toFixed(2)}%`);
+    }
+  } catch (err) {
+    test("[32] Lekhnitskii orthotropic benchmark did not throw", false, String(err));
+  }
+}
+
 // ── Summary ───────────────────────────────────────────────────────────────────
 // Runs at the END of the async IIFE, after every test group above has
 // completed. (A previous setTimeout(0) variant fired as soon as the event
@@ -1695,6 +2799,18 @@ console.log("\n[26] Numerical homogenization — perforated-plate cell vs isolat
 // up to that point and never gated on later failures.)
 console.log(`\n${"─".repeat(52)}`);
 console.log(`Validation: ${passed} passed, ${failed} failed`);
+
+// Machine-readable summary consumed by scripts/check-doc-test-counts.mjs so
+// user-facing surfaces (README, methodology PDF, DEBUG tab) can be checked
+// against the suite as it actually ran, instead of a hand-copied number
+// (issue #198 — three different stale counts had drifted across surfaces).
+try {
+  fs.writeFileSync(
+    path.join(__dirname, "solver-validation-summary.json"),
+    JSON.stringify({ passed, failed, groups: groupsSeen.size }, null, 2)
+  );
+} catch { /* best-effort — never fail the suite over the summary file */ }
+
 if (failed > 0) {
   console.error("VALIDATION FAILED — check solver before release");
   process.exit(1);

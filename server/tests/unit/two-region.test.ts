@@ -6,10 +6,10 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { buildTwoRegionField, buildWallBondField, TWO_REGION_BIN_COUNT } from "../../twoRegion.js";
+import { buildTwoRegionField, buildWallBondField, estimateWallLoopPerimeterMm, TWO_REGION_BIN_COUNT } from "../../twoRegion.js";
 import { generateBoxMeshC3D4, extractSurfaceFaces } from "../../solver/meshgen.js";
 import { buildAnyConstitutiveMatrix } from "../../solver/element.js";
-import type { OrthotropicMaterial } from "../../solver/types.js";
+import type { OrthotropicMaterial, TetMesh } from "../../solver/types.js";
 
 const SHELL: OrthotropicMaterial = {
   kind: "orthotropic",
@@ -124,6 +124,87 @@ describe("buildTwoRegionField", () => {
   });
 });
 
+describe("estimateWallLoopPerimeterMm — outer-loop only, hole bores excluded (#182)", () => {
+  const Z: readonly [number, number, number] = [0, 0, 1];
+
+  // Build a surface-triangle-soup "mesh" of vertical walls for a set of closed
+  // XY loops extruded from z=0 to z=H. Each loop's points are given in order;
+  // pass CCW (viewed from +z) for an OUTER wall (outward normals) and CW for a
+  // HOLE bore (outward-of-solid normals point into the void). Only mesh.nodes /
+  // mesh.nodeCount and the returned faces are read by the estimator.
+  function buildWalls(H: number, loops: Array<ReadonlyArray<readonly [number, number]>>): { mesh: TetMesh; faces: Int32Array } {
+    const nodes: number[] = [];
+    const faces: number[] = [];
+    for (const loop of loops) {
+      const n = loop.length;
+      const base = nodes.length / 3;
+      // bottom ring then top ring
+      for (const [x, y] of loop) nodes.push(x, y, 0);
+      for (const [x, y] of loop) nodes.push(x, y, H);
+      for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n;
+        const b0 = base + i, b1 = base + j, t0 = base + n + i, t1 = base + n + j;
+        // two triangles per wall quad; winding matches the loop orientation so
+        // CCW loops emit outward normals, CW loops inward-of-solid normals.
+        faces.push(b0, b1, t1);
+        faces.push(b0, t1, t0);
+      }
+    }
+    const mesh = {
+      nodes: new Float64Array(nodes), elements: new Int32Array(0),
+      nodeCount: nodes.length / 3, elementCount: 0, nodesPerElem: 4,
+    } as TetMesh;
+    return { mesh, faces: new Int32Array(faces) };
+  }
+
+  const W = 20, D = 12, H = 8;
+  const outerCCW: ReadonlyArray<readonly [number, number]> = [[0, 0], [W, 0], [W, D], [0, D]];
+
+  it("prismatic box is exact: perimeter = 2(w+d)", () => {
+    const { mesh, faces } = buildWalls(H, [outerCCW]);
+    expect(estimateWallLoopPerimeterMm(mesh, faces, Z)).toBeCloseTo(2 * (W + D), 6);
+  });
+
+  it("real tet-mesh box (extractSurfaceFaces) is exact too", () => {
+    // Uses the actual outward-oriented surface faces of a solid box.
+    expect(estimateWallLoopPerimeterMm(mesh, faces, Z)).toBeCloseTo(2 * (20 + 12), 4);
+  });
+
+  it("adding a through-hole leaves the OUTER loop estimate unchanged (bore excluded)", () => {
+    const solid = buildWalls(H, [outerCCW]);
+    // Same outer wall + a 4×4 square bore centered in the plate, traversed CW
+    // (its outward-of-solid normals point into the hole → negative signed area).
+    const holeCW: ReadonlyArray<readonly [number, number]> = [[8, 4], [8, 8], [12, 8], [12, 4]];
+    const withHole = buildWalls(H, [outerCCW, holeCW]);
+    const solidLen = estimateWallLoopPerimeterMm(solid.mesh, solid.faces, Z);
+    const holeLen = estimateWallLoopPerimeterMm(withHole.mesh, withHole.faces, Z);
+    // Pre-#182 the bore's 16 mm circumference would have inflated the estimate.
+    expect(holeLen).toBeCloseTo(solidLen, 6);
+    expect(holeLen).toBeCloseTo(2 * (W + D), 6);
+  });
+
+  it("a naive all-vertical-area sum WOULD have counted the bore (guards the fix)", () => {
+    // Sanity: the hole geometry really does add vertical wall area, so the
+    // unchanged result above is due to exclusion, not a degenerate mesh.
+    const holeCW: ReadonlyArray<readonly [number, number]> = [[8, 4], [8, 8], [12, 8], [12, 4]];
+    const { mesh: hm, faces: hf } = buildWalls(H, [outerCCW, holeCW]);
+    let allVertArea = 0;
+    for (let t = 0; t < hf.length / 3; t++) {
+      const a = hf[t * 3]!, b = hf[t * 3 + 1]!, c = hf[t * 3 + 2]!;
+      const ax = hm.nodes[a * 3]!, ay = hm.nodes[a * 3 + 1]!, az = hm.nodes[a * 3 + 2]!;
+      const bx = hm.nodes[b * 3]!, by = hm.nodes[b * 3 + 1]!, bz = hm.nodes[b * 3 + 2]!;
+      const cx = hm.nodes[c * 3]!, cy = hm.nodes[c * 3 + 1]!, cz = hm.nodes[c * 3 + 2]!;
+      const nx = (by - ay) * (cz - az) - (bz - az) * (cy - ay);
+      const ny = (bz - az) * (cx - ax) - (bx - ax) * (cz - az);
+      const nz = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+      allVertArea += Math.hypot(nx, ny, nz) / 2;
+    }
+    const naive = allVertArea / H;
+    expect(naive).toBeCloseTo(2 * (W + D) + 4 * 4, 6); // outer + 16 mm bore
+    expect(naive).toBeGreaterThan(2 * (W + D));        // the inflation the fix removes
+  });
+});
+
 describe("buildWallBondField", () => {
   const LINE_WIDTH = 0.45;
 
@@ -191,15 +272,66 @@ describe("true Voigt matrix blending (anisotropic core)", () => {
     }
   });
 
-  it("mid bin is the entrywise mean of the endpoint matrices", () => {
+  it("every bin blends the endpoint matrices at its own shellFrac (spacing-agnostic)", () => {
+    // CORE_ANISO's ~17.5× in-plane contrast trips adaptive log-spacing, so the
+    // middle-INDEX bin is no longer the arithmetic mean — but each bin b must
+    // still be exactly f_b·C_shell + (1−f_b)·C_core at its stored fraction.
     const tr = buildTwoRegionField(mesh, faces, SHELL, CORE_ANISO, 1.35);
     const f = tr.field!;
-    const mid = (f.binCount - 1) / 2;
     const Cshell = buildAnyConstitutiveMatrix(SHELL);
     const Ccore = buildAnyConstitutiveMatrix(CORE_ANISO);
-    for (let i = 0; i < 36; i++) {
-      expect(f.C[mid * 36 + i]).toBeCloseTo((Cshell[i]! + Ccore[i]!) / 2, 10);
+    for (let b = 0; b < f.binCount; b++) {
+      const fr = f.shellFrac[b]!;
+      for (let i = 0; i < 36; i++) {
+        expect(f.C[b * 36 + i]).toBeCloseTo(fr * Cshell[i]! + (1 - fr) * Ccore[i]!, 9);
+      }
     }
+  });
+});
+
+describe("adaptive log-spaced binning at high contrast (issue #178)", () => {
+  // ~1000:1 shell:core stiffness — the near-zero-infill (floored lattice) core
+  // whose 9 LINEAR bins put a ~126× step on the first interval.
+  const CORE_HI: OrthotropicMaterial = {
+    kind: "orthotropic",
+    E_xy: 3.5, E_z: 1.575, nu_xy: 0.35, nu_xz: 0.35, G_xz: 0.52,
+    yieldXY: 0.05, yieldZ: 0.0275, label: "core (0.1% — floored lattice)", massRho: 2,
+  };
+  const DIAG = [0, 7, 14, 21, 28, 35];
+
+  it("grows the bin count past the legacy 9 and bounds every adjacent-bin stiffness step to ~2×", () => {
+    const tr = buildTwoRegionField(mesh, faces, SHELL, CORE_HI, 1.35);
+    const f = tr.field!;
+    expect(f.binCount).toBeGreaterThan(TWO_REGION_BIN_COUNT);
+    for (let b = 1; b < f.binCount; b++) {
+      for (const i of DIAG) {
+        const prev = f.C[(b - 1) * 36 + i]!;
+        const cur = f.C[b * 36 + i]!;
+        if (prev > 1e-30) expect(cur / prev).toBeLessThanOrEqual(2 + 1e-9);
+      }
+    }
+  });
+
+  it("endpoints stay bit-identical: pure-core & pure-shell bins equal the endpoint matrices", () => {
+    const tr = buildTwoRegionField(mesh, faces, SHELL, CORE_HI, 1.35);
+    const f = tr.field!;
+    const N = f.binCount;
+    const Cshell = buildAnyConstitutiveMatrix(SHELL);
+    const Ccore = buildAnyConstitutiveMatrix(CORE_HI);
+    for (let i = 0; i < 36; i++) {
+      expect(f.C[0 * 36 + i]).toBe(Ccore[i]!);       // f = 0 exactly
+      expect(f.C[(N - 1) * 36 + i]).toBe(Cshell[i]!); // f = 1 exactly
+    }
+    expect(f.shellFrac[0]).toBe(0);
+    expect(f.shellFrac[N - 1]).toBe(1);
+  });
+
+  it("retains LINEAR 9-bin spacing at low contrast (bit-identical to legacy)", () => {
+    // SHELL/CORE contrast ≈ 5 → linear N=9, mid-INDEX bin at f = 0.5.
+    const tr = buildTwoRegionField(mesh, faces, SHELL, CORE, 1.35);
+    const f = tr.field!;
+    expect(f.binCount).toBe(TWO_REGION_BIN_COUNT);
+    expect(f.shellFrac[(f.binCount - 1) / 2]).toBeCloseTo(0.5, 12);
   });
 });
 

@@ -13,10 +13,14 @@
 import { describe, it, expect } from "vitest";
 import {
   predictBondMultipliers,
+  bondBandExcursion,
   fitBondCoeffs,
   hasProcessSettings,
+  isKnownBondMaterial,
   BOND_REFERENCE,
   BOND_MATERIALS,
+  BOND_FIT_RMSE_MAX_PCT,
+  WALL_THERMAL_DEPTH_CLAMP_MM,
   type BondSweepPoint,
 } from "../../solver/bond.js";
 import { buildOrthotropicMaterial, layerHeightFactor } from "../../analysis.js";
@@ -62,7 +66,7 @@ describe("physical trends (direction locks)", () => {
     const noFan   = predictBondMultipliers("pla", 0.2, { ...REF_PROC, coolingFanPct: 0 });
     const fullFan = predictBondMultipliers("pla", 0.2, { ...REF_PROC, coolingFanPct: 100 });
     expect(noFan.relStrength).toBeGreaterThan(fullFan.relStrength);
-    expect(fullFan.relStrength).toBeCloseTo(1.0, 9);   // reference IS full fan
+    expect(fullFan.relStrength).toBeCloseTo(1.0, 9);   // PLA reference IS full fan
   });
 
   it("faster printing → hotter substrate → stronger bond (Coogan & Kazmer 2017 trend)", () => {
@@ -93,6 +97,74 @@ describe("physical trends (direction locks)", () => {
   });
 });
 
+describe("per-material reference cooling fan (#184)", () => {
+  // The reference (multiplier = 1.0) fan is now per-material, anchored to each
+  // material's NORMAL print practice instead of a shared 100 %. PLA/PETG print
+  // with high part cooling; ABS/ASA/PA are run fan-off/low (full fan drives the
+  // warping + interlayer cracking this model predicts). The per-material values
+  // live on BOND_MATERIALS.fanRefPct and are LOW confidence, regression-locked.
+  const REF_FAN: Record<string, number> = {
+    pla: 100, petg: 100, abs: 0, tpu: 50, pa12: 0, asa: 20,
+  };
+
+  it("each material's fanRefPct matches the locked reference table", () => {
+    for (const [m, fan] of Object.entries(REF_FAN)) {
+      expect(BOND_MATERIALS[m]!.fanRefPct).toBe(fan);
+    }
+  });
+
+  it("a material printed at its OWN reference fan sits at exactly 1.0 (no spurious >1)", () => {
+    // Pre-#184 this was the bug: ABS at fan 0 was scored against a fan-100
+    // anchor, so relStrength came out > 1 (spuriously strong at the setting
+    // ABS is actually printed at). Now fan 0 IS the ABS reference ⇒ exactly 1.0.
+    for (const [m, fan] of Object.entries(REF_FAN)) {
+      const p = predictBondMultipliers(m, 0.2, {
+        nozzleTempC: BOND_MATERIALS[m]!.nozzleRefC, coolingFanPct: fan,
+      });
+      expect(p.relStrength).toBeCloseTo(1.0, 9);
+      expect(p.coolingFanRefPct).toBe(fan);
+    }
+  });
+
+  it("ABS at fan 0 is at reference (≈1.0) and MORE fan weakens it (trend preserved)", () => {
+    const absRef  = predictBondMultipliers("abs", 0.2, {
+      nozzleTempC: BOND_MATERIALS["abs"]!.nozzleRefC, coolingFanPct: 0,
+    });
+    const absFan  = predictBondMultipliers("abs", 0.2, {
+      nozzleTempC: BOND_MATERIALS["abs"]!.nozzleRefC, coolingFanPct: 100,
+    });
+    expect(absRef.relStrength).toBeCloseTo(1.0, 9);   // fan-off IS the ABS reference
+    expect(absRef.relStrength).toBeGreaterThan(absFan.relStrength);  // more fan ↓ (trend lock)
+    expect(absFan.relStrength).toBeLessThan(1.0);
+  });
+
+  it("PLA/PETG (100% reference, unchanged from pre-#184) evaluate at 1.0 at fan 100", () => {
+    // PLA and PETG references both stayed 100 %, so their behavior is
+    // bit-identical to the pre-#184 shared-100 % reference (only ABS/ASA/TPU/
+    // PA12 moved). A part evaluated at fan 100 lands exactly on reference.
+    const pla = predictBondMultipliers("pla", 0.2, {
+      nozzleTempC: BOND_MATERIALS["pla"]!.nozzleRefC, coolingFanPct: 100,
+    });
+    const petg = predictBondMultipliers("petg", 0.2, {
+      nozzleTempC: BOND_MATERIALS["petg"]!.nozzleRefC, coolingFanPct: 100,
+    });
+    expect(pla.relStrength).toBeCloseTo(1.0, 9);
+    expect(petg.relStrength).toBeCloseTo(1.0, 9);
+    expect(pla.coolingFanRefPct).toBe(100);
+    expect(petg.coolingFanRefPct).toBe(100);
+    // And PLA still weakens with fan above its reference is impossible (100 is
+    // max), so check the below-reference direction: less fan → stronger.
+    const plaLowFan = predictBondMultipliers("pla", 0.2, {
+      nozzleTempC: BOND_MATERIALS["pla"]!.nozzleRefC, coolingFanPct: 0,
+    });
+    expect(plaLowFan.relStrength).toBeGreaterThan(pla.relStrength);
+  });
+
+  it("BOND_REFERENCE no longer carries a shared fan (per-material only)", () => {
+    expect((BOND_REFERENCE as Record<string, unknown>).coolingFanPct).toBeUndefined();
+  });
+});
+
 describe("robustness: clamps and degenerate inputs", () => {
   it("extreme settings stay finite and inside the clamps", () => {
     const cases = [
@@ -111,9 +183,24 @@ describe("robustness: clamps and degenerate inputs", () => {
     }
   });
 
-  it("unknown material falls back to PLA constants", () => {
+  it("unknown material refuses the bond path — no silent PLA fallback (issue #186)", () => {
     const p = predictBondMultipliers("unobtainium", 0.2, REF_PROC);
-    expect(Number.isFinite(p.relStrength)).toBe(true);
+    expect(p.supported).toBe(false);
+    // Reference no-op multipliers (= legacy no-process behavior), NOT PLA physics.
+    expect(p.relStrength).toBe(1);
+    expect(p.relStiffness).toBe(1);
+    expect(p.confidence).toBe("low");
+    expect(p.note).toMatch(/no entry in the bond property table/i);
+    expect(isKnownBondMaterial("unobtainium")).toBe(false);
+    expect(isKnownBondMaterial("pla")).toBe(true);
+  });
+
+  it("fitBondCoeffs refuses an unknown material (issue #186)", () => {
+    expect(() => fitBondCoeffs("unobtainium", [
+      { layerHeightMm: 0.2, measuredSztMPa: 20 },
+      { layerHeightMm: 0.2, measuredSztMPa: 21 },
+      { layerHeightMm: 0.3, measuredSztMPa: 18 },
+    ], 50, 0.58, layerHeightFactor)).toThrow(/bond property table/i);
   });
 
   it("hasProcessSettings gates on any meaningful field", () => {
@@ -235,5 +322,136 @@ describe("process-sweep coefficient fit", () => {
       { layerHeightMm: 0.2, measuredSztMPa: 20 },
       { layerHeightMm: 0.3, measuredSztMPa: 18 },
     ], 50, 0.58, layerHeightFactor)).toThrow(/≥3/);
+  });
+
+  // ── Residual gate (issue #179) ─────────────────────────────────────────────
+  const Y = 50, yZ = 0.58;
+  const cleanSettings: Array<Omit<BondSweepPoint, "measuredSztMPa">> = [
+    { layerHeightMm: 0.2, nozzleTempC: 190, printSpeedMmS: 60, coolingFanPct: 100 },
+    { layerHeightMm: 0.2, nozzleTempC: 210, printSpeedMmS: 60, coolingFanPct: 100 },
+    { layerHeightMm: 0.2, nozzleTempC: 230, printSpeedMmS: 60, coolingFanPct: 100 },
+    { layerHeightMm: 0.1, nozzleTempC: 210, printSpeedMmS: 120, coolingFanPct: 50 },
+    { layerHeightMm: 0.3, nozzleTempC: 220, printSpeedMmS: 30, coolingFanPct: 0 },
+    { layerHeightMm: 0.2, nozzleTempC: 200, printSpeedMmS: 90, coolingFanPct: 100 },
+  ];
+  const cleanMeasured = (s: Omit<BondSweepPoint, "measuredSztMPa">) =>
+    Y * yZ * layerHeightFactor(s.layerHeightMm) * predictBondMultipliers("pla", s.layerHeightMm, s, {
+      hConv: 50, activationEnergyKJmol: 75, strengthPrefactor: 1.1,
+    }).relStrength;
+
+  it("a clean sweep reports fitQuality 'good' with rmsePct under the bound", () => {
+    const points: BondSweepPoint[] = cleanSettings.map(s => ({ ...s, measuredSztMPa: cleanMeasured(s) }));
+    const fit = fitBondCoeffs("pla", points, Y, yZ, layerHeightFactor);
+    expect(fit.fitQuality).toBe("good");
+    expect(fit.rmsePct).toBeLessThan(BOND_FIT_RMSE_MAX_PCT);
+    // Every datum carries its residual — evidence is shown even for good fits.
+    expect(fit.points).toHaveLength(points.length);
+    for (const p of fit.points) expect(Number.isFinite(p.deviationPct)).toBe(true);
+  });
+
+  it("a gross outlier makes the fit 'poor' and names the worst datum (would 400)", () => {
+    // Clean data except point index 3, whose measured strength is corrupted to
+    // 3× — the physical model cannot reproduce it, so the RMS blows past 15%.
+    const points: BondSweepPoint[] = cleanSettings.map((s, i) => ({
+      ...s,
+      measuredSztMPa: cleanMeasured(s) * (i === 3 ? 3.0 : 1.0),
+    }));
+    const fit = fitBondCoeffs("pla", points, Y, yZ, layerHeightFactor);
+    expect(fit.fitQuality).toBe("poor");
+    expect(fit.rmsePct).toBeGreaterThan(BOND_FIT_RMSE_MAX_PCT);
+    // The worst-fit datum is the corrupted one — the reject response points here.
+    expect(fit.worstPoint.index).toBe(3);
+    expect(Math.abs(fit.worstPoint.deviationPct)).toBeGreaterThan(
+      Math.max(...fit.points.filter(p => p.index !== 3).map(p => Math.abs(p.deviationPct))));
+  });
+});
+
+// ── SF-band excursion from the bond model's LOW-confidence constants (#172) ────
+describe("bondBandExcursion (SF-band widening from LOW-confidence bond constants)", () => {
+  it("collapses to {1,1} at the reference process condition (anchor preserved)", () => {
+    for (const matId of Object.keys(BOND_MATERIALS)) {
+      for (const lh of [0.1, 0.2, 0.3]) {
+        const refProc = { ...BOND_REFERENCE, nozzleTempC: BOND_MATERIALS[matId]!.nozzleRefC };
+        const exc = bondBandExcursion(matId, lh, refProc, null);
+        // relStrength is a ratio to reference at the same constants ⇒ perturbing
+        // the constants cannot move it off 1.0 at the reference condition.
+        expect(exc.low).toBeCloseTo(1, 12);
+        expect(exc.high).toBeCloseTo(1, 12);
+      }
+    }
+  });
+
+  it("widens strictly off-reference (low < 1 < high)", () => {
+    const off = { nozzleTempC: BOND_MATERIALS["pla"]!.nozzleRefC - 40, printSpeedMmS: 20, coolingFanPct: 100, bedTempC: 60, ambientTempC: 25 };
+    const exc = bondBandExcursion("pla", 0.2, off, null);
+    expect(exc.low).toBeLessThan(1);
+    expect(exc.high).toBeGreaterThan(1);
+    expect(exc.high).toBeGreaterThan(exc.low);
+  });
+
+  it("is monotone in off-reference distance (further off ⇒ wider)", () => {
+    const near = { nozzleTempC: BOND_MATERIALS["pla"]!.nozzleRefC - 15, printSpeedMmS: 45, coolingFanPct: 100, bedTempC: 60, ambientTempC: 25 };
+    const far  = { nozzleTempC: BOND_MATERIALS["pla"]!.nozzleRefC - 45, printSpeedMmS: 15, coolingFanPct: 100, bedTempC: 60, ambientTempC: 25 };
+    const excNear = bondBandExcursion("pla", 0.2, near, null);
+    const excFar  = bondBandExcursion("pla", 0.2, far, null);
+    const widthNear = excNear.high - excNear.low;
+    const widthFar  = excFar.high - excFar.low;
+    expect(widthFar).toBeGreaterThan(widthNear);
+  });
+
+  it("calibrated bondCoeffs narrow the added term", () => {
+    const off = { nozzleTempC: BOND_MATERIALS["pla"]!.nozzleRefC - 40, printSpeedMmS: 20, coolingFanPct: 100, bedTempC: 60, ambientTempC: 25 };
+    const uncal = bondBandExcursion("pla", 0.2, off, null);
+    const cal   = bondBandExcursion("pla", 0.2, off, { hConv: 30, activationEnergyKJmol: 60, voidSensitivity: 0.35, strengthPrefactor: 1.0 });
+    const wUncal = uncal.high - uncal.low;
+    const wCal   = cal.high - cal.low;
+    expect(wCal).toBeLessThan(wUncal);
+    // Fitted profile still collapses at reference.
+    const refProc = { ...BOND_REFERENCE, nozzleTempC: BOND_MATERIALS["pla"]!.nozzleRefC };
+    const excRefCal = bondBandExcursion("pla", 0.2, refProc, { hConv: 30, activationEnergyKJmol: 60, voidSensitivity: 0.35, strengthPrefactor: 1.0 });
+    expect(excRefCal.low).toBeCloseTo(1, 12);
+    expect(excRefCal.high).toBeCloseTo(1, 12);
+  });
+});
+
+describe("thermal-depth clamp / wall-bond parameterization (#185)", () => {
+  // The wall-to-wall bond reuses the τc road-cooling formula with the bead LINE
+  // WIDTH as the thermal depth (derivation in WALL_THERMAL_DEPTH_CLAMP_MM docs),
+  // but under its OWN width-appropriate clamp — not the interlayer layer-height
+  // clamp silently repurposed. The default (interlayer) clamp is unchanged.
+  const proc = { ...REF_PROC };
+
+  it("in-clamp inputs are bit-identical whichever clamp is passed (≤1.0 mm)", () => {
+    // 0.45 mm sits inside BOTH the layer [0.04,1.0] and wall [0.1,2.0] clamps,
+    // so τc — and therefore every output — is identical. This is the
+    // no-results-change guarantee for typical line widths.
+    const dflt = predictBondMultipliers("pla", 0.45, proc, null, 30);
+    const wall = predictBondMultipliers("pla", 0.45, proc, null, 30, WALL_THERMAL_DEPTH_CLAMP_MM);
+    expect(wall.coolTimeConstS).toBeCloseTo(dflt.coolTimeConstS, 12);
+    expect(wall.relStrength).toBeCloseTo(dflt.relStrength, 12);
+  });
+
+  it("a wide bead (>1.0 mm) is honored under the wall clamp, not silently clamped to 1.0", () => {
+    // Under the OLD layer-height clamp a 1.2 mm width was pinned to 1.0 mm, so a
+    // 1.2 mm and a 1.0 mm bead gave the same τc. The wall clamp lets τc keep
+    // rising with width (τc ∝ depth), which is the disclosed behavior change.
+    const layerClamped = predictBondMultipliers("pla", 1.2, proc, null, 30);            // default → clamps 1.2→1.0
+    const wall12       = predictBondMultipliers("pla", 1.2, proc, null, 30, WALL_THERMAL_DEPTH_CLAMP_MM);
+    const wall10       = predictBondMultipliers("pla", 1.0, proc, null, 30, WALL_THERMAL_DEPTH_CLAMP_MM);
+    expect(layerClamped.coolTimeConstS).toBeCloseTo(wall10.coolTimeConstS, 12); // old: 1.2 pinned to 1.0
+    expect(wall12.coolTimeConstS).toBeGreaterThan(wall10.coolTimeConstS);       // new: 1.2 honored
+    // τc scales linearly with the (clamped) thermal depth.
+    expect(wall12.coolTimeConstS / wall10.coolTimeConstS).toBeCloseTo(1.2, 6);
+  });
+
+  it("wall clamp still anchors to exactly 1.0 at the reference condition", () => {
+    const p = predictBondMultipliers("pla", 0.6, REF_PROC, null, 30, WALL_THERMAL_DEPTH_CLAMP_MM);
+    expect(p.relStrength).toBeCloseTo(1.0, 9);
+    expect(p.relStiffness).toBeCloseTo(1.0, 9);
+  });
+
+  it("WALL_THERMAL_DEPTH_CLAMP_MM covers typical line widths and large nozzles", () => {
+    expect(WALL_THERMAL_DEPTH_CLAMP_MM[0]).toBeLessThanOrEqual(0.1);
+    expect(WALL_THERMAL_DEPTH_CLAMP_MM[1]).toBeGreaterThanOrEqual(1.2);
   });
 });

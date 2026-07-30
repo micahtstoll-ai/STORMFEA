@@ -17,8 +17,9 @@ import {
   computeNodeSurfaceDistancesAndNormals,
   computeElementWallNormals,
 } from "../../solver/distance.js";
-import { generateBoxMeshC3D4 } from "../../solver/meshgen.js";
+import { generateBoxMeshC3D4, generateBoxMeshC3D10 } from "../../solver/meshgen.js";
 import { extractSurfaceFaces } from "../../solver/meshgen.js";
+import type { TetMesh } from "../../solver/types.js";
 
 describe("tetFractionBelowIso", () => {
   it("all corners on one side → 0 or 1", () => {
@@ -144,6 +145,101 @@ describe("computeNodeSurfaceDistances + computeWallFractions on a box", () => {
     expect(zero.every(v => v === 0)).toBe(true);
     const all = computeWallFractions(mesh, dist, 100);
     expect(all.every(v => v === 1)).toBe(true);
+  });
+});
+
+describe("C3D10 sub-tet subdivision captures between-corner bands (issue #180)", () => {
+  // A single straight-sided reference C3D10 tet. Corners at the unit simplex,
+  // midside nodes at exact edge midpoints (Gmsh order: 4=mid01,5=mid12,6=mid02,
+  // 7=mid03,8=mid13,9=mid23).
+  function refC3D10(): TetMesh {
+    const c: [number, number, number][] = [
+      [0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1],
+    ];
+    const mid = (a: number, b: number): [number, number, number] => [
+      (c[a]![0] + c[b]![0]) / 2, (c[a]![1] + c[b]![1]) / 2, (c[a]![2] + c[b]![2]) / 2,
+    ];
+    const pts = [c[0]!, c[1]!, c[2]!, c[3]!, mid(0, 1), mid(1, 2), mid(0, 2), mid(0, 3), mid(1, 3), mid(2, 3)];
+    return {
+      nodes: Float64Array.from(pts.flat()),
+      elements: Int32Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+      nodeCount: 10,
+      elementCount: 1,
+      nodesPerElem: 10,
+    };
+  }
+  const mesh = refC3D10();
+  const T_WALL = 1.0;
+
+  it("all corners OUTSIDE the band, a midside INSIDE → nonzero fraction (old path gave 0)", () => {
+    // dist − tWall: corners φ = +1 (outside), midside 4 φ = −0.5 (inside band).
+    const dist = new Float64Array(10).fill(2.0); // φ = 2 − 1 = +1 at every node
+    dist[4] = 0.5;                                // φ = 0.5 − 1 = −0.5 (inside)
+    const frac = computeWallFractions(mesh, dist, T_WALL);
+    // Old 4-corner interpolant: tetFractionBelowIso(+1,+1,+1,+1) = 0.
+    expect(tetFractionBelowIso(1, 1, 1, 1)).toBe(0);
+    // New: the 6 sub-tets touching node 4 each contribute (−0.5/−1.5)³ = 1/27,
+    // averaged over 8 sub-tets → 6/(27·8) = 1/36.
+    expect(frac[0]).toBeGreaterThan(0);
+    expect(frac[0]).toBeCloseTo(1 / 36, 12);
+  });
+
+  it("fully-inside element → fraction 1; fully-outside → 0 (unchanged)", () => {
+    const inside = new Float64Array(10).fill(0.2);  // φ = −0.8 everywhere
+    expect(computeWallFractions(mesh, inside, T_WALL)[0]).toBeCloseTo(1, 12);
+    const outside = new Float64Array(10).fill(5.0); // φ = +4 everywhere
+    expect(computeWallFractions(mesh, outside, T_WALL)[0]).toBe(0);
+  });
+
+  it("all-corners-equal, all-midsides-equal collapses to the 4-corner fraction", () => {
+    // When the midside φ equals the (linear) corner average, the 8 sub-tet mean
+    // must equal the single 4-corner marching-tet value (no spurious drift).
+    const dist = new Float64Array(10);
+    const cornerDist = [0.4, 1.6, 1.6, 1.6]; // φ = [-0.6, +0.6, +0.6, +0.6]
+    for (let i = 0; i < 4; i++) dist[i] = cornerDist[i]!;
+    // Linear-consistent midsides = average of their two corner distances.
+    const pairs: [number, number][] = [[0, 1], [1, 2], [0, 2], [0, 3], [1, 3], [2, 3]];
+    for (let m = 0; m < 6; m++) dist[4 + m] = (cornerDist[pairs[m]![0]]! + cornerDist[pairs[m]![1]]!) / 2;
+    const frac8 = computeWallFractions(mesh, dist, T_WALL)[0]!;
+    const frac4 = tetFractionBelowIso(-0.6, 0.6, 0.6, 0.6);
+    expect(frac8).toBeCloseTo(frac4, 12);
+  });
+
+  it("no NaN across randomized φ (level-set stays finite by construction)", () => {
+    for (let trial = 0; trial < 200; trial++) {
+      const dist = new Float64Array(10);
+      for (let i = 0; i < 10; i++) dist[i] = Math.random() * 3;
+      const f = computeWallFractions(mesh, dist, T_WALL)[0]!;
+      expect(Number.isFinite(f)).toBe(true);
+      expect(f).toBeGreaterThanOrEqual(0);
+      expect(f).toBeLessThanOrEqual(1);
+    }
+  });
+});
+
+describe("C3D10 midside surface distances are consumed, not discarded (issue #180)", () => {
+  const meshC = generateBoxMeshC3D10(0, 0, 0, 20, 12, 8, 6, 4, 3);
+  const faces = extractSurfaceFaces(meshC);
+  const DMAX = 1.35 + 6.0;
+  const dist = computeNodeSurfaceDistances(meshC, faces, DMAX);
+
+  it("midside nodes receive a real distance (previously left at dMax)", () => {
+    // Identify midside nodes: those NOT appearing as a corner (first 4) of any element.
+    const isCorner = new Uint8Array(meshC.nodeCount);
+    for (let e = 0; e < meshC.elementCount; e++) {
+      for (let k = 0; k < 4; k++) isCorner[meshC.elements[e * 10 + k]!] = 1;
+    }
+    let checkedInterior = 0;
+    for (let n = 0; n < meshC.nodeCount; n++) {
+      if (isCorner[n]) continue;
+      const x = meshC.nodes[n * 3]!, y = meshC.nodes[n * 3 + 1]!, z = meshC.nodes[n * 3 + 2]!;
+      const analytic = Math.min(Math.min(x, 20 - x, y, 12 - y, z, 8 - z), DMAX);
+      // Every midside node's distance equals the analytic box distance now.
+      expect(dist[n]).toBeCloseTo(analytic, 6);
+      if (analytic < DMAX - 1e-9) checkedInterior++;
+    }
+    // Sanity: some midside nodes are genuinely interior (would have been dMax before).
+    expect(checkedInterior).toBeGreaterThan(0);
   });
 });
 

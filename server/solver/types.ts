@@ -95,6 +95,16 @@ export interface OrthotropicMaterial {
    * τ_z,yield = Z/√3), so old materials reproduce legacy behavior.
    */
   readonly yieldZShear?:  number;   // MPa
+  /**
+   * Deshpande–Fleck–Ashby pressure-sensitivity coefficient α of the bulk yield
+   * criterion (`fdmDualCriterionSF`). Absent or 0 → deviatoric von Mises (the
+   * solid limit; every non-lattice material). Positive → the cellular-foam DFA
+   * criterion σ̂² = (σ_vm² + α²σ_m²)/(1 + (α/3)²), which yields under hydrostatic
+   * stress too. Set only on the homogenized infill CORE, where α = α(ρ) grows
+   * from 0 at ρ=1 (solid ⇒ von Mises exactly) toward ~2.08 at ρ→0 (issue #171).
+   * Confidence LOW; see `dfaPressureSensitivity` in solver/lattice.ts.
+   */
+  readonly dfaAlpha?:     number;   // dimensionless, ≥ 0
   readonly label:         string;
   /**
    * Unit vector (global frame) giving the material's weak / through-layer axis —
@@ -150,6 +160,8 @@ export interface GyroidOrthotropic {
   readonly yieldZ:        number;           // MPa — yield strength in Z
   /** Interlaminar shear allowable S_zs; absent → yieldZ/√3 (see OrthotropicMaterial). */
   readonly yieldZShear?:  number;           // MPa
+  /** DFA pressure-sensitivity α; absent → von Mises (see OrthotropicMaterial.dfaAlpha). */
+  readonly dfaAlpha?:     number;           // dimensionless, ≥ 0
   readonly label:         string;
   /** Mass density in kg/m³ (SI); see IsotropicMaterial.massRho. */
   readonly massRho?:      number;
@@ -193,6 +205,15 @@ export interface ElementMaterialField {
   readonly yieldZ:       Float64Array;
   /** Interlaminar shear allowable per bin, MPa (endpoint absent → yieldZ/√3) */
   readonly yieldZShear:  Float64Array;
+  /**
+   * Deshpande–Fleck–Ashby pressure-sensitivity α per bin (issue #171).
+   * Absent = every bin von Mises (legacy; older/hand-built fields stay
+   * bit-identical). Present: the core-fraction-weighted α, (1−shellFrac)·α(ρ),
+   * so pure-shell bins are 0 (von Mises, untouched) and the pure-core bin
+   * carries the full foam α. Recovery-only (like the yields) — does NOT cross
+   * the assembly-worker boundary (invariant #7); the worker only reads C.
+   */
+  readonly dfaAlpha?:    Float64Array;
   /** Mass density per bin, kg/m³ (SI, converted at assembly time) */
   readonly massRho:      Float64Array;
   /** Representative shell (wall) volume fraction per bin, for reporting */
@@ -323,7 +344,9 @@ export interface SolverResult {
   /**
    * Per-constraint reaction force vector [Fx, Fy, Fz] in Newtons.
    * constraints[i] corresponds to constraints array passed to runLinearStatic.
-   * Length = number of FixedNodeSets. Computed from f_reaction = K×u - f_ext at constrained DOFs.
+   * Length = number of FixedNodeSets. Computed from f_reaction = K₀×u - f_ext at
+   * constrained DOFs, where K₀ is the pristine stiffness (the Dirichlet penalty is
+   * backed out of the modified diagonal — see computeBoltReactions, issue #136).
    */
   readonly boltReactions?: readonly { nodeCount: number; Fx: number; Fy: number; Fz: number }[];
 
@@ -345,6 +368,32 @@ export interface SolverResult {
    * Array of { iteration, relativeResidual } points.
    */
   readonly residualCheckpoints?: readonly { iteration: number; relativeResidual: number }[];
+
+  /**
+   * TRUE relative residual ‖f − K·u‖₂/‖f‖₂ measured by one final SpMV after the
+   * CG loop exits (issue #153). This is the residual `converged` is keyed to.
+   */
+  readonly trueRelativeResidual?: number;
+
+  /**
+   * The CG RECURRENCE residual at exit (the quantity the loop iterated against).
+   * A large gap vs trueRelativeResidual flags finite-precision drift from a
+   * penalty-inflated / ill-conditioned operator (issue #153).
+   */
+  readonly recurrenceRelativeResidual?: number;
+
+  /**
+   * Condition-number estimate κ ≈ λmax/λmin of the PRECONDITIONED operator,
+   * from the CG-implied Lanczos tridiagonal (issue #153). NOTE it is the
+   * preconditioned conditioning CG actually sees, not κ(K).
+   */
+  readonly conditionEstimate?: number;
+
+  /**
+   * Honest order-of-magnitude estimate of the relative displacement error,
+   * κ_preconditioned × trueRelativeResidual (issue #153).
+   */
+  readonly displacementErrorEstimate?: number;
 
   /**
    * Zienkiewicz-Zhu error estimates η_e at each element centroid (0–1 fraction).
@@ -391,7 +440,26 @@ export interface ModeResult {
   readonly frequencyHz:          number;        // Hz = sqrt(omega2) / (2π)
   readonly omega2:               number;        // rad²/s² (eigenvalue of K·φ = ω²·M·φ)
   readonly modeShape:            Float64Array;  // length = nodeCount * 3
-  readonly participationFactor:  number;        // φᵀ·M·r, r = X-direction unit excitation
+  /** Legacy alias of participationX (φᵀ·M·rx). Kept for backward compatibility. */
+  readonly participationFactor:  number;
+  // ── Issue #161: three-direction participation & effective modal mass ─────────
+  /** Γx = φᵀ·M·rx  (rx = unit rigid-body translation in +X). */
+  readonly participationX:       number;
+  readonly participationY:       number;
+  readonly participationZ:       number;
+  /** meffX = Γx²/(φᵀMφ)  [tonne] — effective modal mass in X for this mode. */
+  readonly effectiveMassX:       number;
+  readonly effectiveMassY:       number;
+  readonly effectiveMassZ:       number;
+  /** Running Σ effectiveMassX (this mode and all lower) / total X translational mass. */
+  readonly cumulativeMassFracX:  number;
+  readonly cumulativeMassFracY:  number;
+  readonly cumulativeMassFracZ:  number;
+  // ── Issue #160: per-mode robustness diagnostics ──────────────────────────────
+  /** Relative eigen-residual ‖Kφ − ω²Mφ‖ / ‖ω²Mφ‖ (0 for near-zero/rigid modes). */
+  readonly residual:             number;
+  /** True when ω² is below the rigid-body threshold (near-zero / mechanism mode). */
+  readonly rigid:                boolean;
 }
 
 /**
@@ -404,24 +472,79 @@ export interface ModalAnalysisResult {
   readonly iterations:          number;
   readonly rigidBodyModeCount:  number;
   readonly modalMs:             number;          // wall-clock ms for eigensolver only
+  // ── Issue #160: missed-mode certification ────────────────────────────────────
+  /**
+   * How completeness of the reported band was verified:
+   *   'guard-block' — the enlarged working subspace (p > nModes guard vectors)
+   *                   converged with small residuals AND a spectral gap separates
+   *                   the last reported mode from the first guard mode, so no
+   *                   eigenvalue below the highest reported ω² was skipped
+   *                   (clustered/degenerate pairs inside the band are resolved).
+   *   'sturm'       — reserved: full sparse Sturm (LDLᵀ inertia) count. NOT
+   *                   implemented; a true negative-eigenvalue count via sparse
+   *                   factorization is out of scope for this PCG-based solver.
+   *   'none'        — could not certify (residuals too large, or a cluster
+   *                   straddles the top boundary — see warnings).
+   */
+  readonly certified:           'guard-block' | 'sturm' | 'none';
+  /** Non-fatal advisories surfaced to the caller (partial rigid modes, un-certified
+   *  band, non-convergence). Empty/absent when the solve is clean. */
+  readonly warnings?:           readonly string[];
+  // ── Issue #161: total translational mass per direction (rᵀ·M·r) ──────────────
+  readonly totalMassX:          number;
+  readonly totalMassY:          number;
+  readonly totalMassZ:          number;
 }
 
 // ─── Mesh Quality Types ───────────────────────────────────────────────────────
 
 /**
- * Quality severity: degenerate (J < 0), poor (J < 0.01 or AR > 20 or dihedral < 5°), normal.
+ * Quality severity (issue #165/#166):
+ *   degenerate — unusable: near-zero-volume sliver (|normalizedJacobian| below
+ *                the hard floor), a folded C3D10 curved mapping, or a non-finite
+ *                metric.  A MIRRORED element (negative raw Jacobian but well
+ *                shaped) is NOT degenerate — the assembler auto-orients it.
+ *   poor       — low-accuracy shape: |normalizedJacobian| < poor floor, aspect
+ *                ratio above the poor cap, or a dihedral angle out of band.
+ *   normal     — acceptable.
  */
 export type ElementQualitySeverity = "degenerate" | "poor" | "normal";
 
 /**
  * Per-element quality metrics.
+ *
+ * The classification metrics are SCALE-INVARIANT (issue #165): `normalizedJacobian`,
+ * `aspectRatio` and the dihedral angles are dimensionless, so the same physical
+ * element gives the same verdict at any model scale. `jacobianMin` (raw signed
+ * 6·V in mm³) is kept for sign/back-compat reporting only — never threshold on it.
  */
 export interface ElementQualityMetrics {
   readonly elementIdx:       number;
-  readonly jacobianMin:      number;        // minimum determinant (J_min)
-  readonly aspectRatio:      number;        // longest edge / shortest altitude
-  readonly minDihedralDeg:   number;        // minimum dihedral angle in degrees
+  readonly jacobianMin:      number;        // raw signed 6·V (mm³) — sign only, scale-dependent
+  /**
+   * Scale-invariant "mean-ratio" normalized Jacobian: √2·(6V) / l_rms³, where
+   * l_rms is the RMS of the 6 edge lengths. Exactly 1.0 for a regular tet,
+   * (0,1] for well-shaped, → 0 for slivers, < 0 for inverted. Dimensionless.
+   */
+  readonly normalizedJacobian: number;
+  readonly aspectRatio:      number;        // longest edge / shortest altitude (dimensionless)
+  readonly minDihedralDeg:   number;        // minimum dihedral angle in degrees, over [0,180]
+  readonly maxDihedralDeg:   number;        // maximum dihedral angle in degrees, over [0,180]
   readonly severity:         ElementQualitySeverity;
+  // ── C3D10 curved-element metrics (issue #162; undefined for C3D4) ──
+  /** True when the quadratic mapping is folded (a Gauss-point Jacobian sign
+   *  disagrees with the corner orientation, or a midside node is grossly
+   *  displaced). Such an element must never be integrated with Math.abs(detJ). */
+  readonly curvedFolded?:    boolean;
+  /** Worst corner-orientation-relative Gauss-point detJ (cornerSign·detJ). ≤ 0
+   *  ⇒ folded. undefined for C3D4. */
+  readonly minGaussDetJ?:    number;
+  /** Max over the 6 edges of ‖midsideNode − edgeMidpoint‖ / edgeLength. 0 for a
+   *  straight-sided element; a cheap fold screen. undefined for C3D4. */
+  readonly maxMidsideOffset?: number;
+  /** Element centroid (mm) — surfaced so the gate can name/highlight the worst
+   *  element (issue #166). */
+  readonly centroid?:        readonly [number, number, number];
 }
 
 /**
@@ -430,12 +553,23 @@ export interface ElementQualityMetrics {
  */
 export interface MeshQualityReport {
   readonly totalElements:           number;
-  readonly degenerateCount:         number;   // J_min < 0 (inverted)
-  readonly poorQualityCount:        number;   // J_min < 0.01 or AR > 20 or dihedral < 5°
+  readonly degenerateCount:         number;   // unusable elements (sliver / folded / non-finite)
+  readonly poorQualityCount:        number;   // low-accuracy shape (see ElementQualitySeverity)
   readonly normalCount:             number;
   readonly qualityScore:            number;   // [0, 1] where 1 = all elements perfect
-  readonly worstJacobianMin:        number;
+  readonly worstJacobianMin:        number;   // raw signed 6·V (mm³) — sign only
+  /** Worst (closest-to-zero) |normalizedJacobian| over the mesh — scale-invariant. */
+  readonly worstNormalizedJacobian: number;
   readonly worstAspectRatio:        number;
   readonly worstMinDihedralDeg:     number;
+  readonly worstMaxDihedralDeg:     number;
+  /** Count of C3D10 elements whose curved mapping is folded (issue #162). */
+  readonly curvedFoldedCount:       number;
+  /** Count of elements exceeding a HARD shape threshold — these block the solve
+   *  (issue #166). */
+  readonly hardViolationCount:      number;
+  /** The worst hard-threshold violators (capped list) for actionable gate
+   *  messages; empty when the mesh passes the hard gate. */
+  readonly hardViolators:           readonly ElementQualityMetrics[];
   readonly worstElement:            ElementQualityMetrics | null;
 }

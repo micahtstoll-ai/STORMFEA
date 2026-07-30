@@ -32,8 +32,10 @@
  *
  * ANCHORING (the load-bearing design decision): the model returns multipliers
  * RELATIVE to the reference process condition (per-material reference nozzle
- * temperature, 60 mm/s, fan 100 %, bed 60 °C, ambient 25 °C), evaluated at
- * the SAME layer height and extrusion width as the current settings. So:
+ * temperature AND per-material reference cooling fan — PLA/PETG high, ABS/ASA/
+ * PA fan-off/low, since that is each material's normal print practice, #184 —
+ * 60 mm/s, bed 60 °C, ambient 25 °C), evaluated at the SAME layer height and
+ * extrusion width as the current settings. So:
  *   - at the reference condition the multipliers are exactly 1.0, and every
  *     legacy result (which assumed "typical" process settings) is unchanged;
  *   - the layer-height direction stays governed by the separately validated
@@ -92,9 +94,19 @@ export interface BondModelCoeffs {
 export interface BondPrediction {
   /** Multiplier on interlayer STRENGTHS (yieldZ, yieldZShear) vs reference. */
   relStrength: number;
+  /**
+   * UNCLAMPED strength ratio pre·(Φ/Φ_ref)^exp·consolidation before REL_S_CLAMP
+   * is applied. Consumed by {@link bondBandExcursion} so the uncertainty band
+   * looks THROUGH the (LOW-confidence) clamp — a heavily off-reference
+   * prediction pinned at the clamp must still report a widened band, not a
+   * spuriously tight one. Exactly `pre` (= 1.0 by default) at the reference
+   * condition, so the band term still vanishes there.
+   */
+  rawStrength: number;
   /** Multiplier on interlayer STIFFNESS (E_z, G_xz) vs reference. */
   relStiffness: number;
   /** Diagnostics for reporting. */
+  coolingFanRefPct: number;  // per-material reference (multiplier=1.0) fan duty, % (#184)
   interfaceTempC:  number;   // T0 — interface temperature at deposition
   substrateTempC:  number;   // substrate road temperature when the bead lands
   coolTimeConstS:  number;   // τc
@@ -103,6 +115,13 @@ export interface BondPrediction {
   consolidation:   number;   // void/consolidation factor (1.0 at/above reference temp)
   clamped:         boolean;  // true when the raw ratio hit the clamp
   confidence:      "low" | "medium";
+  /**
+   * False when the material id has no entry in {@link BOND_MATERIALS} (issue
+   * #186): the bond path was REFUSED rather than silently run on PLA physics, so
+   * the multipliers are the reference no-op (1.0) and the diagnostic temps are
+   * NaN. Callers must surface `note` and must NOT read the temp fields.
+   */
+  supported:       boolean;
   note:            string;
 }
 
@@ -111,6 +130,18 @@ export interface BondPrediction {
 interface BondMaterialParams {
   /** Reference (typical) nozzle temperature, °C. */
   nozzleRefC: number;
+  /**
+   * Reference (typical) part-cooling fan duty, 0–100 %. Per-material because
+   * the fan that is "normal practice" is material-specific: PLA/PETG print
+   * with full/high part cooling, whereas ABS/ASA/PA are run with the fan
+   * OFF or barely on (full fan promotes warping and the very interlayer
+   * cracking this model predicts). Anchoring the reference to a fan setting
+   * the material is essentially never printed at (the old shared 100 %) made
+   * "multiplier = 1.0" an unphysical operating point for exactly the most
+   * fan-sensitive materials — see issue #184. Sourced values in
+   * {@link BOND_MATERIALS}; confidence LOW like the rest of the block.
+   */
+  fanRefPct:  number;
   /** Glass transition (bond formation stops ~Tg), °C. */
   TgC:        number;
   /** Arrhenius activation energy for viscous flow / reptation, kJ/mol. */
@@ -126,20 +157,46 @@ interface BondMaterialParams {
  * rheology literature); Tg from datasheets; cp typical of the solid near Tg.
  * TPU: Tg is below room temperature — bonding is not diffusion-limited the
  * same way; the entry keeps the integral finite and the trends mild.
+ *
+ * fanRefPct — the reference (multiplier = 1.0) cooling-fan duty, chosen as
+ * each material's NORMAL print practice (all LOW confidence, regression-locked):
+ *   pla  100 — always printed with full part cooling (crisp overhangs, no
+ *              warping tendency); this is the historical shared reference.
+ *   petg 100 — routinely printed with high/full part cooling on open desktop
+ *              machines (not warp-prone like the styrenics); kept at 100 so
+ *              PETG behavior is unchanged from the pre-#184 shared reference.
+ *   abs    0 — run with the fan OFF (enclosed chamber); part cooling drives
+ *              warping and interlayer delamination — the failure this predicts.
+ *   asa   20 — like ABS but marginally more forgiving; profiles use a low
+ *              20–30 % fan for bridges/overhangs only.
+ *   tpu   50 — flexible filaments use moderate cooling to curb stringing
+ *              without over-chilling the slow-printed weld.
+ *   pa12   0 — nylon printed fan-off to maximize interlayer diffusion
+ *              (hygroscopic, high-Tg; cooling starves the weld).
  */
 export const BOND_MATERIALS: Record<string, BondMaterialParams> = {
-  pla:   { nozzleRefC: 210, TgC:  60, EaKJmol: 60, rho: 1240, cp: 1800 },
-  petg:  { nozzleRefC: 240, TgC:  80, EaKJmol: 70, rho: 1270, cp: 1700 },
-  abs:   { nozzleRefC: 245, TgC: 105, EaKJmol: 95, rho: 1050, cp: 1900 },
-  tpu:   { nozzleRefC: 225, TgC:  25, EaKJmol: 45, rho: 1200, cp: 1800 },
-  pa12:  { nozzleRefC: 255, TgC:  50, EaKJmol: 65, rho: 1010, cp: 2100 },
-  asa:   { nozzleRefC: 245, TgC: 100, EaKJmol: 90, rho: 1070, cp: 1900 },
+  pla:   { nozzleRefC: 210, fanRefPct: 100, TgC:  60, EaKJmol: 60, rho: 1240, cp: 1800 },
+  petg:  { nozzleRefC: 240, fanRefPct: 100, TgC:  80, EaKJmol: 70, rho: 1270, cp: 1700 },
+  abs:   { nozzleRefC: 245, fanRefPct:   0, TgC: 105, EaKJmol: 95, rho: 1050, cp: 1900 },
+  tpu:   { nozzleRefC: 225, fanRefPct:  50, TgC:  25, EaKJmol: 45, rho: 1200, cp: 1800 },
+  pa12:  { nozzleRefC: 255, fanRefPct:   0, TgC:  50, EaKJmol: 65, rho: 1010, cp: 2100 },
+  asa:   { nozzleRefC: 245, fanRefPct:  20, TgC: 100, EaKJmol: 90, rho: 1070, cp: 1900 },
 };
 
-/** Reference process condition (nozzle temp is per-material). */
+/** True when the bond property table carries physics for this material id (issue #186). */
+export function isKnownBondMaterial(materialId: string): boolean {
+  return Object.prototype.hasOwnProperty.call(BOND_MATERIALS, materialId);
+}
+
+/**
+ * Reference process condition — nozzle temp and cooling fan are PER-MATERIAL
+ * (see {@link BOND_MATERIALS}: nozzleRefC, fanRefPct); the fields here are the
+ * material-independent anchors. coolingFanPct deliberately lives on the
+ * material, not here, so spreading BOND_REFERENCE never injects a wrong-for-
+ * the-material fan (#184).
+ */
 export const BOND_REFERENCE = {
   printSpeedMmS: 60,
-  coolingFanPct: 100,
   bedTempC:      60,
   ambientTempC:  25,
 } as const;
@@ -164,6 +221,32 @@ const VOID_FLOOR     = 0.6;  // floor on the consolidation factor
 const REL_S_CLAMP: readonly [number, number] = [0.4, 1.5];
 const REL_E_CLAMP: readonly [number, number] = [0.6, 1.25];
 
+/**
+ * Thermal-depth clamps (mm) for the τc road-cooling formula. τc uses a single
+ * characteristic length — the road's thermal DEPTH — but which geometric
+ * dimension plays that role depends on the weld being modeled, so the plausible
+ * range (and hence the clamp) is geometry-specific (issue #185):
+ *
+ *  - LAYER (interlayer / vertical Z bond): the road cools through its top and
+ *    bottom faces, so the thermal depth is the LAYER HEIGHT h_L. Physical layer
+ *    heights span ~0.04–1.0 mm.
+ *
+ *  - WALL (wall-to-wall / horizontal bead-to-bead bond): adjacent perimeter
+ *    beads cool laterally toward each other through their SIDES, so the thermal
+ *    depth is the bead LINE WIDTH w. The π/8 prefactor in
+ *    τc = π·ρ·cp·d/(8·h) comes from A_c/P ≈ (π/4·w·h_L)/(2·w) = π/8·h_L for an
+ *    elliptical road — the width cancels and the height is left as the depth.
+ *    For the side-by-side wall weld the roles swap: the shared interface is the
+ *    vertical bead flank (area ≈ h_L per unit length), and the mass cooling
+ *    toward it scales with the bead width, giving A_c/P ≈ (π/4·w·h_L)/(2·h_L) =
+ *    π/8·w — the SAME π/8 prefactor with WIDTH as the depth. So the transfer is
+ *    exact to first order, not merely asserted. Physical line widths span
+ *    ~0.1–2.0 mm (small nozzles to large-nozzle/ CHT profiles); a 1.2 mm wide
+ *    bead must NOT silently clamp to the layer-height ceiling of 1.0.
+ */
+const LAYER_THERMAL_DEPTH_CLAMP_MM: readonly [number, number] = [0.04, 1.0];
+export const WALL_THERMAL_DEPTH_CLAMP_MM: readonly [number, number] = [0.1, 2.0];
+
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
 // ─── Core physics ────────────────────────────────────────────────────────────
@@ -177,22 +260,28 @@ interface ThermalResult {
 
 function thermalBondPotential(
   mat: BondMaterialParams,
-  layerHeightMm: number,
+  thermalDepthMm: number,
   proc: Required<Pick<ProcessSettings, "printSpeedMmS" | "coolingFanPct" | "bedTempC" | "ambientTempC">> & { nozzleTempC: number },
   h0: number,
   EaKJmol: number,
   passLengthMmOverride?: number,
+  depthClampMm: readonly [number, number] = LAYER_THERMAL_DEPTH_CLAMP_MM,
 ): ThermalResult {
-  const hL_m  = clamp(layerHeightMm, 0.04, 1.0) / 1000;
+  // Characteristic thermal depth of the road (LAYER HEIGHT for the interlayer
+  // weld, LINE WIDTH for the wall-to-wall weld — see the clamp docs). The clamp
+  // is geometry-specific and passed in so the wall path is not silently held to
+  // the layer-height ceiling (issue #185).
+  const d_m   = clamp(thermalDepthMm, depthClampMm[0], depthClampMm[1]) / 1000;
   const fan   = clamp(proc.coolingFanPct, 0, 100) / 100;
   const speed = clamp(proc.printSpeedMmS, 1, 1000);
   const Tn    = clamp(proc.nozzleTempC, mat.TgC + 20, 500);
 
   const Tenv = proc.ambientTempC + BED_ENV_WEIGHT * (proc.bedTempC - proc.ambientTempC);
   const hEff = h0 * (1 + FAN_H_GAIN * fan);
-  // τc = ρ·cp·A/(h·P) with A = (π/4)·w·hL and P ≈ 2w → π·ρ·cp·hL/(8·h).
-  // The extrusion width cancels — the road's thermal depth is its height.
-  const tauC = (Math.PI * mat.rho * mat.cp * hL_m) / (8 * hEff);
+  // τc = ρ·cp·A_c/(h·P) = π·ρ·cp·d/(8·h) — the same π/8 elliptical-road prefactor
+  // for both welds, with d the geometry's thermal depth (layer height for
+  // interlayer, line width for wall-to-wall; derivation in the clamp docs).
+  const tauC = (Math.PI * mat.rho * mat.cp * d_m) / (8 * hEff);
 
   // Substrate road cooled for one inter-pass time before the bead lands.
   // Default: characteristic toolpath return distance (one Z-layer later, at
@@ -234,13 +323,18 @@ export function hasProcessSettings(proc: ProcessSettings | undefined | null): pr
 }
 
 /**
- * Predict the interlayer bond multipliers for the given process settings,
- * RELATIVE to the reference condition at the same layer height (see module
- * docblock — multiplies on top of layerHeightFactor and calibration ratios).
+ * Predict the bond multipliers for the given process settings, RELATIVE to the
+ * reference condition at the same thermal depth (see module docblock —
+ * multiplies on top of layerHeightFactor and calibration ratios).
+ *
+ * `thermalDepthMm` is the road's characteristic cooling depth: for the default
+ * (interlayer) use it is the LAYER HEIGHT; for the wall-to-wall weld the caller
+ * passes the bead LINE WIDTH together with `depthClampMm =
+ * WALL_THERMAL_DEPTH_CLAMP_MM` (issue #185 — no silent parameter repurposing).
  */
 export function predictBondMultipliers(
   materialId:    string,
-  layerHeightMm: number,
+  thermalDepthMm: number,
   proc:          ProcessSettings,
   coeffs?:       BondModelCoeffs | null,
   /**
@@ -251,8 +345,33 @@ export function predictBondMultipliers(
    * full perimeter loop before starting the next.
    */
   passLengthMmOverride?: number,
+  /**
+   * Clamp (mm) applied to `thermalDepthMm` in the τc formula. Defaults to the
+   * LAYER-height range; the wall-to-wall caller passes
+   * {@link WALL_THERMAL_DEPTH_CLAMP_MM} so wide beads (>1.0 mm) are not held to
+   * the layer-height ceiling (issue #185).
+   */
+  depthClampMm: readonly [number, number] = LAYER_THERMAL_DEPTH_CLAMP_MM,
 ): BondPrediction {
-  const mat = BOND_MATERIALS[materialId] ?? BOND_MATERIALS["pla"]!;
+  const mat = BOND_MATERIALS[materialId];
+  if (!mat) {
+    // Unknown material (issue #186): NEVER silently substitute PLA bond physics.
+    // For e.g. a PA-CF (nozzle ~280 °C, Tg ~180 °C) the PLA constants
+    // (Tg 60, nozzleRef 210, Ea 60) are catastrophically wrong. Refuse the bond
+    // path by returning the reference (no-op) multipliers of exactly 1.0 — which
+    // reproduces the legacy no-process behavior bit-for-bit in the material
+    // builders — with a disclosed note the caller surfaces (materialModel.bond).
+    return {
+      relStrength: 1, rawStrength: 1, relStiffness: 1,
+      coolingFanRefPct: NaN,  // unknown material → no reference fan (#184 × #186)
+      interfaceTempC: NaN, substrateTempC: NaN, coolTimeConstS: NaN,
+      bondPotentialS: NaN, refPotentialS: NaN, consolidation: 1,
+      clamped: false, confidence: "low", supported: false,
+      note: `Bond model skipped: material "${materialId}" has no entry in the bond property table (BOND_MATERIALS). ` +
+            `Falling back to the reference (no-process) interlayer behavior — NOT PLA physics. ` +
+            `Add sourced bond constants for this material to enable process-aware bonding.`,
+    };
+  }
   const h0  = coeffs?.hConv ?? H0_WPM2K;
   const Ea  = coeffs?.activationEnergyKJmol ?? mat.EaKJmol;
   const pre = coeffs?.strengthPrefactor ?? 1.0;
@@ -260,20 +379,20 @@ export function predictBondMultipliers(
   const filled = {
     nozzleTempC:   proc.nozzleTempC   ?? mat.nozzleRefC,
     printSpeedMmS: proc.printSpeedMmS ?? BOND_REFERENCE.printSpeedMmS,
-    coolingFanPct: proc.coolingFanPct ?? BOND_REFERENCE.coolingFanPct,
+    coolingFanPct: proc.coolingFanPct ?? mat.fanRefPct,
     bedTempC:      proc.bedTempC      ?? BOND_REFERENCE.bedTempC,
     ambientTempC:  proc.ambientTempC  ?? BOND_REFERENCE.ambientTempC,
   };
   const refProc = {
     nozzleTempC:   mat.nozzleRefC,
     printSpeedMmS: BOND_REFERENCE.printSpeedMmS,
-    coolingFanPct: BOND_REFERENCE.coolingFanPct,
+    coolingFanPct: mat.fanRefPct,
     bedTempC:      BOND_REFERENCE.bedTempC,
     ambientTempC:  BOND_REFERENCE.ambientTempC,
   };
 
-  const cur = thermalBondPotential(mat, layerHeightMm, filled, h0, Ea, passLengthMmOverride);
-  const ref = thermalBondPotential(mat, layerHeightMm, refProc, h0, Ea, passLengthMmOverride);
+  const cur = thermalBondPotential(mat, thermalDepthMm, filled, h0, Ea, passLengthMmOverride, depthClampMm);
+  const ref = thermalBondPotential(mat, thermalDepthMm, refProc, h0, Ea, passLengthMmOverride, depthClampMm);
 
   // Void/consolidation factor: 1.0 when the interface is at/above the reference
   // deposition temperature, dropping toward VOID_FLOOR as it cools toward Tg.
@@ -291,7 +410,9 @@ export function predictBondMultipliers(
   const fitted = !!(coeffs && (coeffs.hConv != null || coeffs.activationEnergyKJmol != null || coeffs.strengthPrefactor != null || coeffs.voidSensitivity != null));
   return {
     relStrength,
+    rawStrength: rawRatio,
     relStiffness,
+    coolingFanRefPct: mat.fanRefPct,
     interfaceTempC: cur.T0,
     substrateTempC: cur.Tsub,
     coolTimeConstS: cur.tauC,
@@ -300,13 +421,86 @@ export function predictBondMultipliers(
     consolidation,
     clamped,
     confidence: fitted ? "medium" : "low",
+    supported: true,
     note: `Bond model (${fitted ? "sweep-fitted" : "literature constants, LOW confidence"}): ` +
+          `ref fan ${mat.fanRefPct}% (per-material), ` +
           `interface ${cur.T0.toFixed(0)}°C on a ${cur.Tsub.toFixed(0)}°C substrate, τc=${cur.tauC.toFixed(1)}s, ` +
           `Φ/Φ_ref=${(cur.phi / Math.max(ref.phi, 1e-9)).toFixed(2)}` +
           (consolidation < 1 ? `, consolidation ×${consolidation.toFixed(2)} (cold-deposition voids)` : "") +
           ` → strength ×${relStrength.toFixed(2)}, stiffness ×${relStiffness.toFixed(2)}` +
           (clamped ? " (clamped)" : ""),
   };
+}
+
+/**
+ * Multiplicative SF-band excursion from the bond model's LOW-confidence
+ * constants (issue #172). Returns { low, high } — factors on the interlayer
+ * STRENGTH multiplier, i.e. the spread in `relStrength` when the least-trusted
+ * bond constants are perturbed across the plausible ranges their "confidence
+ * LOW" labels imply:
+ *
+ *   - h0 (still-air convection): 20–90 W/m²K   (Coogan & Kazmer 2019 band)
+ *   - Ea (activation energy):    ±40% of the per-material melt-rheology value
+ *   - voidSensitivity:           0.20–0.50      (default 0.35, engineering est.)
+ *
+ * ANCHOR (repo invariant): `relStrength` is a RATIO to the reference process
+ * condition evaluated at the SAME constants, so at the reference process
+ * Φ_cur/Φ_ref = 1 and the interface temperature deficit is 0 for ANY value of
+ * these constants — every perturbed prediction is exactly the central one, and
+ * the excursion collapses to { 1, 1 }. Off-reference the ratio's sensitivity to
+ * the constants grows, widening the band with the distance from reference. The
+ * strength prefactor is deliberately NOT perturbed (it scales `relStrength`
+ * uniformly and would break the reference anchor); it is a fit-residual soak,
+ * not a physics uncertainty.
+ *
+ * A fitted `coeffs` block (post bond-sweep calibration) halves the spread — the
+ * fit residual has absorbed part of the constant uncertainty (issue #172:
+ * "calibrated bondCoeffs narrow the added term").
+ */
+export function bondBandExcursion(
+  materialId:    string,
+  layerHeightMm: number,
+  proc:          ProcessSettings,
+  coeffs?:       BondModelCoeffs | null,
+  passLengthMmOverride?: number,
+): { low: number; high: number } {
+  const mat = BOND_MATERIALS[materialId] ?? BOND_MATERIALS["pla"]!;
+  const fitted = !!(coeffs && (coeffs.hConv != null || coeffs.activationEnergyKJmol != null || coeffs.voidSensitivity != null));
+  const k = fitted ? 0.5 : 1.0; // calibration narrows the spread
+
+  const baseH  = coeffs?.hConv ?? H0_WPM2K;
+  const baseEa = coeffs?.activationEnergyKJmol ?? mat.EaKJmol;
+  const baseV  = coeffs?.voidSensitivity ?? VOID_TEMP_GAIN;
+
+  // Range endpoints, contracted toward the base by (1 − k) so a fitted profile
+  // perturbs over a tighter interval and k = 0 would collapse to the base.
+  const hLo = baseH - k * (baseH - 20);
+  const hHi = baseH + k * (90 - baseH);
+  const eaLo = baseEa * (1 - 0.4 * k);
+  const eaHi = baseEa * (1 + 0.4 * k);
+  const vLo = Math.max(0, baseV - k * (baseV - 0.20));
+  const vHi = baseV + k * (0.50 - baseV);
+
+  // Use the UNCLAMPED raw ratio: the REL_S_CLAMP bound is itself a
+  // LOW-confidence guardrail, and truncating the excursion at it would report a
+  // spuriously tight band exactly for the most off-reference (clamped) cases.
+  const central = predictBondMultipliers(materialId, layerHeightMm, proc, coeffs, passLengthMmOverride).rawStrength;
+  if (!(central > 0)) return { low: 1, high: 1 };
+
+  let lo = central, hi = central;
+  for (const h of [hLo, hHi]) {
+    for (const ea of [eaLo, eaHi]) {
+      for (const v of [vLo, vHi]) {
+        const rel = predictBondMultipliers(materialId, layerHeightMm, proc, {
+          ...coeffs,
+          hConv: h, activationEnergyKJmol: ea, voidSensitivity: v,
+        }, passLengthMmOverride).rawStrength;
+        if (rel < lo) lo = rel;
+        if (rel > hi) hi = rel;
+      }
+    }
+  }
+  return { low: lo / central, high: hi / central };
 }
 
 // ─── Process-sweep coefficient fitting ───────────────────────────────────────
@@ -323,10 +517,37 @@ export interface BondSweepPoint {
   measuredSztMPa:  number;
 }
 
+/**
+ * Fit-quality gate for the process sweep (issue #179). `rmsePct` is the RMS of
+ * (predicted − measured) Z-tension strength as a percentage of the mean
+ * measured strength. A clean sweep — even the coarse 6-point one in
+ * bond.test.ts — fits to < ~2%; a sweep whose scatter or outliers the physical
+ * bond model structurally cannot reproduce runs far higher. Above this bound
+ * the fitted coefficients are not a trustworthy relative correction, so the
+ * calibration endpoint REFUSES them (400) rather than letting them silently
+ * override the literature defaults — and lift bond confidence LOW→MEDIUM — in
+ * every subsequent process-aware analysis. 15% leaves generous headroom over a
+ * clean fit while still catching gross noise or a single mislabeled datum.
+ */
+export const BOND_FIT_RMSE_MAX_PCT = 15;
+
+/** One fitted sweep datum with its residual, in input order. */
+export interface BondFitPoint {
+  index:        number;
+  measuredMPa:  number;
+  predictedMPa: number;
+  /** (predicted − measured) / measured × 100, signed. */
+  deviationPct: number;
+}
+
 export interface BondFitResult {
   coeffs:   Required<Pick<BondModelCoeffs, "hConv" | "activationEnergyKJmol" | "strengthPrefactor" | "voidSensitivity">>;
   rmsePct:  number;
-  points:   Array<{ measuredMPa: number; predictedMPa: number }>;
+  /** "good" when rmsePct ≤ BOND_FIT_RMSE_MAX_PCT, else "poor" (issue #179). */
+  fitQuality: "good" | "poor";
+  points:   BondFitPoint[];
+  /** The single worst-fit datum (largest |deviationPct|) — reject diagnostics. */
+  worstPoint: BondFitPoint;
 }
 
 /**
@@ -348,6 +569,11 @@ export function fitBondCoeffs(
   if (points.length < 3) {
     throw new Error("fitBondCoeffs needs ≥3 sweep points with measured Z-tension strengths.");
   }
+  if (!isKnownBondMaterial(materialId)) {
+    // Issue #186: fitting against PLA physics for an unknown material would hand
+    // back coefficients calibrated to the wrong reference — refuse instead.
+    throw new Error(`fitBondCoeffs: material "${materialId}" has no entry in the bond property table (BOND_MATERIALS).`);
+  }
   const sse = (h: number, ea: number, pre: number, vs: number): number => {
     let s = 0;
     for (const p of points) {
@@ -361,7 +587,7 @@ export function fitBondCoeffs(
   };
 
   // Coarse grid over the three thermal params at the default void sensitivity.
-  let best = { h: H0_WPM2K, ea: (BOND_MATERIALS[materialId] ?? BOND_MATERIALS["pla"]!).EaKJmol, pre: 1.0, vs: VOID_TEMP_GAIN };
+  let best = { h: H0_WPM2K, ea: BOND_MATERIALS[materialId]!.EaKJmol, pre: 1.0, vs: VOID_TEMP_GAIN };
   let bestSse = sse(best.h, best.ea, best.pre, best.vs);
   for (const h of [20, 30, 45, 60, 80]) {
     for (const ea of [40, 55, 70, 90, 110]) {
@@ -387,18 +613,28 @@ export function fitBondCoeffs(
   const fitted: BondModelCoeffs = {
     hConv: best.h, activationEnergyKJmol: best.ea, strengthPrefactor: best.pre, voidSensitivity: best.vs,
   };
-  const outPoints = points.map(p => {
+  const outPoints: BondFitPoint[] = points.map((p, index) => {
     const rel = predictBondMultipliers(materialId, p.layerHeightMm, p, fitted).relStrength;
+    const predictedMPa = yieldXYMPa * yZRatio * layerHeightFactorFn(p.layerHeightMm) * rel;
     return {
+      index,
       measuredMPa: p.measuredSztMPa,
-      predictedMPa: yieldXYMPa * yZRatio * layerHeightFactorFn(p.layerHeightMm) * rel,
+      predictedMPa,
+      deviationPct: p.measuredSztMPa > 0 ? ((predictedMPa - p.measuredSztMPa) / p.measuredSztMPa) * 100 : 0,
     };
   });
   const meanMeasured = points.reduce((s, p) => s + p.measuredSztMPa, 0) / points.length;
   const rmse = Math.sqrt(bestSse / points.length);
+  const rmsePct = meanMeasured > 0 ? (rmse / meanMeasured) * 100 : 0;
+  // Worst datum by absolute deviation — named in the reject diagnostics so the
+  // user knows which sweep point to re-check (bad thermocouple, mixed filament).
+  const worstPoint = outPoints.reduce((w, p) =>
+    Math.abs(p.deviationPct) > Math.abs(w.deviationPct) ? p : w, outPoints[0]!);
   return {
     coeffs: { hConv: best.h, activationEnergyKJmol: best.ea, strengthPrefactor: best.pre, voidSensitivity: best.vs },
-    rmsePct: meanMeasured > 0 ? (rmse / meanMeasured) * 100 : 0,
+    rmsePct,
+    fitQuality: rmsePct <= BOND_FIT_RMSE_MAX_PCT ? "good" : "poor",
     points: outPoints,
+    worstPoint,
   };
 }

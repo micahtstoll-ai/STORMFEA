@@ -13,6 +13,7 @@
  */
 
 import type { AnalysisResult } from "./analysis.js";
+import { FAIL_SF_THRESHOLD, SAFE_SF_THRESHOLD } from "./analysis.js";
 
 export function generateHtmlReport(
   result: AnalysisResult,
@@ -32,10 +33,39 @@ export function generateHtmlReport(
     safetyFactor, estimatedFailForce, verdict,
     failureModes, holeClassifications, fatigue, singularity,
     topologySuggestions, calibrationId,
-    converged, meshFallback,
+    converged, meshFallback, rigidBodyMode,
     sfCriterion, safetyfactorLow, safetyFactorHigh,
-    isotropicComparison, materialModel,
+    isotropicComparison, materialModel, nodesPerElem,
+    nodeCount, elementCount, globalRelativeError, bucklingResult,
   } = result;
+
+  // C3D4 (linear tet, nodesPerElem===4) carries a documented ~55%
+  // bending-stress underprediction from shear locking — never let the
+  // printed report show a C3D4 result without this caveat (issue #189).
+  // C3D10 (nodesPerElem===10, the default) gets no banner.
+  const c3d4Caveat = nodesPerElem === 4
+    ? `<div style="padding:8px 10px;margin-bottom:10px;background:#fff8e0;border:1px solid #8B6914;border-radius:3px;font-size:10px;color:#5c3a00">
+        <b>&#9888; Computed with C3D4 linear elements:</b> underpredict bending stress by up to ~55% due to shear locking. The safety factor above may be more optimistic than the true value for bending-loaded geometry. Re-run with C3D10 before trusting this margin.
+      </div>`
+    : '';
+
+  // Issue #204: estimatedFailForce is a linear first-yield extrapolation
+  // (totalAppliedForce × SF, server/analysis.ts) presented with no caveat.
+  // When buckling governs below that first-yield load, lead with the lower,
+  // more honest number instead and flag it — the BLF and safetyFactor
+  // needed to derive the applied load are both already on the result.
+  let bucklingGoverns = false;
+  let displayFailForce = estimatedFailForce;
+  if (bucklingResult && bucklingResult.blf != null
+      && bucklingResult.verdict !== 'no-buckling' && bucklingResult.verdict !== 'indeterminate'
+      && safetyFactor != null && safetyFactor > 0) {
+    const appliedForce = estimatedFailForce / safetyFactor;
+    const bucklingForce = bucklingResult.blf * appliedForce;
+    if (bucklingForce < estimatedFailForce) {
+      bucklingGoverns = true;
+      displayFailForce = bucklingForce;
+    }
+  }
 
   const criterionLabel =
     sfCriterion === "fdm-interface" ? "FDM dual criterion (bulk von Mises + interlayer interface)"
@@ -47,10 +77,14 @@ export function generateHtmlReport(
   // trustworthy — colour the verdict box neutral grey rather than a reassuring
   // green/amber so the printed report can't imply confidence it doesn't have.
   const unreliable = converged === false || meshFallback === true || safetyFactor === null;
+  // Green only at/above SAFE_SF_THRESHOLD (issue #141) — shared with the
+  // headline verdict text (analysis.ts baseVerdict) and client/index.html's
+  // identically-named constants so the printed report can't disagree with
+  // the app.
   const sfColor = unreliable ? '#5a5a5a'
-    : safetyFactor >= 2 ? '#1a7a40' : safetyFactor >= 1 ? '#7a5a00' : '#7a1a1a';
+    : safetyFactor >= SAFE_SF_THRESHOLD ? '#1a7a40' : safetyFactor >= FAIL_SF_THRESHOLD ? '#7a5a00' : '#7a1a1a';
   const verdictBg = unreliable ? '#ececec'
-    : safetyFactor >= 2 ? '#e8f5ee' : safetyFactor >= 1 ? '#fff8e0' : '#fde8e8';
+    : safetyFactor >= SAFE_SF_THRESHOLD ? '#e8f5ee' : safetyFactor >= FAIL_SF_THRESHOLD ? '#fff8e0' : '#fde8e8';
 
   const confBadge = (c: string) => {
     const colors: Record<string, string> = {
@@ -62,7 +96,7 @@ export function generateHtmlReport(
   const failureRows = failureModes.map(m => `
     <tr style="border-bottom:1px solid #eee">
       <td style="padding:4px 8px;font-weight:${m === govMode ? '600' : '400'};color:${m===govMode?'#8B6914':'#333'}">${m === govMode ? '▲ ' : ''}${m.mode}</td>
-      <td style="padding:4px 8px;text-align:center;color:${m.checked?(m.sf>=2?'#1a7a40':m.sf>=1?'#5c3a00':'#7a1a1a'):'#999'}">${m.checked ? `${m.sf.toFixed(2)}×` : '—'}</td>
+      <td style="padding:4px 8px;text-align:center;color:${m.checked?(m.sf>=SAFE_SF_THRESHOLD?'#1a7a40':m.sf>=FAIL_SF_THRESHOLD?'#5c3a00':'#7a1a1a'):'#999'}">${m.checked ? `${m.sf.toFixed(2)}×` : '—'}</td>
       <td style="padding:4px 8px;text-align:center">${confBadge(m.confidence)}</td>
       <td style="padding:4px 8px;font-size:10px;color:#666">${m.note.split('.')[0]}.</td>
     </tr>`).join('');
@@ -78,6 +112,48 @@ export function generateHtmlReport(
   const topoList = topologySuggestions.slice(0, 2).map((t, i) => `
     <li style="margin-bottom:4px"><b>${t.stressMPa} MPa</b> at (${t.position.join(', ')}) mm — ${t.suggestion.slice(0, 120)}</li>
   `).join('');
+
+  // ── Reliability caveats (issue #196) ──────────────────────────────────────
+  // The app shows explicit banners for compromised results (client/index.html
+  // reliabilityBanner, ~L6291-6321) but the printed report used to signal
+  // this ONLY via a grey verdict box — indistinguishable from a normal result
+  // once photocopied or grayscale-printed. Port every caveat state the app
+  // can show into report text as well, wording kept in sync with the app.
+  let reliabilityCaveats = '';
+  const caveatBox = (title: string, body: string) => `
+    <div style="padding:8px 10px;margin-bottom:8px;background:#fdf0e0;border:1px solid #7a1a1a;border-radius:3px;font-size:10px;color:#3a1a00">
+      <div style="font-weight:700;color:#7a1a1a;margin-bottom:2px">&#9888; ${title}</div>
+      <div style="line-height:1.5">${body}</div>
+    </div>`;
+  if (meshFallback) {
+    reliabilityCaveats += caveatBox(
+      'Approximate result — mesh fallback',
+      'STL meshing failed, so the part was analysed as a solid bounding box. Holes, fillets, and stress concentrations are <b>not modelled</b> — the true peak stress is higher than shown. Re-export the STL (check for non-manifold edges or self-intersections) and re-run before trusting this number.',
+    );
+  }
+  if (converged === false) {
+    const convergenceDetail = (rigidBodyMode && rigidBodyMode.detected)
+      ? rigidBodyMode.message
+      : 'The linear solve did not reach its tolerance, so the stress field — and every number derived from it — is unreliable in either direction. Try a finer mesh or verify that the constraints fully restrain the part.';
+    reliabilityCaveats += caveatBox(
+      `Solver did not converge${rigidBodyMode && rigidBodyMode.detected ? ' — under-constrained rotation' : ''}`,
+      convergenceDetail,
+    );
+  }
+  if (converged !== false && rigidBodyMode?.detected) {
+    reliabilityCaveats += caveatBox('Under-constrained rotation detected', rigidBodyMode.message);
+  }
+  if (materialModel.twoRegion && materialModel.degraded) {
+    reliabilityCaveats += caveatBox('Two-region material model degraded', materialModel.degraded);
+  } else if (!materialModel.twoRegion && materialModel.degraded) {
+    reliabilityCaveats += caveatBox('Two-region material model requested but ran uniform', materialModel.degraded);
+  }
+  if (materialModel.wallBond) {
+    reliabilityCaveats += caveatBox(
+      'Wall-to-wall bond — LOW confidence',
+      `Wall-to-wall bond allowable ${materialModel.wallBond.yieldWallMPa.toFixed(2)} MPa tension / ${materialModel.wallBond.yieldWallShearMPa.toFixed(2)} MPa shear (×${materialModel.wallBond.relStrength.toFixed(2)} vs interlayer baseline, est. perimeter ${materialModel.wallBond.perimeterLengthMm.toFixed(0)} mm${materialModel.wallBond.perimeterFallback ? ' — fallback' : ''}) — no bead-to-bead coupon data.`,
+    );
+  }
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -137,7 +213,11 @@ export function generateHtmlReport(
     </div>
   </div>
 
+  <!-- Reliability caveats -->
+  ${reliabilityCaveats}
+
   <!-- Verdict -->
+  ${c3d4Caveat}
   <div class="verdict-box">
     <div class="verdict-text">${verdict}</div>
     <div class="verdict-sub">
@@ -157,14 +237,24 @@ export function generateHtmlReport(
       <div class="card-value">${maxVonMisesMPa.toFixed(1)}<span class="card-unit"> MPa</span></div>
     </div>
     <div class="card">
-      <div class="card-label">Fail Force</div>
-      <div class="card-value">${estimatedFailForce.toFixed(0)}<span class="card-unit"> N</span></div>
-      <div class="card-unit">(${(estimatedFailForce/4.448).toFixed(0)} lbf)</div>
+      <div class="card-label">Est. Failure Load${bucklingGoverns ? ' (buckling-limited)' : ''}</div>
+      <div class="card-value">${displayFailForce.toFixed(0)}<span class="card-unit"> N</span></div>
+      <div class="card-unit">(${(displayFailForce/4.448).toFixed(0)} lbf)</div>
     </div>
     <div class="card">
       <div class="card-label">Max Displacement</div>
       <div class="card-value">${maxDisplacementMm.toFixed(3)}<span class="card-unit"> mm</span></div>
     </div>
+  </div>
+
+  <!-- Fail-force caveat (issue #204) — the number above is a linear
+       first-yield extrapolation (totalAppliedForce × SF), not a definitive
+       ultimate/collapse load. Every other point estimate in this report
+       (SF band, fatigue) is disclosed with the same kind of humility. -->
+  <div style="font-size:9px;color:#888;margin:-8px 0 14px;line-height:1.5">
+    ${bucklingGoverns
+      ? `⚠ Buckling-limited estimate: BLF ${bucklingResult!.blf!.toFixed(2)}× applied load, lower than the linear first-yield estimate of ${estimatedFailForce.toFixed(0)} N. Linear buckling can overestimate real capacity by 10–40% for imperfect FDM geometry.`
+      : `Linear first-yield estimate: assumes stress ∝ load and failure at first yield (no plasticity/buckling redistribution). Actual capacity is typically higher for ductile bending, lower if buckling governs.`}
   </div>
 
   <div class="grid2">
@@ -212,18 +302,39 @@ export function generateHtmlReport(
       ${materialModel.twoRegion
         ? `<br><b>Two-region model:</b> ${((materialModel.shellVolumeFraction ?? 0) * 100).toFixed(0)}% dense wall band (perimeter ${materialModel.wallThicknessMm?.toFixed(2)} mm${
             materialModel.skinTopThicknessMm != null
-              ? `, top skin ${materialModel.skinTopThicknessMm.toFixed(2)} mm, bottom skin ${materialModel.skinBotThicknessMm?.toFixed(2)} mm${materialModel.skinBuildAxis === "assumed-z-up" ? " — skins assumed Z-up (no bed picked)" : ""}`
+              ? `, top skin ${materialModel.skinTopThicknessMm.toFixed(2)} mm (${materialModel.skinTopLayers} layers), bottom skin ${materialModel.skinBotThicknessMm?.toFixed(2)} mm (${materialModel.skinBotLayers} layers)${materialModel.skinLayersAssumed ? " — assumed slicer-default layer counts; set actual top/bottom layers for accuracy" : ""}${materialModel.skinBuildAxis === "assumed-z-up" ? " — skins assumed Z-up (no bed picked)" : ""}`
               : ``
           }) over a homogenized ${materialModel.core ? materialModel.core.patternFamily + " Gibson-Ashby" : ""} infill core; shell yield ${materialModel.shellYieldXYMPa?.toFixed(1)} MPa vs core ${materialModel.coreYieldXYMPa?.toFixed(1)} MPa.`
         : ``}
       ${materialModel.bond
-        ? `<br><b>Bead-penetration bond model (${materialModel.bond.confidence.toUpperCase()} confidence):</b> interlayer strength ×${materialModel.bond.relStrength.toFixed(2)}, stiffness ×${materialModel.bond.relStiffness.toFixed(2)} vs typical settings — interface ${materialModel.bond.interfaceTempC.toFixed(0)}°C on a ${materialModel.bond.substrateTempC.toFixed(0)}°C substrate, τ_cool ${materialModel.bond.coolTimeConstS.toFixed(1)} s${materialModel.bond.clamped ? " (clamped)" : ""}.`
+        ? materialModel.bond.applied === false
+          ? `<br><b>Bead-penetration bond model:</b> not applied — ${materialModel.bond.note}`
+          : `<br><b>Bead-penetration bond model (${materialModel.bond.confidence.toUpperCase()} confidence):</b> interlayer strength ×${materialModel.bond.relStrength.toFixed(2)}, stiffness ×${materialModel.bond.relStiffness.toFixed(2)} vs typical settings — interface ${(materialModel.bond.interfaceTempC ?? 0).toFixed(0)}°C on a ${(materialModel.bond.substrateTempC ?? 0).toFixed(0)}°C substrate, τ_cool ${(materialModel.bond.coolTimeConstS ?? 0).toFixed(1)} s${materialModel.bond.clamped ? " (clamped)" : ""}.`
         : ``}
       ${isotropicComparison
         ? `<br><b>vs conventional isotropic FEA:</b> ${isotropicComparison.explanation}`
         : ``}
     </div>
   </div>
+
+  <!-- Mesh & discretization confidence (issue #202) — globalRelativeError
+       and topErrorElements were computed and transmitted but never shown
+       anywhere; this is the plain-percentage answer to "how much of the
+       stress field is mesh, not physics?" next to the node/element counts
+       a reviewer already expects here. -->
+  ${nodeCount != null && elementCount != null ? `
+  <div style="margin-bottom:14px">
+    <div class="section-title">Mesh</div>
+    <div style="font-size:10px;color:#444;line-height:1.7">
+      <b>${nodeCount.toLocaleString()}</b> nodes &nbsp;·&nbsp; <b>${elementCount.toLocaleString()}</b> elements
+      ${globalRelativeError != null ? (() => {
+        const pct = globalRelativeError * 100;
+        const errColor = pct < 5 ? '#1a7a40' : pct < 10 ? '#7a5a00' : '#7a1a1a';
+        const errLabel = pct < 5 ? 'low — mesh is well resolved' : pct < 10 ? 'moderate — consider a finer mesh for final numbers' : 'high — refine the mesh before trusting margins';
+        return ` &nbsp;·&nbsp; <b>Discretization error (η):</b> <span style="color:${errColor}">${pct.toFixed(1)}% — ${errLabel}</span>. Zienkiewicz-Zhu ESTIMATE of mesh-artifact share of the stress field, not an exact bound — lower is better.`;
+      })() : ``}
+    </div>
+  </div>` : ``}
 
   <!-- Holes + Topology -->
   <div class="grid2">

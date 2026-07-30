@@ -21,6 +21,7 @@
 
 import type { PointForce, TetMesh } from "./types.js";
 import { computeGeometry, c3d10ShapeFunctions, buildB_c3d10, C3D10_GAUSS } from "./element.js";
+import { buildEdgeMidsideMap } from "./adjacency.js";
 
 /**
  * Assemble the force vector for a list of point forces.
@@ -48,12 +49,21 @@ export function assembleForceVector(
 }
 
 /**
- * Distribute a uniform traction over a set of nodes as equivalent nodal forces.
+ * Split a resultant face force EQUALLY over a set of nodes.
  *
- * totalForce [N, N, N] is the resultant force on the face.
- * It is split equally among all nodes in nodeIndices.
+ * totalForce [N, N, N] is the resultant on the face; each node in nodeIndices
+ * gets an equal 1/N share regardless of its tributary area or shape-function
+ * weight.
  *
- * For the patch test:
+ * NOT a consistent load: equal splitting is only the work-equivalent nodal
+ * force when every node has the same tributary integral, which holds only for a
+ * uniform patch of identical linear (C3D4) corner nodes. It is WRONG for a
+ * C3D10 face (corners and mid-sides have different ∫N dA) and for irregular
+ * tessellations. Use it ONLY for the equal-node patch-test fixture; production
+ * surface loads go through assembleSurfaceTraction / assembleSurfaceTractionNormal,
+ * which integrate the actual shape functions (C3D4 corner lumping, C3D10 T6).
+ *
+ * For the patch-test fixture:
  *   Area of top face of a 10mm cube = 100 mm²
  *   Pressure = 1 MPa = 1 N/mm²
  *   Total force = 100 N in +Z
@@ -157,28 +167,44 @@ export function assembleBodyForce(
  *   f_i = ∫_A N_i · t dA        (per surface node i, per DOF)
  *
  * where t = [tx, ty, tz] is the traction in N/mm² (MPa) — for a pressure P
- * along direction d, t = P·d. Over a triangle of area A the integral of each
- * linear corner shape function is A/3, so each of the three corner nodes
- * receives t·A/3 (tributary-area lumping). For C3D10 surface faces only the
- * corner nodes are available from the boundary triangle list, so the load is
- * lumped on corners — the standard, safe consistent-load approximation while
- * the interior solve stays fully quadratic.
+ * along direction d, t = P·d. The boundary triangle list carries only the three
+ * CORNER nodes of each face, so the consistent load depends on the element order
+ * (mesh.nodesPerElem):
  *
- * @param nodes    mesh node coordinates [x0,y0,z0, …]
- * @param faces    surface triangles as node triples [a0,b0,c0, a1,b1,c1, …]
+ *   • C3D4 (linear): the face is a linear T3 triangle. ∫N_i dA = A/3 for each of
+ *     the three corner shape functions, so every corner node receives t·A/3.
+ *
+ *   • C3D10 (quadratic): the face is a 6-node T6 triangle. The quadratic corner
+ *     integral ∫N_corner dA = 0 and the mid-side integral ∫N_mid dA = A/3, so the
+ *     load belongs on the three MID-SIDE nodes (t·A/3 each), NOT the corners.
+ *     The mid-side node on each face edge is recovered from the edge→mid-side map
+ *     (adjacency.ts) built from the parent elements. This is the true consistent
+ *     load for the quadratic element and is required for the C3D10 patch test to
+ *     reproduce a constant stress field near the loaded surface (issue #137). If
+ *     an edge's mid-side is somehow absent (non-quadratic/inconsistent input) the
+ *     triangle falls back to corner lumping so the resultant stays correct.
+ *
+ * Both paths integrate to the same resultant t·A per triangle.
+ *
+ * @param mesh     tet mesh (nodes + connectivity; element order drives the rule)
+ * @param faces    surface triangles as corner-node triples [a0,b0,c0, a1,b1,c1, …]
  * @param loaded   isLoaded[t] = true → triangle t receives the traction
  * @param traction [tx, ty, tz] in N/mm² (MPa)
  * @returns Float64Array of length nodeCount × 3
  */
 export function assembleSurfaceTraction(
-  nodes:    Float64Array,
+  mesh:     TetMesh,
   faces:    Int32Array,
   loaded:   readonly boolean[],
   traction: readonly [number, number, number],
 ): Float64Array {
+  const nodes = mesh.nodes;
   const f = new Float64Array(nodes.length);
   const [tx, ty, tz] = traction;
   const triCount = Math.floor(faces.length / 3);
+  const edgeMid = buildEdgeMidsideMap(mesh);   // null for C3D4
+  const N = mesh.nodeCount;
+  const edgeKey = (p: number, q: number): number => (p < q ? p * N + q : q * N + p);
 
   for (let t = 0; t < triCount; t++) {
     if (!loaded[t]) continue;
@@ -192,7 +218,16 @@ export function assembleSurfaceTraction(
     const nx = uy*vz - uz*vy, ny = uz*vx - ux*vz, nz = ux*vy - uy*vx;
     const area = 0.5 * Math.hypot(nx, ny, nz);
     const w = area / 3;
-    for (const n of [a, b, c]) {
+
+    // C3D10: load the three mid-side nodes (T6 consistent). C3D4 (or missing
+    // mid-side): load the three corners (T3 consistent).
+    const mab = edgeMid?.get(edgeKey(a, b));
+    const mbc = edgeMid?.get(edgeKey(b, c));
+    const mca = edgeMid?.get(edgeKey(c, a));
+    const targets = (edgeMid && mab !== undefined && mbc !== undefined && mca !== undefined)
+      ? [mab, mbc, mca]
+      : [a, b, c];
+    for (const n of targets) {
       f[n*3]   = (f[n*3]   ?? 0) + tx * w;
       f[n*3+1] = (f[n*3+1] ?? 0) + ty * w;
       f[n*3+2] = (f[n*3+2] ?? 0) + tz * w;
@@ -202,11 +237,39 @@ export function assembleSurfaceTraction(
   return f;
 }
 
+/** Median triangle edge length over a boundary-triangle list — the mesh's own
+ *  characteristic element size. Used to make the 'face' proximity band scale-
+ *  and unit-relative (issue #157) instead of a fixed 0.5 mm. Returns 0 for an
+ *  empty list. */
+function medianTriEdgeLength(nodes: Float64Array, faces: Int32Array): number {
+  const triCount = Math.floor(faces.length / 3);
+  if (triCount === 0) return 0;
+  const perTri = new Float64Array(triCount);
+  for (let t = 0; t < triCount; t++) {
+    const a = faces[t*3]??0, b = faces[t*3+1]??0, c = faces[t*3+2]??0;
+    const ax = nodes[a*3]??0, ay = nodes[a*3+1]??0, az = nodes[a*3+2]??0;
+    const bx = nodes[b*3]??0, by = nodes[b*3+1]??0, bz = nodes[b*3+2]??0;
+    const cx = nodes[c*3]??0, cy = nodes[c*3+1]??0, cz = nodes[c*3+2]??0;
+    const eAB = Math.hypot(bx-ax, by-ay, bz-az);
+    const eBC = Math.hypot(cx-bx, cy-by, cz-bz);
+    const eCA = Math.hypot(ax-cx, ay-cy, az-cz);
+    perTri[t] = (eAB + eBC + eCA) / 3;
+  }
+  perTri.sort();
+  return perTri[Math.floor(triCount / 2)] ?? 0;
+}
+
 /**
  * Select which surface triangles a pressure load acts on.
  *
- *   'face'   — the extreme face toward `direction`: triangles whose centroid is
- *              within 0.5 mm of the furthest node projected onto `direction`.
+ *   'face'   — the extreme face toward `direction`: triangles whose centroid
+ *              projects to within a SCALE-RELATIVE band (0.5 × the median
+ *              boundary-edge length) of the furthest node projected onto
+ *              `direction`. Deriving the band from the mesh's own element size
+ *              (issue #157) means a coarse mesh no longer selects zero
+ *              triangles and a fine/scaled mesh no longer captures extra rows.
+ *              The extreme triangle is always included, so a valid direction on
+ *              a non-empty surface can never yield an empty 'face' selection.
  *   'facing' — every triangle whose OUTWARD normal faces `direction`
  *              (normal·direction > 0), i.e. the whole windward side.
  *   'all'    — the entire exterior surface (hydrostatic / external pressure).
@@ -231,12 +294,21 @@ export function selectPressureRegion(
   const ux = dx/dl, uy = dy/dl, uz = dz/dl;
 
   let maxProj = -Infinity;
+  // Scale-relative proximity band (issue #157): 0.5 × the median boundary-edge
+  // length. On a canonical mm mesh this lands near the historical 0.5 mm; it
+  // scales with the mesh so coarse meshes still capture the extreme face and
+  // 10×-scaled geometry selects the same triangles.
+  let band = 0;
   if (region === "face") {
     for (let n = 0; n < nodes.length / 3; n++) {
       const proj = (nodes[n*3]??0)*ux + (nodes[n*3+1]??0)*uy + (nodes[n*3+2]??0)*uz;
       if (proj > maxProj) maxProj = proj;
     }
+    band = 0.5 * medianTriEdgeLength(nodes, faces);
   }
+  // Track the triangle nearest the extreme, so 'face' can never come back empty
+  // for a valid direction on a non-empty surface (the silent zero-load bug).
+  let bestTri = -1, bestProj = -Infinity;
   for (let t = 0; t < triCount; t++) {
     const a = faces[t*3]??0, b = faces[t*3+1]??0, c = faces[t*3+2]??0;
     const ax = nodes[a*3]??0, ay = nodes[a*3+1]??0, az = nodes[a*3+2]??0;
@@ -249,9 +321,14 @@ export function selectPressureRegion(
       out[t] = (nx*ux + ny*uy + nz*uz) > 1e-9;
     } else { // face
       const proj = ((ax+bx+cx)/3)*ux + ((ay+by+cy)/3)*uy + ((az+bz+cz)/3)*uz;
-      out[t] = (maxProj - proj) < 0.5;
+      if (proj > bestProj) { bestProj = proj; bestTri = t; }
+      out[t] = (maxProj - proj) <= band;
     }
   }
+  // Guarantee non-emptiness for 'face': if the band caught nothing (e.g. a very
+  // coarse, slightly angled face), fall back to the single extreme triangle
+  // rather than silently applying no load.
+  if (region === "face" && bestTri >= 0 && !out.some(Boolean)) out[bestTri] = true;
   return out;
 }
 
@@ -264,23 +341,29 @@ export function selectPressureRegion(
  *
  * Sign convention matches `assembleSurfaceTraction`'s caller: pass a negative
  * `pressureMPa` for an inward push (compression) and a positive value for an
- * outward pull (suction/tension). Each of the three corner nodes receives
- * t·A/3 (tributary-area lumping), identical to the uniform assembler.
+ * outward pull (suction/tension). The consistent load per triangle is t·A with
+ * t = pressure·n̂, distributed exactly as in `assembleSurfaceTraction`: onto the
+ * three corners for C3D4 (T3) and onto the three mid-side nodes for C3D10 (T6,
+ * issue #137). Each loaded node receives pressure·n/6 (= pressure·n̂·A/3).
  *
- * @param nodes       mesh node coordinates [x0,y0,z0, …]
- * @param faces       surface triangles as node triples [a0,b0,c0, …]
+ * @param mesh        tet mesh (nodes + connectivity; element order drives the rule)
+ * @param faces       surface triangles as corner-node triples [a0,b0,c0, …]
  * @param loaded      isLoaded[t] = true → triangle t receives the pressure
  * @param pressureMPa scalar pressure in N/mm² (MPa); sign per convention above
  * @returns Float64Array of length nodeCount × 3
  */
 export function assembleSurfaceTractionNormal(
-  nodes:       Float64Array,
+  mesh:        TetMesh,
   faces:       Int32Array,
   loaded:      readonly boolean[],
   pressureMPa: number,
 ): Float64Array {
+  const nodes = mesh.nodes;
   const f = new Float64Array(nodes.length);
   const triCount = Math.floor(faces.length / 3);
+  const edgeMid = buildEdgeMidsideMap(mesh);   // null for C3D4
+  const N = mesh.nodeCount;
+  const edgeKey = (p: number, q: number): number => (p < q ? p * N + q : q * N + p);
 
   for (let t = 0; t < triCount; t++) {
     if (!loaded[t]) continue;
@@ -297,7 +380,15 @@ export function assembleSurfaceTractionNormal(
     // force per node = pressure · n̂ · (area/3) = pressure · (n/mag) · (mag/2) / 3
     //               = pressure · n / 6
     const w = pressureMPa / 6;
-    for (const n of [a, b, c]) {
+
+    // C3D10: onto the three mid-side nodes (T6). C3D4 (or missing): corners (T3).
+    const mab = edgeMid?.get(edgeKey(a, b));
+    const mbc = edgeMid?.get(edgeKey(b, c));
+    const mca = edgeMid?.get(edgeKey(c, a));
+    const targets = (edgeMid && mab !== undefined && mbc !== undefined && mca !== undefined)
+      ? [mab, mbc, mca]
+      : [a, b, c];
+    for (const n of targets) {
       f[n*3]   = (f[n*3]   ?? 0) + nx * w;
       f[n*3+1] = (f[n*3+1] ?? 0) + ny * w;
       f[n*3+2] = (f[n*3+2] ?? 0) + nz * w;

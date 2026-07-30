@@ -66,6 +66,44 @@ export function buildNodeElementAdjacency(
 }
 
 /**
+ * Map each mesh edge (a corner-node pair) to the mid-side node that sits on it,
+ * for a C3D10 (10-node quadratic tet) mesh. Returns `null` for a linear C3D4
+ * mesh (no mid-side nodes exist).
+ *
+ * STORMFEA's C3D10 local ordering pairs mid-side slots with corner edges as
+ *   slot 4 = mid(0,1), 5 = mid(1,2), 6 = mid(0,2),
+ *   slot 7 = mid(0,3), 8 = mid(1,3), 9 = mid(2,3)
+ * (element.ts c3d10ShapeFunctions; tetgen.ts C3D10_REORDER). A conforming
+ * quadratic mesh has exactly ONE mid-side node per geometric edge — both tets
+ * sharing an edge reference the same global node — so this global map is
+ * single-valued. Consumers that hold a boundary corner-triangle (a,b,c) can
+ * therefore recover its 3 mid-side nodes by looking up edges (a,b),(b,c),(c,a),
+ * which is all the T6 surface-load integral needs (load.ts).
+ *
+ * Key = lo·nodeCount + hi with lo<hi the sorted global corner indices (unique
+ * for nodeCount up to ~9.4e7, well beyond any real mesh).
+ */
+export function buildEdgeMidsideMap(mesh: TetMesh): Map<number, number> | null {
+  if ((mesh.nodesPerElem ?? 4) !== 10) return null;
+  const { elements, elementCount, nodeCount } = mesh;
+  // [cornerSlotA, cornerSlotB, midSlot] for the 6 edges of a C3D10 tet.
+  const EDGES: readonly (readonly [number, number, number])[] = [
+    [0, 1, 4], [1, 2, 5], [0, 2, 6], [0, 3, 7], [1, 3, 8], [2, 3, 9],
+  ];
+  const map = new Map<number, number>();
+  for (let e = 0; e < elementCount; e++) {
+    const base = e * 10;
+    for (const [ca, cb, cm] of EDGES) {
+      const a = elements[base + ca] ?? 0;
+      const b = elements[base + cb] ?? 0;
+      const lo = a < b ? a : b, hi = a < b ? b : a;
+      map.set(lo * nodeCount + hi, elements[base + cm] ?? 0);
+    }
+  }
+  return map;
+}
+
+/**
  * Build node → element adjacency as plain arrays (number[][]).
  * Convenience form for consumers that iterate patches with for..of
  * (SPR patch recovery). Element ids within each node's list are ascending.

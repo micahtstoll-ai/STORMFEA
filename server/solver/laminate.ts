@@ -242,6 +242,17 @@ export const PATTERN_PLY_ANGLES: Record<string, { angles: number[]; fracs: numbe
  * representing a typical FDM thermoplastic bead (PLA-like).
  * E1 is the along-bead modulus at 100% infill, E2 is the transverse modulus.
  */
+// Keys MUST stay a subset of analysis.ts MATERIALS (issue #186) — a bead-props
+// entry with no MATERIALS/BOND_MATERIALS counterpart is unreachable and a
+// desync hazard (a future materialId matching it would draw laminate stiffness
+// from here but base/bond physics from the PLA fallback). Enforced by
+// server/tests/unit/material-tables.test.ts.
+//
+// The carbon-fibre entries `pa6cf` and `petgcf` were removed here: they were
+// orphans (absent from MATERIALS and BOND_MATERIALS), so no request could ever
+// reach them, and their values were unsourced placeholders. Real CF support
+// needs sourced base/yield/density/bond constants across all three tables, not
+// a lone stiffness row — deferred rather than half-wired.
 export const DEFAULT_BEAD_PROPS: Record<string, BeadProperties> = {
   pla:   { E1: 3700, E2: 2200, nu12: 0.36, G12: 1350 },
   petg:  { E1: 2300, E2: 1400, nu12: 0.38, G12:  830 },
@@ -249,6 +260,4 @@ export const DEFAULT_BEAD_PROPS: Record<string, BeadProperties> = {
   tpu:   { E1:  250, E2:  150, nu12: 0.48, G12:   85 },
   pa12:  { E1: 1900, E2: 1200, nu12: 0.40, G12:  700 },
   asa:   { E1: 2300, E2: 1400, nu12: 0.35, G12:  850 },
-  pa6cf: { E1: 8000, E2: 2500, nu12: 0.30, G12: 1800 },
-  petgcf:{ E1: 6500, E2: 2000, nu12: 0.32, G12: 1500 },
 };

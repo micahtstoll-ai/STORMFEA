@@ -30,7 +30,7 @@ import { applyDirichletBC }    from "./boundary.js";
 import { assembleForceVector } from "./load.js";
 import { solvePCG, solvePCGStreaming } from "./cg.js";
 import { buildSolverResult }   from "./stress.js";
-import { computeMeshQuality }  from "./meshQuality.js";
+import { computeMeshQuality, formatHardViolations }  from "./meshQuality.js";
 
 export interface SolverInput {
   readonly mesh:        TetMesh;
@@ -76,6 +76,17 @@ export interface SolverInput {
    * extra Float64Array(nnz) copy.
    */
   readonly keepPristineK?: boolean;
+  /**
+   * Mesh-quality hard gate policy (issue #166). Default 'throw': a hard shape
+   * violation aborts the solve to protect user-facing results. Internal
+   * calibration probes that run on a controlled, deliberately-graded structured
+   * fixture (e.g. the coupon Kt plate-with-hole, whose hole-clustered O-grid
+   * layers are graded on purpose and whose peak is read at the fine hole edge)
+   * pass 'warn' — the hard-violation elements are logged but the solve proceeds,
+   * since the fixture geometry and its extracted quantity are known-good. Never
+   * expose this to the user analysis path.
+   */
+  readonly meshGate?: 'throw' | 'warn';
   /**
    * Optional abort signal (issue #109). Forwarded to solvePCG, which checks it
    * at CG iteration checkpoints and throws if the caller has cancelled.
@@ -152,27 +163,45 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
 
   _snap("before mesh quality check");
 
-  // Compute mesh quality metrics before assembly
+  // Compute mesh quality metrics before assembly (issue #166).
+  //
+  // The gate keys on what actually predicts solution damage — the scale-invariant
+  // sliver/aspect metrics and the stiffness-conditioning proxy (the normalized
+  // Jacobian: the strain-displacement B ∝ 1/(6V), so a near-zero-volume sliver
+  // inflates B and wrecks conditioning), plus the C3D10 curved-mapping fold flags
+  // (issue #162) — NOT the raw Jacobian SIGN. The C3D4/C3D10 assemblers
+  // auto-orient via Math.abs(sixV)/Math.abs(detJ), so a MIRROR-oriented but well
+  // shaped mesh solves correctly and must pass the gate.
   const meshQualityReport = computeMeshQuality(mesh);
-  const degeneratePercent = (meshQualityReport.degenerateCount / mesh.elementCount) * 100;
-  const poorQualityPercent = (meshQualityReport.poorQualityCount / mesh.elementCount) * 100;
 
-  if (degeneratePercent > 5) {
-    throw new Error(
-      `Mesh quality error: ${meshQualityReport.degenerateCount} elements (${degeneratePercent.toFixed(1)}%) ` +
-      `are degenerate (inverted or zero-volume). ` +
-      `Worst Jacobian: ${meshQualityReport.worstJacobianMin.toFixed(6)}. ` +
-      `Please re-mesh with higher quality settings or verify element connectivity.`
-    );
+  // HARD gate: any element beyond a hard shape threshold (sliver
+  // |normalizedJacobian| < 0.02, catastrophic aspect ratio > 100, a folded C3D10
+  // mapping, or a non-finite metric) cannot be trusted — a handful (< 5%) is
+  // enough to corrupt the solve, so percentages do NOT gate here. With no local
+  // remesher on this path, fail with an actionable message naming the worst
+  // elements' coordinates so the client can highlight them.
+  if (meshQualityReport.hardViolationCount > 0) {
+    if ((input.meshGate ?? 'throw') === 'warn') {
+      // Internal calibration probe on a controlled fixture: log but proceed
+      // (the extracted quantity is validated for this known geometry).
+      console.warn(`[Mesh quality] ${formatHardViolations(meshQualityReport)}`);
+    } else {
+      throw new Error(formatHardViolations(meshQualityReport));
+    }
   }
 
-  if (poorQualityPercent > 1) {
+  // SOFT tier: advisory only. A broadly marginal mesh (> SOFT_POOR_WARN_PERCENT
+  // of elements below the poor shape floor) still solves, but stress recovery may
+  // be less accurate. Percentage thresholds belong to this soft tier alone.
+  const SOFT_POOR_WARN_PERCENT = 1;
+  const poorQualityPercent = (meshQualityReport.poorQualityCount / mesh.elementCount) * 100;
+  if (poorQualityPercent > SOFT_POOR_WARN_PERCENT) {
     console.warn(
       `[Mesh quality] ${meshQualityReport.poorQualityCount} elements (${poorQualityPercent.toFixed(1)}%) ` +
-      `have poor quality. Stress recovery may be less accurate. ` +
-      `Worst J_min: ${meshQualityReport.worstJacobianMin.toFixed(6)}, ` +
+      `have poor (but usable) shape. Stress recovery may be less accurate. ` +
+      `Worst normalized Jacobian: ${meshQualityReport.worstNormalizedJacobian.toFixed(4)} (ideal 1.0), ` +
       `worst AR: ${meshQualityReport.worstAspectRatio.toFixed(1)}, ` +
-      `worst dihedral: ${meshQualityReport.worstMinDihedralDeg.toFixed(1)}°.`
+      `dihedral range: ${meshQualityReport.worstMinDihedralDeg.toFixed(1)}°–${meshQualityReport.worstMaxDihedralDeg.toFixed(1)}°.`
     );
   }
 
@@ -188,8 +217,12 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
   // (issue #100: reused by modal/buckling, which apply their own BC flavors).
   const K0data = input.keepPristineK ? K.data.slice() : undefined;
 
-  // applyDirichletBC modifies K and f in-place (penalty method)
-  applyDirichletBC(K, f, diagIdx, constraints);
+  // applyDirichletBC modifies K and f in-place. The static path uses EXACT
+  // ELIMINATION (issue #154): constrained rows/cols are zeroed and the known
+  // values moved to the RHS, so constraints are satisfied exactly and no penalty
+  // conditioning is injected for the PCG to fight. The returned pristine rows let
+  // computeBoltReactions recover true reactions R = K0·u − f_ext (issue #136).
+  const bc = applyDirichletBC(K, f, diagIdx, constraints, 'elimination');
   _snap("after applyDirichletBC");
 
   // Use the cooperative (event-loop-yielding) solver on the streaming analysis
@@ -212,11 +245,16 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
 
   const solverMs = Date.now() - t0;
   _snap("before buildSolverResult");
-  const result = buildSolverResult(mesh, cg.u, material, cg.iterations, cg.converged, solverMs, cg.residualCheckpoints, true, input.materialField, input.criterion, input.inPlaneAniso ?? null, input.wallBond);
+  const result = buildSolverResult(mesh, cg.u, material, cg.iterations, cg.converged, solverMs, cg.residualCheckpoints, true, input.materialField, input.criterion, input.inPlaneAniso ?? null, input.wallBond, {
+    trueRelativeResidual:       cg.trueRelativeResidual,
+    recurrenceRelativeResidual: cg.recurrenceRelativeResidual,
+    conditionEstimate:          cg.conditionEstimate,
+    displacementErrorEstimate:  cg.displacementErrorEstimate,
+  });
   _snap("after buildSolverResult");
   validateResult(result, mesh);
 
-  const boltReactions = computeBoltReactions(K, cg.u, f_ext, constraints);
+  const boltReactions = computeBoltReactions(K, cg.u, f_ext, constraints, bc.pristineRows);
 
   return {
     result: { ...result, boltReactions, meshQualityReport },
@@ -227,20 +265,28 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
 }
 
 /**
- * Per-constraint reaction forces via the residual method:
- *   f_reaction = K_modified × u − f_ext
- * At constrained DOFs this gives the force the boundary exerts on the structure.
- * K_modified × u is computed as a sparse row dot-product at the constrained DOF
- * rows only — O(nnz_at_constrained_rows), fast even for large meshes.
+ * Per-constraint reaction forces via the residual method against the PRISTINE
+ * stiffness (issue #136 intent, made scheme-independent by issue #154):
+ *   R_i = (K0 × u)_i − f_ext_i
+ * where K0 is the pre-boundary-condition matrix. This is the force the support
+ * exerts on the structure — exact for the given u regardless of CG residual, and
+ * independent of how the constraint was imposed (elimination or penalty).
+ *
+ * With ELIMINATION the constrained rows of the SOLVED K are zeroed, so the
+ * modified matrix carries no usable reaction; instead we dot the PRISTINE rows
+ * (snapshotted by applyDirichletBC) with u. `pristineRows` is keyed by global
+ * DOF and aligned to K.rowPtr/colIdx (elimination preserves the sparsity
+ * structure, only zeroing values). O(nnz_at_constrained_rows).
  */
 function computeBoltReactions(
   K: CSRMatrix,
   u: Float64Array,
   f_ext: Float64Array,
   constraints: readonly import("./boundary.js").FixedNodeSet[],
+  pristineRows: Map<number, Float64Array>,
 ): { nodeCount: number; Fx: number; Fy: number; Fz: number }[] {
   const boltReactions: { nodeCount: number; Fx: number; Fy: number; Fz: number }[] = [];
-  const { data, colIdx, rowPtr } = K;
+  const { colIdx, rowPtr } = K;
 
   for (const cs of constraints) {
     let Fx = 0, Fy = 0, Fz = 0;
@@ -248,13 +294,15 @@ function computeBoltReactions(
       for (let dof = 0; dof < 3; dof++) {
         const globalDof = nodeIdx * 3 + dof;
         if (globalDof >= K.n) continue;
+        // Pristine (pre-BC) row for this DOF; if somehow absent, no reaction.
+        const row = pristineRows.get(globalDof);
+        if (row === undefined) continue;
+        const rStart = rowPtr[globalDof] ?? 0;
         let Ku_i = 0;
-        const rStart = rowPtr[globalDof]   ?? 0;
-        const rEnd   = rowPtr[globalDof+1] ?? 0;
-        for (let k = rStart; k < rEnd; k++) {
-          const col = colIdx[k];
+        for (let off = 0; off < row.length; off++) {
+          const col = colIdx[rStart + off];
           if (col === undefined) continue;
-          Ku_i += (data[k] ?? 0) * (u[col] ?? 0);
+          Ku_i += (row[off] ?? 0) * (u[col] ?? 0);
         }
         const reaction = Ku_i - (f_ext[globalDof] ?? 0);
         if (dof === 0) Fx += reaction;

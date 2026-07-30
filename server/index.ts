@@ -21,6 +21,7 @@ import { spawn }         from "child_process";
 import { parseSTL }      from "./stl.js";
 import { detectHoles, flagMergedHoleWarnings }   from "./holes.js";
 import { runAnalysis, AnalysisAbortError }   from "./analysis.js";
+import { MATERIALS, layerHeightFactor, literatureYieldZRatio } from "./analysis.js";
 import type { ForceSpec, PrintSettings, AnalysisSettings, AnalysisResult } from "./analysis.js";
 import { expect as expectShape, ValidationError } from "./validate.js";
 import type { Spec } from "./validate.js";
@@ -261,6 +262,7 @@ const ANALYSE_SPEC: Spec = {
     "beadProps?":       "object",
     "twoRegion?":       "boolean",
     "criterion?":       "fdm-interface|hill-legacy",
+    "includeVolumeField?": "boolean",
   },
   "gravity?":      { g: "number", direction: "vec3" },
   "pressures?":    [{ magnitude: "number", direction: "vec3", "normal?": "boolean", "region?": "face|facing|all" }],
@@ -272,6 +274,19 @@ const ANALYSE_SPEC: Spec = {
 app.post("/api/analyse", async (req, res) => {
   try {
     if (!validateBody(req, res, ANALYSE_SPEC)) return;
+
+    // ANALYSE_SPEC only asserts materialId is a string — enforce the supported
+    // SET here (issue #186) so an unknown id is refused up front rather than
+    // silently falling back to PLA base/bond physics deep in the solver.
+    const materialId = (req.body as { print?: { materialId?: unknown } })?.print?.materialId;
+    if (typeof materialId !== "string" || !isKnownMaterial(materialId)) {
+      res.status(400).json({
+        error: `Unknown material "${String(materialId)}"`,
+        field: "print.materialId",
+        hint:  `must be one of: ${MATERIAL_IDS.join(", ")}`,
+      });
+      return;
+    }
 
     const body = req.body as {
       positionsB64: string;
@@ -328,6 +343,7 @@ app.post("/api/analyse", async (req, res) => {
       useCLT:          body.analysis?.useCLT === true,
       ...(body.analysis?.beadProps ? { beadProps: body.analysis.beadProps } : {}),
       twoRegion:       body.analysis?.twoRegion === true,
+      includeVolumeField: body.analysis?.includeVolumeField === true,
     };
 
     console.log(`[analyse] fileType=${body.fileType} bolts=[${body.boltHoleIds}] forces=${body.forces.length} mesh=${analysis.meshQuality}`);
@@ -381,6 +397,7 @@ app.post("/api/analyse", async (req, res) => {
         cgIterations:         result.cgIterations,
         converged:            result.converged,
         meshFallback:         result.meshFallback,
+        unitsWarning:         result.unitsWarning,
         materialModel:        result.materialModel,
         solverMs:             result.solverMs,
         nodeCount:            result.nodeCount,
@@ -405,6 +422,11 @@ app.post("/api/analyse", async (req, res) => {
         maxSignedVonMisesMPa: result.maxSignedVonMisesMPa,
         boltReactions:        (result as any).boltReactions ?? [],
         residualCheckpoints:  result.residualCheckpoints ?? [],
+        // Per-analysis validation coverage map (#191) — which validation
+        // groups/suites cover THIS analysis's configuration, and which
+        // characteristics have no direct anchor. Always present (computed
+        // from characteristics the solve already has, no extra opt-in).
+        validationCoverage:   result.validationCoverage,
       },
       vertexStressB64:              Buffer.from(result.vertexStress.buffer).toString("base64"),
       vertexSignedVonMisesB64:      Buffer.from(result.vertexSignedVonMises.buffer).toString("base64"),
@@ -418,15 +440,35 @@ app.post("/api/analyse", async (req, res) => {
       globalRelativeError:      result.globalRelativeError ?? null,
       topErrorElements:         result.topErrorElements ?? null,
       vertexModeShapesB64:      result.vertexModeShapesB64 ?? null,
+      // Volumetric interior-stress payload for the section-view cut-face
+      // heatmap (#190) — present only when the request opted in via
+      // analysis.includeVolumeField (kept off default analyses' payload).
+      volumeField:              result.volumeField ?? null,
       modalResult:              result.modalResult ? {
         modalMs:            result.modalResult.modalMs,
         converged:          result.modalResult.converged,
         iterations:         result.modalResult.iterations,
         rigidBodyModeCount: result.modalResult.rigidBodyModeCount,
+        certified:          result.modalResult.certified,          // #160
+        warnings:           result.modalResult.warnings ?? [],     // #160
+        totalMassX:         result.modalResult.totalMassX,         // #161
+        totalMassY:         result.modalResult.totalMassY,
+        totalMassZ:         result.modalResult.totalMassZ,
         modes: result.modalResult.modes.map(m => ({
           frequencyHz:         m.frequencyHz,
           omega2:              m.omega2,
-          participationFactor: m.participationFactor,
+          participationFactor: m.participationFactor,               // legacy (= X)
+          participationX:      m.participationX,                    // #161
+          participationY:      m.participationY,
+          participationZ:      m.participationZ,
+          effectiveMassX:      m.effectiveMassX,
+          effectiveMassY:      m.effectiveMassY,
+          effectiveMassZ:      m.effectiveMassZ,
+          cumulativeMassFracX: m.cumulativeMassFracX,
+          cumulativeMassFracY: m.cumulativeMassFracY,
+          cumulativeMassFracZ: m.cumulativeMassFracZ,
+          rigid:               m.rigid,                             // #160.4
+          residual:            m.residual,                         // #160.2
           // modeShape excluded — transmitted via vertexModeShapesB64
         })),
       } : null,
@@ -599,7 +641,10 @@ app.get("/api/calibration/coupon/:type", (req, res) => {
 import {
   backCalculateProfile,
   fitFatigueProfile,
+  FATIGUE_LOGRMS_MAX,
   COUPON_DIMS,
+  isKnownMaterial,
+  MATERIAL_IDS,
 } from "./analysis.js";
 import type { CalibrationProfile, FatigueCouponPoint } from "./analysis.js";
 import fs   from "fs";
@@ -689,13 +734,25 @@ app.post("/api/calibration/fatigue", (req, res) => {
     }
     const uts = typeof body.utsMPa === "number" && body.utsMPa > 0 ? body.utsMPa : 55;
     const fit = fitFatigueProfile(body.points, uts, body.enduranceLifeCycles ?? 1e6);
+    // Residual gate (issue #179), keep-LOW decision: accept the fit either way —
+    // cyclic-coupon scatter is physically inherent, so a team's own noisy S-N
+    // data is still their best available. A POOR fit is carried into the profile
+    // as fatigueFitQuality:"poor", which keeps estimateFatigue at LOW confidence
+    // (it still USES the measured Se/b). Clean fits behave exactly as before
+    // (LOW→MEDIUM). logRms is always returned so even good fits show their
+    // evidence.
     res.json({
-      fit,
+      fit,   // includes logRms + fitQuality
+      fitQuality: fit.fitQuality,
       fatigueFields: {
-        fatigueSeRatio:  +fit.seRatio.toFixed(4),
-        fatigueBasquinB: +fit.basquinB.toFixed(4),
-        fatigueUTS_MPa:  uts,
+        fatigueSeRatio:    +fit.seRatio.toFixed(4),
+        fatigueBasquinB:   +fit.basquinB.toFixed(4),
+        fatigueUTS_MPa:    uts,
+        fatigueFitQuality: fit.fitQuality,
       },
+      ...(fit.fitQuality === "poor" ? {
+        warning: `S-N fit quality is POOR: log-log residual ${fit.logRms.toFixed(3)} exceeds the ${FATIGUE_LOGRMS_MAX} bound (~±${(Math.expm1(FATIGUE_LOGRMS_MAX) * 100).toFixed(0)}% amplitude scatter). The fields are accepted — your coupons are the best data — but the fatigue mode stays LOW confidence. Re-check for outliers or mixed test conditions.`,
+      } : {}),
     });
   } catch (e) {
     res.status(400).json({ error: String(e) });
@@ -723,12 +780,22 @@ app.post("/api/calibration/bond-sweep", async (req, res) => {
     })) return;
     const { fitBondCoeffs, layerHeightFactor, literatureYieldMPa, literatureYieldZRatio, COUPON_DIMS: CD } =
       await import("./analysis.js");
+    const { isKnownBondMaterial } = await import("./solver/bond.js");
     const body = req.body as {
       materialId: string;
       yieldXY_MPa?: number;
       yieldZ_over_yieldXY?: number;
       points: Array<Record<string, number | undefined>>;
     };
+    // Refuse unknown materials (issue #186): fitting against PLA's reference
+    // physics would return coefficients calibrated to the wrong material.
+    if (!isKnownBondMaterial(body.materialId)) {
+      res.status(400).json({
+        error: `Unknown material "${body.materialId}" — no bond property table entry`,
+        field: "materialId",
+      });
+      return;
+    }
     // Accept either a directly measured strength or the raw coupon failure
     // load (converted with the Z-tension gauge area, same as backCalculate).
     const areaZ = CD.zTensile.gaugeWidthMm * CD.zTensile.gaugeThickMm;
@@ -748,10 +815,38 @@ app.post("/api/calibration/bond-sweep", async (req, res) => {
       });
       return;
     }
+    const { BOND_FIT_RMSE_MAX_PCT } = await import("./solver/bond.js");
     const yieldXY = body.yieldXY_MPa ?? literatureYieldMPa(body.materialId);
     const yZRatio = body.yieldZ_over_yieldXY ?? literatureYieldZRatio();
     const fit = fitBondCoeffs(body.materialId, points, yieldXY, yZRatio, layerHeightFactor);
-    res.json({ fit, bondFields: { bondCoeffs: fit.coeffs } });
+    // Residual gate (issue #179), reject decision: bond coefficients are applied
+    // MULTIPLICATIVELY to interlayer strength/stiffness in every later analysis
+    // that carries process settings, and their presence lifts bond confidence
+    // LOW→MEDIUM. A fit the physical model cannot reproduce would silently
+    // corrupt all of those, so refuse it (400) and name the worst datum rather
+    // than hand back numbers the fit itself says are wrong. The legacy
+    // literature-constants path (no bondCoeffs) remains the honest default.
+    if (fit.fitQuality === "poor") {
+      const w = fit.worstPoint;
+      res.status(400).json({
+        error: `Bond sweep fit quality too poor to accept: RMS error ${fit.rmsePct.toFixed(1)}% of mean measured strength exceeds the ${BOND_FIT_RMSE_MAX_PCT}% bound. The bead-penetration model cannot reproduce this data — check for a mislabeled point, mixed filament, or a bad measurement, then re-fit.`,
+        field: "points",
+        rmsePct: +fit.rmsePct.toFixed(2),
+        thresholdPct: BOND_FIT_RMSE_MAX_PCT,
+        fitQuality: "poor",
+        worstPoint: {
+          index: w.index, measuredMPa: +w.measuredMPa.toFixed(3),
+          predictedMPa: +w.predictedMPa.toFixed(3), deviationPct: +w.deviationPct.toFixed(1),
+        },
+        points: fit.points.map(p => ({
+          index: p.index, measuredMPa: +p.measuredMPa.toFixed(3),
+          predictedMPa: +p.predictedMPa.toFixed(3), deviationPct: +p.deviationPct.toFixed(1),
+        })),
+      });
+      return;
+    }
+    // Good fit: return the evidence (rmsePct + per-point residuals live on `fit`).
+    res.json({ fit, fitQuality: fit.fitQuality, bondFields: { bondCoeffs: fit.coeffs } });
   } catch (e) {
     res.status(400).json({ error: String(e) });
   }
@@ -773,7 +868,17 @@ app.post("/api/bond-sensitivity", async (req, res) => {
       process?: { nozzleTempC?: number; printSpeedMmS?: number; coolingFanPct?: number; bedTempC?: number; ambientTempC?: number };
       bondCoeffs?: { hConv?: number; activationEnergyKJmol?: number; strengthPrefactor?: number } | null;
     };
-    const matKey = body.materialId in BOND_MATERIALS ? body.materialId : "pla";
+    // Refuse unknown materials (issue #186) rather than silently graph PLA bond
+    // physics under another material's name.
+    if (!(body.materialId in BOND_MATERIALS)) {
+      res.status(400).json({
+        error: `Unknown material "${body.materialId}" — no bond property table entry`,
+        field: "materialId",
+        hint:  `must be one of: ${Object.keys(BOND_MATERIALS).join(", ")}`,
+      });
+      return;
+    }
+    const matKey = body.materialId;
     const matRef = BOND_MATERIALS[matKey]!;
     const lh = body.layerHeightMm > 1e-6 ? body.layerHeightMm : 0.2;
     const coeffs = body.bondCoeffs ?? null;
@@ -784,7 +889,10 @@ app.post("/api/bond-sensitivity", async (req, res) => {
     const base = {
       nozzleTempC:   proc.nozzleTempC   ?? matRef.nozzleRefC,
       printSpeedMmS: proc.printSpeedMmS ?? BOND_REFERENCE.printSpeedMmS,
-      coolingFanPct: proc.coolingFanPct ?? BOND_REFERENCE.coolingFanPct,
+      // Fan reference is per-material (#184): ABS/ASA/PA anchor at fan-off/low,
+      // PLA/PETG high — so an empty process block sits at the material's OWN
+      // reference (relStrength = 1.0), matching predictBondMultipliers.
+      coolingFanPct: proc.coolingFanPct ?? matRef.fanRefPct,
       bedTempC:      proc.bedTempC      ?? BOND_REFERENCE.bedTempC,
       ambientTempC:  proc.ambientTempC  ?? BOND_REFERENCE.ambientTempC,
     };
@@ -1090,7 +1198,7 @@ app.post("/api/calibration/kt", async (req, res) => {
       layerHeightMm?: number;
     };
 
-    const { solveCouponKt, buildGaugeBoxMesh } = await import("./coupon_fea.js");
+    const { solveCouponKt, buildBearingKtProbe } = await import("./coupon_fea.js");
     const { backCalculateProfile } = await import("./analysis.js");
 
     // Build a representative material profile from literature defaults
@@ -1113,24 +1221,31 @@ app.post("/api/calibration/kt", async (req, res) => {
       label: materialId,
     };
 
-    // Lap-shear coupon: 20×20mm overlap, 2mm thick
-    const lapBox = buildGaugeBoxMesh(20, 2, 20);
-    const ktLap = await solveCouponKt(lapBox, mat, {
-      totalForceN: 1000, axis: 0, nominalAreaMm2: 20 * 2,
-      gripFraction: 0.35, shear: true,
-    });
+    // Lap-shear: POLICY Kt ≡ 1.0 — the calibrated allowable is the APPARENT
+    // (average) interlaminar shear strength F/A_overlap, by design (issue #140).
+    // Two reasons this is correct, not a shortcut:
+    //   1. The end-of-overlap shear peak in a single-lap joint is a geometric
+    //      SINGULARITY (re-entrant corner): any FEA "Kt" there just tracks mesh
+    //      density and never converges, so a peak-based lap-shear allowable
+    //      would be false precision.
+    //   2. STORMFEA evaluates part interlaminar shear on element-AVERAGED stress
+    //      (fdmDualCriterion S_zs), so an average-based allowable is the
+    //      consistent measure. The previous plain-box probe returned Kt ≈ 1
+    //      anyway — this makes the ≡1 explicit and honest rather than incidental.
+    const ktLapShear = 1.0;
 
-    // Bearing coupon: 20×3mm plate, 3mm hole → approximate as uniform bar
-    const bearBox = buildGaugeBoxMesh(20, 3, 20);
-    const ktBear = await solveCouponKt(bearBox, mat, {
-      totalForceN: 1000, axis: 1, nominalAreaMm2: 3 * 3,
-      gripFraction: 0.35, shear: false,
-    });
+    // Bearing: plate-with-hole fixture at COUPON_DIMS.bearing geometry, loaded in
+    // far-field tension (the only load the fixture supports). Kt is the
+    // net-section OPEN-HOLE tension SCF used as a first-order proxy for the
+    // bearing concentration — see buildBearingKtProbe (issue #139). Replaces the
+    // old hole-less bar whose Kt ≈ 1 made this correction a silent no-op.
+    const bearingProbe = buildBearingKtProbe(COUPON_DIMS.bearing);
+    const ktBear = await solveCouponKt(bearingProbe.mesh, mat, bearingProbe.loadCase);
 
     res.json({
-      ktLapShear: ktLap.converged ? ktLap.Kt : null,
+      ktLapShear,
       ktBearing:  ktBear.converged ? ktBear.Kt : null,
-      converged:  ktLap.converged && ktBear.converged,
+      converged:  ktBear.converged,
     });
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -1358,14 +1473,17 @@ SF = min(SF_bulk, SF_int)</div>
 <h2>Material Database</h2>
 <table>
   <tr><th>Material</th><th>E_xy (MPa)</th><th>ν</th><th>Yield XY (MPa)</th><th>Yield Z (MPa)</th></tr>
-  <tr><td>PLA</td><td>3500</td><td>0.36</td><td>50</td><td>29</td></tr>
-  <tr><td>PETG</td><td>2100</td><td>0.38</td><td>45</td><td>26</td></tr>
-  <tr><td>ABS</td><td>2300</td><td>0.35</td><td>40</td><td>23</td></tr>
+  ${Object.values(MATERIALS).map(m => {
+    const yieldZ = m.yieldMPa * literatureYieldZRatio();
+    return `<tr><td>${m.label}</td><td>${m.E}</td><td>${m.nu}</td><td>${m.yieldMPa}</td><td>${yieldZ.toFixed(0)}</td></tr>`;
+  }).join('\n  ')}
 </table>
 <p class="muted">
-  Layer-height correction applied: 0.2 mm baseline. Thicker layers (≥0.28 mm) reduce yield_Z
-  by up to 12% per Farashi &amp; Vafaee 2022 meta-analysis. Thinner layers (≤0.12 mm) increase
-  yield_Z by up to 8%.
+  Layer-height correction applied: 0.2&nbsp;mm baseline, slope −1.0/mm, clamped to
+  ${((layerHeightFactor(10) - 1) * 100).toFixed(0)}%/+${((layerHeightFactor(0) - 1) * 100).toFixed(0)}%
+  per Farashi &amp; Vafaee 2022 meta-analysis. Example: at 0.28&nbsp;mm, yield_Z is reduced
+  ${((1 - layerHeightFactor(0.28)) * 100).toFixed(0)}% (factor ${layerHeightFactor(0.28).toFixed(2)}×); at 0.12&nbsp;mm it is
+  increased ${((layerHeightFactor(0.12) - 1) * 100).toFixed(0)}% (factor ${layerHeightFactor(0.12).toFixed(2)}×).
 </p>
 </div>
 <div>
@@ -1406,7 +1524,7 @@ SF = min(SF_bulk, SF_int)</div>
 
 <h2>Solver Validation</h2>
 <p>
-  STORMFEA includes a 117-test automated validation suite run against problems with known analytical
+  STORMFEA includes a 180-test automated validation suite run against problems with known analytical
   solutions. All tests must pass before a release is packaged. Results can be reproduced live from
   the DEBUG tab in the application.
 </p>
@@ -1452,11 +1570,18 @@ SF = min(SF_bulk, SF_int)</div>
 
 <h3>Stress Concentration Correction</h3>
 <p>
-  Lap-shear and bearing joints concentrate stress beyond the nominal F/A value. STORMFEA optionally
-  runs FEA on the coupon geometry to compute Kt (stress concentration factor), then corrects the
-  derived strength upward — making the calibrated allowable consistent with how real parts are
-  evaluated. This eliminates the systematic non-conservatism introduced by mixing nominal-stress
-  calibration with peak-stress analysis.
+  The <strong>bearing</strong> coupon concentrates stress at the hole bore, so its nominal F/(d×t)
+  understates the peak. STORMFEA runs FEA on a plate-with-hole model of the coupon to extract the
+  net-section open-hole Kt (stress concentration factor) and lifts the derived bearing strength by
+  that factor — a first-order proxy, since the fixture applies far-field tension rather than a bolt
+  bearing on the wall. This removes the non-conservatism of mixing nominal-stress calibration with
+  peak-stress part analysis.
+</p>
+<p>
+  The <strong>lap-shear</strong> allowable is reported as the apparent (average) shear strength
+  F/(w×l), i.e. Kt ≡ 1 by design: the end-of-overlap shear peak is a geometric singularity that does
+  not converge under mesh refinement, and parts are checked on element-averaged interlaminar shear —
+  so an average-based allowable is the consistent measure, not a peak-corrected one.
 </p>
 </div>
 <div>

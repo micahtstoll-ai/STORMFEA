@@ -48,8 +48,43 @@ import {
 } from "./solver/wallfrac.js";
 import { interlaminarShearOf } from "./solver/stress.js";
 
-/** Quantization level count for the wall-fraction bins (f_b = b/(N−1)). */
+/**
+ * BASE / FLOOR wall-fraction bin count. Low- and medium-contrast fields use
+ * exactly this many LINEARLY spaced bins (f_b = b/(N−1)) — bit-identical to the
+ * legacy path. High-contrast fields grow the count and switch to log-spacing so
+ * the adjacent-bin stiffness ratio stays bounded (see planBins, issue #178).
+ */
 export const TWO_REGION_BIN_COUNT = 9;
+
+/** Hard cap on the adaptive bin count (memory bound; 33×36 doubles ≈ 9 KB). */
+export const TWO_REGION_MAX_BINS = 33;
+
+/**
+ * Target upper bound on the stiffness ratio between ADJACENT bins (issue #178).
+ * Linear 9-bin spacing already respects this up to a shell:core contrast ≈ 9;
+ * above that a 0.01 change in wallFrac could otherwise flip an element's
+ * stiffness ~100× (0.06→bin0 vs 0.07→bin1 at 10³:1), so we log-space and add
+ * bins until every adjacent pair is within this factor.
+ */
+export const TWO_REGION_BIN_RATIO_TARGET = 2;
+
+/**
+ * Default solid-skin cone half-angle, degrees: a boundary face is a solid
+ * top/bottom SKIN when the angle between its normal and the build axis is
+ * ≤ this value (equivalently, the face is tilted ≤ this many degrees from
+ * horizontal). Faces steeper than this — within (90° − cone) of vertical —
+ * stay on the perimeter WALL band.
+ *
+ * The legacy value was 45° (a hard cos45 test), which sent 45°–90°-from-
+ * horizontal up/down-facing surfaces — shallow domes, moderate overhangs and
+ * undersides that slicers print as stair-stepped SOLID top/bottom skins — into
+ * the vertical-perimeter band with wall thickness (issue #181). 65° captures
+ * those solid-skin surfaces (e.g. a 60°-from-horizontal dome region: normal
+ * 60° off the axis, cos 60° = 0.5 ≥ cos 65° = 0.423 → skin) while leaving
+ * genuine near-vertical perimeter walls (tilt > 65°, i.e. within 25° of
+ * vertical) on the wall band. Overridable per-analysis via SkinBands.skinConeDeg.
+ */
+export const DEFAULT_SKIN_CONE_DEG = 65;
 
 /** Sanity cap: skip the field on absurdly large meshes (memory/latency). */
 export const TWO_REGION_MAX_ELEMENTS = 400_000;
@@ -97,16 +132,27 @@ export interface SkinBands {
   tSkinTop: number;
   /** Bottom (floor) skin band thickness, mm. */
   tSkinBot: number;
+  /**
+   * Solid-skin cone half-angle in degrees (max tilt of a solid-skin face's
+   * normal from the build axis). Defaults to DEFAULT_SKIN_CONE_DEG (65°).
+   * Set to 45 to reproduce the legacy hard-cos45 classification.
+   */
+  skinConeDeg?: number;
 }
 
 /**
  * Per-boundary-triangle band thickness for the multi-thickness classifier.
- * A triangle whose normal is within 45° of the build axis is a solid SKIN
- * (top or bottom, split by its centroid's position along the axis relative to
- * the part mid-plane — winding-independent); everything else (side walls,
- * steep overhangs) uses the perimeter band `tWall`.
+ * A triangle whose normal is within `skinConeDeg` (default 65°) of the build
+ * axis is a solid SKIN (top or bottom, split by its centroid's position along
+ * the axis relative to the part mid-plane — winding-independent); everything
+ * else (near-vertical side walls) uses the perimeter band `tWall`. The cone
+ * angle replaces the legacy hard cos45 test so 45°–90°-from-horizontal
+ * up/down-facing overhang/underside surfaces are credited as solid skin
+ * rather than mis-classified as vertical perimeter (issue #181).
+ *
+ * Exported for direct unit testing of the face classification.
  */
-function classifyFaceBands(
+export function classifyFaceBands(
   mesh: TetMesh,
   surfaceFaces: Int32Array,
   skin: SkinBands,
@@ -127,7 +173,11 @@ function classifyFaceBands(
     if (proj > pMax) pMax = proj;
   }
   const mid = (pMin + pMax) / 2;
-  const COS45 = Math.SQRT1_2; // cos(45°) ≈ 0.70710678
+  // Skin faces: normal within `skinConeDeg` of the build axis (|n·ŵ| ≥ cos θ).
+  // Larger cone → more up/down-facing overhang/underside faces credited as
+  // solid skin; genuine near-vertical walls stay on tWall (issue #181).
+  const coneDeg = skin.skinConeDeg ?? DEFAULT_SKIN_CONE_DEG;
+  const cosCone = Math.cos((coneDeg * Math.PI) / 180);
 
   for (let t = 0; t < triCount; t++) {
     const na = surfaceFaces[t * 3] ?? 0, nb = surfaceFaces[t * 3 + 1] ?? 0, nc = surfaceFaces[t * 3 + 2] ?? 0;
@@ -143,7 +193,7 @@ function classifyFaceBands(
     const nlen = Math.hypot(nx, ny, nz);
     if (nlen < 1e-12) { band[t] = tWall; continue; } // degenerate → perimeter
     const nDotW = (nx * wx + ny * wy + nz * wz) / nlen;
-    if (Math.abs(nDotW) >= COS45) {
+    if (Math.abs(nDotW) >= cosCone) {
       const cProj = ((ax + bx + cx) / 3) * wx + ((ay + by + cy) / 3) * wy + ((az + bz + cz) / 3) * wz;
       band[t] = cProj >= mid ? skin.tSkinTop : skin.tSkinBot;
     } else {
@@ -186,10 +236,19 @@ function blendMaterial(
   const rho = shell.massRho !== undefined || core.massRho !== undefined
     ? mix(shell.massRho ?? 0, core.massRho ?? 0)
     : undefined;
+  // DFA pressure sensitivity blends like the yields: core-only, shell = 0. At
+  // f = 1 (pure shell / 100%-infill collapse) → 0 (von Mises); at f = 0 (pure
+  // core degenerate) → the core's α. Matches the per-bin dfaAlpha blend, so the
+  // averageMaterial the field-null degenerate paths hand to recovery carries
+  // the right criterion. Omitted when neither endpoint is pressure-sensitive.
+  const dfaAlpha = shell.dfaAlpha !== undefined || core.dfaAlpha !== undefined
+    ? mix(shell.dfaAlpha ?? 0, core.dfaAlpha ?? 0)
+    : undefined;
   return {
     ...blended,
     ...(gxy !== undefined ? { G_xy: gxy } : {}),
     ...(rho !== undefined ? { massRho: rho } : {}),
+    ...(dfaAlpha !== undefined ? { dfaAlpha } : {}),
     ...(shell.weakAxis ? { weakAxis: shell.weakAxis } : {}),
   };
 }
@@ -221,6 +280,65 @@ function maxCornerEdge(mesh: TetMesh): number {
     }
   }
   return Math.sqrt(maxE2);
+}
+
+// ─── Adaptive wall-fraction binning (issue #178) ─────────────────────────────
+//
+// The per-bin constitutive matrix is C(f) = f·C_shell + (1−f)·C_core, linear in
+// the shell fraction f. For a diagonal entry with shell:core ratio k the
+// magnitude C(f) = C_core·(1 + f·(k−1)) grows fastest near f = 0, so uniformly
+// spaced bins put a huge stiffness step on the first interval at high contrast.
+// We (a) measure the worst diagonal contrast K, (b) keep the legacy LINEAR
+// N=9 spacing while it already bounds the adjacent-bin ratio (K ⪅ 9), and
+// (c) otherwise LOG-space the fractions so C grows geometrically — every
+// adjacent-bin ratio ≤ TWO_REGION_BIN_RATIO_TARGET. Because C(f) is steepest
+// for the max-contrast entry, bounding ITS ratio bounds every entry's ratio.
+// Endpoints stay f=0 (pure core) and f=1 (pure shell) EXACTLY in both modes,
+// so pure-phase elements map to the endpoint matrices bit-for-bit.
+
+/** Worst shell:core diagonal stiffness ratio across the two endpoint matrices. */
+function stiffnessContrast(Cshell: Float64Array, Ccore: Float64Array): number {
+  const DIAG = [0, 7, 14, 21, 28, 35]; // 6×6 flattened row-major diagonal
+  let k = 1;
+  for (const i of DIAG) {
+    const s = Math.abs(Cshell[i] ?? 0);
+    const c = Math.abs(Ccore[i] ?? 0);
+    if (s > 1e-30 && c > 1e-30) k = Math.max(k, s / c);
+  }
+  return k;
+}
+
+/**
+ * Choose the bin count and spacing mode for a given contrast. Linear N=9 is
+ * kept while its worst adjacent ratio 1 + (K−1)/(N−1) ≤ target (so low/medium
+ * contrast stays bit-identical to the legacy path); otherwise log-space with
+ * N−1 = ⌈log(K)/log(target)⌉ bins (capped), giving adjacent ratio K^(1/(N−1)) ≤
+ * target.
+ */
+function planBins(K: number): { N: number; logSpaced: boolean } {
+  const Nlin = TWO_REGION_BIN_COUNT;
+  const linWorst = 1 + (K - 1) / (Nlin - 1);
+  if (linWorst <= TWO_REGION_BIN_RATIO_TARGET + 1e-12) return { N: Nlin, logSpaced: false };
+  const need = 1 + Math.ceil(Math.log(K) / Math.log(TWO_REGION_BIN_RATIO_TARGET));
+  return { N: Math.min(TWO_REGION_MAX_BINS, Math.max(Nlin, need)), logSpaced: true };
+}
+
+/** Shell fraction for bin b (endpoints exact; log-spaced ⇒ geometric stiffness). */
+function binFraction(b: number, N: number, K: number, logSpaced: boolean): number {
+  if (b <= 0) return 0;
+  if (b >= N - 1) return 1;
+  if (!logSpaced) return b / (N - 1);
+  return (Math.pow(K, b / (N - 1)) - 1) / (K - 1);
+}
+
+/** Nearest bin (in the spacing's warped index space) for an element's wallFrac. */
+function binForWallFrac(w: number, N: number, K: number, logSpaced: boolean): number {
+  const wc = Math.min(1, Math.max(0, w));
+  const idx = logSpaced
+    ? (N - 1) * Math.log1p(wc * (K - 1)) / Math.log(K) // inverse of binFraction
+    : wc * (N - 1);
+  const b = Math.round(idx);
+  return b < 0 ? 0 : b > N - 1 ? N - 1 : b;
 }
 
 /**
@@ -343,19 +461,30 @@ export function buildTwoRegionField(
   // ratio; the per-axis core laws broke that proportionality. Endpoint bins
   // (f = 0, 1) are the endpoint matrices bit-for-bit. Yields and density
   // stay linear scalar blends (consistent with Voigt).
-  const N = TWO_REGION_BIN_COUNT;
+  //
+  // ADAPTIVE spacing (issue #178): the bin FRACTIONS f_b are linear (legacy,
+  // bit-identical) for low/medium contrast and log-spaced (with more bins) for
+  // high contrast, so no adjacent-bin stiffness step exceeds ~2× even at the
+  // ~10³:1 shell:core contrast of a near-zero-infill core. The field SHAPE is
+  // unchanged (binOfElement + binCount×36 C), so the assembly-worker payload
+  // (invariant #7) is untouched — binCount is already read as C.length/36.
+  const Cshell = buildAnyConstitutiveMatrix(shellMat as AnyMaterial);
+  const Ccore  = buildAnyConstitutiveMatrix(coreMat as AnyMaterial);
+  const K = stiffnessContrast(Cshell, Ccore);
+  const { N, logSpaced } = planBins(K);
   const C = new Float64Array(N * 36);
   const yieldXY = new Float64Array(N);
   const yieldZ = new Float64Array(N);
   const yieldZShear = new Float64Array(N);
   const massRho = new Float64Array(N);
   const shellFrac = new Float64Array(N);
-  const Cshell = buildAnyConstitutiveMatrix(shellMat as AnyMaterial);
-  const Ccore  = buildAnyConstitutiveMatrix(coreMat as AnyMaterial);
+  const dfaAlpha = new Float64Array(N);
   const zsShell = interlaminarShearOf(shellMat);
   const zsCore  = interlaminarShearOf(coreMat);
+  // The shell is solid (von Mises, α = 0); only the core is pressure-sensitive.
+  const alphaCore = coreMat.dfaAlpha ?? 0;
   for (let b = 0; b < N; b++) {
-    const f = b / (N - 1);
+    const f = binFraction(b, N, K, logSpaced);
     for (let i = 0; i < 36; i++) {
       C[b * 36 + i] = f * (Cshell[i] ?? 0) + (1 - f) * (Ccore[i] ?? 0);
     }
@@ -364,15 +493,19 @@ export function buildTwoRegionField(
     yieldZShear[b] = f * zsShell + (1 - f) * zsCore;
     massRho[b]   = f * (shellMat.massRho ?? 0) + (1 - f) * (coreMat.massRho ?? 0);
     shellFrac[b] = f;
+    // Core-fraction-weighted DFA α: pure-shell bins (f = 1) → 0 (von Mises,
+    // untouched); the pure-core bin (f = 0) → the core's full foam α. First-
+    // order scalar blend, consistent with the yields above. LOW confidence.
+    dfaAlpha[b]  = (1 - f) * alphaCore;
   }
 
   const binOfElement = new Int32Array(mesh.elementCount);
   for (let e = 0; e < mesh.elementCount; e++) {
-    binOfElement[e] = Math.round((wallFrac[e] ?? 0) * (N - 1));
+    binOfElement[e] = binForWallFrac(wallFrac[e] ?? 0, N, K, logSpaced);
   }
 
   return {
-    field: { binCount: N, binOfElement, C, yieldXY, yieldZ, yieldZShear, massRho, shellFrac },
+    field: { binCount: N, binOfElement, C, yieldXY, yieldZ, yieldZShear, massRho, shellFrac, dfaAlpha },
     averageMaterial,
     shellVolumeFraction: Vf,
     wallThicknessMm: tWall,
@@ -398,11 +531,11 @@ export function buildTwoRegionField(
  *                           scaled by the wall-to-wall bond model).
  */
 /**
- * Estimate the average wall-loop perimeter length (mm): sum of "perimeter"
- * (non-skin, i.e. more-than-45°-off-build-axis) boundary triangle area,
- * divided by the part's extent along the build axis. For a prismatic part
- * this is exact (perimeter area = perimeter length × height); for general
- * shapes it's a first-order average.
+ * Estimate the average OUTER wall-loop perimeter length (mm): the vertical-ish
+ * ("perimeter", more-than-45°-off-build-axis) boundary triangle area of the
+ * OUTER contour(s) only, divided by the part's extent along the build axis. For
+ * a prismatic part this is exact (perimeter area = perimeter length × height);
+ * for general shapes it's a first-order average.
  *
  * Used to derive a physically-grounded inter-pass revisit time for the
  * wall-to-wall bond model: unlike interlayer (Z) bonding, where the nozzle
@@ -411,9 +544,27 @@ export function buildTwoRegionField(
  * traverse one full perimeter loop before starting the next, i.e.
  * perimeterLengthMm / printSpeedMmS.
  *
- * Reuses the same face-classification logic as classifyFaceBands (normal
- * vs build-axis, 45° threshold) but accumulates triangle AREA instead of
- * assigning a band thickness — a distinct, reporting/timing-only quantity.
+ * INTERNAL HOLE BORES ARE EXCLUDED (issue #182). The old estimate summed ALL
+ * vertical boundary area, so a bolt-hole bore inflated the loop length, doubled
+ * the modeled inter-pass time, and understated wall-to-wall bond strength — with
+ * hole count a spurious driver. Physically a bore is a SEPARATE, short loop, not
+ * part of the outer wall's return path. We separate the two here:
+ *
+ *   1. Group the vertical boundary triangles into connected components (shared
+ *      mesh edges). The outer shell is one component; each hole bore is its own.
+ *   2. For each component compute its signed projected cross-section via the
+ *      divergence theorem, Σ (r_⊥ · A_⊥) = 2·(signed area)·height, using the
+ *      OUTWARD triangle normals (extractSurfaceFaces / Gmsh emit outward faces).
+ *      Outer contours enclose POSITIVE area; a hole's outward-of-solid normal
+ *      points INTO the void, so its bore encloses NEGATIVE area. The sign is
+ *      origin-independent (Σ A_⊥ = 0 over a closed band).
+ *   3. Keep only components on the OUTER side (same sign as the largest-|area|
+ *      component — robust to a globally flipped winding convention); drop the
+ *      opposite-sign bores. Sum their area / height.
+ *
+ * A solid (hole-free) part is one positive component ⇒ identical to the legacy
+ * sum (bit-for-bit). Adding a through-hole adds one negative component that is
+ * now excluded, so the outer-loop estimate is unchanged by the hole.
  */
 export function estimateWallLoopPerimeterMm(
   mesh: TetMesh,
@@ -434,7 +585,21 @@ export function estimateWallLoopPerimeterMm(
   }
   const height = Math.max(pMax - pMin, 1e-6);
 
-  let vertArea = 0;
+  // In-plane orthonormal basis (ex, ey) spanning the plane ⊥ buildAxis, for the
+  // signed-area projection.
+  const seedX = Math.abs(wx) < 0.9 ? 1 : 0, seedY = Math.abs(wx) < 0.9 ? 0 : 1, seedZ = 0;
+  const sdotw = seedX * wx + seedY * wy + seedZ * wz;
+  let exx = seedX - sdotw * wx, exy = seedY - sdotw * wy, exz = seedZ - sdotw * wz;
+  const exlen = Math.hypot(exx, exy, exz) || 1;
+  exx /= exlen; exy /= exlen; exz /= exlen;
+  const eyx = wy * exz - wz * exy, eyy = wz * exx - wx * exz, eyz = wx * exy - wy * exx;
+
+  // Collect vertical-ish triangles with their area, in-plane centroid, and
+  // in-plane outward area-vector (raw cross product / 2 projected onto ex, ey).
+  const vTri: number[] = [];         // global triangle indices (vertical-ish)
+  const vArea: number[] = [];        // triangle area
+  const vCu: number[] = [], vCv: number[] = [];   // in-plane centroid coords
+  const vAu: number[] = [], vAv: number[] = [];   // in-plane area-vector coords
   for (let t = 0; t < triCount; t++) {
     const na = surfaceFaces[t * 3] ?? 0, nb = surfaceFaces[t * 3 + 1] ?? 0, nc = surfaceFaces[t * 3 + 2] ?? 0;
     const ax = nodes[na * 3] ?? 0, ay = nodes[na * 3 + 1] ?? 0, az = nodes[na * 3 + 2] ?? 0;
@@ -446,9 +611,60 @@ export function estimateWallLoopPerimeterMm(
     const nlen = Math.hypot(nx, ny, nz);
     if (nlen < 1e-12) continue;
     const nDotW = (nx * wx + ny * wy + nz * wz) / nlen;
-    if (Math.abs(nDotW) < COS45) vertArea += nlen / 2; // "perimeter" (vertical-ish) face
+    if (Math.abs(nDotW) >= COS45) continue; // skin (floor/ceiling) face — skip
+    const gx = (ax + bx + cx) / 3, gy = (ay + by + cy) / 3, gz = (az + bz + cz) / 3;
+    vTri.push(t);
+    vArea.push(nlen / 2);
+    vCu.push(gx * exx + gy * exy + gz * exz);
+    vCv.push(gx * eyx + gy * eyy + gz * eyz);
+    // Area vector = (nx,ny,nz)/2 (outward); its in-plane components.
+    vAu.push((nx * exx + ny * exy + nz * exz) / 2);
+    vAv.push((nx * eyx + ny * eyy + nz * eyz) / 2);
   }
-  return vertArea / height;
+  const M = vTri.length;
+  if (M === 0) return 0;
+
+  // Union-find over vertical triangles sharing a mesh edge → connected loops.
+  const parent = new Int32Array(M);
+  for (let i = 0; i < M; i++) parent[i] = i;
+  const find = (x: number): number => { while (parent[x] !== x) { parent[x] = parent[parent[x]!]!; x = parent[x]!; } return x; };
+  const union = (a: number, b: number): void => { const ra = find(a), rb = find(b); if (ra !== rb) parent[ra] = rb; };
+  const stride = mesh.nodeCount + 1;
+  const edgeOwner = new Map<number, number>();
+  for (let i = 0; i < M; i++) {
+    const t = vTri[i]!;
+    const n0 = surfaceFaces[t * 3] ?? 0, n1 = surfaceFaces[t * 3 + 1] ?? 0, n2 = surfaceFaces[t * 3 + 2] ?? 0;
+    const edges = [[n0, n1], [n1, n2], [n2, n0]];
+    for (const [p, q] of edges) {
+      const lo = Math.min(p!, q!), hi = Math.max(p!, q!);
+      const key = lo * stride + hi;
+      const owner = edgeOwner.get(key);
+      if (owner === undefined) edgeOwner.set(key, i);
+      else union(owner, i);
+    }
+  }
+
+  // Per-component signed cross-section (Σ r_⊥·A_⊥) and total area.
+  const compSigned = new Map<number, number>();
+  const compArea = new Map<number, number>();
+  for (let i = 0; i < M; i++) {
+    const r = find(i);
+    compSigned.set(r, (compSigned.get(r) ?? 0) + (vCu[i]! * vAu[i]! + vCv[i]! * vAv[i]!));
+    compArea.set(r, (compArea.get(r) ?? 0) + vArea[i]!);
+  }
+
+  // Outer side = sign of the largest-|signed-area| component (robust to a
+  // globally flipped winding convention). Keep components on that side; the
+  // opposite-sign components are internal hole bores → excluded.
+  let outerSign = 0, maxAbs = -1;
+  for (const s of compSigned.values()) {
+    if (Math.abs(s) > maxAbs) { maxAbs = Math.abs(s); outerSign = s >= 0 ? 1 : -1; }
+  }
+  let outerArea = 0;
+  for (const [r, s] of compSigned) {
+    if (s * outerSign >= 0) outerArea += compArea.get(r) ?? 0; // outer contour
+  }
+  return outerArea / height;
 }
 
 export function buildWallBondField(
