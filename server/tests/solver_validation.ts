@@ -2366,7 +2366,7 @@ console.log("\n[29] Energy-norm ZZ estimator — full tensor, volume-weighted, s
 // invariance, tensor weighting). This group locks the estimator's MAGNITUDE
 // against a manufactured solution with a KNOWN exact stress field, measuring the
 // effectivity index θ = η_ZZ / ‖σ_exact − σ_h‖ (both in the energy norm).
-console.log("\n[28] Manufactured-solution effectivity index θ = η_ZZ / ‖σ_exact−σ_h‖ (#150)");
+console.log("\n[30] Manufactured-solution effectivity index θ = η_ZZ / ‖σ_exact−σ_h‖ (#150)");
 {
   // Manufactured EXACT solution — pure-bending stress σ_exact = (α·z, 0,0,0,0,0):
   //   • self-equilibrated (div σ = 0 ⇒ NO body force needed), and
@@ -2457,17 +2457,17 @@ console.log("\n[28] Manufactured-solution effectivity index θ = η_ZZ / ‖σ_e
     const theta   = etaZZ / trueErr;
     const trueRel = trueErr / Math.sqrt(normSq);
     thetas.push(theta); trueRels.push(trueRel);
-    test(`[28.1] div=${nDiv}: effectivity index θ ∈ [0.7, 1.3]`, theta >= 0.7 && theta <= 1.3,
+    test(`[30.1] div=${nDiv}: effectivity index θ ∈ [0.7, 1.3]`, theta >= 0.7 && theta <= 1.3,
       `θ=${theta.toFixed(4)} trueRelErr=${trueRel.toExponential(3)} etaZZ=${etaZZ.toExponential(3)} trueErr=${trueErr.toExponential(3)}`);
   }
   // Consistency of the MMS: the genuine FE stress error must FALL under refinement
   // (guards against the CG-non-convergence artifact that inflates θ when the
   // penalty system is under-solved).
-  test("[28.2] manufactured FE error decreases under refinement (consistent MMS)",
+  test("[30.2] manufactured FE error decreases under refinement (consistent MMS)",
     trueRels[0]! > trueRels[1]! && trueRels[1]! > trueRels[2]!,
     `trueRelErr=${trueRels.map(v => v.toExponential(3)).join(" → ")}`);
   // Asymptotic exactness: θ → 1 monotonically, from the conservative (θ > 1) side.
-  test("[28.3] effectivity index converges monotonically toward 1 (θ→1, θ>1)",
+  test("[30.3] effectivity index converges monotonically toward 1 (θ→1, θ>1)",
     thetas[0]! > thetas[1]! && thetas[1]! > thetas[2]! && thetas[2]! > 1 &&
     Math.abs(thetas[2]! - 1) < Math.abs(thetas[0]! - 1),
     `θ=${thetas.map(v => v.toFixed(4)).join(" → ")}`);
@@ -2491,7 +2491,7 @@ console.log("\n[28] Manufactured-solution effectivity index θ = η_ZZ / ‖σ_e
 //   • A NON-representable (quadratic) field degrades GRACEFULLY at the boundary:
 //     the recovery error is comparable to the interior (no extrapolation
 //     overshoot) and converges at the interior's O(h²) rate.
-console.log("\n[29] SPR boundary-patch conditioning + boundary known-answer (#156)");
+console.log("\n[31] SPR boundary-patch conditioning + boundary known-answer (#156)");
 {
   // Symmetric 4×4 eigenvalues via cyclic Jacobi → condition number κ₂ = λmax/λmin.
   const symEig4 = (A0: number[][]): number[] => {
@@ -2551,13 +2551,13 @@ console.log("\n[29] SPR boundary-patch conditioning + boundary known-answer (#15
       if (isBoundary(x, y, z, 0, L)) { bndC.push(cnd); if (!isFinite(cnd)) bndFinite = false; } else intC.push(cnd);
     }
     const intMed = median(intC), bndMed = median(bndC), bndMax = Math.max(...bndC);
-    test("[29.1] boundary SPR patches are more ill-conditioned than interior (the #156 phenomenon)",
+    test("[31.1] boundary SPR patches are more ill-conditioned than interior (the #156 phenomenon)",
       bndMed > intMed, `κ_med interior=${intMed.toExponential(2)} boundary=${bndMed.toExponential(2)} (ratio=${(bndMed/intMed).toFixed(1)}×)`);
     // Bounded, not singular: every well-posed (length≥4) boundary patch stays far
     // below 1/ε_mach (~1e16) where a double-precision LS solve would fail — the
     // genuinely singular corner patches are the ones diverted to the averaging
     // fallback by length<4 / pivot<1e-12, so no near-singular system is solved.
-    test("[29.2] boundary patch conditioning is bounded (κ < 1e9) and finite",
+    test("[31.2] boundary patch conditioning is bounded (κ < 1e9) and finite",
       bndFinite && bndMax < 1e9, `κ_max boundary=${bndMax.toExponential(2)}`);
   }
 
@@ -2583,12 +2583,12 @@ console.log("\n[29] SPR boundary-patch conditioning + boundary known-answer (#15
         const exact = a0 + ax*x + ay*y + az*z;
         maxBndRel = Math.max(maxBndRel, Math.abs((spr[n*6] ?? 0) - exact) / Math.max(1, Math.abs(exact)));
       }
-      test(`[29.3] boundary known-answer (linear σ, ${label}): SPR recovers to < 1e-6`,
+      test(`[31.3] boundary known-answer (linear σ, ${label}): SPR recovers to < 1e-6`,
         maxBndRel < 1e-6, `maxBoundaryRelErr=${maxBndRel.toExponential(2)}`);
     }
   }
 
-  // [29.5] Graceful degradation on a NON-representable (quadratic) field: SPR fits
+  // [31.5] Graceful degradation on a NON-representable (quadratic) field: SPR fits
   // a linear polynomial and must EXTRAPOLATE to boundary nodes (outside the patch
   // hull). A fragile estimator would overshoot there; a robust one keeps the
   // boundary error comparable to the interior and convergent at the same rate.
@@ -2615,7 +2615,7 @@ console.log("\n[29] SPR boundary-patch conditioning + boundary known-answer (#15
     }
     // No boundary overshoot: worst boundary error stays within 3× the interior
     // (measured ~1.1×), and boundary error falls monotonically under refinement.
-    test("[29.5] non-representable field degrades gracefully at boundary (no overshoot, ratio<3, convergent)",
+    test("[31.5] non-representable field degrades gracefully at boundary (no overshoot, ratio<3, convergent)",
       maxRatio < 3 && converges, `worst boundary/interior ratio=${maxRatio.toFixed(2)}, boundary error convergent=${converges}`);
   }
 }
