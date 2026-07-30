@@ -25,8 +25,12 @@ import {
   latticeStiffnessScale,
   latticeStiffnessScales,
   latticeStrengthFraction,
+  latticeStrengthFractions,
+  lumpedInPlaneStiffnessScale,
+  wallCreditFraction,
   patternFamilyOf,
 } from "../../solver/lattice.js";
+import { buildLaminateCMatrix, DEFAULT_BEAD_PROPS, PATTERN_PLY_ANGLES } from "../../solver/laminate.js";
 import { buildAnyConstitutiveMatrix } from "../../solver/element.js";
 import { buildTwoRegionField } from "../../twoRegion.js";
 import { generateBoxMeshC3D4, extractSurfaceFaces } from "../../solver/meshgen.js";
@@ -316,5 +320,152 @@ describe("buildCoreMaterial frame handling + stability", () => {
     expect(core.E_xy).toBeCloseTo(solid.E_xy * g, 8);
     expect(core.E_z).toBeCloseTo(solid.E_z * g, 8);   // ratios preserved
     expect(core.nu_xz).toBe(solid.nu_xz);             // no Poisson guard needed
+  });
+});
+
+// ─── Issue #177: per-axis core strength knockdown ────────────────────────────
+
+describe("per-axis lattice strength fractions (issue #177)", () => {
+  it("every axis is EXACTLY min(1, patternMul) at ρ=1 (materialsEqual anchor holds)", () => {
+    for (const p of ALL_PATTERNS) {
+      const s = latticeStrengthFractions(p, 1);
+      const anchor = Math.min(1, PATTERN_MULTIPLIERS[p]!);
+      expect(s.sXY).toBe(anchor);
+      expect(s.sZ).toBe(anchor);
+      expect(s.sZS).toBe(anchor);
+    }
+  });
+
+  it("locked per-axis strength exponents at ρ=0.2 (change = deliberate re-estimation)", () => {
+    const grid = latticeStrengthFractions("grid", 0.2);       // walls25d
+    expect(grid.sXY).toBeCloseTo(0.089443, 5);   // 0.2^1.5 (bending collapse)
+    expect(grid.sZ).toBeCloseTo(0.2, 10);        // 0.2^1.0 (continuous walls, rule of mixtures)
+    expect(grid.sZS).toBeCloseTo(0.089443, 5);   // 0.2^1.5
+    const gyroid = latticeStrengthFractions("gyroid", 0.2);   // tpms3d
+    expect(gyroid.sXY).toBeCloseTo(0.144452, 5); // 1.08·0.2^1.25
+    expect(gyroid.sZ).toBeCloseTo(0.096598, 5);  // 1.08·0.2^1.5
+    expect(gyroid.sZS).toBeCloseTo(0.082238, 5); // 1.08·0.2^1.6
+  });
+
+  it("walls25d through-layer strength degrades SLOWER than in-plane (m_z < m_xy)", () => {
+    // Mirrors the stiffness law (gZ exp 1.0 < gXY exp 2.0): at low ρ the
+    // continuous vertical walls keep Z proportionally stronger.
+    const s = latticeStrengthFractions("grid", 0.2);
+    expect(s.sZ).toBeGreaterThan(s.sXY);
+  });
+
+  it("tpms3d through-layer strength degrades FASTER than in-plane (mirrors gZ>gXY)", () => {
+    const s = latticeStrengthFractions("gyroid", 0.2);
+    expect(s.sZ).toBeLessThan(s.sXY);
+  });
+
+  it("scalar latticeStrengthFraction equals the in-plane axis (legacy value unchanged)", () => {
+    for (const p of ALL_PATTERNS) {
+      for (const rho of [0.1, 0.2, 0.5, 0.8]) {
+        expect(latticeStrengthFraction(p, rho)).toBe(latticeStrengthFractions(p, rho).sXY);
+      }
+    }
+  });
+
+  it("a calibration strength-exponent override collapses all axes to one isotropic law", () => {
+    const s = latticeStrengthFractions("grid", 0.5, 1.0); // override m=1 on every axis
+    expect(s.sXY).toBeCloseTo(0.5, 12);
+    expect(s.sZ).toBe(s.sXY);
+    expect(s.sZS).toBe(s.sXY);
+  });
+
+  it("core sign(E_z − E_xy) agrees with sign(yieldZ − yieldXY) — walls25d inverts BOTH", () => {
+    // The whole point of #177: extruded-wall cores are Z-stiffer AND now
+    // Z-stronger than in-plane at low ρ (previously Z-stiffer yet Z-weaker).
+    for (const rho of [0.15, 0.2, 0.3]) {
+      const core = makeCore(rho * 100, "grid");  // flat, natural frame
+      const dE = core.E_z - core.E_xy;
+      const dY = core.yieldZ - core.yieldXY;
+      expect(dE).toBeGreaterThan(0);
+      expect(dY).toBeGreaterThan(0);
+      expect(Math.sign(dE)).toBe(Math.sign(dY));
+    }
+  });
+
+  it("core sign consistency holds for tpms3d too (Z softer AND weaker)", () => {
+    for (const rho of [0.15, 0.2, 0.3]) {
+      const core = makeCore(rho * 100, "gyroid");
+      const dE = core.E_z - core.E_xy;
+      const dY = core.yieldZ - core.yieldXY;
+      expect(dE).toBeLessThan(0);
+      expect(dY).toBeLessThan(0);
+      expect(Math.sign(dE)).toBe(Math.sign(dY));
+    }
+  });
+});
+
+// ─── Issue #176: ONE in-plane density knockdown across all paths ──────────────
+
+describe("unified in-plane density knockdown (issue #176)", () => {
+  const PAT = "grid";
+  const wc1 = wallCreditFraction(1);
+
+  it("100% infill knockdown is EXACTLY 1.0 (solid anchor) for every structural pattern & wall count", () => {
+    for (const p of STRUCTURAL) {
+      for (const walls of [0, 1, 3, 5]) {
+        // g_GA(1) = 1 ⇒ wallCredit + (1−wallCredit)·1 = 1 bit-for-bit.
+        expect(lumpedInPlaneStiffnessScale(p, 1, wallCreditFraction(walls))).toBe(1.0);
+      }
+    }
+  });
+
+  it("wall credit is the +0.10-per-wall proxy, capped at 0.9", () => {
+    expect(wallCreditFraction(0)).toBe(0);
+    expect(wallCreditFraction(1)).toBeCloseTo(0.10, 12);
+    expect(wallCreditFraction(3)).toBeCloseTo(0.30, 12);
+    expect(wallCreditFraction(20)).toBe(0.9);
+  });
+
+  it("the lumped law sits between bare Gibson-Ashby and the legacy linear model (fixes the 2–5× swing)", () => {
+    for (const rho of [0.2, 0.5]) {
+      const k = lumpedInPlaneStiffnessScale(PAT, rho, wc1);
+      const bareGA = latticeStiffnessScale(PAT, rho);             // e.g. 0.0368 at 0.2
+      const legacyLinear = Math.min(1, 0.30 + 0.70 * rho);        // grid patternMul 1.0
+      expect(k).toBeGreaterThan(bareGA);
+      expect(k).toBeLessThan(legacyLinear);
+    }
+  });
+
+  it("non-CLT single-material E_xy uses the shared knockdown and preserves the E_z/E_xy ratio", () => {
+    for (const rho of [0.2, 0.5]) {
+      const k = lumpedInPlaneStiffnessScale(PAT, rho, wc1);
+      const solid = buildOrthotropicMaterial("pla", 1.0, "flat", 0.2, null, null);
+      const part  = buildOrthotropicMaterial("pla", 1.0, "flat", 0.2, null, null, null, k);
+      expect(part.E_xy / solid.E_xy).toBeCloseTo(k, 12);
+      expect(part.E_z  / solid.E_z ).toBeCloseTo(k, 12);
+      // Anchor: at ρ=1 the built part IS the solid, bit-for-bit.
+      const anchor = buildOrthotropicMaterial("pla", 1.0, "flat", 0.2, null, null, null,
+        lumpedInPlaneStiffnessScale(PAT, 1, wc1));
+      expect(anchor.E_xy).toBe(solid.E_xy);
+    }
+  });
+
+  it("CLT and non-CLT single-material paths agree on the in-plane knockdown RATIO to <1% (unified ρ-law)", () => {
+    const bead = DEFAULT_BEAD_PROPS["pla"]!;
+    const stack = PATTERN_PLY_ANGLES[PAT]!;
+    for (const rho of [0.2, 0.5]) {
+      const k = lumpedInPlaneStiffnessScale(PAT, rho, wc1);
+
+      // Non-CLT isotropic-base path: E_xy scales by k.
+      const nSolid = buildOrthotropicMaterial("pla", 1.0, "flat", 0.2, null, null);
+      const nPart  = buildOrthotropicMaterial("pla", 1.0, "flat", 0.2, null, null, null, k);
+      const rNon = nPart.E_xy / nSolid.E_xy;
+
+      // CLT path: the SAME k is the A-matrix scale, and CLT E is linear in A.
+      const cSolid = buildLaminateCMatrix(bead, stack.angles, stack.fracs, 1.0, 1400, 0.30, 540, 50, 29, "s");
+      const cPart  = buildLaminateCMatrix(bead, stack.angles, stack.fracs, k,   1400, 0.30, 540, 50, 29, "p");
+      const rCLT = cPart.E_xy / cSolid.E_xy;
+
+      // Both knockdown ratios equal k (the shared law) — the cross-path swing is
+      // gone. Absolute E still differs (CLT laminate vs isotropic base), by design.
+      expect(rNon).toBeCloseTo(k, 10);
+      expect(rCLT).toBeCloseTo(k, 6);
+      expect(Math.abs(rNon - rCLT) / rNon).toBeLessThan(0.01);
+    }
   });
 });

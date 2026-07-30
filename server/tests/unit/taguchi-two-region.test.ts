@@ -25,7 +25,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { buildTwoRegionField } from "../../twoRegion.js";
+import { buildTwoRegionField, TWO_REGION_MAX_BINS } from "../../twoRegion.js";
 import {
   buildCoreMaterial,
   buildOrthotropicMaterial,
@@ -149,7 +149,11 @@ describe("Taguchi L9 sweep — per-run invariants", () => {
       // Specimen is thick enough that every run stays a genuine two-region mix
       expect(r.Vf).toBeGreaterThan(0.05);
       expect(r.Vf).toBeLessThan(0.95);
-      expect(r.fieldBins).toBe(9);
+      // Adaptive binning (issue #178): ≥9 bins — low/medium-contrast runs keep
+      // the legacy 9; high-contrast runs (e.g. 10% grid, whose floored ρ³ shear
+      // gives ~10³:1 contrast) log-space and add bins to bound the step.
+      expect(r.fieldBins).toBeGreaterThanOrEqual(9);
+      expect(r.fieldBins!).toBeLessThanOrEqual(TWO_REGION_MAX_BINS);
       expect(r.binYieldsMonotone).toBe(true);
       expect(r.avgBounded).toBe(true);
       expect(r.allFinite).toBe(true);

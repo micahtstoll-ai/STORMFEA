@@ -191,15 +191,66 @@ describe("true Voigt matrix blending (anisotropic core)", () => {
     }
   });
 
-  it("mid bin is the entrywise mean of the endpoint matrices", () => {
+  it("every bin blends the endpoint matrices at its own shellFrac (spacing-agnostic)", () => {
+    // CORE_ANISO's ~17.5× in-plane contrast trips adaptive log-spacing, so the
+    // middle-INDEX bin is no longer the arithmetic mean — but each bin b must
+    // still be exactly f_b·C_shell + (1−f_b)·C_core at its stored fraction.
     const tr = buildTwoRegionField(mesh, faces, SHELL, CORE_ANISO, 1.35);
     const f = tr.field!;
-    const mid = (f.binCount - 1) / 2;
     const Cshell = buildAnyConstitutiveMatrix(SHELL);
     const Ccore = buildAnyConstitutiveMatrix(CORE_ANISO);
-    for (let i = 0; i < 36; i++) {
-      expect(f.C[mid * 36 + i]).toBeCloseTo((Cshell[i]! + Ccore[i]!) / 2, 10);
+    for (let b = 0; b < f.binCount; b++) {
+      const fr = f.shellFrac[b]!;
+      for (let i = 0; i < 36; i++) {
+        expect(f.C[b * 36 + i]).toBeCloseTo(fr * Cshell[i]! + (1 - fr) * Ccore[i]!, 9);
+      }
     }
+  });
+});
+
+describe("adaptive log-spaced binning at high contrast (issue #178)", () => {
+  // ~1000:1 shell:core stiffness — the near-zero-infill (floored lattice) core
+  // whose 9 LINEAR bins put a ~126× step on the first interval.
+  const CORE_HI: OrthotropicMaterial = {
+    kind: "orthotropic",
+    E_xy: 3.5, E_z: 1.575, nu_xy: 0.35, nu_xz: 0.35, G_xz: 0.52,
+    yieldXY: 0.05, yieldZ: 0.0275, label: "core (0.1% — floored lattice)", massRho: 2,
+  };
+  const DIAG = [0, 7, 14, 21, 28, 35];
+
+  it("grows the bin count past the legacy 9 and bounds every adjacent-bin stiffness step to ~2×", () => {
+    const tr = buildTwoRegionField(mesh, faces, SHELL, CORE_HI, 1.35);
+    const f = tr.field!;
+    expect(f.binCount).toBeGreaterThan(TWO_REGION_BIN_COUNT);
+    for (let b = 1; b < f.binCount; b++) {
+      for (const i of DIAG) {
+        const prev = f.C[(b - 1) * 36 + i]!;
+        const cur = f.C[b * 36 + i]!;
+        if (prev > 1e-30) expect(cur / prev).toBeLessThanOrEqual(2 + 1e-9);
+      }
+    }
+  });
+
+  it("endpoints stay bit-identical: pure-core & pure-shell bins equal the endpoint matrices", () => {
+    const tr = buildTwoRegionField(mesh, faces, SHELL, CORE_HI, 1.35);
+    const f = tr.field!;
+    const N = f.binCount;
+    const Cshell = buildAnyConstitutiveMatrix(SHELL);
+    const Ccore = buildAnyConstitutiveMatrix(CORE_HI);
+    for (let i = 0; i < 36; i++) {
+      expect(f.C[0 * 36 + i]).toBe(Ccore[i]!);       // f = 0 exactly
+      expect(f.C[(N - 1) * 36 + i]).toBe(Cshell[i]!); // f = 1 exactly
+    }
+    expect(f.shellFrac[0]).toBe(0);
+    expect(f.shellFrac[N - 1]).toBe(1);
+  });
+
+  it("retains LINEAR 9-bin spacing at low contrast (bit-identical to legacy)", () => {
+    // SHELL/CORE contrast ≈ 5 → linear N=9, mid-INDEX bin at f = 0.5.
+    const tr = buildTwoRegionField(mesh, faces, SHELL, CORE, 1.35);
+    const f = tr.field!;
+    expect(f.binCount).toBe(TWO_REGION_BIN_COUNT);
+    expect(f.shellFrac[(f.binCount - 1) / 2]).toBeCloseTo(0.5, 12);
   });
 });
 
