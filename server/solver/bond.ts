@@ -32,8 +32,10 @@
  *
  * ANCHORING (the load-bearing design decision): the model returns multipliers
  * RELATIVE to the reference process condition (per-material reference nozzle
- * temperature, 60 mm/s, fan 100 %, bed 60 °C, ambient 25 °C), evaluated at
- * the SAME layer height and extrusion width as the current settings. So:
+ * temperature AND per-material reference cooling fan — PLA/PETG high, ABS/ASA/
+ * PA fan-off/low, since that is each material's normal print practice, #184 —
+ * 60 mm/s, bed 60 °C, ambient 25 °C), evaluated at the SAME layer height and
+ * extrusion width as the current settings. So:
  *   - at the reference condition the multipliers are exactly 1.0, and every
  *     legacy result (which assumed "typical" process settings) is unchanged;
  *   - the layer-height direction stays governed by the separately validated
@@ -104,6 +106,7 @@ export interface BondPrediction {
   /** Multiplier on interlayer STIFFNESS (E_z, G_xz) vs reference. */
   relStiffness: number;
   /** Diagnostics for reporting. */
+  coolingFanRefPct: number;  // per-material reference (multiplier=1.0) fan duty, % (#184)
   interfaceTempC:  number;   // T0 — interface temperature at deposition
   substrateTempC:  number;   // substrate road temperature when the bead lands
   coolTimeConstS:  number;   // τc
@@ -127,6 +130,18 @@ export interface BondPrediction {
 interface BondMaterialParams {
   /** Reference (typical) nozzle temperature, °C. */
   nozzleRefC: number;
+  /**
+   * Reference (typical) part-cooling fan duty, 0–100 %. Per-material because
+   * the fan that is "normal practice" is material-specific: PLA/PETG print
+   * with full/high part cooling, whereas ABS/ASA/PA are run with the fan
+   * OFF or barely on (full fan promotes warping and the very interlayer
+   * cracking this model predicts). Anchoring the reference to a fan setting
+   * the material is essentially never printed at (the old shared 100 %) made
+   * "multiplier = 1.0" an unphysical operating point for exactly the most
+   * fan-sensitive materials — see issue #184. Sourced values in
+   * {@link BOND_MATERIALS}; confidence LOW like the rest of the block.
+   */
+  fanRefPct:  number;
   /** Glass transition (bond formation stops ~Tg), °C. */
   TgC:        number;
   /** Arrhenius activation energy for viscous flow / reptation, kJ/mol. */
@@ -142,14 +157,30 @@ interface BondMaterialParams {
  * rheology literature); Tg from datasheets; cp typical of the solid near Tg.
  * TPU: Tg is below room temperature — bonding is not diffusion-limited the
  * same way; the entry keeps the integral finite and the trends mild.
+ *
+ * fanRefPct — the reference (multiplier = 1.0) cooling-fan duty, chosen as
+ * each material's NORMAL print practice (all LOW confidence, regression-locked):
+ *   pla  100 — always printed with full part cooling (crisp overhangs, no
+ *              warping tendency); this is the historical shared reference.
+ *   petg 100 — routinely printed with high/full part cooling on open desktop
+ *              machines (not warp-prone like the styrenics); kept at 100 so
+ *              PETG behavior is unchanged from the pre-#184 shared reference.
+ *   abs    0 — run with the fan OFF (enclosed chamber); part cooling drives
+ *              warping and interlayer delamination — the failure this predicts.
+ *   asa   20 — like ABS but marginally more forgiving; profiles use a low
+ *              20–30 % fan for bridges/overhangs only.
+ *   tpu   50 — flexible filaments use moderate cooling to curb stringing
+ *              without over-chilling the slow-printed weld.
+ *   pa12   0 — nylon printed fan-off to maximize interlayer diffusion
+ *              (hygroscopic, high-Tg; cooling starves the weld).
  */
 export const BOND_MATERIALS: Record<string, BondMaterialParams> = {
-  pla:   { nozzleRefC: 210, TgC:  60, EaKJmol: 60, rho: 1240, cp: 1800 },
-  petg:  { nozzleRefC: 240, TgC:  80, EaKJmol: 70, rho: 1270, cp: 1700 },
-  abs:   { nozzleRefC: 245, TgC: 105, EaKJmol: 95, rho: 1050, cp: 1900 },
-  tpu:   { nozzleRefC: 225, TgC:  25, EaKJmol: 45, rho: 1200, cp: 1800 },
-  pa12:  { nozzleRefC: 255, TgC:  50, EaKJmol: 65, rho: 1010, cp: 2100 },
-  asa:   { nozzleRefC: 245, TgC: 100, EaKJmol: 90, rho: 1070, cp: 1900 },
+  pla:   { nozzleRefC: 210, fanRefPct: 100, TgC:  60, EaKJmol: 60, rho: 1240, cp: 1800 },
+  petg:  { nozzleRefC: 240, fanRefPct: 100, TgC:  80, EaKJmol: 70, rho: 1270, cp: 1700 },
+  abs:   { nozzleRefC: 245, fanRefPct:   0, TgC: 105, EaKJmol: 95, rho: 1050, cp: 1900 },
+  tpu:   { nozzleRefC: 225, fanRefPct:  50, TgC:  25, EaKJmol: 45, rho: 1200, cp: 1800 },
+  pa12:  { nozzleRefC: 255, fanRefPct:   0, TgC:  50, EaKJmol: 65, rho: 1010, cp: 2100 },
+  asa:   { nozzleRefC: 245, fanRefPct:  20, TgC: 100, EaKJmol: 90, rho: 1070, cp: 1900 },
 };
 
 /** True when the bond property table carries physics for this material id (issue #186). */
@@ -157,10 +188,15 @@ export function isKnownBondMaterial(materialId: string): boolean {
   return Object.prototype.hasOwnProperty.call(BOND_MATERIALS, materialId);
 }
 
-/** Reference process condition (nozzle temp is per-material). */
+/**
+ * Reference process condition — nozzle temp and cooling fan are PER-MATERIAL
+ * (see {@link BOND_MATERIALS}: nozzleRefC, fanRefPct); the fields here are the
+ * material-independent anchors. coolingFanPct deliberately lives on the
+ * material, not here, so spreading BOND_REFERENCE never injects a wrong-for-
+ * the-material fan (#184).
+ */
 export const BOND_REFERENCE = {
   printSpeedMmS: 60,
-  coolingFanPct: 100,
   bedTempC:      60,
   ambientTempC:  25,
 } as const;
@@ -298,14 +334,14 @@ export function predictBondMultipliers(
   const filled = {
     nozzleTempC:   proc.nozzleTempC   ?? mat.nozzleRefC,
     printSpeedMmS: proc.printSpeedMmS ?? BOND_REFERENCE.printSpeedMmS,
-    coolingFanPct: proc.coolingFanPct ?? BOND_REFERENCE.coolingFanPct,
+    coolingFanPct: proc.coolingFanPct ?? mat.fanRefPct,
     bedTempC:      proc.bedTempC      ?? BOND_REFERENCE.bedTempC,
     ambientTempC:  proc.ambientTempC  ?? BOND_REFERENCE.ambientTempC,
   };
   const refProc = {
     nozzleTempC:   mat.nozzleRefC,
     printSpeedMmS: BOND_REFERENCE.printSpeedMmS,
-    coolingFanPct: BOND_REFERENCE.coolingFanPct,
+    coolingFanPct: mat.fanRefPct,
     bedTempC:      BOND_REFERENCE.bedTempC,
     ambientTempC:  BOND_REFERENCE.ambientTempC,
   };
@@ -331,6 +367,7 @@ export function predictBondMultipliers(
     relStrength,
     rawStrength: rawRatio,
     relStiffness,
+    coolingFanRefPct: mat.fanRefPct,
     interfaceTempC: cur.T0,
     substrateTempC: cur.Tsub,
     coolTimeConstS: cur.tauC,
@@ -341,6 +378,7 @@ export function predictBondMultipliers(
     confidence: fitted ? "medium" : "low",
     supported: true,
     note: `Bond model (${fitted ? "sweep-fitted" : "literature constants, LOW confidence"}): ` +
+          `ref fan ${mat.fanRefPct}% (per-material), ` +
           `interface ${cur.T0.toFixed(0)}°C on a ${cur.Tsub.toFixed(0)}°C substrate, τc=${cur.tauC.toFixed(1)}s, ` +
           `Φ/Φ_ref=${(cur.phi / Math.max(ref.phi, 1e-9)).toFixed(2)}` +
           (consolidation < 1 ? `, consolidation ×${consolidation.toFixed(2)} (cold-deposition voids)` : "") +

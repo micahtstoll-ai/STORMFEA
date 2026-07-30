@@ -2514,6 +2514,9 @@ export interface MaterialModelInfo {
      * (1.0) and the thermal diagnostics below are omitted. Absent ⇒ applied.
      */
     applied?:       boolean;
+    /** Per-material reference cooling-fan duty the multiplier is anchored to, %
+     *  (#184). Present only when the bond path applied (omitted on the #186 no-op). */
+    coolingFanRefPct?: number;
     interfaceTempC?: number;
     substrateTempC?: number;
     coolTimeConstS?: number;
@@ -3641,6 +3644,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     ...(bondRel ? { bond: bondRel.supported ? {
       relStrength:    +bondRel.relStrength.toFixed(4),
       relStiffness:   +bondRel.relStiffness.toFixed(4),
+      coolingFanRefPct: bondRel.coolingFanRefPct,
       interfaceTempC: +bondRel.interfaceTempC.toFixed(1),
       substrateTempC: +bondRel.substrateTempC.toFixed(1),
       coolTimeConstS: +bondRel.coolTimeConstS.toFixed(2),

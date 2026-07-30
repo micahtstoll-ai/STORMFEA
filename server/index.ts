@@ -877,7 +877,10 @@ app.post("/api/bond-sensitivity", async (req, res) => {
     const base = {
       nozzleTempC:   proc.nozzleTempC   ?? matRef.nozzleRefC,
       printSpeedMmS: proc.printSpeedMmS ?? BOND_REFERENCE.printSpeedMmS,
-      coolingFanPct: proc.coolingFanPct ?? BOND_REFERENCE.coolingFanPct,
+      // Fan reference is per-material (#184): ABS/ASA/PA anchor at fan-off/low,
+      // PLA/PETG high — so an empty process block sits at the material's OWN
+      // reference (relStrength = 1.0), matching predictBondMultipliers.
+      coolingFanPct: proc.coolingFanPct ?? matRef.fanRefPct,
       bedTempC:      proc.bedTempC      ?? BOND_REFERENCE.bedTempC,
       ambientTempC:  proc.ambientTempC  ?? BOND_REFERENCE.ambientTempC,
     };
