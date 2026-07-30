@@ -364,7 +364,12 @@ onto the raster axes (audit A7). The interface term is untouched, so azimuth
 invariance about the weak axis is preserved. With no evidence the cross-bead
 ratio is 1 (no penalty) and the criterion collapses exactly to the von Mises
 bulk term; typical ±45° alternating rasters homogenize toward isotropic and stay
-isotropic, which is why this is opt-in and evidence-gated.
+isotropic, which is why this is opt-in and evidence-gated. Absent a measured
+`CalibrationProfile.crossBeadRatio`, the literature default is
+`CROSS_BEAD_RATIO_LITERATURE = 0.85` — an engineering default mid-band of the
+~0.7–0.9 spread reported for unidirectional-raster tensile coupons (no single
+paper pins 0.85 exactly), confidence LOW; see the SOURCES tab entry
+`cross_bead_ratio`.
 
 **Legacy Hill.** The Hill (1948) quadratic (`hillEquivalentStress`) remains
 callable (`criterion: "hill-legacy"`) for comparison and as the
@@ -404,8 +409,9 @@ verdict.
 ### Fatigue (Goodman)
 
 A fatigue-life estimate uses the **modified Goodman** relation (plus Basquin for
-cycle count) with an FDM-specific endurance ratio `Se/UTS = 0.37` (Wang et al.
-2020). The **load ratio** `R = σ_min/σ_max` is a user input (default `0`,
+cycle count) with an orientation-dependent endurance ratio `Se/UTS = 0.37`
+(flat print, inter-layer bonds are the weak link) or `0.43` (upright print)
+(Wang et al. 2020). The **load ratio** `R = σ_min/σ_max` is a user input (default `0`,
 pulsating): `σ_a = σ_max(1−R)/2`, `σ_m = σ_max(1+R)/2`, with compressive mean
 stress conservatively clamped to zero. `R = −1` is fully reversed; `R > 0` is a
 tension-biased cycle. Confidence is LOW by default — published FDM S-N data is

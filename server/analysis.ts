@@ -840,7 +840,7 @@ export function backCalculateProfile(params: {
 // ─── Base properties (solid, 100% infill, isotropic approximation) ─────────
 // densityKgM3: solid (100% dense) mass density in kg/m³ — used with
 // effectiveVolumeFraction() to set massRho for modal analysis (issue #99).
-const MATERIALS: Record<string, { E: number; nu: number; yieldMPa: number; densityKgM3: number; label: string }> = {
+export const MATERIALS: Record<string, { E: number; nu: number; yieldMPa: number; densityKgM3: number; label: string }> = {
   pla:   { E: 3500,  nu: 0.36, yieldMPa: 50,  densityKgM3: 1240, label: "PLA"   },
   petg:  { E: 2100,  nu: 0.38, yieldMPa: 45,  densityKgM3: 1270, label: "PETG"  },
   abs:   { E: 2300,  nu: 0.35, yieldMPa: 40,  densityKgM3: 1050, label: "ABS"   },
@@ -1658,7 +1658,8 @@ export interface AnalysisSettings {
  * One study found optimal at 0.3mm (not 0.1mm) for gyroid+80% infill
  * (Hikmat et al. 2023, ETJ). The relationship depends on infill interaction.
  *
- * Revised calibration — capped at ±15% (down from ±20%):
+ * Revised calibration — capped at -15%/+10% (down from ±20%), asymmetric
+ * because the clamp bounds [0.85, 1.10] are not symmetric about 1.0:
  *   0.1mm → ~1.10× baseline (was 1.15×)
  *   0.2mm → ~1.00× reference
  *   0.3mm → ~0.90× baseline (was 0.87×)
@@ -1957,7 +1958,8 @@ export interface InterlayerFatigue {
  *     fully reversed (σ_m=0, σ_a=σ_max); R>0 is a tension-biased cycle. A
  *     compressive mean stress (σ_m<0) is clamped to 0 in Goodman to stay
  *     conservative (its life benefit is not credited).
- *   - Endurance limit Se ≈ 0.40 × UTS for FDM PLA (flat print)
+ *   - Endurance limit Se/UTS is orientation-dependent: 0.37 for flat prints
+ *     (inter-layer bonds are the weak link) and 0.43 for upright prints.
  *     Conservative estimate: Juvinall & Marshek, and limited FDM fatigue data
  *     from Wang et al. 2020 (PLA fatigue life study)
  *   - Basquin exponent b ≈ -0.1 (typical for semi-ductile polymers)
