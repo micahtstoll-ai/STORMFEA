@@ -92,6 +92,15 @@ export interface BondModelCoeffs {
 export interface BondPrediction {
   /** Multiplier on interlayer STRENGTHS (yieldZ, yieldZShear) vs reference. */
   relStrength: number;
+  /**
+   * UNCLAMPED strength ratio pre·(Φ/Φ_ref)^exp·consolidation before REL_S_CLAMP
+   * is applied. Consumed by {@link bondBandExcursion} so the uncertainty band
+   * looks THROUGH the (LOW-confidence) clamp — a heavily off-reference
+   * prediction pinned at the clamp must still report a widened band, not a
+   * spuriously tight one. Exactly `pre` (= 1.0 by default) at the reference
+   * condition, so the band term still vanishes there.
+   */
+  rawStrength: number;
   /** Multiplier on interlayer STIFFNESS (E_z, G_xz) vs reference. */
   relStiffness: number;
   /** Diagnostics for reporting. */
@@ -320,6 +329,7 @@ export function predictBondMultipliers(
   const fitted = !!(coeffs && (coeffs.hConv != null || coeffs.activationEnergyKJmol != null || coeffs.strengthPrefactor != null || coeffs.voidSensitivity != null));
   return {
     relStrength,
+    rawStrength: rawRatio,
     relStiffness,
     interfaceTempC: cur.T0,
     substrateTempC: cur.Tsub,
@@ -337,6 +347,77 @@ export function predictBondMultipliers(
           ` → strength ×${relStrength.toFixed(2)}, stiffness ×${relStiffness.toFixed(2)}` +
           (clamped ? " (clamped)" : ""),
   };
+}
+
+/**
+ * Multiplicative SF-band excursion from the bond model's LOW-confidence
+ * constants (issue #172). Returns { low, high } — factors on the interlayer
+ * STRENGTH multiplier, i.e. the spread in `relStrength` when the least-trusted
+ * bond constants are perturbed across the plausible ranges their "confidence
+ * LOW" labels imply:
+ *
+ *   - h0 (still-air convection): 20–90 W/m²K   (Coogan & Kazmer 2019 band)
+ *   - Ea (activation energy):    ±40% of the per-material melt-rheology value
+ *   - voidSensitivity:           0.20–0.50      (default 0.35, engineering est.)
+ *
+ * ANCHOR (repo invariant): `relStrength` is a RATIO to the reference process
+ * condition evaluated at the SAME constants, so at the reference process
+ * Φ_cur/Φ_ref = 1 and the interface temperature deficit is 0 for ANY value of
+ * these constants — every perturbed prediction is exactly the central one, and
+ * the excursion collapses to { 1, 1 }. Off-reference the ratio's sensitivity to
+ * the constants grows, widening the band with the distance from reference. The
+ * strength prefactor is deliberately NOT perturbed (it scales `relStrength`
+ * uniformly and would break the reference anchor); it is a fit-residual soak,
+ * not a physics uncertainty.
+ *
+ * A fitted `coeffs` block (post bond-sweep calibration) halves the spread — the
+ * fit residual has absorbed part of the constant uncertainty (issue #172:
+ * "calibrated bondCoeffs narrow the added term").
+ */
+export function bondBandExcursion(
+  materialId:    string,
+  layerHeightMm: number,
+  proc:          ProcessSettings,
+  coeffs?:       BondModelCoeffs | null,
+  passLengthMmOverride?: number,
+): { low: number; high: number } {
+  const mat = BOND_MATERIALS[materialId] ?? BOND_MATERIALS["pla"]!;
+  const fitted = !!(coeffs && (coeffs.hConv != null || coeffs.activationEnergyKJmol != null || coeffs.voidSensitivity != null));
+  const k = fitted ? 0.5 : 1.0; // calibration narrows the spread
+
+  const baseH  = coeffs?.hConv ?? H0_WPM2K;
+  const baseEa = coeffs?.activationEnergyKJmol ?? mat.EaKJmol;
+  const baseV  = coeffs?.voidSensitivity ?? VOID_TEMP_GAIN;
+
+  // Range endpoints, contracted toward the base by (1 − k) so a fitted profile
+  // perturbs over a tighter interval and k = 0 would collapse to the base.
+  const hLo = baseH - k * (baseH - 20);
+  const hHi = baseH + k * (90 - baseH);
+  const eaLo = baseEa * (1 - 0.4 * k);
+  const eaHi = baseEa * (1 + 0.4 * k);
+  const vLo = Math.max(0, baseV - k * (baseV - 0.20));
+  const vHi = baseV + k * (0.50 - baseV);
+
+  // Use the UNCLAMPED raw ratio: the REL_S_CLAMP bound is itself a
+  // LOW-confidence guardrail, and truncating the excursion at it would report a
+  // spuriously tight band exactly for the most off-reference (clamped) cases.
+  const central = predictBondMultipliers(materialId, layerHeightMm, proc, coeffs, passLengthMmOverride).rawStrength;
+  if (!(central > 0)) return { low: 1, high: 1 };
+
+  let lo = central, hi = central;
+  for (const h of [hLo, hHi]) {
+    for (const ea of [eaLo, eaHi]) {
+      for (const v of [vLo, vHi]) {
+        const rel = predictBondMultipliers(materialId, layerHeightMm, proc, {
+          ...coeffs,
+          hConv: h, activationEnergyKJmol: ea, voidSensitivity: v,
+        }, passLengthMmOverride).rawStrength;
+        if (rel < lo) lo = rel;
+        if (rel > hi) hi = rel;
+      }
+    }
+  }
+  return { low: lo / central, high: hi / central };
 }
 
 // ─── Process-sweep coefficient fitting ───────────────────────────────────────

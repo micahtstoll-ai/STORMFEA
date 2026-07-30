@@ -32,6 +32,7 @@ import {
 } from "./solver/laminate.js";
 import {
   predictBondMultipliers,
+  bondBandExcursion,
   hasProcessSettings,
   type ProcessSettings,
   type BondModelCoeffs,
@@ -70,6 +71,7 @@ import {
   latticeStiffnessScales,
   latticeStrengthFraction,
   latticeStrengthFractions,
+  latticeStrengthExpExcursion,
   lumpedInPlaneStiffnessScale,
   wallCreditFraction,
   patternFamilyOf,
@@ -2534,6 +2536,14 @@ export interface AnalysisResult {
   safetyfactorLow:        number | null;
   /** Optimistic SF using upper bound of literature uncertainty range */
   safetyFactorHigh:       number | null;
+  /**
+   * Human-readable disclosure of which uncertainty terms contributed to the SF
+   * band (issues #172/#173): the interlayer yield-ratio and layer-height-slope
+   * literature ranges, plus — when active — the bond-model LOW-confidence
+   * constants (process path) and the Gibson-Ashby core strength-exponent
+   * spread (low-infill two-region path).
+   */
+  sfBandComposition?:     string | null;
   yielding:               boolean;
   verdict:                string;
   cgIterations:           number;
@@ -5313,8 +5323,75 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       );
     }
   }
-  const sfLow  = +(bandScalesSF ? sf * yieldMul_low  * lhMul_low  : sf).toFixed(2);
-  const sfHigh = +(bandScalesSF ? sf * yieldMul_high * lhMul_high : sf).toFixed(2);
+  // ── Bond-model LOW-confidence band term (#172) ────────────────────────────
+  // The bead-penetration bond model scales the INTERFACE allowables via
+  // constants the repo labels LOW confidence (bond.ts). When the process path
+  // is active AND the interface governs, propagate their uncertainty as an
+  // extra multiplicative widening. bondBandExcursion is exactly {1,1} at the
+  // reference process condition (relStrength is a ratio to reference at the
+  // same constants), so the anchor is preserved and the width grows with the
+  // distance off-reference. Interface-only, gated on bandScalesSF like the
+  // yield/lh terms (bond does not move the bulk-governed SF).
+  let bondBandLow = 1, bondBandHigh = 1;
+  if (bondRel && bandScalesSF && hasProcessSettings(req.print.process)) {
+    const exc = bondBandExcursion(
+      req.print.materialId,
+      req.print.layerHeightMm ?? 0.2,
+      req.print.process,
+      req.calibration?.bondCoeffs ?? null,
+    );
+    bondBandLow  = exc.low;
+    bondBandHigh = exc.high;
+  }
+
+  // ── Gibson-Ashby exponent band term (#173) ────────────────────────────────
+  // On the two-region path the core strength rides on ρ^m with LOW-confidence
+  // exponents. When the GOVERNING element is core-classified, propagate the
+  // exponent uncertainty so low-infill core-governed parts get a wider band,
+  // scaling with (1−ρ). Weighted by the governing bin's CORE fraction (1−shell)
+  // so shell-governed parts inherit none of it. Applies regardless of
+  // interface/bulk (the core knockdown hits both in-plane and through-layer
+  // strength), and is exactly {1,1} at ρ=1 (solid anchor).
+  let coreBandLow = 1, coreBandHigh = 1;
+  if (materialField && result.governingElement !== undefined) {
+    const gBinC = materialField.binOfElement[result.governingElement] ?? 0;
+    const shellFracG = materialField.shellFrac[gBinC] ?? 1;
+    const coreFracG = Math.min(1, Math.max(0, 1 - shellFracG));
+    if (coreFracG > 1e-9) {
+      const exc = latticeStrengthExpExcursion(
+        req.print.pattern ?? "grid",
+        req.print.infillPct / 100,
+        req.calibration?.latticeStrengthExp,
+      );
+      coreBandLow  = 1 + coreFracG * (exc.low  - 1);
+      coreBandHigh = 1 + coreFracG * (exc.high - 1);
+    }
+  }
+
+  // Interface-governed terms (yield ratio, layer-height slope, bond) apply only
+  // when the interface governs; the core GA term applies whenever the governing
+  // element is core-classified. All terms are exactly 1.0 at their anchors
+  // (100% infill, reference process, solid), so uniform / on-reference parts
+  // reproduce the prior band bit-for-bit.
+  const ifLow  = bandScalesSF ? yieldMul_low  * lhMul_low  * bondBandLow  : 1;
+  const ifHigh = bandScalesSF ? yieldMul_high * lhMul_high * bondBandHigh : 1;
+  const sfLow  = +(sf * ifLow  * coreBandLow ).toFixed(2);
+  const sfHigh = +(sf * ifHigh * coreBandHigh).toFixed(2);
+
+  // Disclose which terms actually contributed to the band (#172/#173).
+  const bandTerms: string[] = [];
+  if (bandScalesSF) {
+    bandTerms.push("interlayer yield-ratio (0.48–0.68)", "layer-height slope (−0.7…−1.3/mm)");
+    if (bondBandLow !== 1 || bondBandHigh !== 1) {
+      bandTerms.push(`bond-model LOW-confidence constants (×${bondBandLow.toFixed(2)}…${bondBandHigh.toFixed(2)}, off-reference process)`);
+    }
+  }
+  if (coreBandLow !== 1 || coreBandHigh !== 1) {
+    bandTerms.push(`Gibson-Ashby core strength-exponent spread (×${coreBandLow.toFixed(2)}…${coreBandHigh.toFixed(2)}, low-infill core-governed)`);
+  }
+  const sfBandComposition = bandTerms.length > 0
+    ? `SF band from: ${bandTerms.join("; ")}.`
+    : "SF band collapses to the central value (bulk in-plane governs; no banded constant applies).";
 
   // ── Governing utilization direction ──────────────────────────────────────
   let governingDirection: 'xy' | 'z' | null = null;
@@ -5353,6 +5430,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     vonMisesSafetyFactor: meshFallback ? null : sfVonMises,
     safetyfactorLow:    meshFallback ? null : sfLow,
     safetyFactorHigh:   meshFallback ? null : sfHigh,
+    sfBandComposition:  meshFallback ? null : sfBandComposition,
     estimatedFailForce,
     yielding,
     verdict:            governingVerdict,

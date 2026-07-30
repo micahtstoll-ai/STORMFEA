@@ -13,6 +13,7 @@
 import { describe, it, expect } from "vitest";
 import {
   predictBondMultipliers,
+  bondBandExcursion,
   fitBondCoeffs,
   hasProcessSettings,
   isKnownBondMaterial,
@@ -293,5 +294,53 @@ describe("process-sweep coefficient fit", () => {
     expect(fit.worstPoint.index).toBe(3);
     expect(Math.abs(fit.worstPoint.deviationPct)).toBeGreaterThan(
       Math.max(...fit.points.filter(p => p.index !== 3).map(p => Math.abs(p.deviationPct))));
+  });
+});
+
+// ── SF-band excursion from the bond model's LOW-confidence constants (#172) ────
+describe("bondBandExcursion (SF-band widening from LOW-confidence bond constants)", () => {
+  it("collapses to {1,1} at the reference process condition (anchor preserved)", () => {
+    for (const matId of Object.keys(BOND_MATERIALS)) {
+      for (const lh of [0.1, 0.2, 0.3]) {
+        const refProc = { ...BOND_REFERENCE, nozzleTempC: BOND_MATERIALS[matId]!.nozzleRefC };
+        const exc = bondBandExcursion(matId, lh, refProc, null);
+        // relStrength is a ratio to reference at the same constants ⇒ perturbing
+        // the constants cannot move it off 1.0 at the reference condition.
+        expect(exc.low).toBeCloseTo(1, 12);
+        expect(exc.high).toBeCloseTo(1, 12);
+      }
+    }
+  });
+
+  it("widens strictly off-reference (low < 1 < high)", () => {
+    const off = { nozzleTempC: BOND_MATERIALS["pla"]!.nozzleRefC - 40, printSpeedMmS: 20, coolingFanPct: 100, bedTempC: 60, ambientTempC: 25 };
+    const exc = bondBandExcursion("pla", 0.2, off, null);
+    expect(exc.low).toBeLessThan(1);
+    expect(exc.high).toBeGreaterThan(1);
+    expect(exc.high).toBeGreaterThan(exc.low);
+  });
+
+  it("is monotone in off-reference distance (further off ⇒ wider)", () => {
+    const near = { nozzleTempC: BOND_MATERIALS["pla"]!.nozzleRefC - 15, printSpeedMmS: 45, coolingFanPct: 100, bedTempC: 60, ambientTempC: 25 };
+    const far  = { nozzleTempC: BOND_MATERIALS["pla"]!.nozzleRefC - 45, printSpeedMmS: 15, coolingFanPct: 100, bedTempC: 60, ambientTempC: 25 };
+    const excNear = bondBandExcursion("pla", 0.2, near, null);
+    const excFar  = bondBandExcursion("pla", 0.2, far, null);
+    const widthNear = excNear.high - excNear.low;
+    const widthFar  = excFar.high - excFar.low;
+    expect(widthFar).toBeGreaterThan(widthNear);
+  });
+
+  it("calibrated bondCoeffs narrow the added term", () => {
+    const off = { nozzleTempC: BOND_MATERIALS["pla"]!.nozzleRefC - 40, printSpeedMmS: 20, coolingFanPct: 100, bedTempC: 60, ambientTempC: 25 };
+    const uncal = bondBandExcursion("pla", 0.2, off, null);
+    const cal   = bondBandExcursion("pla", 0.2, off, { hConv: 30, activationEnergyKJmol: 60, voidSensitivity: 0.35, strengthPrefactor: 1.0 });
+    const wUncal = uncal.high - uncal.low;
+    const wCal   = cal.high - cal.low;
+    expect(wCal).toBeLessThan(wUncal);
+    // Fitted profile still collapses at reference.
+    const refProc = { ...BOND_REFERENCE, nozzleTempC: BOND_MATERIALS["pla"]!.nozzleRefC };
+    const excRefCal = bondBandExcursion("pla", 0.2, refProc, { hConv: 30, activationEnergyKJmol: 60, voidSensitivity: 0.35, strengthPrefactor: 1.0 });
+    expect(excRefCal.low).toBeCloseTo(1, 12);
+    expect(excRefCal.high).toBeCloseTo(1, 12);
   });
 });
