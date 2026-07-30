@@ -282,7 +282,7 @@ export function predictBondMultipliers(
     // reproduces the legacy no-process behavior bit-for-bit in the material
     // builders — with a disclosed note the caller surfaces (materialModel.bond).
     return {
-      relStrength: 1, relStiffness: 1,
+      relStrength: 1, rawStrength: 1, relStiffness: 1,
       interfaceTempC: NaN, substrateTempC: NaN, coolTimeConstS: NaN,
       bondPotentialS: NaN, refPotentialS: NaN, consolidation: 1,
       clamped: false, confidence: "low", supported: false,
