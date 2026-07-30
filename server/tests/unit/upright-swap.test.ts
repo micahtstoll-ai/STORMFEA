@@ -26,6 +26,7 @@
 
 import { describe, it, expect } from "vitest";
 import { buildOrthotropicConstitutiveMatrix } from "../../solver/element.js";
+import { applyUprightScalarSwap } from "../../analysis.js";
 import type { OrthotropicMaterial } from "../../solver/types.js";
 
 // Voigt index pairs in this codebase's ordering [xx, yy, zz, xy, yz, xz]
@@ -88,16 +89,15 @@ const FLAT: OrthotropicMaterial = {
   yieldXY: 50, yieldZ: 29, label: "pla-flat",
 };
 
-// The scalar-swapped upright material exactly as both builders in analysis.ts
-// now construct it (E swap, yield swap, G_xy = G_xz inter-layer shear).
-const SWAPPED: OrthotropicMaterial = {
-  kind: "orthotropic",
-  E_xy: FLAT.E_z, E_z: FLAT.E_xy,
-  nu_xy: FLAT.nu_xy, nu_xz: FLAT.nu_xz,
-  G_xy: FLAT.G_xz, G_xz: FLAT.G_xz,
-  yieldXY: FLAT.yieldZ, yieldZ: FLAT.yieldXY,
-  label: "pla-upright-swap",
-};
+// The scalar-swapped upright material exactly as the builders in analysis.ts
+// construct it — sourced from the real function so this benchmark can never
+// drift from production (E swap, yield swap, G_xy = G_xz inter-layer shear,
+// and the reciprocity-consistent Poisson swap of issue #187).
+const SWAPPED: OrthotropicMaterial = applyUprightScalarSwap(FLAT);
+
+// Input minor Poisson ratio ν_zx = ν_xz·E_z/E_xy — the value both swapped
+// Poisson entries take (both horizontal directions are the weak axis).
+const NU_ZX = nu_xz * E_z / E_xy;
 
 // 90° rotation about global Y: material z-axis (layer normal) → global +x,
 // material x → global −z. This is the exact "upright" reorientation.
@@ -179,5 +179,68 @@ describe("upright orientation: scalar swap vs full tensor rotation (issue #101)"
     // ratio, and one vertical shear plane held at the inter-layer value.
     expect(eSwap.Ey / eRot.Ey).toBeCloseTo(E_z / E_xy, 1);      // ≈ 0.65
     expect(C_swap[28]! / C_rotated[28]!).toBeCloseTo(0.40, 1);  // G_xz/G_xy
+  });
+});
+
+describe("applyUprightScalarSwap: field-by-field + Poisson consistency (issue #187)", () => {
+  const s = applyUprightScalarSwap(FLAT);
+
+  it("swaps every field of the material exactly (full field-by-field lock)", () => {
+    // Moduli & yields swap; inter-layer shear takes both shear slots.
+    expect(s.E_xy).toBe(FLAT.E_z);
+    expect(s.E_z).toBe(FLAT.E_xy);
+    expect(s.G_xy).toBe(FLAT.G_xz);
+    expect(s.G_xz).toBe(FLAT.G_xz);
+    expect(s.yieldXY).toBe(FLAT.yieldZ);
+    expect(s.yieldZ).toBe(FLAT.yieldXY);
+    // Poisson pair now swapped consistently (was the pre-#187 inconsistency):
+    // both horizontals are the weak axis → every ν involving them is ν_zx.
+    expect(s.nu_xy).toBeCloseTo(NU_ZX, 12);
+    expect(s.nu_xz).toBeCloseTo(NU_ZX, 12);
+    // yieldZShear rides along unchanged (physical interface property).
+    expect(s.kind).toBe("orthotropic");
+  });
+
+  it("preserves the physical interlayer cross-coupling s13 (not inflated by E_xy/E_z)", () => {
+    // The swapped material's coupling compliance entry equals the INPUT's own
+    // s13 = −ν_xz/E_xy. The pre-#187 swap (nu_xz unchanged, E_xy←E_z) gave
+    // s13_old = −ν_xz/E_z, larger in magnitude by E_xy/E_z ≈ 1.54×.
+    const s13_new = -s.nu_xz / s.E_xy;
+    const s13_input = -FLAT.nu_xz / FLAT.E_xy;
+    expect(s13_new).toBeCloseTo(s13_input, 12);
+    const s13_preFix = -FLAT.nu_xz / FLAT.E_z; // what the unswapped ν gave
+    expect(Math.abs(s13_new - s13_preFix)).toBeGreaterThan(1e-6);
+  });
+
+  it("reciprocity ν_ij/E_i = ν_ji/E_j holds for the swapped set", () => {
+    // Minor ratio derived from the swapped constants must round-trip.
+    const nu_zx_swapped = s.nu_xz * s.E_z / s.E_xy;
+    expect(s.nu_xz / s.E_xy).toBeCloseTo(nu_zx_swapped / s.E_z, 15);
+    // And the swapped minor ratio equals the input's MAJOR ν_xz — the clean
+    // relabel of the through-layer coupling.
+    expect(nu_zx_swapped).toBeCloseTo(FLAT.nu_xz, 12);
+  });
+
+  it("swapped material yields a symmetric, positive-definite compliance (SPD)", () => {
+    const C = buildOrthotropicConstitutiveMatrix(s); // throws if not stable
+    for (let i = 0; i < 6; i++)
+      for (let j = 0; j < 6; j++)
+        expect(C[i * 6 + j]).toBeCloseTo(C[j * 6 + i] ?? 0, 8);
+    // Leading principal minors of the 3×3 normal block > 0 (SPD).
+    const c11 = C[0]!, c12 = C[1]!, c13 = C[2]!, c33 = C[14]!;
+    expect(c11).toBeGreaterThan(0);
+    expect(c11 * c11 - c12 * c12).toBeGreaterThan(0);
+    const m3 = c11 * (c11 * c33 - c13 * c13) - c12 * (c12 * c33 - c13 * c13)
+             + c13 * (c12 * c13 - c11 * c13);
+    expect(m3).toBeGreaterThan(0);
+  });
+
+  it("recovered ν_xz from the swapped compliance equals the fabricated value", () => {
+    const C = buildOrthotropicConstitutiveMatrix(s);
+    // Invert the normal block to read s13 = −ν_xz/E_xy back out.
+    const a = C[0]!, b = C[1]!, c = C[2]!, e = C[14]!;
+    const det = a * (a * e - c * c) - b * (b * e - c * c) + c * (b * c - a * c);
+    const s13 = (b * c - a * c) / det; // (1,3) cofactor / det
+    expect(-s13 * s.E_xy).toBeCloseTo(s.nu_xz, 6);
   });
 });
