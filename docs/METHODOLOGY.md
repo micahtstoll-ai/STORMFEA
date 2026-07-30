@@ -339,7 +339,9 @@ to MEDIUM by fitting their own S-N curve: enter cyclic-coupon (σ_amplitude,
 cycles) points at `POST /api/calibration/fatigue`, which least-squares fits the
 Basquin exponent `b` and endurance ratio `Se/UTS`; those measured constants then
 replace the literature defaults and lift the fatigue mode to MEDIUM confidence
-(the same LOW→MEDIUM data gate the bearing coupon uses).
+(the same LOW→MEDIUM data gate the bearing coupon uses) — **provided the fit is
+clean**; a poorly-fitting (high-scatter) S-N dataset is still used but stays LOW
+confidence (see the fit-quality gating note in §8).
 
 ---
 
@@ -382,6 +384,33 @@ Two further calibrations fit process/cycle models rather than static allowables:
 `Se/UTS` from cyclic-coupon points (fatigue LOW→MEDIUM), and
 `POST /api/calibration/bond-sweep` fits the bead-penetration bond coefficients
 from a process sweep of Z-tension coupons (bond model LOW→MEDIUM).
+
+**Fit-quality gating (both fitted models).** A fit that reproduces the data
+poorly must not silently earn the LOW→MEDIUM upgrade, so each endpoint measures
+its own residual and gates on it. The residual is always returned — even a clean
+fit shows its evidence — and every response carries an additive `fitQuality`
+field.
+
+- **Bond sweep — reject.** `fitBondCoeffs` reports `rmsePct`, the RMS of
+  (predicted − measured) Z-tension strength as a percentage of the mean measured
+  strength. A clean sweep fits to well under 1%; the threshold is **15%**
+  (`BOND_FIT_RMSE_MAX_PCT`, generous headroom that still catches a mislabeled
+  point — a single 3× outlier lands near 77%). Above it the endpoint **refuses
+  with 400**, naming the worst datum and its deviation. Rationale: the fitted
+  coefficients are applied *multiplicatively* to interlayer strength and stiffness
+  in **every** subsequent process-aware analysis, so accepting a fit the physics
+  cannot reproduce would corrupt all of them at once; the literature-constants
+  path (no `bondCoeffs`) stays the honest default.
+- **Fatigue — accept but keep LOW.** `fitFatigueProfile` reports `logRms`, the RMS
+  residual of the log-log Basquin regression (≈ multiplicative amplitude scatter).
+  The threshold is **0.15** (`FATIGUE_LOGRMS_MAX`, ≈ ±16%). S-N scatter is
+  physically inherent, so a team's own noisy coupons are still their best data —
+  the endpoint **accepts** the fit and stores the measured `Se`/`b`, but tags the
+  profile `fatigueFitQuality: "poor"`, which keeps `estimateFatigue` at **LOW**
+  confidence (no MEDIUM upgrade) and says so in the mode note. A clean fit behaves
+  exactly as before. The reject-vs-keep split is deliberate: bond coefficients
+  are global multipliers on load-bearing allowables, whereas the fatigue fields
+  drive only the already order-of-magnitude fatigue mode.
 
 ---
 
