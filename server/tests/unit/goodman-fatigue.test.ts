@@ -168,3 +168,65 @@ describe("Fatigue load ratio R (issue: R input)", () => {
     expect(r.loadRatio).toBe(-1);
   });
 });
+
+describe("Interlayer fatigue decomposition (issue #174 — additive interface check)", () => {
+  // Bulk anchor: PLA flat, peak VM = 20 MPa, yield 40 → bulk SF 1.58 (Case 1).
+  // Static interface allowables: S_zt = 29 MPa, S_zs = 29/√3 ≈ 16.7 MPa
+  // (default). Interlayer endurance ratio 0.37 → Se_interlayer = 0.37×29 = 10.73 MPa.
+
+  it("no interlayer input → bulk-only, existing numbers reproduced (regression anchor)", () => {
+    const r = estimateFatigue(20, 40, "pla", "flat");
+    expect(r.interlayer).toBeNull();
+    expect(r.governingMechanism).toBe("bulk");
+    expect(r.fatigueSF).toBeCloseTo(1.5793, 2);
+    expect(r.bulkFatigueSF).toBe(r.fatigueSF);
+    expect(r.bulkEstimatedCycles).toBe(r.estimatedCycles);
+  });
+
+  it("in-plane load (interface ~0) is governed by bulk; headline unchanged vs bulk-only", () => {
+    const bulkOnly = estimateFatigue(20, 40, "pla", "flat");
+    const withZero = estimateFatigue(20, 40, "pla", "flat", 0, null, {
+      peakTensionMPa: 0, peakShearMPa: 0, allowTensionMPa: 29, allowShearMPa: 16.7,
+    });
+    expect(withZero.governingMechanism).toBe("bulk");
+    // Interlayer term present but not governing; headline scalars unchanged.
+    expect(withZero.fatigueSF).toBe(bulkOnly.fatigueSF);
+    expect(withZero.estimatedCycles).toBe(bulkOnly.estimatedCycles);
+    expect(withZero.interlayer!.fatigueSF).toBeGreaterThan(withZero.bulkFatigueSF);
+  });
+
+  it("through-layer-dominated cyclic load: interlayer governs with a LOWER SF than bulk-only", () => {
+    // Same peak magnitude routed through the interface (⟨σzz⟩₊ = 20 MPa) instead
+    // of as in-plane VM. The interlayer endurance (10.73 MPa) is far weaker than
+    // the bulk endurance (24.05 MPa), so the interface fatigue SF drops below
+    // the bulk-only estimate.
+    const bulkOnly = estimateFatigue(20, 40, "pla", "flat");
+    const r = estimateFatigue(20, 40, "pla", "flat", 0, null, {
+      peakTensionMPa: 20, peakShearMPa: 0, allowTensionMPa: 29, allowShearMPa: 16.7,
+    });
+    expect(r.interlayer).not.toBeNull();
+    expect(r.governingMechanism).toBe("interlayer");
+    expect(r.interlayer!.fatigueSF).toBeLessThan(bulkOnly.fatigueSF);
+    // Bulk number preserved verbatim (not silently changed).
+    expect(r.bulkFatigueSF).toBe(bulkOnly.fatigueSF);
+    // Verdict takes the min: interlayer concern propagates to the headline flag.
+    expect(r.fatigueConcern).toBe(r.bulkFatigueSF < 1 || r.interlayer!.fatigueConcern);
+  });
+
+  it("interlayer equivalent stress folds shear onto the tension basis (S_zt/S_zs)", () => {
+    // Pure interlayer shear τ_z = 10 MPa, S_zt=29, S_zs=16.7 →
+    // σ_iface = 10 × 29/16.7 = 17.37 MPa.
+    const r = estimateFatigue(5, 40, "pla", "flat", 0, null, {
+      peakTensionMPa: 0, peakShearMPa: 10, allowTensionMPa: 29, allowShearMPa: 16.7,
+    });
+    expect(r.interlayer!.peakInterfaceMPa).toBeCloseTo(10 * 29 / 16.7, 1);
+  });
+
+  it("calibrated interlayer Se ratio overrides the default and raises confidence", () => {
+    const r = estimateFatigue(20, 40, "pla", "flat", 0,
+      { fatigueSeRatio: 0.4, fatigueSeRatioInterlayer: 0.25 },
+      { peakTensionMPa: 15, peakShearMPa: 0, allowTensionMPa: 29, allowShearMPa: 16.7 });
+    expect(r.interlayer!.enduranceLimitMPa).toBeCloseTo(0.25 * 29, 1);
+    expect(r.interlayer!.confidence).toBe("medium");
+  });
+});

@@ -1802,6 +1802,69 @@ export interface FatigueEstimate {
   loadRatio:          number;
   confidence:         "medium" | "low";
   note:               string;
+  /**
+   * BULK (von Mises amplitude) fatigue SF — the historical scalar estimate,
+   * preserved verbatim so adding the interlayer check never silently changes
+   * the reported bulk number. Equals `fatigueSF` when bulk governs.
+   */
+  bulkFatigueSF:      number;
+  /** BULK Basquin cycles-to-failure (null = infinite life). Preserved from the scalar path. */
+  bulkEstimatedCycles: number | null;
+  /**
+   * ADDITIVE interlayer (through-layer / interlaminar-shear) fatigue check —
+   * present only for orthotropic materials with an interface stress field.
+   * FDM cyclic delamination at the bead interface degrades from a lower
+   * baseline than the bulk, so this term commonly governs cross-layer cyclic
+   * loads even when the bulk estimate looks safe. Null for isotropic
+   * materials or when no interface stress was available.
+   */
+  interlayer:         InterlayerFatigue | null;
+  /**
+   * Which mechanism gives the lower (governing) fatigue SF. The headline
+   * verdict (`fatigueConcern`) is the MIN of the two: a concern if EITHER the
+   * bulk or the interlayer term is a concern.
+   */
+  governingMechanism: "bulk" | "interlayer";
+}
+
+/**
+ * Interlayer (through-layer) fatigue estimate — the cyclic counterpart of the
+ * static interface criterion. The static path decomposes into in-plane bulk vs
+ * tension-only interface traction; this mirrors that at the fatigue level.
+ *
+ * Amplitude: the interface driving stress is the tension-basis equivalent
+ *   σ_iface = sqrt(⟨σzz⟩₊² + (τ_z · S_zt/S_zs)²)
+ * (the static interface utilization × S_zt), so a single Goodman/Basquin runs
+ * on the S_zt-basis endurance.
+ *
+ * Endurance: anchored to the STATIC interface allowable S_zt (≈ Z/Y × in-plane
+ * yield — the "static Z/Y ratio as the zeroth-order default") knocked down by
+ * the FLAT-print endurance ratio (0.37, the weaker of the flat-vs-upright Se/UTS
+ * split), because flat prints already fatigue at the inter-layer bond.
+ * Calibratable via the upright-vs-flat fatigue-coupon pair. Confidence LOW —
+ * FDM interlayer S-N data is sparse.
+ */
+export interface InterlayerFatigue {
+  /** Interlayer fatigue safety factor (modified Goodman on the interface traction). */
+  fatigueSF:          number;
+  /** Basquin cycles-to-failure for the interface (null = below the interlayer endurance limit). */
+  estimatedCycles:    number | null;
+  /** True if the interlayer term itself is a fatigue concern (SF < 1 or < 100k cycles). */
+  fatigueConcern:     boolean;
+  /** Interlayer endurance limit Se (MPa), on the S_zt allowable basis. */
+  enduranceLimitMPa:  number;
+  /** Interface tensile allowable S_zt used as the Goodman ultimate (MPa). */
+  allowTensionMPa:    number;
+  /** Interlaminar shear allowable S_zs (MPa). */
+  allowShearMPa:      number;
+  /** Peak through-layer opening stress ⟨σzz⟩₊ driving the cycle (MPa). */
+  peakTensionMPa:     number;
+  /** Peak driving interlayer shear τ_z (MPa). */
+  peakShearMPa:       number;
+  /** Tension-basis equivalent interface amplitude stress σ_iface used (MPa, = σ_max of the cycle). */
+  peakInterfaceMPa:   number;
+  confidence:         "medium" | "low";
+  note:               string;
 }
 
 /**
@@ -1830,6 +1893,57 @@ export interface FatigueEstimate {
  *
  * Confidence: LOW-MEDIUM. FDM fatigue data is sparse. Treat as order-of-magnitude.
  */
+/**
+ * Modified-Goodman + Basquin core, shared by the bulk (von Mises) and the
+ * interlayer (interface-traction) fatigue paths so the two can never diverge
+ * in their cyclic mechanics — only their stress amplitude, endurance limit,
+ * and ultimate differ. σ_max is the peak stress; Se the endurance limit; uts
+ * the Goodman ultimate; sigmaf the Basquin fatigue-strength coefficient; b the
+ * Basquin exponent; R the load ratio (already clamped).
+ */
+function goodmanBasquin(
+  sigmaMax: number, Se: number, uts: number, sigmaf: number, b: number, R: number,
+): { fatigueSF: number; estimatedCycles: number | null; sigma_a: number; sigma_m_eff: number } {
+  const sigma_a = sigmaMax * (1 - R) / 2;
+  const sigma_m = sigmaMax * (1 + R) / 2;
+  // Compressive mean stress is beneficial; conservatively don't credit it.
+  const sigma_m_eff = Math.max(0, sigma_m);
+  // Modified Goodman: 1/SF = σ_a/Se + σ_m/Su
+  const goodmanDemand = (sigma_a / Se) + (sigma_m_eff / uts);
+  const fatigueSF = goodmanDemand > 0 ? 1 / goodmanDemand : 999;
+  // Basquin cycles: σ_a,eq = σ_a/(1 − σ_m/Su) [Goodman-corrected amplitude]
+  const sigmaEqA = sigma_a / Math.max(0.01, 1 - sigma_m_eff / uts);
+  let estimatedCycles: number | null = null;
+  if (sigmaEqA > Se) estimatedCycles = Math.max(1, Math.round(Math.pow(sigmaEqA / sigmaf, 1 / b)));
+  return { fatigueSF, estimatedCycles, sigma_a, sigma_m_eff };
+}
+
+/**
+ * Peak interface traction driving the interlayer fatigue cycle, plus the static
+ * interface allowables. Mirrors the FEM inputs of the static interface
+ * criterion (⟨σzz⟩₊ and interlaminar shear τ_z at the governing node).
+ */
+export interface InterlayerFatigueInput {
+  /** Peak through-layer opening stress ⟨σzz⟩₊ (MPa) — σ_max of the interface cycle. */
+  peakTensionMPa:  number;
+  /** Peak driving interlayer shear τ_z (MPa). */
+  peakShearMPa:    number;
+  /** Static interface tensile allowable S_zt (MPa) — the Goodman ultimate for the interface. */
+  allowTensionMPa: number;
+  /** Static interlaminar shear allowable S_zs (MPa). */
+  allowShearMPa:   number;
+}
+
+/**
+ * Interlayer endurance ratio Se/S_zt for the through-layer bond under cyclic
+ * load. Anchored to the FLAT-print bulk endurance ratio (0.37 — the weaker of
+ * the flat-vs-upright split, since flat prints already fatigue AT the bond),
+ * applied to the static interface allowable S_zt (which itself carries the
+ * static Z/Y ratio). Calibratable via the upright-vs-flat fatigue coupon pair.
+ * Confidence LOW.
+ */
+const INTERLAYER_ENDURANCE_RATIO_DEFAULT = 0.37;
+
 export function estimateFatigue(
   peakVonMisesMPa: number,
   effectiveYieldMPa: number,
@@ -1843,7 +1957,15 @@ export function estimateFatigue(
    * replaced by the measured values and confidence rises LOW→MEDIUM — mirroring
    * how a bearing coupon lifts the bearing mode.
    */
-  calib?: { fatigueSeRatio?: number | null; fatigueBasquinB?: number | null; fatigueUTS_MPa?: number | null; fatigueFitQuality?: "good" | "poor" | null } | null,
+  calib?: { fatigueSeRatio?: number | null; fatigueBasquinB?: number | null; fatigueUTS_MPa?: number | null; fatigueFitQuality?: "good" | "poor" | null; fatigueSeRatioInterlayer?: number | null } | null,
+  /**
+   * Optional interlayer (through-layer / interlaminar-shear) interface stress —
+   * when present the ADDITIVE interlayer fatigue check runs alongside the bulk
+   * scalar path and the governing (min-SF) mechanism drives the verdict. Absent
+   * for isotropic materials or when no interface stress field is available, in
+   * which case the result is the bulk-only estimate (bit-identical to before).
+   */
+  interlayerInput?: InterlayerFatigueInput | null,
 ): FatigueEstimate {
   const R = Math.max(-1, Math.min(0.95, Number.isFinite(loadRatioR) ? loadRatioR : 0));
   const isCalibrated = calib != null && calib.fatigueSeRatio != null && Number.isFinite(calib.fatigueSeRatio);
@@ -1876,58 +1998,99 @@ export function estimateFatigue(
   // For Goodman, we need UTS. Use effective yield as a proxy for actual UTS
   // (FDM parts typically fracture near yield for brittle-ish PLA)
   const utsMPa = Math.max(effectiveYieldMPa * 1.15, Se * 1.5);
-
-  // Amplitude / mean from the load ratio R = σ_min/σ_max, with σ_max = peak VM:
-  //   σ_a = σ_max(1−R)/2,  σ_m = σ_max(1+R)/2.  R=0 → σ_m = σ_a = σ_max/2.
-  const sigma_a = peakVonMisesMPa * (1 - R) / 2;
-  const sigma_m = peakVonMisesMPa * (1 + R) / 2;
-  // Compressive mean stress is beneficial; conservatively don't credit it.
-  const sigma_m_eff = Math.max(0, sigma_m);
-
-  // Modified Goodman: 1/SF = σ_a/Se + σ_m/Su
-  const goodmanDemand = (sigma_a / Se) + (sigma_m_eff / utsMPa);
-  const fatigueSF     = goodmanDemand > 0 ? 1 / goodmanDemand : 999;
-
-  // Basquin cycles to failure
-  // σ_a,eq = σ_a / (1 - σ_m/Su)  [Goodman-corrected amplitude]
-  const sigmaEqA = sigma_a / Math.max(0.01, 1 - sigma_m_eff / utsMPa);
   const sigmaf   = 1.5 * baseMaterialUTS;
   const b        = (isCalibrated && calib?.fatigueBasquinB != null) ? calib.fatigueBasquinB : -0.1;
 
-  let estimatedCycles: number | null = null;
-  if (sigmaEqA <= Se) {
-    estimatedCycles = null; // infinite life
-  } else {
-    const N = Math.pow(sigmaEqA / sigmaf, 1 / b);
-    estimatedCycles = Math.max(1, Math.round(N));
+  // ── Bulk (von Mises amplitude) path — the historical scalar estimate ──────
+  // σ_max = peak VM: σ_a = σ_max(1−R)/2, σ_m = σ_max(1+R)/2. R=0 → σ_m=σ_a=σ_max/2.
+  const bulk = goodmanBasquin(peakVonMisesMPa, Se, utsMPa, sigmaf, b, R);
+  const bulkFatigueSF = +bulk.fatigueSF.toFixed(2);
+  const bulkConcern = bulk.fatigueSF < 1.0 || (bulk.estimatedCycles !== null && bulk.estimatedCycles < 100_000);
+
+  const cycleStrOf = (c: number | null): string => c === null
+    ? 'infinite life (below endurance limit)'
+    : c < 1_000
+    ? `~${c.toLocaleString()} cycles — part will fail quickly under cyclic loading`
+    : c < 100_000
+    ? `~${c.toLocaleString()} cycles — fatigue concern for competition use (~${(c/500).toFixed(0)} matches)`
+    : `~${c.toLocaleString()} cycles — adequate for competition use`;
+
+  // ── Interlayer (through-layer / interlaminar-shear) path — ADDITIVE ───────
+  // FDM cyclic delamination at the bead interface degrades from a lower
+  // baseline than the bulk. The static interface criterion already erases the
+  // tension-on-interface information from the scalar VM amplitude, so we run a
+  // parallel Goodman/Basquin on the interface traction against an interlayer
+  // endurance anchored to the static S_zt allowable (which carries the Z/Y
+  // ratio) times the flat-print endurance ratio. Confidence LOW.
+  let interlayer: InterlayerFatigue | null = null;
+  if (interlayerInput && interlayerInput.allowTensionMPa > 0 && interlayerInput.allowShearMPa > 0) {
+    const { peakTensionMPa, peakShearMPa, allowTensionMPa, allowShearMPa } = interlayerInput;
+    // Tension-basis equivalent interface amplitude = S_zt × static interface
+    // utilization = sqrt(⟨σzz⟩₊² + (τ_z·S_zt/S_zs)²). Reduces to ⟨σzz⟩₊ for
+    // pure opening and to τ_z·S_zt/S_zs for pure interlayer shear.
+    const shearOnTensionBasis = peakShearMPa * (allowTensionMPa / allowShearMPa);
+    const sigmaIface = Math.sqrt(peakTensionMPa * peakTensionMPa + shearOnTensionBasis * shearOnTensionBasis);
+    const seRatioIl = (isCalibrated && calib?.fatigueSeRatioInterlayer != null && Number.isFinite(calib.fatigueSeRatioInterlayer))
+      ? calib.fatigueSeRatioInterlayer!
+      : INTERLAYER_ENDURANCE_RATIO_DEFAULT;
+    // Interface Goodman ultimate: the static tensile allowable S_zt (the bond
+    // fractures at its through-layer tensile strength). Se on the same basis.
+    const utsIface = allowTensionMPa;
+    const SeIface  = allowTensionMPa * seRatioIl;
+    const sigmafIface = 1.5 * utsIface;
+    const il = goodmanBasquin(sigmaIface, SeIface, utsIface, sigmafIface, b, R);
+    const ilConcern = il.fatigueSF < 1.0 || (il.estimatedCycles !== null && il.estimatedCycles < 100_000);
+    interlayer = {
+      fatigueSF: +il.fatigueSF.toFixed(2),
+      estimatedCycles: il.estimatedCycles,
+      fatigueConcern: ilConcern,
+      enduranceLimitMPa: +SeIface.toFixed(1),
+      allowTensionMPa: +allowTensionMPa.toFixed(1),
+      allowShearMPa: +allowShearMPa.toFixed(1),
+      peakTensionMPa: +peakTensionMPa.toFixed(2),
+      peakShearMPa: +peakShearMPa.toFixed(2),
+      peakInterfaceMPa: +sigmaIface.toFixed(2),
+      confidence: (isCalibrated && calib?.fatigueSeRatioInterlayer != null) ? "medium" : "low",
+      note: `Interlayer (through-layer) fatigue: ${cycleStrOf(il.estimatedCycles)}. ` +
+            `σ_iface=${sigmaIface.toFixed(1)} MPa (⟨σzz⟩₊=${peakTensionMPa.toFixed(1)}, τ_z=${peakShearMPa.toFixed(1)} MPa) ` +
+            `vs Se_interlayer=${SeIface.toFixed(1)} MPa (${(seRatioIl*100).toFixed(0)}% of S_zt=${allowTensionMPa.toFixed(1)} MPa). ` +
+            `Cyclic delamination at the bead interface — the dominant FDM cyclic failure mode, degrades from a lower baseline than the bulk. ` +
+            ((isCalibrated && calib?.fatigueSeRatioInterlayer != null)
+              ? `Interlayer Se/UTS CALIBRATED from your upright-vs-flat fatigue coupon pair.`
+              : `LOW confidence — interlayer S-N data sparse; anchored to the static Z/Y ratio. Run an upright-vs-flat fatigue coupon pair to calibrate.`),
+    };
   }
 
-  const fatigueConcern = fatigueSF < 1.0 || (estimatedCycles !== null && estimatedCycles < 100_000);
-
-  const cycleStr = estimatedCycles === null
-    ? 'infinite life (below endurance limit)'
-    : estimatedCycles < 1_000
-    ? `~${estimatedCycles.toLocaleString()} cycles — part will fail quickly under cyclic loading`
-    : estimatedCycles < 100_000
-    ? `~${estimatedCycles.toLocaleString()} cycles — fatigue concern for competition use (~${(estimatedCycles/500).toFixed(0)} matches)`
-    : `~${estimatedCycles.toLocaleString()} cycles — adequate for competition use`;
+  // ── Governing verdict: MIN of bulk and interlayer ─────────────────────────
+  // Headline scalars stay the BULK values (never silently changed); the
+  // verdict flag is a concern if EITHER mechanism is a concern.
+  const governingMechanism: "bulk" | "interlayer" =
+    interlayer && interlayer.fatigueSF < bulkFatigueSF ? "interlayer" : "bulk";
+  const fatigueConcern = bulkConcern || (interlayer?.fatigueConcern ?? false);
 
   return {
-    estimatedCycles,
+    estimatedCycles: bulk.estimatedCycles,
     fatigueConcern,
-    fatigueSF: +fatigueSF.toFixed(2),
+    fatigueSF: bulkFatigueSF,
     enduranceLimitMPa: +Se.toFixed(1),
     utsMPa: +utsMPa.toFixed(1),
     loadRatio: R,
     confidence: calibratedConfident ? "medium" : "low",
-    note: `${R === 0 ? "Pulsating load (R=0)" : `Load ratio R=${R.toFixed(2)}`}: ${cycleStr}. ` +
-          `σ_a=${sigma_a.toFixed(1)} MPa, σ_m=${sigma_m_eff.toFixed(1)} MPa. ` +
+    bulkFatigueSF,
+    bulkEstimatedCycles: bulk.estimatedCycles,
+    interlayer,
+    governingMechanism,
+    note: `${R === 0 ? "Pulsating load (R=0)" : `Load ratio R=${R.toFixed(2)}`}: ${cycleStrOf(bulk.estimatedCycles)}. ` +
+          `σ_a=${bulk.sigma_a.toFixed(1)} MPa, σ_m=${bulk.sigma_m_eff.toFixed(1)} MPa. ` +
           `Se=${Se.toFixed(1)} MPa (${(seRatio*100).toFixed(0)}% of ${isCalibrated ? "measured" : "base"} UTS ${baseMaterialUTS.toFixed(0)} MPa, ${orientation} orientation). ` +
           (calibratedConfident
             ? `Using CALIBRATED S-N fit from cyclic coupon data (Se/UTS and Basquin b=${b.toFixed(3)} measured on your printer/filament). Goodman criterion + Basquin.`
             : calibPoorFit
             ? `Using your cyclic-coupon S-N fit (Se/UTS and Basquin b=${b.toFixed(3)}), but the fit quality was POOR (log-log scatter above the threshold) so confidence stays LOW — treat as order-of-magnitude and re-check the coupon data. Goodman criterion + Basquin.`
-            : `FDM fatigue data sparse — treat as order-of-magnitude. Goodman criterion + Basquin b=-0.1. Run a fatigue coupon (POST /api/calibration/fatigue) to raise confidence. Source: Wang et al. 2020.`),
+            : `FDM fatigue data sparse — treat as order-of-magnitude. Goodman criterion + Basquin b=-0.1. Run a fatigue coupon (POST /api/calibration/fatigue) to raise confidence. Source: Wang et al. 2020.`) +
+          (interlayer
+            ? ` BULK vs INTERLAYER: bulk SF ${bulkFatigueSF}×, interlayer SF ${interlayer.fatigueSF}× → ${governingMechanism.toUpperCase()} governs. ${interlayer.note}`
+            : ``),
   };
 }
 
@@ -5233,6 +5396,23 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     fatigueStress = result.vonMises[ge] ?? maxVM;
     fatigueYield  = materialField.yieldXY[bin] ?? effectiveYield;
   }
+  // Interlayer fatigue input: the peak interface traction (⟨σzz⟩₊ and driving
+  // interlayer shear τ_z) against its static allowables, so the ADDITIVE
+  // through-layer fatigue check can run alongside the bulk scalar. Only defined
+  // for orthotropic materials with an interface stress field; null otherwise,
+  // in which case the fatigue result is the bulk-only estimate as before.
+  let interlayerFatigueInput: InterlayerFatigueInput | null = null;
+  if (result.elemStress6 && isOrthotropic(material)) {
+    const ifp = computeInterfaceModePeaks(mesh, result.elemStress6, material, materialField ?? null);
+    if (ifp) {
+      interlayerFatigueInput = {
+        peakTensionMPa:  ifp.peakTensionMPa,
+        peakShearMPa:    ifp.peakShearMPa,
+        allowTensionMPa: ifp.allowTensionMPa,
+        allowShearMPa:   ifp.allowShearMPa,
+      };
+    }
+  }
   const fatigue = estimateFatigue(
     fatigueStress,
     fatigueYield,
@@ -5240,6 +5420,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     req.print.orientation,
     req.fatigueLoadRatio ?? 0,
     req.calibration ?? null,
+    interlayerFatigueInput,
   );
 
   // ── Isotropic comparison ─────────────────────────────────────────────────
