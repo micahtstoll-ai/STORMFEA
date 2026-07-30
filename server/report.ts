@@ -13,6 +13,7 @@
  */
 
 import type { AnalysisResult } from "./analysis.js";
+import { FAIL_SF_THRESHOLD, SAFE_SF_THRESHOLD } from "./analysis.js";
 
 export function generateHtmlReport(
   result: AnalysisResult,
@@ -47,10 +48,14 @@ export function generateHtmlReport(
   // trustworthy — colour the verdict box neutral grey rather than a reassuring
   // green/amber so the printed report can't imply confidence it doesn't have.
   const unreliable = converged === false || meshFallback === true || safetyFactor === null;
+  // Green only at/above SAFE_SF_THRESHOLD (issue #141) — shared with the
+  // headline verdict text (analysis.ts baseVerdict) and client/index.html's
+  // identically-named constants so the printed report can't disagree with
+  // the app.
   const sfColor = unreliable ? '#5a5a5a'
-    : safetyFactor >= 2 ? '#1a7a40' : safetyFactor >= 1 ? '#7a5a00' : '#7a1a1a';
+    : safetyFactor >= SAFE_SF_THRESHOLD ? '#1a7a40' : safetyFactor >= FAIL_SF_THRESHOLD ? '#7a5a00' : '#7a1a1a';
   const verdictBg = unreliable ? '#ececec'
-    : safetyFactor >= 2 ? '#e8f5ee' : safetyFactor >= 1 ? '#fff8e0' : '#fde8e8';
+    : safetyFactor >= SAFE_SF_THRESHOLD ? '#e8f5ee' : safetyFactor >= FAIL_SF_THRESHOLD ? '#fff8e0' : '#fde8e8';
 
   const confBadge = (c: string) => {
     const colors: Record<string, string> = {
@@ -62,7 +67,7 @@ export function generateHtmlReport(
   const failureRows = failureModes.map(m => `
     <tr style="border-bottom:1px solid #eee">
       <td style="padding:4px 8px;font-weight:${m === govMode ? '600' : '400'};color:${m===govMode?'#8B6914':'#333'}">${m === govMode ? '▲ ' : ''}${m.mode}</td>
-      <td style="padding:4px 8px;text-align:center;color:${m.checked?(m.sf>=2?'#1a7a40':m.sf>=1?'#5c3a00':'#7a1a1a'):'#999'}">${m.checked ? `${m.sf.toFixed(2)}×` : '—'}</td>
+      <td style="padding:4px 8px;text-align:center;color:${m.checked?(m.sf>=SAFE_SF_THRESHOLD?'#1a7a40':m.sf>=FAIL_SF_THRESHOLD?'#5c3a00':'#7a1a1a'):'#999'}">${m.checked ? `${m.sf.toFixed(2)}×` : '—'}</td>
       <td style="padding:4px 8px;text-align:center">${confBadge(m.confidence)}</td>
       <td style="padding:4px 8px;font-size:10px;color:#666">${m.note.split('.')[0]}.</td>
     </tr>`).join('');

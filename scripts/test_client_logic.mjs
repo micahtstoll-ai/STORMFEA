@@ -564,6 +564,307 @@ console.log('\n[J] bed frame — bedDirToWorld maps bed Z to world +Y');
     `got (${rt.x.toFixed(3)},${rt.y.toFixed(3)},${rt.z.toFixed(3)})`);
 }
 
+// ── Test group K: sfVerdictTier — safety-factor verdict tiering (issue #141) ──
+console.log('\n[K] sfVerdictTier — Safe requires SF >= 2.0, not 1.5 (issue #141)');
+{
+  // Extract the shared thresholds + classifier that both the headline action
+  // card and sticky bar now read from, so this locks the exact regression:
+  // the headline used to render green "Safe" at SF 1.5x while the same panel
+  // said "Recommended minimum: 2x".
+  const m = html.match(/const FAIL_SF_THRESHOLD[\s\S]*?function sfVerdictTier\(sf\) \{[\s\S]*?\n\}\n/);
+  if (!m) throw new Error('Could not extract sfVerdictTier + its threshold constants');
+  const mod = { exports: {} };
+  new Function('module', 'exports',
+    m[0] + '\nmodule.exports = { sfVerdictTier, FAIL_SF_THRESHOLD, ACCEPTABLE_SF_THRESHOLD, SAFE_SF_THRESHOLD };'
+  )(mod, mod.exports);
+  const { sfVerdictTier, FAIL_SF_THRESHOLD, ACCEPTABLE_SF_THRESHOLD, SAFE_SF_THRESHOLD } = mod.exports;
+
+  test('Thresholds are 1.0 / 1.5 / 2.0',
+    FAIL_SF_THRESHOLD === 1.0 && ACCEPTABLE_SF_THRESHOLD === 1.5 && SAFE_SF_THRESHOLD === 2.0,
+    `got ${FAIL_SF_THRESHOLD}/${ACCEPTABLE_SF_THRESHOLD}/${SAFE_SF_THRESHOLD}`);
+
+  test('SF 0.9 -> fail tier', sfVerdictTier(0.9) === 'fail', `got ${sfVerdictTier(0.9)}`);
+  test('SF 1.2 -> marginal tier', sfVerdictTier(1.2) === 'marginal', `got ${sfVerdictTier(1.2)}`);
+  test('SF 1.6 -> acceptable tier, NOT "safe" (the exact issue #141 regression case — used to render green "Safe" here)',
+    sfVerdictTier(1.6) === 'acceptable', `got ${sfVerdictTier(1.6)}`);
+  test('SF 1.5 boundary resolves to acceptable, not marginal (>= 1.5 is the acceptable band)',
+    sfVerdictTier(1.5) === 'acceptable', `got ${sfVerdictTier(1.5)}`);
+  test('SF 2.1 -> safe tier', sfVerdictTier(2.1) === 'safe', `got ${sfVerdictTier(2.1)}`);
+  test('SF 2.0 boundary resolves to safe (green requires >= 2.0, not > 2.0)',
+    sfVerdictTier(2.0) === 'safe', `got ${sfVerdictTier(2.0)}`);
+  test('null SF -> null tier (safety factor unavailable)', sfVerdictTier(null) === null);
+  test('NaN SF -> null tier (guards against a false verdict, mirrors the safetyFactorAvailable guard)',
+    sfVerdictTier(NaN) === null);
+}
+
+// ── Test group L: legend/model heatmap color agreement (issue #142) ──────────
+console.log('\n[L] Legend gradient bar matches model gamma color at 25/50/75% (issue #142)');
+{
+  // Extract currentGamma (+ its localStorage/URL-backed init), stressColor,
+  // COLORMAPS, and updateLegendSwatches together — updateLegendSwatches calls
+  // currentGamma() and stressColor() directly, so they need to come from the
+  // same extracted block rather than being re-implemented by the test.
+  const m = html.match(/\(function\(\) \{\n  const stored = localStorage\.getItem\('sf-gamma-disabled'\);[\s\S]*?\n\}\n\n\/\/ Restore saved colormap/);
+  if (!m) throw new Error('Could not extract gamma-init IIFE..updateLegendSwatches block');
+  const src = m[0];
+
+  let gradientCss = null;
+  global.document = {
+    getElementById(id) {
+      if (id === 'legend-gradient') {
+        const el = { style: {} };
+        Object.defineProperty(el.style, 'background', {
+          set(v) { gradientCss = v; }, get() { return gradientCss; },
+        });
+        return el;
+      }
+      return { style: {}, classList: { toggle() {} }, textContent: '' };
+    },
+  };
+  global.window = { location: { search: '' } };
+  global.localStorage = {
+    _store: {},
+    getItem(k) { return Object.prototype.hasOwnProperty.call(this._store, k) ? this._store[k] : null; },
+    setItem(k, v) { this._store[k] = v; },
+  };
+
+  // Runs the REAL extracted updateLegendSwatches() with gamma on/off (driven
+  // through localStorage exactly like the app's own init IIFE does — not by
+  // poking S.gammaEnabled directly, so this exercises the real init path)
+  // and returns helpers to read back the generated gradient plus an
+  // independent re-derivation of what the model would paint.
+  function run(gammaEnabled) {
+    gradientCss = null;
+    global.localStorage._store = { 'sf-gamma-disabled': gammaEnabled ? 'false' : 'true' };
+    global.S = { colormap: 'viridis' };
+    const mod = { exports: {} };
+    new Function('module', 'exports',
+      src + '\nmodule.exports = { currentGamma, stressColor, updateLegendSwatches };'
+    )(mod, mod.exports);
+    const { currentGamma, stressColor, updateLegendSwatches } = mod.exports;
+    updateLegendSwatches();
+    const stopRe = /rgb\((\d+),(\d+),(\d+)\)\s+([\d.]+)%/g;
+    const stops = [];
+    let mm;
+    while ((mm = stopRe.exec(gradientCss))) {
+      stops.push({ pct: parseFloat(mm[4]), r: +mm[1], g: +mm[2], b: +mm[3] });
+    }
+    const colorAtPct = (pct) => {
+      const s = stops.find(s => Math.abs(s.pct - pct) < 1e-6);
+      if (!s) throw new Error(`No legend stop at pct=${pct}`);
+      return [s.r, s.g, s.b];
+    };
+    // computeSmoothedStressColors paints each vertex with
+    // stressColor(pow(stressFraction, GAMMA)) — reproduce that exactly for a
+    // given stress fraction (0 = min, 1 = max) as the "model" color.
+    const modelColorAtFraction = (f) => {
+      const t = Math.pow(f, currentGamma());
+      const [r, g, b] = stressColor(t, 'viridis');
+      return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+    };
+    return { colorAtPct, modelColorAtFraction, stressColor, gammaValue: currentGamma() };
+  }
+
+  // Legend label rows sit at fixed positions 0/25/50/75/100% (flexbox
+  // space-between over 5 rows), each labeled with the linear stress fraction
+  // f = 1 - pct/100 (HIGH at top/0%, LOW at bottom/100%). For each position,
+  // the legend bar's color there must equal the model's color for that same
+  // stress fraction — that's the exact property issue #142 broke.
+  {
+    const { colorAtPct, modelColorAtFraction, stressColor, gammaValue } = run(true);
+    test('gamma enabled -> currentGamma() = 0.55', gammaValue === 0.55, `got ${gammaValue}`);
+    [25, 50, 75].forEach(pct => {
+      const f = 1 - pct / 100;
+      const legend = colorAtPct(pct);
+      const model = modelColorAtFraction(f);
+      test(`gamma ON: legend color at ${pct}% matches model color at stress fraction ${f.toFixed(2)}`,
+        legend[0] === model[0] && legend[1] === model[1] && legend[2] === model[2],
+        `legend=rgb(${legend}) model=rgb(${model})`);
+    });
+
+    // Sanity check that the fix isn't a no-op: the gamma-mapped 50% stop must
+    // differ from the naive linear stressColor(0.5) — otherwise this test
+    // group wouldn't actually have caught the original ~1.8x over-read bug.
+    const legendMid = colorAtPct(50);
+    const [rNaive, gNaive, bNaive] = stressColor(0.5, 'viridis');
+    const naiveLinear = [Math.round(rNaive * 255), Math.round(gNaive * 255), Math.round(bNaive * 255)];
+    test('gamma ON: 50% stop is NOT the naive linear color (proves gamma actually changed the output)',
+      !(legendMid[0] === naiveLinear[0] && legendMid[1] === naiveLinear[1] && legendMid[2] === naiveLinear[2]),
+      `legend50%=rgb(${legendMid}) naiveLinear=rgb(${naiveLinear})`);
+  }
+
+  // When gamma is disabled, GAMMA=1 and pow(f,1)=f, so the legend must go
+  // back to sampling linearly — i.e. exactly stressColor(1 - pct/100) with no
+  // warp, keyed to the same currentGamma() the model itself reads (not a
+  // second copy of the disableGamma flag).
+  {
+    const { colorAtPct, gammaValue, stressColor } = run(false);
+    test('gamma disabled -> currentGamma() = 1.0', gammaValue === 1.0, `got ${gammaValue}`);
+    [25, 50, 75].forEach(pct => {
+      const f = 1 - pct / 100;
+      const legend = colorAtPct(pct);
+      const [r, g, b] = stressColor(f, 'viridis');
+      const linear = [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+      test(`gamma OFF: legend color at ${pct}% is exactly linear (fraction ${f.toFixed(2)}, no warp)`,
+        legend[0] === linear[0] && legend[1] === linear[1] && legend[2] === linear[2],
+        `legend=rgb(${legend}) linear=rgb(${linear})`);
+    });
+  }
+}
+
+// ── Test group M: convergenceObservedOrder / richardsonExtrapolate (#146) ────
+console.log('\n[M] Observed order of convergence — recovers known p, clamps, falls back');
+{
+  const mA = html.match(/function convergenceObservedOrder\(meshes, theoreticalP\) \{[\s\S]*?\n\}/);
+  const mB = html.match(/function richardsonExtrapolate\(second, finest, orderInfo\) \{[\s\S]*?\n\}/);
+  if (!mA) throw new Error('Could not extract convergenceObservedOrder');
+  if (!mB) throw new Error('Could not extract richardsonExtrapolate');
+  const mod = { exports: {} };
+  new Function('module', 'exports',
+    mA[0] + '\n' + mB[0] + '\nmodule.exports = { convergenceObservedOrder, richardsonExtrapolate };'
+  )(mod, mod.exports);
+  const { convergenceObservedOrder, richardsonExtrapolate } = mod.exports;
+
+  // Synthetic sequence with constant linear refinement r=2 (node counts scale
+  // by 8 each step) and f_i = f_exact + C*h_i^p. With h halving each refinement
+  // the closed-form order recovers p exactly regardless of C or f_exact.
+  const seq = (p, fExact = 100, C = 40) => {
+    // coarsest h=4, std h=2, fine h=1 ; nodes ∝ (1/h)^3
+    const hs = [4, 2, 1];
+    const nodesFine = 64000; // 1/h=1 -> base; scale so ratios are exactly 8
+    const nodesFor = h => Math.round(nodesFine / (h * h * h)); // (1/h)^3 * (nodesFine)
+    return hs.map(h => ({ nodes: nodesFor(h), value: fExact + C * Math.pow(h, p) }));
+  };
+
+  // p = 2 (quadratic-stress-like), converging from above (C>0)
+  {
+    const r = convergenceObservedOrder(seq(2), 2);
+    test('M recovers p=2 from a clean O(h^2) sequence',
+      r.source === 'observed' && Math.abs(r.order - 2) < 1e-6, `order=${r.order} src=${r.source}`);
+    test('M p=2 sequence is monotone', r.monotone === true);
+  }
+  // p = 1 (linear-stress), the exact case the old hard-coded p=2 got wrong
+  {
+    const r = convergenceObservedOrder(seq(1), 1);
+    test('M recovers p=1 from a clean O(h^1) sequence (C3D4 stress rate)',
+      r.source === 'observed' && Math.abs(r.order - 1) < 1e-6, `order=${r.order}`);
+  }
+  // Clamp high: p=5 synthetic must clamp to 3
+  {
+    const r = convergenceObservedOrder(seq(5), 2);
+    test('M clamps a super-cubic observed order to the [0.5,3] ceiling',
+      r.order === 3 && r.raw > 3, `order=${r.order} raw=${r.raw?.toFixed(2)}`);
+  }
+  // Diverging peak: values GROW under refinement (singularity) -> raw <= 0,
+  // order clamps to floor 0.5, still flagged observed so the raw signal survives
+  {
+    const diverge = [
+      { nodes: 1000,  value: 50 },
+      { nodes: 8000,  value: 80 },
+      { nodes: 64000, value: 140 },  // difference grows 30 -> 60
+    ];
+    const r = convergenceObservedOrder(diverge, 1);
+    test('M diverging peak yields raw order ≤ 0 (singularity signal)',
+      isFinite(r.raw) && r.raw <= 0, `raw=${r.raw}`);
+    test('M diverging peak clamps reported order to the 0.5 floor',
+      r.order === 0.5, `order=${r.order}`);
+  }
+  // Non-monotone (sign flip) -> theoretical fallback
+  {
+    const osc = [
+      { nodes: 1000,  value: 100 },
+      { nodes: 8000,  value: 108 },
+      { nodes: 64000, value: 104 },  // up then down
+    ];
+    const r = convergenceObservedOrder(osc, 1);
+    test('M non-monotone sequence falls back to theoretical order',
+      r.source === 'theoretical' && r.order === 1 && r.monotone === false, `order=${r.order} src=${r.source}`);
+  }
+  // Fewer than 3 meshes -> theoretical fallback
+  {
+    const r = convergenceObservedOrder([{ nodes: 1000, value: 10 }, { nodes: 8000, value: 12 }], 2);
+    test('M <3 meshes falls back to theoretical order', r.source === 'theoretical' && r.order === 2);
+  }
+  // Richardson uses the observed order, not a hard-coded p=2
+  {
+    // O(h^1) sequence: f_exact=100. Extrapolation with p=1 must land ~100.
+    const s = seq(1, 100, 40);
+    const order = convergenceObservedOrder(s, 1);
+    const rich = richardsonExtrapolate(s[1], s[2], order);
+    test('M Richardson with observed p=1 recovers the true limit (~100)',
+      rich.valid && Math.abs(rich.value - 100) < 1e-6, `value=${rich.value}`);
+    // The old hard-coded p=2 would UNDER-correct an O(h) sequence: r^2-1=3 vs
+    // the correct r-1=1, so it lands at 105, not 100 — prove the fix matters.
+    const wrong = richardsonExtrapolate(s[1], s[2], { order: 2 });
+    test('M hard-coded p=2 would mis-extrapolate the O(h) sequence (proves fix matters)',
+      Math.abs(wrong.value - 100) > 1, `p2 value=${wrong.value}`);
+  }
+}
+
+// ── Test group N: selectConvergenceMetric / stressPercentile (#147) ──────────
+console.log('\n[N] Singularity-aware convergence metric — evidence hierarchy + p99');
+{
+  const mA = html.match(/function selectConvergenceMetric\(singularity, peakOrder\) \{[\s\S]*?\n\}/);
+  const mB = html.match(/function stressPercentile\(stressArr, pct\) \{[\s\S]*?\n\}/);
+  if (!mA) throw new Error('Could not extract selectConvergenceMetric');
+  if (!mB) throw new Error('Could not extract stressPercentile');
+  const mod = { exports: {} };
+  new Function('module', 'exports',
+    mA[0] + '\n' + mB[0] + '\nmodule.exports = { selectConvergenceMetric, stressPercentile };'
+  )(mod, mod.exports);
+  const { selectConvergenceMetric, stressPercentile } = mod.exports;
+
+  // No singularity, healthy observed order -> converge on peak VM as usual.
+  {
+    const r = selectConvergenceMetric(null, { source: 'observed', raw: 1.8 });
+    test('N healthy peak: metric peakVM, not singular', !r.singularAtPeak && r.metric === 'peakVM' && r.evidence === 'none');
+  }
+  // Refinement divergence (raw <= 0.5) is PRIMARY, scale-independent evidence.
+  {
+    const r = selectConvergenceMetric(null, { source: 'observed', raw: 0.1 });
+    test('N diverging observed order -> singular, p99, refinement evidence',
+      r.singularAtPeak && r.metric === 'p99' && r.evidence === 'refinement');
+  }
+  // Negative observed order (peak growing) also counts as refinement evidence.
+  {
+    const r = selectConvergenceMetric(null, { source: 'observed', raw: -1 });
+    test('N negative observed order -> refinement evidence', r.evidence === 'refinement' && r.metric === 'p99');
+  }
+  // Server single-mesh flag with no refinement signal -> single-mesh evidence.
+  {
+    const r = selectConvergenceMetric({ detected: true }, { source: 'observed', raw: 2.2 });
+    test('N server flag only -> singular, p99, single-mesh evidence',
+      r.singularAtPeak && r.metric === 'p99' && r.evidence === 'single-mesh');
+  }
+  // Refinement OUTRANKS the single-mesh heuristic when both fire.
+  {
+    const r = selectConvergenceMetric({ detected: true }, { source: 'observed', raw: 0 });
+    test('N refinement outranks single-mesh heuristic', r.evidence === 'refinement');
+  }
+  // Non-monotone peak order (theoretical fallback) is NOT treated as divergence.
+  {
+    const r = selectConvergenceMetric(null, { source: 'theoretical', raw: null });
+    test('N non-monotone order alone is not a singularity flag', !r.singularAtPeak && r.metric === 'peakVM');
+  }
+  // A server flag still fires even with a non-monotone client order.
+  {
+    const r = selectConvergenceMetric({ detected: true }, { source: 'theoretical', raw: null });
+    test('N server flag fires under non-monotone order (single-mesh evidence)',
+      r.singularAtPeak && r.evidence === 'single-mesh');
+  }
+  // stressPercentile: p99 excludes a lone unbounded spike; p100 == max.
+  {
+    const arr = new Float32Array(1000);
+    for (let i = 0; i < 1000; i++) arr[i] = 10;      // uniform background
+    arr[500] = 100000;                                // singular spike
+    const p99 = stressPercentile(arr, 99);
+    const p100 = stressPercentile(arr, 100);
+    test('N p99 rejects the lone singular spike (stays at background)', p99 === 10, `p99=${p99}`);
+    test('N p100 is the max (includes the spike)', p100 === 100000, `p100=${p100}`);
+    test('N stressPercentile of empty array is null', stressPercentile(new Float32Array(0), 99) === null);
+  }
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 if (failed > 0) {
