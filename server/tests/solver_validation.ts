@@ -2034,8 +2034,9 @@ console.log("\n[27] C3D10 midside self-check + affine-exact / curved-under-integ
   test("[27.4] curved C3D10: 4-pt under-integrates (measurable vs high-order)",
     curvedErr > 0.005 && curvedErr < 0.1, `relErr=${(curvedErr*100).toFixed(2)}%`);
   console.log(`    quadrature: affine relErr=${affErr.toExponential(1)} (exact); curved (~20% midside offset) relErr=${(curvedErr*100).toFixed(2)}%`);
+}
 
-// ── Test group 27: Face pressure selection — coarse mesh, no silent zero-load ─
+// ── Test group 28: Face pressure selection — coarse mesh, no silent zero-load ─
 // Issue #157: 'face' pressure selection used an absolute 0.5 mm proximity band,
 // so a COARSE mesh (large triangles) could select zero triangles → zero load
 // applied → a silently unstressed model. The band is now 0.5 × median boundary
@@ -2077,7 +2078,10 @@ console.log("\n[28] Face pressure selection — coarse mesh non-empty + force = 
     const vx = mesh.nodes[c*3]!-mesh.nodes[a*3]!, vy = mesh.nodes[c*3+1]!-mesh.nodes[a*3+1]!, vz = mesh.nodes[c*3+2]!-mesh.nodes[a*3+2]!;
     area += 0.5 * Math.hypot(uy*vz-uz*vy, uz*vx-ux*vz, ux*vy-uy*vx);
   }
-  const pf = assembleSurfaceTraction(mesh.nodes, faces, sel, [0, 0, P]);
+  // #206 changed assembleSurfaceTraction to take the full TetMesh (it needs the
+  // parent element/face map for the C3D10 T6 consistent load); this test came
+  // from #226 which predated that, so pass `mesh`, not `mesh.nodes`.
+  const pf = assembleSurfaceTraction(mesh, faces, sel, [0, 0, P]);
   let fz = 0; for (let n = 0; n < mesh.nodeCount; n++) fz += pf[n*3+2] ?? 0;
   test("[28.3] total force = P × selected area", Math.abs(fz - P*area) < 1e-6*(P*area),
     `Σfz=${fz.toFixed(3)} P·A=${(P*area).toFixed(3)} (A=${area.toFixed(1)} mm²)`);
