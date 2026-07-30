@@ -904,6 +904,17 @@ export const INTERSHEAR_OVER_YIELDZ_DEFAULT = 1 / Math.sqrt(3);
  */
 export const CROSS_BEAD_RATIO_LITERATURE = 0.85;
 
+/**
+ * Assumed solid top/bottom layer counts for the two-region model when the
+ * caller supplies none (issue #181). Common slicer defaults are 4 top / 4
+ * bottom layers, giving a 0.8 mm skin at a 0.2 mm layer height — a value with
+ * NO physical relationship to the perimeter wall band (wallCount × line width)
+ * that the code previously borrowed silently. The assumption is surfaced in
+ * materialModel (skinLayersAssumed) and the report so it can be corrected.
+ */
+export const DEFAULT_TOP_LAYERS = 4;
+export const DEFAULT_BOTTOM_LAYERS = 4;
+
 
 /**
  * Fallback SCALAR-SWAP APPROXIMATION for upright prints when no bed is picked
@@ -1473,13 +1484,16 @@ export interface PrintSettings {
    * Number of solid TOP layers (ceiling skin). Consumed by the two-region
    * model to give the top solid skin its own band thickness
    * (topLayers × layerHeightMm), independent of the vertical perimeter band
-   * (wallCount × extrusionWidthMm). Clamped to [0, 64]. Absent → the top skin
-   * falls back to the perimeter band thickness (legacy behavior, unchanged).
+   * (wallCount × extrusionWidthMm). Clamped to [0, 64]. Absent → the two-region
+   * model assumes a slicer-default count (DEFAULT_TOP_LAYERS) and flags the
+   * assumption in materialModel.skinLayersAssumed (issue #181) — it never
+   * borrows the perimeter band thickness.
    */
   topLayers?: number;
   /**
    * Number of solid BOTTOM layers (floor skin); see topLayers. Bottoms are
    * commonly thicker than tops, so the two are independent. Clamped to [0, 64].
+   * Absent → assumes DEFAULT_BOTTOM_LAYERS (flagged in skinLayersAssumed).
    */
   bottomLayers?: number;
   /**
@@ -2612,16 +2626,27 @@ export interface MaterialModelInfo {
   /** Perimeter wall-band thickness used for classification (wallCount × line width). */
   wallThicknessMm:      number | null;
   /**
-   * Top/bottom solid-skin (floor/ceiling) band thicknesses, mm — present when
-   * the two-region model classified independent skins (topLayers/bottomLayers
-   * supplied). Null when skins were not modeled (fell back to the perimeter band).
+   * Top/bottom solid-skin (floor/ceiling) band thicknesses, mm. Derived from
+   * the solid top/bottom layer COUNT × layer height (issue #181) — a quantity
+   * independent of the perimeter wall band. Always present for a two-region
+   * solve; when the caller supplied no layer counts these use the assumed
+   * defaults (see skinLayersAssumed).
    */
   skinTopThicknessMm?:  number | null;
   skinBotThicknessMm?:  number | null;
+  /** Solid top/bottom layer counts used to derive the skin thicknesses. */
+  skinTopLayers?:       number;
+  skinBotLayers?:       number;
+  /**
+   * True when the top or bottom skin layer count was not supplied and the
+   * slicer-default assumption (DEFAULT_TOP_LAYERS / DEFAULT_BOTTOM_LAYERS) was
+   * used — set the actual slicer values for an accurate skin credit.
+   */
+  skinLayersAssumed?:   boolean;
   /**
    * Build axis the skin classification used. "bed" = the picked bed normal;
    * "assumed-z-up" = no bed picked, so global +Z was assumed (skins may be
-   * misplaced if the part is not modeled Z-up). Absent when skins not modeled.
+   * misplaced if the part is not modeled Z-up).
    */
   skinBuildAxis?:       "bed" | "assumed-z-up";
   /** Shell (dense wall) share of part volume from the geometric classification. */
@@ -3891,23 +3916,31 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       );
 
       // Independent floor/ceiling (top/bottom solid skin) bands: their
-      // thickness is layers × layer height, generally different from the
-      // vertical perimeter band. Skins are the SAME solid material as the
-      // perimeters (same weak axis), so only the geometry changes. When the
-      // user supplies no skin layer counts, the skin bands default to tWall and
-      // the classifier reduces bit-identically to the single-band path.
+      // thickness is layers × layer height, generally DIFFERENT from the
+      // vertical perimeter band (wallCount × line width). Skins are the SAME
+      // solid material as the perimeters (same weak axis), so only the geometry
+      // changes. The top/bottom solid-skin count has no physical relationship
+      // to the perimeter wall count, so when the caller supplies none we assume
+      // sensible slicer defaults (4/4) and derive the skin thickness from THEM
+      // — never silently borrowing tWall (issue #181). The assumption is
+      // surfaced in materialModel (skinLayersAssumed) and the report. Skins are
+      // always modeled for a two-region solve; when their thickness equals
+      // tWall the classifier still collapses bit-identically to the single-band
+      // path (skin-band.test.ts).
       const layerH = req.print.layerHeightMm ?? 0.2;
-      const clampLayers = (n: number | undefined): number | undefined =>
-        n === undefined ? undefined : Math.min(64, Math.max(0, n));
-      const topLayers = clampLayers(req.print.topLayers);
-      const botLayers = clampLayers(req.print.bottomLayers);
-      const skinRequested = topLayers !== undefined || botLayers !== undefined;
-      const tSkinTop = topLayers !== undefined ? topLayers * layerH : tWall;
-      const tSkinBot = botLayers !== undefined ? botLayers * layerH : tWall;
+      const clampLayers = (n: number | undefined, dflt: number): number =>
+        n === undefined ? dflt : Math.min(64, Math.max(0, n));
+      const topAssumed = req.print.topLayers === undefined;
+      const botAssumed = req.print.bottomLayers === undefined;
+      const topLayers = clampLayers(req.print.topLayers, DEFAULT_TOP_LAYERS);
+      const botLayers = clampLayers(req.print.bottomLayers, DEFAULT_BOTTOM_LAYERS);
+      const skinLayersAssumed = topAssumed || botAssumed;
+      const tSkinTop = topLayers * layerH;
+      const tSkinBot = botLayers * layerH;
       // Build axis for skin geometry: the picked bed normal, else assume Z-up.
       const skinBuildAxis: "bed" | "assumed-z-up" = weakAxis ? "bed" : "assumed-z-up";
       const buildAxis = weakAxis ?? ([0, 0, 1] as const);
-      const skin = skinRequested ? { buildAxis, tSkinTop, tSkinBot } : undefined;
+      const skin = { buildAxis, tSkinTop, tSkinBot };
 
       const tr = buildTwoRegionField(mesh, surfaceFaces, shellMat, coreMat, tWall, skin);
       material = tr.averageMaterial;
@@ -3990,9 +4023,12 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         ...materialModel,
         twoRegion: true,
         wallThicknessMm: tWall,
-        skinTopThicknessMm: skinRequested ? tSkinTop : null,
-        skinBotThicknessMm: skinRequested ? tSkinBot : null,
-        ...(skinRequested ? { skinBuildAxis } : {}),
+        skinTopThicknessMm: tSkinTop,
+        skinBotThicknessMm: tSkinBot,
+        skinTopLayers: topLayers,
+        skinBotLayers: botLayers,
+        skinLayersAssumed,
+        skinBuildAxis,
         shellVolumeFraction: Vf,
         shellYieldXYMPa: shellMat.yieldXY,
         coreYieldXYMPa: coreMat.yieldXY,
@@ -4014,9 +4050,8 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       };
       console.log(
         `[analysis] two-region model: tWall=${tWall.toFixed(2)}mm, ` +
-        (skinRequested
-          ? `skins top=${tSkinTop.toFixed(2)}mm bot=${tSkinBot.toFixed(2)}mm (${skinBuildAxis}), `
-          : ``) +
+        `skins top=${tSkinTop.toFixed(2)}mm (${topLayers}L) bot=${tSkinBot.toFixed(2)}mm (${botLayers}L) ` +
+        `${skinBuildAxis}${skinLayersAssumed ? " assumed-default" : ""}, ` +
         `shell Vf=${(Vf * 100).toFixed(1)}%, ` +
         `bins=${tr.field ? tr.field.binCount : "collapsed-to-uniform"}, ` +
         `impliedAvgMul=${impliedAvgStrengthMul.toFixed(3)} vs globalMul=${strengthMul.toFixed(3)}`
