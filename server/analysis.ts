@@ -315,11 +315,29 @@ export function checkFailureModes(params: {
    * the FEM interface criterion uses).
    */
   interlayerShearMPa?: number | null;
+  /**
+   * Per-failure-mode material selection for WALL-LINED holes under the
+   * two-region model (issue #175). Slicers line every hole with dense
+   * perimeter walls, so the bolt shank / thread bears on SHELL material, not
+   * the volume-averaged shell/core blend that `effectiveYieldMPa` /
+   * `interlayerShearMPa` carry (CLAUDE.md invariant #6: per-feature consumers
+   * read the shell endpoint, whole-part consumers read the average). Present
+   * ⇒ two-region active AND walls line the hole (wallCount ≥ 1): bearing uses
+   * `wallShellYieldMPa`, thread strip-out uses `wallShellInterlayerShearMPa`.
+   * Absent (single-material / no walls) ⇒ bit-identical to the average path.
+   * Bulk / net-section / shear-out modes keep the average material.
+   */
+  wallShellYieldMPa?: number | null;
+  wallShellInterlayerShearMPa?: number | null;
 }): FailureModeResult[] {
   const { holeClass, plateThicknessMm, edgeDistMm, holeSeparationMm,
           appliedForceN, effectiveYieldMPa, bulkSF, orientation,
           layerHeightMm, calibratedBearingStrMPa } = params;
   const bearingStressMult = params.bearingStressMult ?? 1.0;
+  // Wall-lined-hole shell selection (issue #175): null unless two-region walls
+  // line this hole. Bearing/thread then read the dense perimeter allowable.
+  const wallShellYield = params.wallShellYieldMPa ?? null;
+  const wallShellShear = params.wallShellInterlayerShearMPa ?? null;
   const bulkCriterion     = params.bulkCriterion ?? "von-mises";
 
   const results: FailureModeResult[] = [];
@@ -412,15 +430,21 @@ export function checkFailureModes(params: {
     // More crossings per thread = more delamination risk
     const crossingsPerThread = pitch / layerHeightMm;
     const penalty = threadLayerPenalty(pitch, layerHeightMm);
-    const threadShear = shearStrength * penalty;
+    // Wall-lined holes: the thread is cut into the dense perimeter, so it strips
+    // through the SHELL interlaminar allowable, not the shell/core blend (#175).
+    const threadBaseShear = wallShellShear ?? shearStrength;
+    const threadShear = threadBaseShear * penalty;
     const sf_strip = (threadShear * shearArea) / F;
+    const threadMatNote = wallShellShear != null
+      ? ` Using wall (shell) interlaminar allowable ${threadBaseShear.toFixed(1)} MPa — the thread is cut into the dense perimeter, not the infill core.`
+      : ``;
     results.push({
       mode:       "Thread strip-out",
       sf:          +sf_strip.toFixed(3),
       failForceN:  +(F * sf_strip).toFixed(0),
       checked:     true,
       confidence:  "medium",
-      note:        `${nThreads} threads engaged (${t.toFixed(1)}mm / ${pitch}mm pitch). Each thread crosses ~${crossingsPerThread.toFixed(1)} layer boundaries (lh=${layerHeightMm}mm) — penalty ${(penalty*100).toFixed(0)}%. Strength estimate ±30%.`,
+      note:        `${nThreads} threads engaged (${t.toFixed(1)}mm / ${pitch}mm pitch). Each thread crosses ~${crossingsPerThread.toFixed(1)} layer boundaries (lh=${layerHeightMm}mm) — penalty ${(penalty*100).toFixed(0)}%. Strength estimate ±30%.${threadMatNote}`,
     });
   }
 
@@ -433,10 +457,14 @@ export function checkFailureModes(params: {
     const boltD        = bolt.nominalMm;
     const bearingArea  = boltD * t;
     const sigmaBear    = (F * bearingStressMult) / bearingArea;
-    // Use calibrated bearing strength if available — otherwise conservative estimate
-    const bearingStr   = calibratedBearingStrMPa ?? Sy * 1.0;
+    // Bearing yield: calibrated bearing strength wins; else the SHELL yield for
+    // a wall-lined two-region hole (the shank bears on the dense perimeter, not
+    // the shell/core blend — #175); else the average yield (single-material).
+    const bearingYield = wallShellYield ?? Sy;
+    const bearingStr   = calibratedBearingStrMPa ?? bearingYield * 1.0;
     const sf_bearing   = bearingStr / sigmaBear;
     const isCalibrated = calibratedBearingStrMPa != null;
+    const usesWallYield = !isCalibrated && wallShellYield != null;
     const distLabel    = bearingStressMult > 1.1 ? ` (peak from cosine-bearing distribution)` : ``;
     results.push({
       mode:       "Bearing (hole wall)",
@@ -446,6 +474,8 @@ export function checkFailureModes(params: {
       confidence:  isCalibrated ? "medium" : "low",
       note: isCalibrated
         ? `Bolt shaft (${boltD}mm) bears on hole wall (${t.toFixed(1)}mm). Using CALIBRATED bearing strength ${bearingStr.toFixed(0)} MPa from physical test.${distLabel}`
+        : usesWallYield
+        ? `Bolt shaft (${boltD}mm) bears on hole wall (${t.toFixed(1)}mm). Using wall (shell) yield ${bearingStr.toFixed(0)} MPa — slicers line the hole with dense perimeters, so the shank bears on shell, not the infill-averaged blend. Run bearing coupon to improve confidence.${distLabel}`
         : `Bolt shaft (${boltD}mm) bears on hole wall (${t.toFixed(1)}mm). Bearing strength assumed = yield strength — no FDM data. Run bearing coupon to improve confidence.${distLabel}`,
     });
   } else {
@@ -3596,6 +3626,10 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // working); the field carries the per-element stiffness/yield/density.
   let materialField: ElementMaterialField | undefined;
   let wallBondField: WallBondField | undefined;
+  // Shell (dense perimeter) allowables for wall-lined-hole bolt-region checks
+  // (issue #175). Set only on the two-region path; whole-part consumers keep
+  // reading the volume-averaged `material`.
+  let shellHoleAllowables: { yieldXY: number; interlayerShear: number } | undefined;
   let materialModel: MaterialModelInfo = {
     twoRegion: false,
     wallThicknessMm: null,
@@ -3654,6 +3688,11 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         bondRel,
       );
       const shellMat: OrthotropicMaterial = { ...shellBuilt, massRho: baseMat.densityKgM3 };
+      // Capture the dense-perimeter allowables for wall-lined bolt-region checks
+      // (#175). The shell is built at strengthMul = 1.0 (solid perimeter), so
+      // this is independent of infill — a 20%-infill and a 100%-infill part with
+      // equal wall count get the SAME bearing/thread allowable.
+      shellHoleAllowables = { yieldXY: shellMat.yieldXY, interlayerShear: interlaminarShearOf(shellMat) };
 
       // Core: wall-free homogenized lattice — per-axis Gibson-Ashby power
       // laws applied to the solid lattice base (see buildCoreMaterial: frame
@@ -4862,6 +4901,15 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       layerHeightMm:     req.print.layerHeightMm ?? 0.2,
       calibratedBearingStrMPa: req.calibration?.bearingStr_MPa ?? null,
       interlayerShearMPa: isOrthotropicLike(material) ? interlaminarShearOf(material) : null,
+      // Wall-lined-hole shell selection (#175): only when a genuine two-region
+      // field is active AND walls line the hole (wallCount ≥ 1). Slicers line
+      // holes with perimeters, so bearing/thread are carried by the shell, not
+      // the volume-averaged blend. Single-material / no-wall path passes null →
+      // bit-identical to the average material.
+      ...(materialField && req.print.wallCount >= 1 && shellHoleAllowables ? {
+        wallShellYieldMPa:           shellHoleAllowables.yieldXY,
+        wallShellInterlayerShearMPa: shellHoleAllowables.interlayerShear,
+      } : {}),
       ...(bearingStressMult > 1.0 ? { bearingStressMult } : {}),
     });
 
