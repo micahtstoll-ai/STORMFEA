@@ -299,7 +299,7 @@ function denseUpperSolve(L: Float64Array, B: Float64Array, p: number, nrhs: numb
  * Exported: the buckling solver (buckling.ts, #138) reuses this dense symmetric
  * eigensolver. Keep the signature stable.
  */
-function symmetricJacobi(A: Float64Array, p: number): Float64Array {
+export function symmetricJacobi(A: Float64Array, p: number): Float64Array {
   const Q = new Float64Array(p * p);
   // Initialize Q = I
   for (let i = 0; i < p; i++) Q[i + i*p] = 1.0;
