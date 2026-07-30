@@ -911,13 +911,17 @@ console.log('\n[O] updateMeshOrderSelector — C3D4 warning shown whenever C3D4 
 // ── Test group P: computeDisplayFailForce — buckling-governed selection (#204) ─
 console.log('\n[P] computeDisplayFailForce — "Will fail at X N" caveat / buckling-governed selection');
 {
+  // Anchor on the function's own column-0 closing brace (not the next
+  // function), so the extraction is robust to what follows it in the merged
+  // client — the integration placed renderValidationCoverage between this and
+  // showResults, which the old "...\n}\n\nfunction showResults" anchor over-grabbed.
   const fnMatch = html.match(
-    /function computeDisplayFailForce\(s, bucklingResult\) \{[\s\S]*?\n\}\n\nfunction showResults/
+    /function computeDisplayFailForce\(s, bucklingResult\) \{[\s\S]*?\n\}\n/
   );
   if (!fnMatch) throw new Error('Could not extract computeDisplayFailForce');
   const mod = { exports: {} };
   new Function('module', 'exports',
-    fnMatch[0].replace(/\n\nfunction showResults$/, '') + '\nmodule.exports = { computeDisplayFailForce };')(mod, mod.exports);
+    fnMatch[0] + '\nmodule.exports = { computeDisplayFailForce };')(mod, mod.exports);
   const { computeDisplayFailForce } = mod.exports;
 
   // No buckling data at all — falls back to the plain first-yield estimate.
