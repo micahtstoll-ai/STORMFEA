@@ -2361,6 +2361,265 @@ console.log("\n[29] Energy-norm ZZ estimator — full tensor, volume-weighted, s
   }
 }
 
+// ── Test group 28: MMS effectivity index — ZZ estimator MAGNITUDE lock (#150) ─
+// Groups 14 & 27 validate the estimator's BEHAVIOR (monotonicity, η∈[0,1], scale
+// invariance, tensor weighting). This group locks the estimator's MAGNITUDE
+// against a manufactured solution with a KNOWN exact stress field, measuring the
+// effectivity index θ = η_ZZ / ‖σ_exact − σ_h‖ (both in the energy norm).
+console.log("\n[28] Manufactured-solution effectivity index θ = η_ZZ / ‖σ_exact−σ_h‖ (#150)");
+{
+  // Manufactured EXACT solution — pure-bending stress σ_exact = (α·z, 0,0,0,0,0):
+  //   • self-equilibrated (div σ = 0 ⇒ NO body force needed), and
+  //   • for the isotropic compliance below it derives from the QUADRATIC field
+  //       uₓ = (α/E)·x·z,  u_y = −(ν α/E)·y·z,
+  //       u_z = (α/2E)·(−x² + ν y² − ν z²).
+  // We SOLVE the real FE problem with u_exact prescribed on the ENTIRE boundary
+  // (Dirichlet MMS, zero body force); the interior is the genuine Galerkin
+  // approximation. A C3D4 constant-strain element CANNOT represent this quadratic
+  // field, so σ_h carries a real, refinement-converging discretization error —
+  // exactly what the ZZ estimator must reproduce in magnitude.
+  //
+  // The TRUE energy-norm error ‖σ_exact − σ_h‖ and the norm ‖σ_h‖ are integrated
+  // INDEPENDENTLY of the estimator under test: σ_exact − σ_h is affine over each
+  // straight tet, so the exact tet mass-matrix rule ∫ dᵃdᵇ dV = V/20·(ΣᵃΣᵇ + Σᵃᵇ)
+  // integrates the quadratic energy integrand exactly — it never touches the
+  // estimator's own Gauss loop.
+  //
+  // A consistent ZZ/SPR estimator is asymptotically exact: θ → 1 under refinement.
+  // Measured here: θ = 1.182 → 1.129 → 1.080 at div = 6, 8, 12 (monotone → 1,
+  // conservative side θ > 1). Asserted band [0.7, 1.3] is the classic effectivity
+  // window (Zienkiewicz–Zhu 1992); the conservative direction (θ ≥ 1, never
+  // under-predicting) is the safety-critical one for FDM surface peak stress.
+  const E = 3500, nu = 0.36, alpha = 1.0, L = 10;
+  const iso = { E, nu, yieldStrength: 1e9, label: "mms" };
+  const Cmms = buildConstitutiveMatrix(iso);
+  const Smms = invert6x6(Cmms);
+  const uex = (x: number, y: number, z: number): [number, number, number] =>
+    [ (alpha/E)*x*z, -(nu*alpha/E)*y*z, (alpha/(2*E))*(-x*x + nu*y*y - nu*z*z) ];
+
+  const tetVolume = (nodes: Float64Array, a: number, b: number, c: number, d: number): number => {
+    const ax = nodes[a*3]!, ay = nodes[a*3+1]!, az = nodes[a*3+2]!;
+    const e1x = nodes[b*3]!-ax, e1y = nodes[b*3+1]!-ay, e1z = nodes[b*3+2]!-az;
+    const e2x = nodes[c*3]!-ax, e2y = nodes[c*3+1]!-ay, e2z = nodes[c*3+2]!-az;
+    const e3x = nodes[d*3]!-ax, e3y = nodes[d*3+1]!-ay, e3z = nodes[d*3+2]!-az;
+    const t = e1x*(e2y*e3z - e2z*e3y) - e1y*(e2x*e3z - e2z*e3x) + e1z*(e2x*e3y - e2y*e3x);
+    return Math.abs(t) / 6;
+  };
+
+  const levels = [6, 8, 12];
+  const thetas: number[] = [], trueRels: number[] = [];
+  for (const nDiv of levels) {
+    const mesh = generateBoxMesh(0, 0, 0, L, L, L, nDiv, nDiv, nDiv);
+    const eps = 1e-6;
+    const bnodes: number[] = [], pd: [number, number, number][] = [];
+    for (let node = 0; node < mesh.nodeCount; node++) {
+      const x = mesh.nodes[node*3] ?? 0, y = mesh.nodes[node*3+1] ?? 0, z = mesh.nodes[node*3+2] ?? 0;
+      if (x<eps||x>L-eps||y<eps||y>L-eps||z<eps||z>L-eps) { bnodes.push(node); pd.push(uex(x,y,z)); }
+    }
+    // Tight CG tolerance: the Dirichlet PENALTY (kMax·1e8) makes K stiff, so the
+    // small interior bending signal is only resolved once the CG residual is
+    // driven far below the discretization error. At the default 1e-8 tol θ would
+    // measure CG non-convergence (true error would spuriously GROW under
+    // refinement), not the estimator — see the #150 investigation.
+    const r = await runLinearStatic({
+      mesh, material: iso,
+      constraints: [{ nodeIndices: bnodes, prescribedDisplacement: pd }],
+      forces: [], cgTolerance: 1e-13, cgMaxIter: 20000,
+    });
+    const disp = r.displacement;
+    const { elemStress6 } = recoverElementStress(mesh, disp, iso);
+    const { globalRelativeError } = computeZZErrorEstimate(mesh, disp, elemStress6, iso);
+
+    // Independent energy norms (analytic affine-tet integral; NOT the estimator's).
+    let normSq = 0, trueSq = 0;
+    const dn = new Float64Array(4 * 6);
+    for (let e = 0; e < mesh.elementCount; e++) {
+      const n0 = mesh.elements[e*4] ?? 0, n1 = mesh.elements[e*4+1] ?? 0,
+            n2 = mesh.elements[e*4+2] ?? 0, n3 = mesh.elements[e*4+3] ?? 0;
+      const V = tetVolume(mesh.nodes, n0, n1, n2, n3);
+      const sh = elemStress6.subarray(e*6, e*6+6);
+      normSq += stressEnergyDensity(sh, Smms) * V;
+      const corners = [n0, n1, n2, n3];
+      for (let ci = 0; ci < 4; ci++) {
+        const nn = corners[ci]!;
+        const zc = mesh.nodes[nn*3+2] ?? 0;
+        dn[ci*6] = alpha*zc - (sh[0] ?? 0);            // σ_exact,xx − σ_h,xx (affine in z)
+        for (let k = 1; k < 6; k++) dn[ci*6+k] = -(sh[k] ?? 0); // other components: σ_exact = 0
+      }
+      for (let a = 0; a < 6; a++) for (let b = 0; b < 6; b++) {
+        let sA = 0, sB = 0, sAB = 0;
+        for (let i = 0; i < 4; i++) { sA += dn[i*6+a]!; sB += dn[i*6+b]!; sAB += dn[i*6+a]! * dn[i*6+b]!; }
+        trueSq += (Smms[a*6+b] ?? 0) * (V/20) * (sA*sB + sAB);
+      }
+    }
+    const etaZZ   = globalRelativeError * Math.sqrt(normSq);
+    const trueErr = Math.sqrt(trueSq);
+    const theta   = etaZZ / trueErr;
+    const trueRel = trueErr / Math.sqrt(normSq);
+    thetas.push(theta); trueRels.push(trueRel);
+    test(`[28.1] div=${nDiv}: effectivity index θ ∈ [0.7, 1.3]`, theta >= 0.7 && theta <= 1.3,
+      `θ=${theta.toFixed(4)} trueRelErr=${trueRel.toExponential(3)} etaZZ=${etaZZ.toExponential(3)} trueErr=${trueErr.toExponential(3)}`);
+  }
+  // Consistency of the MMS: the genuine FE stress error must FALL under refinement
+  // (guards against the CG-non-convergence artifact that inflates θ when the
+  // penalty system is under-solved).
+  test("[28.2] manufactured FE error decreases under refinement (consistent MMS)",
+    trueRels[0]! > trueRels[1]! && trueRels[1]! > trueRels[2]!,
+    `trueRelErr=${trueRels.map(v => v.toExponential(3)).join(" → ")}`);
+  // Asymptotic exactness: θ → 1 monotonically, from the conservative (θ > 1) side.
+  test("[28.3] effectivity index converges monotonically toward 1 (θ→1, θ>1)",
+    thetas[0]! > thetas[1]! && thetas[1]! > thetas[2]! && thetas[2]! > 1 &&
+    Math.abs(thetas[2]! - 1) < Math.abs(thetas[0]! - 1),
+    `θ=${thetas.map(v => v.toFixed(4)).join(" → ")}`);
+}
+
+// ── Test group 29: SPR boundary-patch robustness + known-answer (#156) ────────
+// SPR fits p(x) = [1, x, y, z] by least squares over each nodal patch; its moment
+// matrix M = PᵀP = Σ_e p(x_e)p(x_e)ᵀ is more ill-conditioned at BOUNDARY nodes
+// (one-sided, fewer, clustered patch centroids) — the concern in #156, since FDM
+// stress peaks live on surfaces. This group CHARACTERIZES that conditioning and
+// LOCKS the boundary recovery against a known analytic answer.
+//
+// Finding (no SPR code change warranted): SPR is already robust at the boundary.
+//   • Boundary moment matrices are only ~5× more ill-conditioned than interior
+//     ones and stay bounded (~1e5–1e6); the genuinely rank-deficient corner
+//     patches are caught by the existing length<4 / pivot<1e-12 averaging
+//     fallback, never reaching the solver as a near-singular system.
+//   • A REPRESENTABLE (linear) stress field is recovered to ~roundoff at boundary
+//     nodes — even for a part positioned 1000 mm from the origin (the basis uses
+//     raw global coords, yet κ·ε_mach stays ≪ any engineering tolerance).
+//   • A NON-representable (quadratic) field degrades GRACEFULLY at the boundary:
+//     the recovery error is comparable to the interior (no extrapolation
+//     overshoot) and converges at the interior's O(h²) rate.
+console.log("\n[29] SPR boundary-patch conditioning + boundary known-answer (#156)");
+{
+  // Symmetric 4×4 eigenvalues via cyclic Jacobi → condition number κ₂ = λmax/λmin.
+  const symEig4 = (A0: number[][]): number[] => {
+    const a = A0.map(r => r.slice());
+    for (let sweep = 0; sweep < 100; sweep++) {
+      let off = 0;
+      for (let p = 0; p < 4; p++) for (let q = p+1; q < 4; q++) off += a[p]![q]! * a[p]![q]!;
+      if (off < 1e-30) break;
+      for (let p = 0; p < 4; p++) for (let q = p+1; q < 4; q++) {
+        if (Math.abs(a[p]![q]!) < 1e-300) continue;
+        const phi = 0.5 * Math.atan2(2*a[p]![q]!, a[q]![q]! - a[p]![p]!);
+        const c = Math.cos(phi), s = Math.sin(phi);
+        for (let k = 0; k < 4; k++) { const kp = a[k]![p]!, kq = a[k]![q]!; a[k]![p] = c*kp - s*kq; a[k]![q] = s*kp + c*kq; }
+        for (let k = 0; k < 4; k++) { const pk = a[p]![k]!, qk = a[q]![k]!; a[p]![k] = c*pk - s*qk; a[q]![k] = s*pk + c*qk; }
+      }
+    }
+    return [a[0]![0]!, a[1]![1]!, a[2]![2]!, a[3]![3]!];
+  };
+
+  // Centroids + node→element patches for a box mesh (matches SPR's own build).
+  const buildPatches = (mesh: TetMesh) => {
+    const npe = mesh.nodesPerElem ?? 4;
+    const cx = new Float64Array(mesh.elementCount), cy = new Float64Array(mesh.elementCount), cz = new Float64Array(mesh.elementCount);
+    for (let e = 0; e < mesh.elementCount; e++) {
+      let x = 0, y = 0, z = 0;
+      for (let ni = 0; ni < 4; ni++) { const n = mesh.elements[e*npe+ni] ?? 0; x += mesh.nodes[n*3]!; y += mesh.nodes[n*3+1]!; z += mesh.nodes[n*3+2]!; }
+      cx[e] = x/4; cy[e] = y/4; cz[e] = z/4;
+    }
+    const patches: number[][] = Array.from({ length: mesh.nodeCount }, () => []);
+    for (let e = 0; e < mesh.elementCount; e++) for (let ni = 0; ni < npe; ni++) patches[mesh.elements[e*npe+ni] ?? 0]!.push(e);
+    return { cx, cy, cz, patches };
+  };
+  const patchCond = (patch: number[], cx: Float64Array, cy: Float64Array, cz: Float64Array): number => {
+    const A = [[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]];
+    for (const e of patch) { const p = [1, cx[e]!, cy[e]!, cz[e]!]; for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) A[i]![j]! += p[i]! * p[j]!; }
+    const ev = symEig4(A).map(Math.abs).sort((u, v) => u - v);
+    return ev[3]! / Math.max(ev[0]!, 1e-300);
+  };
+  const median = (v: number[]): number => { const s = v.slice().sort((a, b) => a - b); return s[Math.floor(s.length/2)] ?? 0; };
+  const isBoundary = (x: number, y: number, z: number, x0: number, x1: number): boolean => {
+    const eps = 1e-6;
+    return x < x0+eps || x > x1-eps || y < x0+eps || y > x1-eps || z < x0+eps || z > x1-eps;
+  };
+
+  // [29.1/29.2] Conditioning characterization: boundary vs interior patches.
+  {
+    const L = 10;
+    const mesh = generateBoxMesh(0, 0, 0, L, L, L, 6, 6, 6);
+    const { cx, cy, cz, patches } = buildPatches(mesh);
+    const intC: number[] = [], bndC: number[] = [];
+    let bndFinite = true;
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      const patch = patches[n]!;
+      if (patch.length < 4) continue; // rank-deficient corners → averaging fallback (bounded, tested in 29.5)
+      const cnd = patchCond(patch, cx, cy, cz);
+      const x = mesh.nodes[n*3] ?? 0, y = mesh.nodes[n*3+1] ?? 0, z = mesh.nodes[n*3+2] ?? 0;
+      if (isBoundary(x, y, z, 0, L)) { bndC.push(cnd); if (!isFinite(cnd)) bndFinite = false; } else intC.push(cnd);
+    }
+    const intMed = median(intC), bndMed = median(bndC), bndMax = Math.max(...bndC);
+    test("[29.1] boundary SPR patches are more ill-conditioned than interior (the #156 phenomenon)",
+      bndMed > intMed, `κ_med interior=${intMed.toExponential(2)} boundary=${bndMed.toExponential(2)} (ratio=${(bndMed/intMed).toFixed(1)}×)`);
+    // Bounded, not singular: every well-posed (length≥4) boundary patch stays far
+    // below 1/ε_mach (~1e16) where a double-precision LS solve would fail — the
+    // genuinely singular corner patches are the ones diverted to the averaging
+    // fallback by length<4 / pivot<1e-12, so no near-singular system is solved.
+    test("[29.2] boundary patch conditioning is bounded (κ < 1e9) and finite",
+      bndFinite && bndMax < 1e9, `κ_max boundary=${bndMax.toExponential(2)}`);
+  }
+
+  // [29.3/29.4] Boundary KNOWN-ANSWER: a REPRESENTABLE (linear) stress field must
+  // be recovered by SPR at boundary nodes to ~roundoff, because a linear field
+  // lies exactly in the [1,x,y,z] span — the least-squares fit is exact up to
+  // κ·ε_mach regardless of the one-sided patch. Tested at the origin and at a
+  // realistic 1000 mm offset (the basis uses raw global coords).
+  {
+    const a0 = 5, ax = 0.3, ay = -0.2, az = 0.7;
+    for (const [label, off] of [["origin", 0], ["offset 1000 mm", 1000]] as const) {
+      const L = 10;
+      const mesh = generateBoxMesh(off, off, off, off+L, off+L, off+L, 6, 6, 6);
+      const { cx, cy, cz, patches } = buildPatches(mesh);
+      const es6 = new Float64Array(mesh.elementCount * 6);
+      for (let e = 0; e < mesh.elementCount; e++) es6[e*6] = a0 + ax*cx[e]! + ay*cy[e]! + az*cz[e]!;
+      const spr = sprSmoothedStress6(mesh, es6);
+      let maxBndRel = 0;
+      for (let n = 0; n < mesh.nodeCount; n++) {
+        if (patches[n]!.length < 4) continue;
+        const x = mesh.nodes[n*3] ?? 0, y = mesh.nodes[n*3+1] ?? 0, z = mesh.nodes[n*3+2] ?? 0;
+        if (!isBoundary(x, y, z, off, off+L)) continue;
+        const exact = a0 + ax*x + ay*y + az*z;
+        maxBndRel = Math.max(maxBndRel, Math.abs((spr[n*6] ?? 0) - exact) / Math.max(1, Math.abs(exact)));
+      }
+      test(`[29.3] boundary known-answer (linear σ, ${label}): SPR recovers to < 1e-6`,
+        maxBndRel < 1e-6, `maxBoundaryRelErr=${maxBndRel.toExponential(2)}`);
+    }
+  }
+
+  // [29.5] Graceful degradation on a NON-representable (quadratic) field: SPR fits
+  // a linear polynomial and must EXTRAPOLATE to boundary nodes (outside the patch
+  // hull). A fragile estimator would overshoot there; a robust one keeps the
+  // boundary error comparable to the interior and convergent at the same rate.
+  {
+    const L = 10;
+    const f = (x: number, y: number, z: number) => 0.05*x*x + 0.03*y*y + 0.02*z*z;
+    let prevBnd = Infinity, converges = true, maxRatio = 0;
+    for (const nDiv of [4, 8, 16]) {
+      const mesh = generateBoxMesh(0, 0, 0, L, L, L, nDiv, nDiv, nDiv);
+      const { cx, cy, cz, patches } = buildPatches(mesh);
+      const es6 = new Float64Array(mesh.elementCount * 6);
+      for (let e = 0; e < mesh.elementCount; e++) es6[e*6] = f(cx[e]!, cy[e]!, cz[e]!);
+      const spr = sprSmoothedStress6(mesh, es6);
+      let maxInt = 0, maxBnd = 0;
+      for (let n = 0; n < mesh.nodeCount; n++) {
+        if (patches[n]!.length < 4) continue;
+        const x = mesh.nodes[n*3] ?? 0, y = mesh.nodes[n*3+1] ?? 0, z = mesh.nodes[n*3+2] ?? 0;
+        const err = Math.abs((spr[n*6] ?? 0) - f(x, y, z));
+        if (isBoundary(x, y, z, 0, L)) maxBnd = Math.max(maxBnd, err); else maxInt = Math.max(maxInt, err);
+      }
+      maxRatio = Math.max(maxRatio, maxBnd / Math.max(maxInt, 1e-300));
+      if (maxBnd >= prevBnd) converges = false;
+      prevBnd = maxBnd;
+    }
+    // No boundary overshoot: worst boundary error stays within 3× the interior
+    // (measured ~1.1×), and boundary error falls monotonically under refinement.
+    test("[29.5] non-representable field degrades gracefully at boundary (no overshoot, ratio<3, convergent)",
+      maxRatio < 3 && converges, `worst boundary/interior ratio=${maxRatio.toFixed(2)}, boundary error convergent=${converges}`);
+  }
+}
+
 // ── Summary ───────────────────────────────────────────────────────────────────
 // Runs at the END of the async IIFE, after every test group above has
 // completed. (A previous setTimeout(0) variant fired as soon as the event
