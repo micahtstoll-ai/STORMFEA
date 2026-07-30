@@ -3884,6 +3884,33 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
 
         const isLoaded = selectPressureRegion(mesh.nodes, surfaceFaces, [ux, uy, uz], region);
         const nLoaded = isLoaded.reduce((s, on) => s + (on ? 1 : 0), 0);
+        // Loud failure instead of a silent no-load solve (issue #157). A finite
+        // non-zero pressure that selects ZERO triangles would otherwise proceed
+        // with an unloaded model presented as a normal result. 'face' now
+        // always returns the extreme triangle, so an empty selection here means
+        // the region genuinely has no windward surface — a modelling error the
+        // user must see.
+        if (nLoaded === 0 && region !== "all") {
+          throw new Error(
+            `Pressure of ${p.magnitude} MPa (region='${region}', direction ` +
+            `(${ux.toFixed(2)},${uy.toFixed(2)},${uz.toFixed(2)})) selected NO surface triangles, ` +
+            `so it would apply zero load. Check the pressure direction/region against the model — ` +
+            `a '${region}' region needs a surface facing that direction.`
+          );
+        }
+        // Report the loaded area so total force = pressure × area is verifiable.
+        let loadedAreaMm2 = 0;
+        for (let t = 0; t < isLoaded.length; t++) {
+          if (!isLoaded[t]) continue;
+          const a = surfaceFaces[t*3] ?? 0, b = surfaceFaces[t*3+1] ?? 0, c = surfaceFaces[t*3+2] ?? 0;
+          const ax = mesh.nodes[a*3]??0, ay = mesh.nodes[a*3+1]??0, az = mesh.nodes[a*3+2]??0;
+          const bx = mesh.nodes[b*3]??0, by = mesh.nodes[b*3+1]??0, bz = mesh.nodes[b*3+2]??0;
+          const cx = mesh.nodes[c*3]??0, cy = mesh.nodes[c*3+1]??0, cz = mesh.nodes[c*3+2]??0;
+          const nx = (by-ay)*(cz-az)-(bz-az)*(cy-ay);
+          const ny = (bz-az)*(cx-ax)-(bx-ax)*(cz-az);
+          const nz = (bx-ax)*(cy-ay)-(by-ay)*(cx-ax);
+          loadedAreaMm2 += 0.5 * Math.hypot(nx, ny, nz);
+        }
         // A positive pressure pushes INWARD on the selected face (compression) —
         // the intuitive "pressure on this face" and the compressive pre-stress
         // buckling needs. Negative magnitude → outward (tension).
@@ -3904,7 +3931,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
           }
         }
         console.log(`[analysis] pressure ${p.magnitude}MPa ${p.normal ? "normal-to-surface" : `in (${ux.toFixed(2)},${uy.toFixed(2)},${uz.toFixed(2)})`} region=${region}: ` +
-          `${nLoaded} loaded triangles, |resultant|~${resN.toFixed(2)}N`);
+          `${nLoaded} loaded triangles over ${loadedAreaMm2.toFixed(2)} mm², |resultant|~${resN.toFixed(2)}N`);
       }
     }
   }
