@@ -3,11 +3,28 @@
 **Scope:** how STORMFEA accounts for FDM layers: the transversely isotropic
 constitutive model, the Hill (1948) failure criterion, the print-setting
 multipliers, and the calibration pipeline that feeds them.
-**Status:** A4 is fixed in this audit's companion commit. A1–A3 and A5 are
-fixed by the decoupled dual criterion and A6 by the bead-penetration bond
-model — both later commits on this branch (`server/solver/stress.ts`,
-`server/solver/bond.ts`); until those land, the sections below describe the
-defects in the present tense of the code they audit.
+**Status: A1–A7 are all RESOLVED.** Every defect below has shipped a fix on
+`main`; the sections that follow are the historical derivation record — kept
+in the present tense because they describe the code *as it stood when
+audited*, not the code today. Each `### Fix` paragraph names the resolving
+mechanism, and CLAUDE.md's Interlayer Failure & Bond Model invariants (and
+its Two-Region Material Model invariants, for the parts of A4 that touch
+`materialStrengthMultiplier`) are what now keep these fixes from
+regressing. Resolution summary, one line per item:
+
+| # | Defect | Resolved by | Locked by |
+|---|---|---|---|
+| A1 | Hill criterion azimuth-dependent in the layer plane | `fdmDualCriterionSF` — bulk von Mises (a norm, azimuth-invariant by construction) + separate interface check (`server/solver/stress.ts`) | `fdm-criterion.test.ts`; solver_validation azimuth-invariance group |
+| A2 | Conservative uncertainty band could clamp to SF = 999 | Dual criterion's bulk term is a norm — cannot go negative; band evaluation scales interface allowables only | `fdm-criterion.test.ts`; uncertainty-band unit tests |
+| A3 | Interlayer failure was tension/compression symmetric | Macaulay bracket `⟨σzz⟩₊` on the interface tension term + Mohr–Coulomb friction credit in compression (`fdmDualCriterionSF`) | `fdm-criterion.test.ts` |
+| A4 | Orientation multiplier double-counted the layer penalty | `materialStrengthMultiplier` is orientation-free; `effectiveStrengthMultiplier` survives only as the scalar what-if estimator | `two-region.test.ts` |
+| A5 | Lap-shear calibration couldn't disagree with the Hill coupling | Independent `yieldZShear` (lap-shear coupon) and `yieldZ` (Z-tension coupon, `COUPON_DIMS.zTensile`); legacy `τ/0.58` retained only as a flagged fallback | `coupon-recommendations.test.ts` (`interfaceCalibrationState` gate) |
+| A6 | Bead penetration (process settings) had no bond model | `server/solver/bond.ts` — lumped-capacitance cooling → Frenkel/Pokluda neck growth → reptation healing, normalized to the literature anchors at the reference condition | `bond.test.ts` |
+| A7 | In-plane (bead-to-bead) raster anisotropy absent | Opt-in, evidence-gated cross-bead check as a separate `min` on the bulk term only (`fdmDualCriterionSF`); interface term untouched, so A1's azimuth invariance is preserved | `in-plane-anisotropy.test.ts` |
+
+See `docs/INVARIANTS.md` for the full traceability matrix from CLAUDE.md's
+invariants (not just this audit's items) to implementing code and locking
+tests.
 
 ---
 
@@ -28,7 +45,7 @@ transversely isotropic continuum whose weak direction is the layer normal
 
 ---
 
-## A1 — The "transversely isotropic" Hill criterion was azimuth-dependent in the layer plane
+## A1 — RESOLVED — The "transversely isotropic" Hill criterion was azimuth-dependent in the layer plane
 
 **Defect.** Rotational symmetry about the layer normal requires `N = F + 2H`.
 The implementation set `N = 3/(2Y²)` independently; that only equals `F + 2H`
@@ -53,7 +70,7 @@ constants cannot fix this; the criterion had to be restructured.
 construction) governs the bead material; a separate interface criterion
 governs the layer bond. Locked by an azimuth-invariance regression test.
 
-## A2 — The "conservative" uncertainty band could silently report SF = 999
+## A2 — RESOLVED — The "conservative" uncertainty band could silently report SF = 999
 
 **Defect.** For `Z < Y/2` the in-plane principal-shear coefficient
 `F + G + 4H = 4/Y² − 1/Z²` goes negative. `hillEquivalentStress` clamps the
@@ -65,7 +82,7 @@ uncertainty-band bound `yieldZ/yieldXY = 0.48` is below 0.5, so the
 **Fix.** The dual criterion's bulk term is a norm — it cannot go negative.
 The band evaluation now scales interface allowables only.
 
-## A3 — Interlayer failure was tension/compression symmetric
+## A3 — RESOLVED — Interlayer failure was tension/compression symmetric
 
 **Defect.** Hill is quadratic (sign-blind) and the `U_Z` heatmap used
 `|σzz|`: compressive through-layer stress counted toward bond failure exactly
@@ -76,7 +93,7 @@ compression *increases* interlayer shear capacity (friction).
 tension term and a Mohr–Coulomb friction enhancement of shear capacity under
 compression. Compressive crushing is still caught by the bulk von Mises term.
 
-## A4 — The orientation multiplier double-counted the layer penalty
+## A4 — RESOLVED — The orientation multiplier double-counted the layer penalty
 
 **Defect.** `effectiveStrengthMultiplier` scaled the solved material's
 `yieldXY` by the orientation multiplier (flat **0.55×**), and the Hill
@@ -116,7 +133,7 @@ gain the same factor. Upright parts (no bed) keep the swap semantics with the
 0.90 scalar removed (≈ 1.1× SF). Parts with a picked bed face lose only the
 scalar (criterion unchanged in Phase A).
 
-## A5 — Lap-shear calibration couldn't disagree with the Hill coupling
+## A5 — RESOLVED — Lap-shear calibration couldn't disagree with the Hill coupling
 
 **Defect.** `backCalculateProfile` converted the measured interlaminar shear
 strength into `yieldZ = τ/0.58` — baking Hill's `τ_z = Z/√3` assumption into
@@ -128,7 +145,7 @@ shear allowable (`interShear_MPa` → `yieldZShear`); the new upright Z-tension
 coupon measures `yieldZ` directly. The legacy `τ/0.58` derivation remains
 only as a flagged fallback when no Z-tension measurement exists.
 
-## A6 — Bead penetration was entirely absent
+## A6 — RESOLVED — Bead penetration was entirely absent
 
 **Defect.** Layer height was the only process input to bond strength
 (`layerHeightFactor`, ±15 % linear). Nozzle temperature, print speed,
@@ -146,7 +163,7 @@ settings are provided the legacy layer-height factor path is used unchanged.
 
 ---
 
-## A7 — In-plane raster (bead-to-bead) anisotropy was absent (bulk term only)
+## A7 — RESOLVED — In-plane raster (bead-to-bead) anisotropy was absent (bulk term only)
 
 **Defect.** The bulk mechanism used isotropic in-plane von Mises against a single
 `yieldXY`. Real FDM parts printed with a UNIDIRECTIONAL / dominant raster are

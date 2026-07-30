@@ -133,6 +133,11 @@ Before submitting a PR that modifies mesh visualization or stress heatmap:
 
 ## Two-Region Material Model — Invariants
 
+> This is the normative list. `docs/INVARIANTS.md` is the resolved,
+> navigable index mapping each numbered invariant below to its current
+> implementing symbol and locking test — check there first when a change
+> might touch one of these.
+
 The opt-in two-region model (`print.twoRegion`) classifies elements into dense
 perimeter walls vs homogenized infill core (`server/twoRegion.ts`,
 `server/solver/distance.ts`, `server/solver/wallfrac.ts`, consumed via
@@ -180,6 +185,13 @@ perimeter walls vs homogenized infill core (`server/twoRegion.ts`,
    confidence, locked by `server/tests/unit/core-lattice.test.ts`.
 
 ## Interlayer Failure & Bond Model — Invariants
+
+> This is the normative list. `docs/INVARIANTS.md` is the resolved,
+> navigable index mapping each numbered invariant below to its current
+> implementing symbol and locking test — check there first when a change
+> might touch one of these. See also `docs/layer-model-audit.md` for the
+> historical defects (A1–A7, all resolved) these invariants prevent from
+> regressing.
 
 The FDM dual criterion (`fdmDualCriterionSF`, `server/solver/stress.ts`) and
 the bead-penetration bond model (`server/solver/bond.ts`) replaced the Hill

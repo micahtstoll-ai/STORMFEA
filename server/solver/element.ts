@@ -1,22 +1,40 @@
 /**
  * element.ts
  * ----------
- * C3D4 linear tetrahedral element stiffness matrix.
+ * Element-level kernels shared by both tetrahedral element types, the
+ * constitutive-matrix builders for every material model, and the 6×6
+ * tensor-rotation (Bond transform) utilities several other modules import.
+ * ~850 lines, organized bottom-to-top by the section markers below:
  *
- * MATHEMATICAL DERIVATION
- * =======================
- * C3D4: 4-node, 12-DOF, constant-strain tetrahedral element.
- * Shape functions are linear → B matrix is constant → no numerical integration.
- * Element stiffness: k_e = V · Bᵀ · C · B  (single evaluation at centroid).
+ *   1. Constitutive matrices — `buildConstitutiveMatrix` (isotropic),
+ *      `buildOrthotropicConstitutiveMatrix` (transversely isotropic FDM
+ *      model), `buildGyroidConstitutiveMatrix`, and the dispatching
+ *      `buildAnyConstitutiveMatrix`.
+ *   2. Tensor rotation utilities — `rotationAligningZTo`, `rotateC6`,
+ *      `rotateStress6ToLocal`: the exact 4th-order Bond transform that
+ *      rotates a material's weak axis to an arbitrary layer normal (upright/
+ *      angled prints), used by both element types and the failure criterion.
+ *   3. C3D4 — 4-node, 12-DOF, constant-strain linear tetrahedron.
+ *      `computeGeometry`, `buildB`, `elementStiffness`,
+ *      `elementGeometricStiffness` (for linear buckling). Shape functions
+ *      are linear → B is constant → single centroid evaluation, no
+ *      numerical integration. Offered only as a speed option; NOT the
+ *      default element (see C3D10 below).
+ *   4. C3D10 — 10-node, 30-DOF quadratic tetrahedron, **the default
+ *      element**. `c3d10ShapeFunctions`, `c3d10ShapeDerivatives`,
+ *      `buildB_c3d10`, `c3d10ElementStiffness`,
+ *      `c3d10ElementGeometricStiffness`. Second-order shape functions
+ *      eliminate the shear locking that undersizes C3D4's bending stress;
+ *      integrated at the 4-point Gauss rule (`C3D10_GAUSS`).
  *
- * Voigt strain ordering:  [εxx, εyy, εzz, γxy, γyz, γxz]
- * DOF ordering per node:  [ux, uy, uz]
- * Full DOF ordering:      [u0x,u0y,u0z, u1x,u1y,u1z, u2x,u2y,u2z, u3x,u3y,u3z]
+ * Common conventions across both elements:
+ *   Voigt strain ordering:  [εxx, εyy, εzz, γxy, γyz, γxz]
+ *   DOF ordering per node:  [ux, uy, uz]
  *
- * Shape function derivatives for node i:
+ * C3D4 shape function derivatives for node i:
  *   ∂Ni/∂x = bi/(6V),  ∂Ni/∂y = ci/(6V),  ∂Ni/∂z = di/(6V)
  *
- * B matrix (6×12), node-i 3-column block:
+ * C3D4 B matrix (6×12), node-i 3-column block:
  *   row 0 (εxx):  [bi,  0,   0 ]
  *   row 1 (εyy):  [0,   ci,  0 ]
  *   row 2 (εzz):  [0,   0,   di]
@@ -24,6 +42,10 @@
  *   row 4 (γyz):  [0,   di,  ci]
  *   row 5 (γxz):  [di,  0,   bi]
  * (all scaled by 1/(6V))
+ *
+ * C3D10 uses the analogous but position-dependent B matrix built by
+ * `buildB_c3d10` from the quadratic shape-function gradients at each Gauss
+ * point — see that function for its derivation.
  */
 
 import type { IsotropicMaterial, OrthotropicMaterial, GyroidOrthotropic, AnyMaterial } from "./types.js";
