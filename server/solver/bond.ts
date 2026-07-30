@@ -319,6 +319,7 @@ export function predictBondMultipliers(
     // builders — with a disclosed note the caller surfaces (materialModel.bond).
     return {
       relStrength: 1, rawStrength: 1, relStiffness: 1,
+      coolingFanRefPct: NaN,  // unknown material → no reference fan (#184 × #186)
       interfaceTempC: NaN, substrateTempC: NaN, coolTimeConstS: NaN,
       bondPotentialS: NaN, refPotentialS: NaN, consolidation: 1,
       clamped: false, confidence: "low", supported: false,
