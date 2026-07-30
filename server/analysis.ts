@@ -73,6 +73,7 @@ import {
   lumpedInPlaneStiffnessScale,
   wallCreditFraction,
   patternFamilyOf,
+  dfaPressureSensitivity,
 } from "./solver/lattice.js";
 import { isOrthotropic, isOrthotropicLike } from "./solver/types.js";
 import { recoverElementStressComponents }   from "./solver/stress_detail.js";
@@ -1366,6 +1367,12 @@ export function buildCoreMaterial(
     ...framed,
     label: `${solid.label} · GA ${pattern} lattice ρ=${infillPct}%`,
     massRho: baseMat.densityKgM3 * rho,
+    // Deshpande–Fleck–Ashby pressure sensitivity of the homogenized foam core
+    // (issue #171). α(ρ) → 0 exactly at ρ=1 (Math.pow(0,1)===0), so the ρ=1
+    // core stays von Mises and the materialsEqual collapse is unaffected; grows
+    // toward ~2.08 as ρ→0 (a sparse lattice yields hydrostatically). The bulk
+    // criterion consumes it; stiffness is untouched (a strength-side change).
+    dfaAlpha: dfaPressureSensitivity(rho),
   };
 }
 
@@ -2449,6 +2456,15 @@ export interface MaterialModelInfo {
     strengthScale:     number;
     /** True when g(ρ) hit the 1e-3 low-density floor. */
     floored:           boolean;
+    /**
+     * Core BULK yield criterion (issue #171). "deshpande-fleck-ashby" = the
+     * pressure-dependent foam criterion σ̂² = (σ_vm² + α²σ_m²)/(1 + (α/3)²) with
+     * the disclosed dfaAlpha; the core yields hydrostatically. "von-mises" only
+     * when α = 0 (ρ = 1, i.e. the solid limit). Shell bins are always von Mises.
+     */
+    yieldCriterion:    "deshpande-fleck-ashby" | "von-mises";
+    /** DFA pressure-sensitivity α(ρ) of the pure core (0 at ρ=1). LOW confidence. */
+    dfaAlpha:          number;
     confidence:        "LOW";
   };
   /** Set when the two-region request degraded to uniform (why). */
@@ -3757,6 +3773,8 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
           stiffnessScale: gStiff,
           strengthScale:  sStr,
           floored: gStiff <= LATTICE_STIFFNESS_FLOOR,
+          yieldCriterion: coreMat.dfaAlpha && coreMat.dfaAlpha > 0 ? "deshpande-fleck-ashby" : "von-mises",
+          dfaAlpha: +(coreMat.dfaAlpha ?? 0).toFixed(4),
           confidence: "LOW",
         },
       };

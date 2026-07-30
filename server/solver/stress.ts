@@ -250,12 +250,33 @@ export function fdmDualCriterionSF(
   yieldXY: number, yieldZ: number, yieldZShear: number,
   mu: number = INTERFACE_FRICTION_MU,
   aniso: InPlaneAniso | null = null,
+  /**
+   * Deshpande–Fleck–Ashby pressure-sensitivity α of the BULK term (issue #171).
+   * 0 (default) ⇒ the bulk equivalent stress is exactly von Mises and this
+   * function is bit-identical to the pre-DFA path — every non-core element and
+   * the flag-off path pass 0. Positive (homogenized infill core) ⇒ the foam
+   * criterion σ̂² = (σ_vm² + α²σ_m²)/(1 + (α/3)²), which yields hydrostatically.
+   * Only the bulk term changes; the interlayer/cross-bead interface checks
+   * (delamination) are unchanged.
+   */
+  dfaAlpha: number = 0,
 ): number {
   const vm = Math.sqrt(
     0.5 * ((sxx - syy) ** 2 + (syy - szz) ** 2 + (szz - sxx) ** 2)
     + 3 * (txy * txy + tyz * tyz + txz * txz),
   );
-  const sfBulk = vm > 1e-12 ? yieldXY / vm : 999;
+  // DFA foam equivalent stress. α = 0 ⇒ sigEq = vm EXACTLY (the branch is
+  // skipped, no sqrt(vm²) round-trip), preserving bit-identity for every
+  // non-core / flag-off element. The (1 + (α/3)²) normalization keeps the
+  // UNIAXIAL yield at yieldXY for any α (σ_vm = σ, σ_m = σ/3 ⇒ σ̂ = σ), so DFA
+  // never disturbs the in-plane coupon anchor — it only adds hydrostatic yield.
+  let sigEq = vm;
+  if (dfaAlpha > 0) {
+    const sm = (sxx + syy + szz) / 3;                       // hydrostatic mean stress
+    const a2 = dfaAlpha * dfaAlpha;
+    sigEq = Math.sqrt((vm * vm + a2 * sm * sm) / (1 + a2 / 9));
+  }
+  const sfBulk = sigEq > 1e-12 ? yieldXY / sigEq : 999;
 
   const tau = Math.hypot(tyz, txz);
   let sfInt = 999;
@@ -363,9 +384,15 @@ export function recoverElementStress(
     ? rotationAligningZTo(mat.weakAxis) : null;
   // Uniform-material interlaminar shear allowable (per-bin values override).
   const matZShear = isOrthotropic(mat) ? interlaminarShearOf(mat) : 0;
+  // Uniform-material DFA pressure sensitivity (per-bin values override). Only
+  // set when the (field-null) material is itself a homogenized core — e.g. the
+  // two-region pure-core degenerate, whose averageMaterial carries α. A normal
+  // solid/flag-off material has no dfaAlpha ⇒ 0 ⇒ von Mises (bit-identical).
+  const matDfaAlpha = isOrthotropic(mat) ? (mat.dfaAlpha ?? 0) : 0;
   const anisoSF = (
     sxx: number, syy: number, szz: number, txy: number, tyz: number, txz: number,
     yieldXY: number, yieldZ: number, yieldZShear: number,
+    dfaAlpha: number = 0,
   ): number => {
     let a = sxx, b = syy, c = szz, d = txy, e2 = tyz, f = txz;
     if (weakR) {
@@ -373,10 +400,12 @@ export function recoverElementStress(
       a = L[0]; b = L[1]; c = L[2]; d = L[3]; e2 = L[4]; f = L[5];
     }
     if (criterion === "hill-legacy") {
+      // hill-legacy has no interface term and no pressure sensitivity; the DFA
+      // core criterion is only defined alongside the fdm-interface path.
       const sigHill = hillEquivalentStress(a, b, c, d, e2, f, yieldXY, yieldZ);
       return sigHill > 1e-12 ? yieldXY / sigHill : 999;
     }
-    return fdmDualCriterionSF(a, b, c, d, e2, f, yieldXY, yieldZ, yieldZShear, INTERFACE_FRICTION_MU, inPlaneAniso);
+    return fdmDualCriterionSF(a, b, c, d, e2, f, yieldXY, yieldZ, yieldZShear, INTERFACE_FRICTION_MU, inPlaneAniso, dfaAlpha);
   };
   const vonMises     = new Float64Array(mesh.elementCount);
   const safetyFactor = new Float64Array(mesh.elementCount);
@@ -413,6 +442,9 @@ export function recoverElementStress(
     const eYieldXY = field ? (field.yieldXY[bin] ?? yieldStr) : 0;
     const eYieldZ  = field ? (field.yieldZ[bin]  ?? yieldStr) : 0;
     const eYieldZS = field ? (field.yieldZShear[bin] ?? (eYieldZ / Math.sqrt(3))) : 0;
+    // Per-bin DFA pressure sensitivity (issue #171). field.dfaAlpha absent (old
+    // or hand-built fields) ⇒ 0 ⇒ von Mises, so those fields stay bit-identical.
+    const eDfaAlpha = field ? (field.dfaAlpha ? (field.dfaAlpha[bin] ?? 0) : 0) : matDfaAlpha;
 
     let vm = 0, sf = 999;
 
@@ -494,7 +526,7 @@ export function recoverElementStress(
       if (isOrthotropic(mat)) {
         sf = anisoSF(sxx, syy, szz, txy, tyz, txz,
                      field ? eYieldXY : mat.yieldXY, field ? eYieldZ : mat.yieldZ,
-                     field ? eYieldZS : matZShear);
+                     field ? eYieldZS : matZShear, eDfaAlpha);
       } else {
         sf = vm > 1e-12 ? (field ? eYieldXY : yieldStr)/vm : 999;
       }
@@ -549,7 +581,7 @@ export function recoverElementStress(
       if (isOrthotropic(mat)) {
         sf = anisoSF(sxx, syy, szz, txy, tyz, txz,
                      field ? eYieldXY : mat.yieldXY, field ? eYieldZ : mat.yieldZ,
-                     field ? eYieldZS : matZShear);
+                     field ? eYieldZS : matZShear, eDfaAlpha);
       } else {
         sf = vm > 1e-12 ? (field ? eYieldXY : yieldStr)/vm : 999;
       }

@@ -380,6 +380,55 @@ export function latticeStrengthFractions(
   };
 }
 
+// ─── Deshpande–Fleck–Ashby pressure sensitivity (core yield) ─────────────────
+/**
+ * DFA pressure-sensitivity coefficient α in the fully-cellular (ρ→0) limit.
+ *
+ * Deshpande & Fleck (2000), "Isotropic constitutive models for metallic foams"
+ * (JMPS 48:1253–1283), measured α ≈ 2.08 for aluminium foams (Alporas/Duocel),
+ * corresponding via their self-consistent relation
+ *     α² = (9/2)·(1 − 2ν_p)/(1 + ν_p)
+ * to a plastic Poisson ratio ν_p ≈ 0 (the low-density foam limit √(9/2) ≈ 2.12).
+ * A low-ρ FDM lattice is the same cellular-solid class. Confidence LOW.
+ */
+export const DFA_ALPHA0 = 2.08;
+
+/**
+ * Density knockdown exponent p in α(ρ) = DFA_ALPHA0·(1 − ρ)^p. Linear (p = 1)
+ * is the LOW-confidence default: pressure sensitivity falls off in proportion to
+ * void fraction (1 − ρ) and vanishes exactly as the voids close (ρ → 1). No
+ * override is exposed — a nonzero p is what makes the ρ=1 → von-Mises collapse
+ * exact (Math.pow(0, p>0) === 0), and that anchor (invariant #8) must never be
+ * reachable-away by calibration. Regression-locked in dfa-core-yield.test.ts.
+ */
+export const DFA_ALPHA_EXP = 1.0;
+
+/**
+ * Deshpande–Fleck–Ashby pressure-sensitivity coefficient α(ρ) of the
+ * homogenized infill core as a function of relative density ρ ∈ [0, 1]:
+ *
+ *     α(ρ) = DFA_ALPHA0 · (1 − ρ)^DFA_ALPHA_EXP
+ *
+ * Plugs into the bulk yield criterion (fdmDualCriterionSF): the core's DFA
+ * equivalent stress is σ̂² = (σ_vm² + α²σ_m²)/(1 + (α/3)²), so the core yields
+ * under hydrostatic stress (a lattice compacts) where von Mises predicts
+ * infinite strength.
+ *
+ * ANCHORS:
+ *  - α(1) = 0 EXACTLY (IEEE-754: DFA_ALPHA_EXP > 0 ⇒ Math.pow(0, p) === 0, and
+ *    2.08·0 === 0), so σ̂ ≡ σ_vm and the ρ=1 core reproduces the solid's von
+ *    Mises criterion bit-for-bit (CLAUDE.md two-region invariant #8).
+ *  - α(0) = DFA_ALPHA0, the fully-cellular foam limit.
+ *  - Monotone-decreasing in ρ: denser ⇒ less pressure-sensitive.
+ *
+ * Confidence LOW (the α₀ magnitude and the linear knockdown are literature-form
+ * estimates, like the Gibson-Ashby stiffness/strength exponents).
+ */
+export function dfaPressureSensitivity(rho: number): number {
+  const r = clampRho(rho);
+  return DFA_ALPHA0 * Math.pow(1 - r, DFA_ALPHA_EXP);
+}
+
 /**
  * Representative (in-plane) wall-free lattice strength fraction
  * s_xy(ρ) = max(floor, min(1, patternMul·ρ^m_xy)) — the yieldXY axis of

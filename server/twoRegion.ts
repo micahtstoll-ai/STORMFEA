@@ -203,10 +203,19 @@ function blendMaterial(
   const rho = shell.massRho !== undefined || core.massRho !== undefined
     ? mix(shell.massRho ?? 0, core.massRho ?? 0)
     : undefined;
+  // DFA pressure sensitivity blends like the yields: core-only, shell = 0. At
+  // f = 1 (pure shell / 100%-infill collapse) → 0 (von Mises); at f = 0 (pure
+  // core degenerate) → the core's α. Matches the per-bin dfaAlpha blend, so the
+  // averageMaterial the field-null degenerate paths hand to recovery carries
+  // the right criterion. Omitted when neither endpoint is pressure-sensitive.
+  const dfaAlpha = shell.dfaAlpha !== undefined || core.dfaAlpha !== undefined
+    ? mix(shell.dfaAlpha ?? 0, core.dfaAlpha ?? 0)
+    : undefined;
   return {
     ...blended,
     ...(gxy !== undefined ? { G_xy: gxy } : {}),
     ...(rho !== undefined ? { massRho: rho } : {}),
+    ...(dfaAlpha !== undefined ? { dfaAlpha } : {}),
     ...(shell.weakAxis ? { weakAxis: shell.weakAxis } : {}),
   };
 }
@@ -436,8 +445,11 @@ export function buildTwoRegionField(
   const yieldZShear = new Float64Array(N);
   const massRho = new Float64Array(N);
   const shellFrac = new Float64Array(N);
+  const dfaAlpha = new Float64Array(N);
   const zsShell = interlaminarShearOf(shellMat);
   const zsCore  = interlaminarShearOf(coreMat);
+  // The shell is solid (von Mises, α = 0); only the core is pressure-sensitive.
+  const alphaCore = coreMat.dfaAlpha ?? 0;
   for (let b = 0; b < N; b++) {
     const f = binFraction(b, N, K, logSpaced);
     for (let i = 0; i < 36; i++) {
@@ -448,6 +460,10 @@ export function buildTwoRegionField(
     yieldZShear[b] = f * zsShell + (1 - f) * zsCore;
     massRho[b]   = f * (shellMat.massRho ?? 0) + (1 - f) * (coreMat.massRho ?? 0);
     shellFrac[b] = f;
+    // Core-fraction-weighted DFA α: pure-shell bins (f = 1) → 0 (von Mises,
+    // untouched); the pure-core bin (f = 0) → the core's full foam α. First-
+    // order scalar blend, consistent with the yields above. LOW confidence.
+    dfaAlpha[b]  = (1 - f) * alphaCore;
   }
 
   const binOfElement = new Int32Array(mesh.elementCount);
@@ -456,7 +472,7 @@ export function buildTwoRegionField(
   }
 
   return {
-    field: { binCount: N, binOfElement, C, yieldXY, yieldZ, yieldZShear, massRho, shellFrac },
+    field: { binCount: N, binOfElement, C, yieldXY, yieldZ, yieldZShear, massRho, shellFrac, dfaAlpha },
     averageMaterial,
     shellVolumeFraction: Vf,
     wallThicknessMm: tWall,
