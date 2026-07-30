@@ -2096,8 +2096,9 @@ console.log("\n[28] Face pressure selection — coarse mesh non-empty + force = 
   const selS = selectPressureRegion(small.nodes, sf, [0, 0, 1], "face");
   const nSmall = selS.reduce((s, on) => s + (on ? 1 : 0), 0);
   test("[28.4] ×0.1-scale selects the same face-triangle count", nSmall === nSel, `${nSmall} vs ${nSel}`);
+}
 
-// ── Test group 27: True energy-norm ZZ error estimator (#143/#144/#145) ───────
+// ── Test group 29: True energy-norm ZZ error estimator (#143/#144/#145) ───────
 console.log("\n[29] Energy-norm ZZ estimator — full tensor, volume-weighted, shape-fn interp");
 {
   const iso = { E: 3500, nu: 0.36, yieldStrength: 50, label: "pla" };
