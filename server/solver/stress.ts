@@ -1134,6 +1134,13 @@ export function buildSolverResult(
   criterion:    CriterionKind = "fdm-interface",
   inPlaneAniso: InPlaneAniso | null = null,
   wallBond?:    WallBondField,
+  /** Optional CG convergence diagnostics (issue #153) — surfaced on the result. */
+  cgMeta?: {
+    trueRelativeResidual?:       number;
+    recurrenceRelativeResidual?: number;
+    conditionEstimate?:          number;
+    displacementErrorEstimate?:  number;
+  },
 ): SolverResult {
   const { vonMises, safetyFactor, elemPrincipal, maxVonMises, minSF, governingElement, elemStress6 } =
     recoverElementStress(mesh, displacement, mat, field, criterion, inPlaneAniso, wallBond);
@@ -1165,6 +1172,10 @@ export function buildSolverResult(
     solverMs,
     nodePrincipalStress: nodeAveragedPrincipalStress(mesh, elemPrincipal),
     residualCheckpoints,
+    trueRelativeResidual:       cgMeta?.trueRelativeResidual,
+    recurrenceRelativeResidual: cgMeta?.recurrenceRelativeResidual,
+    conditionEstimate:          cgMeta?.conditionEstimate,
+    displacementErrorEstimate:  cgMeta?.displacementErrorEstimate,
     errorEstimate,
     globalRelativeError,
     topErrorElements,

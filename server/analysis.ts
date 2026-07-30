@@ -3938,7 +3938,13 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
           diagIdx: intermediate.diagIdx,
         } : undefined,
       });
-      console.log(`[analyse] modal: ${modalResult.modes.length} modes, f1=${modalResult.modes.find(m => m.frequencyHz > 1)?.frequencyHz.toFixed(1) ?? '?'}Hz`);
+      console.log(`[analyse] modal: ${modalResult.modes.length} modes, f1=${modalResult.modes.find(m => m.frequencyHz > 1)?.frequencyHz.toFixed(1) ?? '?'}Hz, certified=${modalResult.certified}`);
+      // Surface eigensolver advisories (partial rigid modes, un-certified band,
+      // non-convergence) to the caller — #160.1/.4. These are non-fatal; the
+      // static result and modal frequencies are preserved either way.
+      if (modalResult.warnings && modalResult.warnings.length > 0) {
+        for (const w of modalResult.warnings) console.warn(`[analyse] modal warning: ${w}`);
+      }
     } catch (err) {
       console.warn(`[analyse] modal solve failed (static result preserved): ${err}`);
       modalResult = undefined;

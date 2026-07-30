@@ -237,10 +237,148 @@ export interface CGCheckpoint {
 export interface CGResult {
   readonly u:          Float64Array; // solution vector
   readonly iterations: number;
+  /**
+   * True iff the TRUE relative residual ‖f − K·u‖/‖f‖ < tol (issue #153).
+   * Keyed to the true residual — NOT the CG recurrence residual — because the
+   * recurrence residual drifts optimistically low in finite precision and can
+   * declare convergence while the real residual is orders of magnitude larger.
+   */
   readonly converged:  boolean;
+  /**
+   * The residual reported as the headline figure: the TRUE relative residual
+   * ‖f − K·u‖₂/‖f‖₂, from one extra SpMV after the iteration exits (issue #153).
+   */
   readonly finalRelativeResidual: number;
+  /** TRUE relative residual ‖f − K·u‖₂/‖f‖₂ (explicit alias of finalRelativeResidual). */
+  readonly trueRelativeResidual: number;
+  /**
+   * The CG RECURRENCE residual at exit (r updated by r ← r − α·Kp). This is what
+   * the loop tested against tol; comparing it to trueRelativeResidual reveals
+   * finite-precision drift (a large gap ⇒ an ill-conditioned/penalty-inflated
+   * operator where the recurrence residual is untrustworthy).
+   */
+  readonly recurrenceRelativeResidual: number;
   readonly preconditionerUsed: 'ic0' | 'jacobi';
   readonly residualCheckpoints: readonly CGCheckpoint[];
+  /**
+   * Condition-number estimate κ ≈ λmax/λmin of the PRECONDITIONED operator
+   * M⁻¹K, from the Lanczos tridiagonal implied by the CG (α_k, β_k) scalars
+   * (issue #153). This is the spectrum CG actually sees — it governs the
+   * convergence rate. Undefined when too few iterations ran to estimate it.
+   * NOTE: with an effective preconditioner (or a penalty-masking Jacobi
+   * diagonal) κ(M⁻¹K) can be far below κ(K); it is the preconditioned
+   * condition number, not the raw stiffness conditioning.
+   */
+  readonly conditionEstimate?: number;
+  /** Smallest Ritz value (λmin estimate) of the preconditioned operator. */
+  readonly ritzValueMin?: number;
+  /** Largest Ritz value (λmax estimate) of the preconditioned operator. */
+  readonly ritzValueMax?: number;
+  /**
+   * Honest order-of-magnitude estimate of the relative displacement error,
+   * κ_preconditioned × trueRelativeResidual (issue #153). Because κ is the
+   * PRECONDITIONED condition number, this under-estimates the physical error
+   * when the preconditioner masks conditioning (e.g. penalty BCs) — the exact
+   * situation motivating the elimination migration in issue #154.
+   */
+  readonly displacementErrorEstimate?: number;
+}
+
+/**
+ * Extreme eigenvalues (min, max) of a symmetric tridiagonal matrix via Sturm-
+ * sequence bisection (issue #153). Used to estimate λmin/λmax of the
+ * preconditioned operator from the CG-implied Lanczos tridiagonal.
+ *
+ * @param d Diagonal entries, length m.
+ * @param b Off-diagonal entries, length m−1 (b[i] couples rows i and i+1).
+ * @returns {min,max}, or null if m < 1.
+ */
+export function tridiagExtremeEigs(
+  d: readonly number[],
+  b: readonly number[],
+): { min: number; max: number } | null {
+  const m = d.length;
+  if (m < 1) return null;
+  if (m === 1) return { min: d[0] ?? 0, max: d[0] ?? 0 };
+
+  // Sturm count: number of eigenvalues strictly less than λ (count of negative
+  // pivots in the LDLᵀ recurrence of T − λI). A zero pivot is nudged to a tiny
+  // negative to keep the recurrence finite.
+  const countBelow = (lambda: number): number => {
+    let q = (d[0] ?? 0) - lambda;
+    let neg = q < 0 ? 1 : 0;
+    for (let i = 1; i < m; i++) {
+      const bi = b[i - 1] ?? 0;
+      if (Math.abs(q) < 1e-300) q = q < 0 ? -1e-300 : 1e-300;
+      q = (d[i] ?? 0) - lambda - (bi * bi) / q;
+      if (q < 0) neg++;
+    }
+    return neg;
+  };
+
+  // Gershgorin bounds bracket the whole spectrum.
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < m; i++) {
+    const rad = Math.abs(i > 0 ? (b[i - 1] ?? 0) : 0) + Math.abs(i < m - 1 ? (b[i] ?? 0) : 0);
+    lo = Math.min(lo, (d[i] ?? 0) - rad);
+    hi = Math.max(hi, (d[i] ?? 0) + rad);
+  }
+  if (!(hi > lo)) return { min: lo, max: hi };
+
+  // λmin = threshold where countBelow crosses 0 → ≥1.
+  let a0 = lo, b0 = hi;
+  for (let it = 0; it < 100 && b0 - a0 > 1e-12 * (Math.abs(b0) + Math.abs(a0) + 1e-300); it++) {
+    const mid = 0.5 * (a0 + b0);
+    if (countBelow(mid) >= 1) b0 = mid; else a0 = mid;
+  }
+  const eigMin = 0.5 * (a0 + b0);
+
+  // λmax = threshold where countBelow crosses (m−1) → m.
+  let a1 = lo, b1 = hi;
+  for (let it = 0; it < 100 && b1 - a1 > 1e-12 * (Math.abs(b1) + Math.abs(a1) + 1e-300); it++) {
+    const mid = 0.5 * (a1 + b1);
+    if (countBelow(mid) >= m) b1 = mid; else a1 = mid;
+  }
+  const eigMax = 0.5 * (a1 + b1);
+
+  return { min: eigMin, max: eigMax };
+}
+
+/**
+ * Build the Lanczos tridiagonal (d, e) implied by the CG scalar sequences and
+ * return its extreme eigenvalues — the extreme eigenvalues of the
+ * preconditioned operator M⁻¹K (issue #153).
+ *
+ *   d_k = 1/α_k + β_{k−1}/α_{k−1}   (β_{−1} = 0)
+ *   e_k = √(β_k) / α_k              (couples rows k and k+1)
+ *
+ * (Standard CG↔Lanczos identity: Saad, "Iterative Methods", §6.7.3.)
+ */
+function ritzExtremesFromCG(
+  alphas: readonly number[],
+  betas: readonly number[],
+): { min: number; max: number } | null {
+  const m = alphas.length;
+  if (m < 1) return null;
+  const d: number[] = new Array(m);
+  const e: number[] = new Array(Math.max(0, m - 1));
+  for (let k = 0; k < m; k++) {
+    const ak = alphas[k] ?? 0;
+    if (Math.abs(ak) < 1e-300) return null;
+    let dk = 1 / ak;
+    if (k > 0) {
+      const bkm1 = betas[k - 1] ?? 0;
+      const akm1 = alphas[k - 1] ?? 0;
+      if (Math.abs(akm1) < 1e-300) return null;
+      dk += bkm1 / akm1;
+    }
+    d[k] = dk;
+    if (k < m - 1) {
+      const bk = betas[k] ?? 0;
+      e[k] = Math.sqrt(Math.max(0, bk)) / ak;
+    }
+  }
+  return tridiagExtremeEigs(d, e);
 }
 
 /**
@@ -276,16 +414,24 @@ function* pcgSolve(
   prebuiltFactor: IC0Factor | null | undefined,
 ): Generator<CGProgress, CGResult, void> {
   const n    = K.n;
-  // Hard cap at 5 000 iterations regardless of DOF count.
-  // Rationale: with Jacobi preconditioning on a well-conditioned FEM system,
-  // convergence to 1e-8 typically takes 200–800 iterations for meshes up to
-  // ~50 000 DOF. If the solver has not converged by 5 000 iterations it is
-  // almost certainly not going to — the system is ill-conditioned (singular BCs,
-  // degenerate mesh, bad material constants) and more iterations waste CPU and
-  // hang the server. The old default of 3×n was unbounded: a fine C3D10 STEP
-  // mesh with 24 000 DOF set imax=72 000, causing multi-minute hangs with no
-  // timeout on the HTTP route.
-  const imax = maxIter ?? Math.min(5000, Math.max(1000, 3 * n));
+  // DOF-scaled iteration cap (issue #153, defect 3).
+  //
+  //   imax = max(1000, ceil(20·√n))          [warn-only, never throws here]
+  //
+  // Derivation / anchoring: PCG needs O(√κ) iterations to reach a fixed
+  // tolerance, and for 3-D FEM κ(K) ~ O(n^{2/3}) so the natural growth is
+  // ~ n^{1/3}; IC(0) preconditioning makes it milder still. A √n ceiling
+  // therefore sits comfortably ABOVE the expected iteration count at every
+  // size — it is a generous runaway guard, not a convergence target. The
+  // coefficient 20 is anchored to the historical cap: the old fixed 5 000 was
+  // "sized for ~50 000 DOF", and 20·√50000 ≈ 4472 ≈ 5 000, so small/medium
+  // meshes keep the same ceiling they always had while large meshes finally
+  // get a proportionate budget (500 k DOF → ~14 000; 5 M → ~44 000) instead of
+  // being starved by a flat 5 000. Hitting this cap does NOT throw — the loop
+  // exits and `converged` is reported false so the caller can warn (the old
+  // fixed cap was warn-only too); the 90 s wall-clock deadline below remains
+  // the hard stop for genuinely runaway solves.
+  const imax = maxIter ?? Math.max(1000, Math.ceil(20 * Math.sqrt(n)));
 
   const debugCG     = process.env["STORMFEA_DEBUG_CG"]      === "1";
   const benchPrecond = process.env["STORMFEA_BENCH_PRECOND"] === "1" || debugCG;
@@ -350,8 +496,14 @@ function* pcgSolve(
       iterations: 0,
       converged: true,
       finalRelativeResidual: 0,
+      trueRelativeResidual: 0,
+      recurrenceRelativeResidual: 0,
       preconditionerUsed: preconditioner === 'ic0' ? 'ic0' : 'jacobi',
       residualCheckpoints: [],
+      conditionEstimate: 1,
+      ritzValueMin: undefined,
+      ritzValueMax: undefined,
+      displacementErrorEstimate: 0,
     };
   }
 
@@ -397,6 +549,15 @@ function* pcgSolve(
   const initialRelRes = relRes;
   const residualCheckpoints: CGCheckpoint[] = [];
 
+  // Lanczos coefficients for the cheap condition-number estimate (issue #153).
+  // The CG (α_k, β_k) scalars ARE the Lanczos recurrence of the preconditioned
+  // operator M⁻¹K, so we just record them and reconstruct the tridiagonal at
+  // exit. Extreme Ritz values converge in the FIRST handful of iterations, so a
+  // cap keeps storage O(1) for large solves with no loss of estimate quality.
+  const MAX_LANCZOS = 512;
+  const lanczosAlpha: number[] = [];
+  const lanczosBeta:  number[] = [];
+
   // Benchmark timing for the solve loop
   const tSolveStart = Date.now();
 
@@ -441,6 +602,7 @@ function* pcgSolve(
     if (!isFinite(alpha)) {
       throw new Error(`PCG: non-finite alpha=${alpha} at iteration ${iter}`);
     }
+    if (lanczosAlpha.length < MAX_LANCZOS) lanczosAlpha.push(alpha);
 
     // u = u + α·p
     daxpy(alpha, p, u);
@@ -467,26 +629,57 @@ function* pcgSolve(
     }
     const beta = Math.abs(rz) > 1e-300 ? rzNew / rz : 0;
     rz = rzNew;
+    // β is computed AFTER the convergence break above, so the final iteration
+    // records its α but no β — leaving β with exactly one fewer entry than α,
+    // which is precisely the tridiagonal shape (α_0..α_{m-1}, β_0..β_{m-2}).
+    if (lanczosBeta.length < MAX_LANCZOS) lanczosBeta.push(beta);
 
     // p = z + β·p  (in-place, no heap allocation)
     for (let i = 0; i < n; i++) p[i] = (z[i] ?? 0) + beta * (p[i] ?? 0);
   }
 
+  // ── True-residual evaluation (issue #153, defect 1) ───────────────────────
+  // The recurrence residual r (updated by r ← r − α·Kp) drifts from the actual
+  // residual f − K·u in finite precision, and can sit orders of magnitude BELOW
+  // it on an ill-conditioned/penalty-inflated operator — declaring convergence
+  // that the true solution does not have. Spend ONE extra SpMV to measure the
+  // real thing and key `converged` to it. `recurrenceRelativeResidual` keeps the
+  // loop's own figure so the drift is visible to callers.
+  const recurrenceRelRes = relRes;
+  matvec(K, u, Ap);                 // Ap = K·u  (reuse the iteration buffer)
+  const rTrue = new Float64Array(n);
+  for (let i = 0; i < n; i++) rTrue[i] = (f[i] ?? 0) - (Ap[i] ?? 0);
+  const trueRelRes = norm(rTrue) / fNorm;
+
+  // ── Condition-number estimate (issue #153, defect 2) ──────────────────────
+  const ritz = ritzExtremesFromCG(lanczosAlpha, lanczosBeta);
+  const conditionEstimate =
+    ritz && ritz.min > 0 ? ritz.max / ritz.min : undefined;
+  const displacementErrorEstimate =
+    conditionEstimate !== undefined ? conditionEstimate * trueRelRes : undefined;
+
   if (benchPrecond) {
     console.log(
       `[cg:bench] preconditioner=${useIC0 ? 'ic0' : 'jacobi'} iters=${iter} ` +
-      `relRes=${relRes.toExponential(3)} n=${n} nnz=${K.data.length} ` +
-      `elapsed=${Date.now() - tSolveStart}ms`
+      `recurRelRes=${recurrenceRelRes.toExponential(3)} trueRelRes=${trueRelRes.toExponential(3)} ` +
+      `kappa≈${conditionEstimate !== undefined ? conditionEstimate.toExponential(2) : 'n/a'} ` +
+      `n=${n} nnz=${K.data.length} elapsed=${Date.now() - tSolveStart}ms`
     );
   }
 
   return {
     u,
-    iterations:             iter,
-    converged:              relRes < tol,
-    finalRelativeResidual:  relRes,
-    preconditionerUsed:     useIC0 ? 'ic0' as const : 'jacobi' as const,
-    residualCheckpoints:    residualCheckpoints,
+    iterations:                 iter,
+    converged:                  trueRelRes < tol,
+    finalRelativeResidual:      trueRelRes,
+    trueRelativeResidual:       trueRelRes,
+    recurrenceRelativeResidual: recurrenceRelRes,
+    preconditionerUsed:         useIC0 ? 'ic0' as const : 'jacobi' as const,
+    residualCheckpoints:        residualCheckpoints,
+    conditionEstimate,
+    ritzValueMin:               ritz?.min,
+    ritzValueMax:               ritz?.max,
+    displacementErrorEstimate,
   };
 }
 
