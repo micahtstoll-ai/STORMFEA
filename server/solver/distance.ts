@@ -16,8 +16,12 @@
  * queries (Ericson, "Real-Time Collision Detection" §5.1.5) over a
  * triangle-bucketed spatial grid.
  *
- * C3D10 midside nodes are skipped (left at dMax): the wall-fraction level
- * set (wallfrac.ts) only reads corner distances.
+ * For C3D10 the MIDSIDE nodes are resolved too (issue #180): the wall-fraction
+ * level set (wallfrac.ts) subdivides each quadratic tet into 8 corner/midside
+ * sub-tets, so it needs every element node's distance — a band that enters an
+ * element between corners (concave features) is otherwise missed. Only nodes
+ * NOT referenced by any element stay at dMax. For C3D4 (npe = 4) every node is
+ * a corner, so this is bit-identical to the corner-only behavior.
  */
 
 import type { TetMesh } from "./types.js";
@@ -173,14 +177,16 @@ export function computeNodeSurfaceDistancesAndNormals(
     if (n >= 0 && n < nodeCount) dist[n] = 0;
   }
 
-  // Corner-node set: the level set only reads corners (first 4 per element).
-  const isCorner = new Uint8Array(nodeCount);
+  // Mesh-node set: the level set reads corners AND (for C3D10) midside nodes
+  // (issue #180 sub-tet subdivision), so resolve every node referenced by an
+  // element. For C3D4 (npe = 4) this marks exactly the corners — bit-identical.
+  const isMeshNode = new Uint8Array(nodeCount);
   const npe = mesh.nodesPerElem;
   for (let e = 0; e < mesh.elementCount; e++) {
     const base = e * npe;
-    for (let k = 0; k < 4; k++) {
+    for (let k = 0; k < npe; k++) {
       const n = mesh.elements[base + k] ?? 0;
-      if (n >= 0 && n < nodeCount) isCorner[n] = 1;
+      if (n >= 0 && n < nodeCount) isMeshNode[n] = 1;
     }
   }
 
@@ -231,7 +237,7 @@ export function computeNodeSurfaceDistancesAndNormals(
   // node's cell or one of its 26 neighbors. One ring suffices; anything
   // farther is clamped to dMax anyway.
   for (let n = 0; n < nodeCount; n++) {
-    if (!isCorner[n]) continue;       // midside nodes unused by the level set
+    if (!isMeshNode[n]) continue;     // nodes referenced by no element
     if (dist[n] === 0) continue;      // boundary node, exact already
     const px = nodes[n * 3] ?? 0, py = nodes[n * 3 + 1] ?? 0, pz = nodes[n * 3 + 2] ?? 0;
     const i0 = ci(px), j0 = cj(py), k0 = ck(pz);
@@ -312,16 +318,18 @@ export function computeNodeBandPenetration(
   const triCount = Math.floor(surfaceFaces.length / 3);
   if (triCount === 0 || dMax <= 0) return phi;
 
-  // Corner-node set: the level set only reads corners (first 4 per element).
+  // Mesh-node set: corners AND (for C3D10) midside nodes are resolved so the
+  // level set's sub-tet subdivision (issue #180) sees interior band crossings.
   // Unlike the distance field there is no boundary-node shortcut — a surface
   // node's penetration is −(its triangle's band), which depends on the class.
-  const isCorner = new Uint8Array(nodeCount);
+  // For C3D4 (npe = 4) this marks exactly the corners — bit-identical.
+  const isMeshNode = new Uint8Array(nodeCount);
   const npe = mesh.nodesPerElem;
   for (let e = 0; e < mesh.elementCount; e++) {
     const base = e * npe;
-    for (let k = 0; k < 4; k++) {
+    for (let k = 0; k < npe; k++) {
       const n = mesh.elements[base + k] ?? 0;
-      if (n >= 0 && n < nodeCount) isCorner[n] = 1;
+      if (n >= 0 && n < nodeCount) isMeshNode[n] = 1;
     }
   }
 
@@ -370,7 +378,7 @@ export function computeNodeBandPenetration(
   // sufficient for the sign of φ. Triangles farther than dMax give a large
   // positive penetration and cannot lower a negative min.
   for (let n = 0; n < nodeCount; n++) {
-    if (!isCorner[n]) continue;
+    if (!isMeshNode[n]) continue;
     const px = nodes[n * 3] ?? 0, py = nodes[n * 3 + 1] ?? 0, pz = nodes[n * 3 + 2] ?? 0;
     const i0 = ci(px), j0 = cj(py), k0 = ck(pz);
     let best = dMax;

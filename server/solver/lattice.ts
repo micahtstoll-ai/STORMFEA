@@ -6,7 +6,11 @@
  *
  * Model: cellular-solid power laws (Gibson & Ashby 1997):
  *   stiffness  g(ρ) = pf · ρ^n · (1 − c(1−ρ))       E_core = E_solid · g(ρ)
- *   strength   s(ρ) = min(1, patternMul · ρ^m)       σ_core = σ_solid · s(ρ)
+ *   strength   s(ρ) = clamp(patternMul·ρ^m − (patternMul−1)·ρ^(m+K))
+ *                                                    σ_core = σ_solid · s(ρ)
+ * where the strength law's C¹ taper (issue #183) replaces the old
+ * min(1, patternMul·ρ^m) HARD CLIP that plateaued strength from
+ * ρ* = (1/patternMul)^(1/m) to 1 with a slope discontinuity at ρ*.
  * with n ∈ [1.5, 2.5] for open-cell (bending-dominated) solids and lower for
  * stretch-dominated topologies; m ≈ 1.5 for bending-dominated plastic
  * collapse, ~1.2–1.3 for stretch-dominated TPMS lattices.
@@ -174,6 +178,26 @@ export function patternFamilyOf(pattern: string): PatternFamily {
 export const LATTICE_STIFFNESS_FLOOR = 1e-3;
 export const LATTICE_STRENGTH_FLOOR  = 1e-3;
 
+/**
+ * Issue #183: exponent controlling how sharply a pattern's ABOVE-reference
+ * strength benefit (patternMul > 1) tapers back to the solid anchor as ρ→1.
+ * The strength law's excess term (patternMul − 1) is faded out by (1 − ρ^K):
+ *
+ *   s(ρ) = ρ^m·(1 + (patternMul−1)(1 − ρ^K))
+ *        = patternMul·ρ^m − (patternMul−1)·ρ^(m+K)
+ *
+ * This replaces the old min(1, patternMul·ρ^m) hard clip (which pinned s = 1
+ * for all ρ ∈ [ρ*, 1] and put a kink at ρ*). K = 10 concentrates the taper in
+ * the top ~10–20% of density, so:
+ *   • low/typical infill is bit-unchanged (ρ^K ≈ 0 ⇒ s ≈ patternMul·ρ^m);
+ *   • s(1) = 1 EXACTLY (invariant #8, bit-for-bit: base = 1, (1 − ρ^K) = 0);
+ *   • s'(1) = m − (patternMul−1)·K > 0 for every default pattern/axis (tightest
+ *     margin gyroid m_xy = 1.25, patternMul = 1.08 ⇒ 0.45), so s rises
+ *     monotonically to 1 from below with no interior critical point / overshoot.
+ * Confidence LOW like the exponents; regression-locked in core-lattice.test.ts.
+ */
+export const STRENGTH_TAPER_K = 10;
+
 // ─── Laws ────────────────────────────────────────────────────────────────────
 
 /**
@@ -333,7 +357,22 @@ export function latticeStrengthFractions(
   const p = LATTICE_PARAMS[patternFamilyOf(pattern)];
   const patternMul = PATTERN_MULTIPLIERS[pattern] ?? 1.0;
   const r = clampRho(rho);
-  const s = (m: number) => Math.max(LATTICE_STRENGTH_FLOOR, Math.min(1, patternMul * Math.pow(r, m)));
+  const s = (m: number) => {
+    const base = Math.pow(r, m);
+    // Issue #183: for patterns crediting a > reference strength (patternMul > 1),
+    // taper the excess benefit smoothly to zero as ρ→1 instead of hard-clipping
+    // at min(1,·). scaled = ρ^m·(1 + (patternMul−1)(1 − ρ^K)); equals
+    // patternMul·ρ^m at low ρ (ρ^K→0) and EXACTLY 1 at ρ=1 (base=1, 1−ρ^K=0).
+    // Patterns with patternMul ≤ 1 never clipped → keep the plain power law and
+    // their ρ=1 anchor at patternMul (min(1, patternMul) = patternMul).
+    const scaled = patternMul > 1
+      ? base * (1 + (patternMul - 1) * (1 - Math.pow(r, STRENGTH_TAPER_K)))
+      : patternMul * base;
+    // Safety clamp only: guards a pathological calibration override exponent
+    // (a very small m can lift the interior above solid); never engages for the
+    // default per-axis exponents, whose maximum is s(1) = 1.
+    return Math.max(LATTICE_STRENGTH_FLOOR, Math.min(1, scaled));
+  };
   return {
     sXY: s(overrideExp ?? p.strengthExpXY),
     sZ:  s(overrideExp ?? p.strengthExpZ),

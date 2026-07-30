@@ -7,9 +7,13 @@
  * The wall band is the set of points within `tWall` of the part surface.
  * Volume meshes are far coarser than the band (2.9–6.3 mm element edges vs
  * a ~1.35 mm band), so a hard in/out element classification aliases badly.
- * Instead, each element gets the exact volume fraction of the tet where the
- * LINEAR interpolant of φ = nodeDist − tWall is negative — sub-element
- * resolution from just the 4 corner distances (marching-tetrahedra volume).
+ * Instead, each element gets the volume fraction of the tet where φ = nodeDist
+ * − tWall is negative (marching-tetrahedra volume). For C3D4 this is the exact
+ * fraction of the LINEAR interpolant from the 4 corner distances. For C3D10 the
+ * element is subdivided into 8 corner/midside sub-tets (issue #180) so the
+ * quadratic band field is resolved between corners — a band that enters an
+ * element without reaching a corner (concave features: fillet roots, boss
+ * bases) is otherwise reported as fraction 0 by the corner-only interpolant.
  *
  * Formulas are the standard simplex level-set volume fractions, written per
  * sign-case so every denominator is strictly nonzero by construction (a
@@ -69,10 +73,55 @@ function clamp01(v: number): number {
 }
 
 /**
+ * Sub-tetrahedra of a (straight-sided) C3D10 quadratic tet for the level-set
+ * volume fraction (issue #180). Local node order per element:
+ *   0–3 corners; 4=mid(0,1) 5=mid(1,2) 6=mid(0,2) 7=mid(0,3) 8=mid(1,3) 9=mid(2,3).
+ *
+ * The standard uniform refinement: 4 corner sub-tets plus the central
+ * octahedron (edge-midpoint hull) split into 4 along the internal diagonal
+ * 4–9 (mid(0,1)–mid(2,3), the two opposite edges that share no vertex), whose
+ * equator 6–7–8–5 is a valid 4-cycle of octahedron edges. For a straight-sided
+ * quadratic tet the midside nodes are exact edge midpoints, so all 8 sub-tets
+ * have volume = ⅛ of the parent and the element fraction is their unweighted
+ * mean. (This matches the straight-sided C3D10 assumption already made by the
+ * two-region volume integration in twoRegion.ts.)
+ *
+ * Consuming the midside φ this way captures a band that enters the element
+ * between corners (all 4 corners on the same side of the iso-surface, a midside
+ * on the other) — which the 4-corner linear interpolant reports as fraction 0.
+ */
+const C3D10_SUBTETS: ReadonlyArray<readonly [number, number, number, number]> = [
+  [0, 4, 6, 7], [1, 4, 5, 8], [2, 5, 6, 9], [3, 7, 8, 9], // corner tets
+  [4, 9, 6, 7], [4, 9, 7, 8], [4, 9, 8, 5], [4, 9, 5, 6], // central octahedron
+];
+
+/**
+ * Volume fraction of ONE element where the field φ (per local node) is
+ * negative. C3D4 (npe < 10): the exact 4-corner marching-tet fraction. C3D10
+ * (npe ≥ 10): the mean of the 8 corner/midside sub-tet fractions (issue #180),
+ * quadratic-resolution capture with zero extra distance queries.
+ *
+ * `phi(localNode)` returns φ at local node index 0..3 (C3D4) or 0..9 (C3D10).
+ * NaN-free by construction: every sub-tet fraction routes through
+ * `tetFractionBelowIso`, whose per-sign-case denominators are strictly nonzero.
+ */
+function elementFractionBelowIso(npe: number, phi: (localNode: number) => number): number {
+  if (npe >= 10) {
+    let sum = 0;
+    for (const [a, b, c, d] of C3D10_SUBTETS) {
+      sum += tetFractionBelowIso(phi(a), phi(b), phi(c), phi(d));
+    }
+    return sum / C3D10_SUBTETS.length;
+  }
+  return tetFractionBelowIso(phi(0), phi(1), phi(2), phi(3));
+}
+
+/**
  * Wall-band volume fraction per element: fraction of each tet within `tWall`
- * of the surface, from corner-node surface distances (see distance.ts).
- * C3D10 midside nodes are ignored — the corners define the linear level set,
- * the same order of approximation as the faceted boundary itself.
+ * of the surface, from node surface distances (see distance.ts). For C3D10 the
+ * midside distances are consumed via the 8 sub-tet subdivision (issue #180), so
+ * a band entering the element between corners is captured; C3D4 uses the exact
+ * 4-corner marching-tet fraction.
  *
  * @returns Float64Array of length elementCount, values in [0, 1].
  */
@@ -84,18 +133,10 @@ export function computeWallFractions(
   const frac = new Float64Array(mesh.elementCount);
   if (tWall <= 0) return frac; // no wall band → all core
   const npe = mesh.nodesPerElem;
+  const elems = mesh.elements;
   for (let e = 0; e < mesh.elementCount; e++) {
     const base = e * npe;
-    const n0 = mesh.elements[base] ?? 0;
-    const n1 = mesh.elements[base + 1] ?? 0;
-    const n2 = mesh.elements[base + 2] ?? 0;
-    const n3 = mesh.elements[base + 3] ?? 0;
-    frac[e] = tetFractionBelowIso(
-      (nodeDist[n0] ?? 0) - tWall,
-      (nodeDist[n1] ?? 0) - tWall,
-      (nodeDist[n2] ?? 0) - tWall,
-      (nodeDist[n3] ?? 0) - tWall,
-    );
+    frac[e] = elementFractionBelowIso(npe, (local) => (nodeDist[elems[base + local] ?? 0] ?? 0) - tWall);
   }
   return frac;
 }
@@ -116,18 +157,10 @@ export function computeWallFractionsFromPhi(
 ): Float64Array {
   const frac = new Float64Array(mesh.elementCount);
   const npe = mesh.nodesPerElem;
+  const elems = mesh.elements;
   for (let e = 0; e < mesh.elementCount; e++) {
     const base = e * npe;
-    const n0 = mesh.elements[base] ?? 0;
-    const n1 = mesh.elements[base + 1] ?? 0;
-    const n2 = mesh.elements[base + 2] ?? 0;
-    const n3 = mesh.elements[base + 3] ?? 0;
-    frac[e] = tetFractionBelowIso(
-      nodePhi[n0] ?? 0,
-      nodePhi[n1] ?? 0,
-      nodePhi[n2] ?? 0,
-      nodePhi[n3] ?? 0,
-    );
+    frac[e] = elementFractionBelowIso(npe, (local) => nodePhi[elems[base + local] ?? 0] ?? 0);
   }
   return frac;
 }
@@ -157,20 +190,17 @@ export function computeLoopVolumeFractions(
   const out = new Float64Array(mesh.elementCount * wallCount);
   if (lineWidth <= 0 || wallCount <= 0) return out;
   const npe = mesh.nodesPerElem;
+  const elems = mesh.elements;
   for (let e = 0; e < mesh.elementCount; e++) {
     const base = e * npe;
-    const n0 = mesh.elements[base] ?? 0;
-    const n1 = mesh.elements[base + 1] ?? 0;
-    const n2 = mesh.elements[base + 2] ?? 0;
-    const n3 = mesh.elements[base + 3] ?? 0;
-    const d0 = nodeDist[n0] ?? 0, d1 = nodeDist[n1] ?? 0, d2 = nodeDist[n2] ?? 0, d3 = nodeDist[n3] ?? 0;
     // Cumulative "below outer boundary of loop k" fraction, then difference
     // consecutive thresholds so each loop's fraction is exact and the sum
-    // telescopes back to the single-threshold wallFrac exactly.
+    // telescopes back to the single-threshold wallFrac exactly (same sub-tet
+    // subdivision as computeWallFractions, so telescoping holds for C3D10 too).
     let prevBelow = 0;
     for (let k = 0; k < wallCount; k++) {
       const iso = (k + 1) * lineWidth;
-      const below = tetFractionBelowIso(d0 - iso, d1 - iso, d2 - iso, d3 - iso);
+      const below = elementFractionBelowIso(npe, (local) => (nodeDist[elems[base + local] ?? 0] ?? 0) - iso);
       out[e * wallCount + k] = Math.max(0, below - prevBelow);
       prevBelow = below;
     }
@@ -205,15 +235,11 @@ export function computeWallInteriorFraction(
   const isoLo = 0.5 * lineWidth;
   const isoHi = (wallCount - 0.5) * lineWidth;
   const npe = mesh.nodesPerElem;
+  const elems = mesh.elements;
   for (let e = 0; e < mesh.elementCount; e++) {
     const base = e * npe;
-    const n0 = mesh.elements[base] ?? 0;
-    const n1 = mesh.elements[base + 1] ?? 0;
-    const n2 = mesh.elements[base + 2] ?? 0;
-    const n3 = mesh.elements[base + 3] ?? 0;
-    const d0 = nodeDist[n0] ?? 0, d1 = nodeDist[n1] ?? 0, d2 = nodeDist[n2] ?? 0, d3 = nodeDist[n3] ?? 0;
-    const belowHi = tetFractionBelowIso(d0 - isoHi, d1 - isoHi, d2 - isoHi, d3 - isoHi);
-    const belowLo = tetFractionBelowIso(d0 - isoLo, d1 - isoLo, d2 - isoLo, d3 - isoLo);
+    const belowHi = elementFractionBelowIso(npe, (local) => (nodeDist[elems[base + local] ?? 0] ?? 0) - isoHi);
+    const belowLo = elementFractionBelowIso(npe, (local) => (nodeDist[elems[base + local] ?? 0] ?? 0) - isoLo);
     frac[e] = Math.max(0, belowHi - belowLo);
   }
   return frac;
