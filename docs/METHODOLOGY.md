@@ -398,7 +398,7 @@ from the headline SF (both already folded into it):
 
 With in-plane raster anisotropy active, an **In-plane bead bond (cross-raster)**
 row is added likewise. The optional **Linear buckling (BLF)** mode is added when
-buckling is requested (§7). The governing (lowest-SF) mode drives the overall
+buckling is requested (§8). The governing (lowest-SF) mode drives the overall
 verdict.
 
 ### Fatigue (Goodman)
@@ -420,7 +420,156 @@ confidence (see the fit-quality gating note in §8).
 
 ---
 
-## 7. Optional analyses
+## 7. Convergence & discretization error
+
+Every finite element solution is an approximation whose error shrinks as the
+mesh refines. STORMFEA surfaces that error two ways: an in-app **estimate** of
+where it concentrates (the ZZ heatmap, no re-solve needed) and an actual
+**measurement** of the trend (running a second, finer mesh). *(The estimator's
+internals are under revision in #207/#209 — energy-norm and observed-order
+Richardson improvements exist on other branches but are not on `main`; this
+section documents `main`'s current behavior.)*
+
+### The ZZ (Zienkiewicz–Zhu) error estimate, η
+
+`computeZZErrorEstimate` (`server/solver/stress.ts:1002–1117`) recovers a
+smoothed stress field with **SPR** (§5) and compares it against the raw
+per-element stress — the gap between "what the mesh computed" and "what a
+locally-fitted polynomial says it should be" is the error indicator, per
+Zienkiewicz & Zhu 1992.
+
+For each element `e`:
+
+- The SPR nodal von Mises values at its 4 corner nodes are interpolated to the
+  element centroid with an inverse-distance weight (`1/(1+dist²)`,
+  `stress.ts:1058–1074`) to get `σ_SPR`.
+- The **error energy** is `‖error‖²_e = (σ_SPR − σ_centroid)² · (1+ν)/E`
+  (`stress.ts:1077–1079`) — an approximation: the true SPR energy norm needs
+  the full stress **tensor** and `C⁻¹`, but this uses the scalar von Mises
+  *magnitude* difference instead (flagged in the code comment at
+  `stress.ts:1078`). It also does **not** weight by element volume, so a
+  cluster of small elements and one large element contribute equally per
+  element, not per unit of part volume.
+- Per-element η is that error energy normalized by the **global** stress
+  energy norm, `‖σ‖_global = √(Σ_e σ_e² · (1+ν)/E)` (`stress.ts:1094`, `:1099`):
+
+  ```
+  η_e = ‖error‖_e / ‖σ‖_global
+  ```
+
+  So **η is a share of the whole part's energy norm, not a percentage error on
+  that element's own stress value.** Two consequences that make it easy to
+  misread:
+  - Refining the mesh spreads the same total error over more elements, so the
+    same physical defect produces a *smaller* η per element on a finer mesh —
+    η values are not comparable across mesh densities.
+  - η says nothing about whether the *element's own* stress is high or low in
+    absolute terms — a low-stress element in a poorly-resolved region can rank
+    above a high-stress element in a well-resolved one.
+
+  `globalRelativeError` (`stress.ts:1095`, returned alongside `errorEstimate`)
+  is the one number that IS an absolute, whole-part accuracy read: the
+  root-sum-square of every element's η, `√(Σ_e η_e²)`. It answers "how far is
+  this solve, overall, from the SPR-smoothed reference" — the η heatmap then
+  shows *where* that total is concentrated. STORMFEA's client shows both
+  together for exactly this reason (η heatmap legend, issue #151): the map for
+  "where to refine," the global figure for "how much to trust the numbers."
+  Neither `η` nor `globalRelativeError` is validated against a known-exact
+  solution in the automated suite (`solver_validation.ts` [14.2]/[14.4] only
+  check that both are defined and non-negative, and that a finer mesh's
+  global error is ≤ the coarse mesh's) — they are *indicators*, not calibrated
+  error bounds.
+
+### The 5% "converged" threshold
+
+Both the automatic background check and the manual mesh-convergence study use
+the same criterion, hard-coded as `changePct < 5.0` (percent) — in
+`client/index.html`, once for the automatic upgrade path
+(`const converged = changePct < 5.0;`, near line 6094) and once for the manual
+multi-mesh study (same expression, near line 8558). `changePct` is the
+percent change in **peak von Mises stress** between two mesh levels:
+
+```
+changePct = |maxVM_fine − maxVM_std| / maxVM_std × 100
+```
+
+Under 5% is reported "converged" / "mesh-independent within tolerance"; 5% or
+more triggers an automatic swap to the finer mesh's results (the "auto-
+upgrade" badge) in the background-check path, or a "not converged" call-out in
+the manual study. 5% is an engineering heuristic on ONE scalar (peak stress at
+one point), not a formal a-posteriori bound — a badge can read "converged"
+while a different, non-peak location is still drifting.
+
+**C3D4 caveat.** For linear tetrahedra (C3D4), two meshes can agree within 5%
+because both suffer the *same* shear-locking stiffening, not because the
+answer is right (`client/index.html` badge text: "Standard and fine C3D4
+meshes agree because both are equally locked, not because they are correct" —
+C3D4 underpredicts bending stress by ~55% at practical densities). C3D10
+(quadratic) elements skip the check entirely — the standard-mesh response
+already reports `nodesPerElem === 10`, and the code treats quadratic elements
+as not needing the fine-mesh confirmation (`client/index.html:6061–6064`).
+
+### The SF > 3.0 smart-skip
+
+The background fine-mesh check itself only runs when it is likely to matter.
+`client/index.html:6056–6084`: if the standard mesh has no computable safety
+factor (`safetyFactorAvailable === false`), the fine mesh is skipped outright
+— a finer mesh cannot manufacture an SF that doesn't exist. Otherwise, if
+`stdSF > 3.0` the fine mesh is also skipped and a "clearly safe" badge is
+shown instead. The rationale (`client/index.html` badge sub-text): a part
+already at 3× the failure load has enough margin that mesh-driven changes to
+the peak stress are very unlikely to flip the SF below 1, so the extra solve
+is not worth the compute cost. This is a heuristic gate on cost, not a proof —
+it is skipped only for the *background, automatic* check; the manual
+multi-mesh "MESH CONVERGENCE STUDY" button always runs every requested mesh
+level regardless of SF.
+
+### Manual convergence study & Richardson extrapolation
+
+The "MESH CONVERGENCE STUDY" action (`client/index.html`, around line 8520)
+re-solves the model at several mesh-quality settings and reports peak von
+Mises stress, node/element counts, and SF at each level. From the **two
+finest** results in that set it computes a Richardson-extrapolated estimate of
+the mesh-independent stress (`client/index.html:8554–8573`):
+
+```
+r  = (nodes_fine / nodes_std)^(1/3)     // refinement ratio, from node counts
+p  = 2                                   // ASSUMED convergence order — not
+                                          // measured from the mesh series
+σ_exact ≈ σ_fine + (σ_fine − σ_std) / (r^p − 1)
+```
+
+`p = 2` is a fixed assumption ("assumed for linear elements" per the code
+comment) rather than an order observed from the actual sequence of results —
+main does not fit `p` from 3+ mesh levels (an "observed-order" Richardson fit
+is planned in #209, not yet merged). The refinement ratio `r` is derived from
+node counts as a proxy for element-size ratio (`(nodes_fine/nodes_std)^(1/3)`,
+appropriate for uniform 3-D refinement, not guaranteed for adaptive/local
+refinement). The extrapolated value is only trusted, and shown, when it lands
+in a sane envelope, `0 < extrapolated < 3 × σ_fine`
+(`client/index.html:8569`) — outside that range the raw finest-mesh value is
+used with no extrapolation note. The same `< 5%` criterion (previous
+subsection) decides the study's own "converged" / "not converged" call-out,
+here compared between the last two mesh levels in the study.
+
+### What this machinery does not cover
+
+- **Singularities.** Reentrant corners, point loads, and sharp fillets are
+  classic FEA stress singularities: the theoretical peak stress grows without
+  bound as the mesh refines there, so `changePct` at that location will not
+  settle below 5% no matter how fine the mesh gets, and Richardson
+  extrapolation's assumed order does not apply. STORMFEA does not currently
+  detect or flag singular regions separately from ordinary discretization
+  error; a persistently "not converged" result at a sharp geometric feature
+  should be read as evidence of a singularity, not treated as a mesh-density
+  problem to solve by refining further.
+- **η is diagnostic, not a safety gate.** Nothing in the SF/verdict pipeline
+  reads `errorEstimate` — a high-η region does not lower the reported SF or
+  block the "safe" verdict. It is purely an accuracy diagnostic for the user.
+
+---
+
+## 8. Optional analyses
 
 - **Modal (`solver/modal.ts`).** Solves `K·φ = ω²·M·φ` by subspace iteration with
   shift-invert for the lowest natural frequencies; `f = √(ω²)/(2π)`. Mode shapes
@@ -431,7 +580,7 @@ confidence (see the fit-quality gating note in §8).
 
 ---
 
-## 8. Calibration
+## 9. Calibration
 
 Literature defaults carry **MEDIUM** confidence. Teams can upgrade to **HIGH** by
 printing standard coupons on their own printer/filament, pulling them to failure,
@@ -489,7 +638,7 @@ field.
 
 ---
 
-## 9. Validation
+## 10. Validation
 
 The solver ships an automated validation suite
 (`server/tests/solver_validation.ts`, run via `npm run test` and reproducible live

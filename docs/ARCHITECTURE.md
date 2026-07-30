@@ -154,7 +154,7 @@ types → element → assembly (+ assembly-worker) → boundary → load → cg
 - **Test:** `npm run test` runs Vitest units → `tsc` typecheck → the compiled
   solver-validation suite → the parallel-assembly equivalence check → the
   client-logic checks (`scripts/test_client_logic.mjs`). See
-  [`METHODOLOGY.md`](METHODOLOGY.md#9-validation) for what the solver suite proves.
+  [`METHODOLOGY.md`](METHODOLOGY.md#10-validation) for what the solver suite proves.
 - **CI:** `.github/workflows/test.yml` runs `npm ci` → build → the full suite on
   every push/PR.
 
