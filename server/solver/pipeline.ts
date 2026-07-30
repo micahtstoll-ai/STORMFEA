@@ -30,7 +30,7 @@ import { applyDirichletBC }    from "./boundary.js";
 import { assembleForceVector } from "./load.js";
 import { solvePCG, solvePCGStreaming } from "./cg.js";
 import { buildSolverResult }   from "./stress.js";
-import { computeMeshQuality }  from "./meshQuality.js";
+import { computeMeshQuality, formatHardViolations }  from "./meshQuality.js";
 
 export interface SolverInput {
   readonly mesh:        TetMesh;
@@ -76,6 +76,17 @@ export interface SolverInput {
    * extra Float64Array(nnz) copy.
    */
   readonly keepPristineK?: boolean;
+  /**
+   * Mesh-quality hard gate policy (issue #166). Default 'throw': a hard shape
+   * violation aborts the solve to protect user-facing results. Internal
+   * calibration probes that run on a controlled, deliberately-graded structured
+   * fixture (e.g. the coupon Kt plate-with-hole, whose hole-clustered O-grid
+   * layers are graded on purpose and whose peak is read at the fine hole edge)
+   * pass 'warn' — the hard-violation elements are logged but the solve proceeds,
+   * since the fixture geometry and its extracted quantity are known-good. Never
+   * expose this to the user analysis path.
+   */
+  readonly meshGate?: 'throw' | 'warn';
   /**
    * Optional abort signal (issue #109). Forwarded to solvePCG, which checks it
    * at CG iteration checkpoints and throws if the caller has cancelled.
@@ -152,27 +163,45 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
 
   _snap("before mesh quality check");
 
-  // Compute mesh quality metrics before assembly
+  // Compute mesh quality metrics before assembly (issue #166).
+  //
+  // The gate keys on what actually predicts solution damage — the scale-invariant
+  // sliver/aspect metrics and the stiffness-conditioning proxy (the normalized
+  // Jacobian: the strain-displacement B ∝ 1/(6V), so a near-zero-volume sliver
+  // inflates B and wrecks conditioning), plus the C3D10 curved-mapping fold flags
+  // (issue #162) — NOT the raw Jacobian SIGN. The C3D4/C3D10 assemblers
+  // auto-orient via Math.abs(sixV)/Math.abs(detJ), so a MIRROR-oriented but well
+  // shaped mesh solves correctly and must pass the gate.
   const meshQualityReport = computeMeshQuality(mesh);
-  const degeneratePercent = (meshQualityReport.degenerateCount / mesh.elementCount) * 100;
-  const poorQualityPercent = (meshQualityReport.poorQualityCount / mesh.elementCount) * 100;
 
-  if (degeneratePercent > 5) {
-    throw new Error(
-      `Mesh quality error: ${meshQualityReport.degenerateCount} elements (${degeneratePercent.toFixed(1)}%) ` +
-      `are degenerate (inverted or zero-volume). ` +
-      `Worst Jacobian: ${meshQualityReport.worstJacobianMin.toFixed(6)}. ` +
-      `Please re-mesh with higher quality settings or verify element connectivity.`
-    );
+  // HARD gate: any element beyond a hard shape threshold (sliver
+  // |normalizedJacobian| < 0.02, catastrophic aspect ratio > 100, a folded C3D10
+  // mapping, or a non-finite metric) cannot be trusted — a handful (< 5%) is
+  // enough to corrupt the solve, so percentages do NOT gate here. With no local
+  // remesher on this path, fail with an actionable message naming the worst
+  // elements' coordinates so the client can highlight them.
+  if (meshQualityReport.hardViolationCount > 0) {
+    if ((input.meshGate ?? 'throw') === 'warn') {
+      // Internal calibration probe on a controlled fixture: log but proceed
+      // (the extracted quantity is validated for this known geometry).
+      console.warn(`[Mesh quality] ${formatHardViolations(meshQualityReport)}`);
+    } else {
+      throw new Error(formatHardViolations(meshQualityReport));
+    }
   }
 
-  if (poorQualityPercent > 1) {
+  // SOFT tier: advisory only. A broadly marginal mesh (> SOFT_POOR_WARN_PERCENT
+  // of elements below the poor shape floor) still solves, but stress recovery may
+  // be less accurate. Percentage thresholds belong to this soft tier alone.
+  const SOFT_POOR_WARN_PERCENT = 1;
+  const poorQualityPercent = (meshQualityReport.poorQualityCount / mesh.elementCount) * 100;
+  if (poorQualityPercent > SOFT_POOR_WARN_PERCENT) {
     console.warn(
       `[Mesh quality] ${meshQualityReport.poorQualityCount} elements (${poorQualityPercent.toFixed(1)}%) ` +
-      `have poor quality. Stress recovery may be less accurate. ` +
-      `Worst J_min: ${meshQualityReport.worstJacobianMin.toFixed(6)}, ` +
+      `have poor (but usable) shape. Stress recovery may be less accurate. ` +
+      `Worst normalized Jacobian: ${meshQualityReport.worstNormalizedJacobian.toFixed(4)} (ideal 1.0), ` +
       `worst AR: ${meshQualityReport.worstAspectRatio.toFixed(1)}, ` +
-      `worst dihedral: ${meshQualityReport.worstMinDihedralDeg.toFixed(1)}°.`
+      `dihedral range: ${meshQualityReport.worstMinDihedralDeg.toFixed(1)}°–${meshQualityReport.worstMaxDihedralDeg.toFixed(1)}°.`
     );
   }
 
