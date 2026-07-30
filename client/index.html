@@ -1343,8 +1343,8 @@ body:not(.has-results) #btn-stress { display: none !important; }
       </div>
       <div style="width:1px;height:32px;background:var(--border);flex-shrink:0"></div>
       <!-- Fail force -->
-      <div style="display:flex;flex-direction:column;gap:1px">
-        <div style="font-size:10px;color:var(--text-lo);letter-spacing:.06em;font-weight:600">FAIL FORCE</div>
+      <div style="display:flex;flex-direction:column;gap:1px" title="Linear first-yield estimate, not an ultimate/collapse load — see full results for the caveat.">
+        <div style="font-size:10px;color:var(--text-lo);letter-spacing:.06em;font-weight:600">FAIL FORCE (EST.)</div>
         <div id="sticky-fail" style="font-family:'DM Mono',monospace;font-size:13px;
               color:var(--text-hi);line-height:1.3">—</div>
       </div>
@@ -6378,6 +6378,28 @@ function updateStickyResults(s) {
   bar.style.display = 'flex';
 }
 
+// Issue #204: estimatedFailForce is a linear first-yield extrapolation
+// (totalAppliedForce × SF, server/analysis.ts) — not a definitive
+// ultimate/collapse load. When the buckling mode's BLF × applied load is
+// lower than that first-yield estimate, the buckling-limited number is the
+// more honest (lower) one to lead with, flagged as such. appliedForce is
+// recoverable from already-transmitted numbers (estimatedFailForce /
+// safetyFactor — the exact inverse of how the server derived
+// estimatedFailForce), so this is a display-only re-derivation, not new
+// solver math.
+function computeDisplayFailForce(s, bucklingResult) {
+  const bk = bucklingResult;
+  let bucklingForceN = null;
+  if (bk && bk.blf != null && bk.verdict !== 'no-buckling' && bk.verdict !== 'indeterminate'
+      && s.safetyFactorAvailable && s.safetyFactor > 0) {
+    const appliedForceN = s.estimatedFailForce / s.safetyFactor;
+    bucklingForceN = bk.blf * appliedForceN;
+  }
+  const bucklingGoverns = bucklingForceN != null && bucklingForceN < s.estimatedFailForce;
+  const displayFailForceN = bucklingGoverns ? bucklingForceN : s.estimatedFailForce;
+  return { bucklingGoverns, displayFailForceN, bucklingForceN, bk };
+}
+
 function showResults(s) {
   updateStickyResults(s);
   document.getElementById('results-placeholder').style.display = 'none';
@@ -6481,6 +6503,19 @@ function showResults(s) {
     </div>`;
   }
 
+  // Issue #204: estimatedFailForce is a LINEAR first-yield extrapolation
+  // (totalAppliedForce × SF, server/analysis.ts) — onset of yield under an
+  // assumption of proportional loading, not a definitive ultimate/collapse
+  // load. Buckling is checked separately and can govern below first yield
+  // for compression-dominated parts; when it does, that's the more honest
+  // (lower) number to lead with, flagged as buckling-limited.
+  const { bucklingGoverns, displayFailForceN, bk } = computeDisplayFailForce(s, S.buckling);
+  const failForceCaveat = `<div style="font-size:9px;color:var(--text-lo);margin-top:4px;line-height:1.4">${
+    bucklingGoverns
+      ? `Buckling-limited estimate (BLF ${bk.blf.toFixed(2)}× applied load) — lower than the first-yield estimate of ${U.forceStr(s.estimatedFailForce)}. Linear buckling can overestimate real capacity by 10–40% for imperfect FDM geometry.`
+      : `Linear first-yield estimate: assumes stress ∝ load and failure at first yield, no plasticity/buckling redistribution. Actual capacity is typically higher for ductile bending, lower if buckling governs.`
+  }</div>`;
+
   let actionHTML = '';
   // Guard govSF comparisons on safetyFactorAvailable: null coerces to 0 in JS,
   // which would falsely trigger "Will fail" when SF data is simply unavailable.
@@ -6495,12 +6530,13 @@ function showResults(s) {
       <div style="font-size:11px;color:var(--text-lo)">Not enough material data to compute a safety factor for this configuration.</div>
     </div>`;
   } else if (govTier === 'fail') {
-    const failN = U.forceStr(s.estimatedFailForce);
-    const modeStr = govMode ? govMode.mode.toLowerCase() : 'bulk yield';
+    const failN = U.forceStr(displayFailForceN);
+    const modeStr = bucklingGoverns ? 'buckling' : (govMode ? govMode.mode.toLowerCase() : 'bulk yield');
     actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--text-hi)66;border-radius:6px;margin-bottom:16px">
-      <div style="font-size:13px;font-weight:600;color:var(--text-hi);margin-bottom:6px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Will fail at ${failN}</div>
-      <div style="font-size:11px;color:var(--text-hi);margin-bottom:10px">Governed by ${modeStr}</div>
-      ${bestRec ? `<div style="font-size:11px;color:var(--text-mid);border-top:1px solid var(--border);padding-top:8px;margin-top:4px">
+      <div style="font-size:13px;font-weight:600;color:var(--text-hi);margin-bottom:6px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Estimated failure load: ${failN}</div>
+      <div style="font-size:11px;color:var(--text-hi);margin-bottom:2px">Governed by ${modeStr}</div>
+      ${failForceCaveat}
+      ${bestRec ? `<div style="font-size:11px;color:var(--text-mid);border-top:1px solid var(--border);padding-top:8px;margin-top:8px">
         <span style="color:var(--success)">Fix: </span>Print ${bestRec.label} — estimated SF ${bestRec.estimatedSF.toFixed(2)}×, fails at ${U.forceStr(bestRec.estimatedFailN)}
       </div>` : ''}
     </div>`;
@@ -6577,9 +6613,10 @@ function showResults(s) {
         <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">MAX DISPLACEMENT</div>
         <div style="font-size:18px;font-weight:500;color:var(--text-hi)">${s.maxDisplacementMm.toFixed(4)} <span style="font-size:10px;color:var(--text-label)">mm</span></div>
       </div>
-      <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
-        <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">ESTIMATED FAIL FORCE</div>
-        <div style="font-size:18px;font-weight:500;color:var(--text-hi)">${U.force(s.estimatedFailForce).toFixed(S.units==='imperial'?1:0)} <span style="font-size:10px;color:var(--text-label)">${U.forceLabel()}</span></div>
+      <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px" title="Linear first-yield estimate: assumes stress ∝ load and failure at first yield — not an ultimate/collapse load. Actual capacity is typically higher for ductile bending, lower if buckling governs.">
+        <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">ESTIMATED FAIL FORCE${bucklingGoverns ? ' <span style="color:var(--warn)">(buckling-limited)</span>' : ''}</div>
+        <div style="font-size:18px;font-weight:500;color:var(--text-hi)">${U.force(displayFailForceN).toFixed(S.units==='imperial'?1:0)} <span style="font-size:10px;color:var(--text-label)">${U.forceLabel()}</span></div>
+        <div style="font-size:8px;color:var(--text-lo);margin-top:3px;line-height:1.3">Linear first-yield estimate, not ultimate/collapse load</div>
       </div>
     </div>
 
@@ -6625,6 +6662,34 @@ function showResults(s) {
           ${mqr.poorQualityCount > 0 ? `<b style="color:var(--warn)">${mqr.poorQualityCount}</b> poor · ` : ''}
           ${mqr.degenerateCount > 0 ? `<b style="color:var(--danger)">${mqr.degenerateCount}</b> degenerate` : 'none degenerate'}<br>
           Worst: J<sub>min</sub>=${mqr.worstJacobianMin.toFixed(6)} · AR=${mqr.worstAspectRatio.toFixed(1)}× · dihedral=${mqr.worstMinDihedralDeg.toFixed(1)}°
+        </div>
+      </details>`;
+    })() : ''}
+
+    ${s.globalRelativeError != null ? (() => {
+      // Discretization-confidence readout (issue #202) — globalRelativeError
+      // and topErrorElements were computed and transmitted but never shown;
+      // this is the one number that answers "how much of what I'm seeing is
+      // mesh, not physics?" in plain percentage terms. Lower is better; the
+      // 10% figure below is the same threshold the solver's own convergence
+      // check uses elsewhere, kept as a rough calibration point, not a hard
+      // pass/fail line — this is an ESTIMATE, not an exact bound.
+      const pct = s.globalRelativeError * 100;
+      const errColor = pct < 5 ? 'var(--success)' : pct < 10 ? 'var(--warn)' : 'var(--danger)';
+      const errLabel = pct < 5 ? 'low — mesh is well resolved' : pct < 10 ? 'moderate — consider a finer mesh for final numbers' : 'high — refine the mesh before trusting margins';
+      const worstList = (s.topErrorElements && s.topErrorElements.length)
+        ? s.topErrorElements.slice(0, 5).map(e =>
+            `<li>(${e.x.toFixed(1)}, ${e.y.toFixed(1)}, ${e.z.toFixed(1)}) mm — η≈${(e.errorEstimate*100).toFixed(1)}%</li>`
+          ).join('')
+        : '';
+      return `
+      <details style="margin-bottom:12px">
+        <summary style="cursor:pointer;font-size:11px;font-weight:600;color:var(--text-mid);padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;user-select:none">
+          <span style="color:${errColor}">◈ Mesh discretization error — ${pct.toFixed(1)}%</span>
+        </summary>
+        <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px;font-size:10px;color:var(--text-lo);line-height:1.8">
+          Zienkiewicz-Zhu global relative error estimate η — an ESTIMATE of how much of the stress field is mesh artifact rather than physics. Lower is better; below ~5% is generally trustworthy, above ~10% suggests refining the mesh before trusting margins. <span style="color:${errColor}">${errLabel}.</span>
+          ${worstList ? `<br><br>Worst-resolved regions (highest local error):<ul style="margin:4px 0 0 16px;padding:0">${worstList}</ul>` : ''}
         </div>
       </details>`;
     })() : ''}
@@ -10559,7 +10624,7 @@ function drawSummaryCanvas() {
     }
 
     statRow('PEAK STRESS',   U.stressStr(s.maxVonMisesMPa, S.units==='imperial'?0:1), 0);
-    statRow('FAIL FORCE',    U.forceStr(s.estimatedFailForce, 0), 1);
+    statRow('FAIL FORCE (EST.)', U.forceStr(s.estimatedFailForce, 0), 1);
     RY += 32;
     statRow('YIELD STRENGTH', U.stressStr(s.effectiveYieldMPa, S.units==='imperial'?0:1), 0);
     statRow('MESH NODES',    (s.nodeCount||0).toLocaleString(), 1);
