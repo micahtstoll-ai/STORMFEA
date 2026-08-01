@@ -9,12 +9,13 @@ STORMFEA is an FDM-aware finite element analysis tool built with TypeScript/Node
 **CRITICAL**: This file MUST remain in the repository and be included in every commit.
 
 **Rules:**
-- ✅ DO: Include `package-lock.json` in all commits
-- ✅ DO: Verify the lock file exists before creating PRs
-- ✅ DO: Run `npm install` or `npm ci` if updating dependencies
-- ❌ DON'T: Exclude or ignore `package-lock.json`
-- ❌ DON'T: Delete `package-lock.json` during refactoring
-- ❌ DON'T: Create commits that remove this file
+- DO: Include `package-lock.json` in all commits
+- DO: Verify the lock file exists before creating PRs
+- DO: Run `npm install` or `npm ci` if updating dependencies
+- DON'T: Exclude or ignore `package-lock.json`
+- DON'T: Delete `package-lock.json` during refactoring
+- DON'T: Create commits that remove this file
+- DON'T: Use emojis anywhere
 
 **Why:** The lock file ensures all CI environments use identical dependency versions. Without it:
 1. GitHub Actions workflows fail (`npm ci` requires the lock file)
