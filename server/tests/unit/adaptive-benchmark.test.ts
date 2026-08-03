@@ -26,6 +26,14 @@
  * in `-a` moved the count 40%, non-monotonically), so pinning counts or errors
  * would be brittle for reasons that have nothing to do with the solver.
  *
+ * That same non-monotonicity is the one way this file can fail for a reason
+ * that is not about the solver at all: a future TetGen build can move the
+ * ladder rungs, and the error-margin gate would then fail with two numbers
+ * nobody can interpret. So the fairness of the comparison is checked FIRST,
+ * as its own premise (`UNIFORM_MAX_RATIO`), and the ladder it walked is
+ * printed in the failure. The error-margin gate itself is never relaxed to
+ * accommodate drift — diagnosing drift is the premise check's job.
+ *
  *   TETGEN_BIN=/path/to/tetgen npx vitest run server/tests/unit/adaptive-benchmark.test.ts
  */
 import { describe, it, expect, beforeAll } from "vitest";
@@ -66,6 +74,34 @@ function tubeTriangleSoup(R: number, r: number, H: number, N: number): { positio
 
 const R = 6, r = 2.5, H = 5, N = 32;
 
+/**
+ * TetGen `-a` volume caps tried, in order, to build the uniform yardstick mesh.
+ * A fixed ladder rather than a bisection on the cap because the element count
+ * is NOT monotone in it: measured on this fixture, 0.03 gives 54,373 elements
+ * and 0.03057 gives 32,591. Bisection assumes a monotone response and would
+ * chase that noise; a ladder just reports what each rung produced.
+ */
+const UNIFORM_VOLUME_LADDER = [0.06, 0.03, 0.015, 0.008];
+
+/**
+ * How much larger than the adaptive mesh the uniform yardstick may be before
+ * the comparison stops being interpretable. Measured on TetGen 1.5.0 the
+ * ladder lands at 54,373 elements against the adaptive 40,534 — a ratio of
+ * 1.34, comfortably inside this band.
+ *
+ * Why a band at all: "at least as many elements" is what makes the error
+ * comparison honest, but a uniform mesh that is VASTLY larger is a different
+ * experiment. Its error is lower for reasons that have nothing to do with
+ * where elements were spent, so a failure of the error-margin gate would then
+ * be evidence about TetGen's ladder, not about adaptivity. If a future TetGen
+ * shifts the rungs that far, the premise check below fails and says exactly
+ * that. The band never relaxes the error-margin gate — it explains it.
+ */
+const UNIFORM_MAX_RATIO = 2.0;
+
+/** Why the uniform yardstick is or is not a fair comparison mesh. */
+type Fairness = { ok: boolean; detail: string };
+
 function makeRequest(adaptive: boolean): AnalysisRequest {
   const { positions, triangleCount } = tubeTriangleSoup(R, r, H, N);
   return {
@@ -89,47 +125,107 @@ function makeRequest(adaptive: boolean): AnalysisRequest {
 
 describe.skipIf(!probe.found)("adaptive vs uniform at matched element count (issue #149 acceptance)", () => {
   let adaptive: AnalysisResult;
-  let uniform: AnalysisResult;
+  /** Null when no fair yardstick could be built — see `fairness` for why. */
+  let uniform: AnalysisResult | null = null;
+  let adaptiveCount = 0;
   let uniformCount = 0;
+  let fairness: Fairness = { ok: false, detail: "the benchmark setup never ran" };
+
+  /**
+   * The uniform result, or a failure that names the meshing premise instead of
+   * dereferencing null. Every comparison below goes through this, so a ladder
+   * that could not produce a fair mesh fails as "there was no comparison",
+   * never as a bogus solver number.
+   */
+  function comparison(): AnalysisResult {
+    expect(
+      uniform,
+      `no fair uniform comparison mesh was built, so there is nothing to compare against: ${fairness.detail}`,
+    ).not.toBeNull();
+    return uniform!;
+  }
 
   beforeAll(async () => {
     adaptive = await runAdaptiveAnalysis(makeRequest(true));
 
     // Uniform comparison mesh: walk a ladder of TetGen volume caps and take the
-    // SMALLEST mesh that still has at least as many elements as the adaptive
-    // run finished with. A ladder rather than a bisection because the count is
-    // not monotone in the cap; "at least as many" so any error advantage the
-    // adaptive mesh shows cannot be explained by it simply having more elements.
-    const target = adaptive.adaptiveRefinement!.finalElementCount;
+    // smallest mesh that has at least as many elements as the adaptive run
+    // finished with. "At least as many" so any error advantage the adaptive
+    // mesh shows cannot be explained by it simply having more elements.
+    adaptiveCount = adaptive.adaptiveRefinement!.finalElementCount;
     const { positions, triangleCount } = tubeTriangleSoup(R, r, H, N);
+    const ceiling = adaptiveCount * UNIFORM_MAX_RATIO;
+    const ladder: Array<{ maxVol: number; elementCount: number }> = [];
     let best: Awaited<ReturnType<typeof meshWithTetGen>> | null = null;
-    for (const maxVol of [0.06, 0.03, 0.015, 0.008]) {
+
+    for (const maxVol of UNIFORM_VOLUME_LADDER) {
       const res = await meshWithTetGen(positions, triangleCount, 2, maxVol);
       const n = res.mesh.elementCount;
-      if (n >= target && (best === null || n < best.mesh.elementCount)) best = res;
-      if (best !== null && n >= target) break;
+      ladder.push({ maxVol, elementCount: n });
+      if (n >= adaptiveCount && (best === null || n < best.mesh.elementCount)) best = res;
+      // Stop at the first qualifying mesh that is INSIDE the fairness band —
+      // on TetGen 1.5.0 that is rung 2, so the common case costs exactly the
+      // two meshing calls it always did. Only an overshooting rung makes us
+      // keep walking, and that is worth the time precisely because the count
+      // is non-monotone in the cap: a FINER cap can yield a SMALLER mesh, so a
+      // fairer yardstick may still be further down the ladder.
+      if (best !== null && best.mesh.elementCount <= ceiling) break;
     }
-    expect(best, "no uniform mesh on the ladder reached the adaptive element count").not.toBeNull();
-    uniformCount = best!.mesh.elementCount;
 
-    uniform = await runAnalysis({
-      ...makeRequest(false),
-      _prebuiltMesh: {
-        mesh:          best!.mesh,
-        surfaceToNode: best!.surfaceToNode,
-        surfaceFaces:  best!.surfaceFaces,
-      },
-    });
+    const ladderText = ladder.map((s) => `-a${s.maxVol} -> ${s.elementCount}`).join(", ");
+    if (best === null) {
+      fairness = {
+        ok: false,
+        detail:
+          `no uniform mesh on the ladder reached the adaptive element count (${adaptiveCount}); ` +
+          `TetGen produced [${ladderText}]. This is a meshing-side change, not a solver regression: ` +
+          `extend UNIFORM_VOLUME_LADDER with finer caps until a rung qualifies. Do not lower the bar ` +
+          `by comparing against a smaller uniform mesh — that would hand adaptivity the element-count ` +
+          `advantage the comparison exists to deny it.`,
+      };
+    } else if (best.mesh.elementCount > ceiling) {
+      fairness = {
+        ok: false,
+        detail:
+          `the smallest qualifying uniform mesh has ${best.mesh.elementCount} elements, ` +
+          `${(best.mesh.elementCount / adaptiveCount).toFixed(2)}x the adaptive ${adaptiveCount} and outside ` +
+          `the ${UNIFORM_MAX_RATIO}x fairness band; TetGen produced [${ladderText}]. The uniform solve was ` +
+          `SKIPPED rather than run, because a yardstick that much larger measures mesh size, not where the ` +
+          `elements were spent. Most likely TetGen's response to -a shifted (it is non-monotone); add ladder ` +
+          `rungs between the bracketing caps until one lands in the band. Do NOT widen UNIFORM_MAX_RATIO to ` +
+          `make this pass.`,
+      };
+    } else {
+      fairness = {
+        ok: true,
+        detail:
+          `uniform ${best.mesh.elementCount} elements vs adaptive ${adaptiveCount} ` +
+          `(${(best.mesh.elementCount / adaptiveCount).toFixed(2)}x, band ${UNIFORM_MAX_RATIO}x); ` +
+          `TetGen produced [${ladderText}]`,
+      };
+      uniformCount = best.mesh.elementCount;
+      uniform = await runAnalysis({
+        ...makeRequest(false),
+        _prebuiltMesh: {
+          mesh:          best.mesh,
+          surfaceToNode: best.surfaceToNode,
+          surfaceFaces:  best.surfaceFaces,
+        },
+      });
+    }
 
     // eslint-disable-next-line no-console
     console.log(
       `[#149 benchmark] adaptive: ${adaptive.adaptiveRefinement!.initialElementCount} → ` +
-      `${adaptive.adaptiveRefinement!.finalElementCount} elements, ZZ error ` +
+      `${adaptiveCount} elements, ZZ error ` +
       `${adaptive.adaptiveRefinement!.initialGlobalError.toFixed(4)} → ` +
       `${adaptive.adaptiveRefinement!.finalGlobalError.toFixed(4)}, ` +
       `peak ${adaptive.maxVonMisesMPa.toFixed(3)} MPa, stop '${adaptive.adaptiveRefinement!.stopReason}' | ` +
-      `uniform: ${uniformCount} elements, ZZ error ` +
-      `${(uniform.globalRelativeError ?? NaN).toFixed(4)}, peak ${uniform.maxVonMisesMPa.toFixed(3)} MPa`,
+      (uniform === null
+        ? `uniform: NOT RUN — ${fairness.detail}`
+        : `uniform: ${uniformCount} elements, ZZ error ` +
+          `${(uniform.globalRelativeError ?? NaN).toFixed(4)}, peak ${uniform.maxVonMisesMPa.toFixed(3)} MPa` +
+          ` | fairness: ${fairness.detail}`),
     );
   }, 900_000);
 
@@ -168,11 +264,22 @@ describe.skipIf(!probe.found)("adaptive vs uniform at matched element count (iss
   });
 
   // ── 2. The open question: does adaptivity beat a finer uniform tier? ───────
-  it("the uniform comparison mesh has AT LEAST as many elements (premise)", () => {
-    // Stated as its own assertion so a failure here reads as "the comparison was
-    // not fair" rather than as a solver regression.
-    expect(uniformCount).toBeGreaterThanOrEqual(adaptive.adaptiveRefinement!.finalElementCount);
-    expect(uniform.converged).toBe(true);
+  it("the uniform comparison mesh is a fair yardstick (premise)", () => {
+    // Stated as its own assertion, and asserted BEFORE the error margin, so a
+    // meshing-side change reads as "the comparison was not fair" rather than as
+    // a solver regression. Two ways it goes wrong, both about TetGen and not
+    // about adaptivity:
+    //   too small — no ladder rung reached the adaptive count, so any error win
+    //               would just be the larger mesh winning;
+    //   too large — the smallest qualifying rung overshoots UNIFORM_MAX_RATIO,
+    //               so the uniform run is no longer "the same budget spent
+    //               evenly" and its error is not an interpretable baseline.
+    // Either way `fairness.detail` carries the ladder TetGen actually produced,
+    // so the fix (add rungs) is readable straight off the failure.
+    expect(fairness.ok, fairness.detail).toBe(true);
+    expect(uniformCount, fairness.detail).toBeGreaterThanOrEqual(adaptiveCount);
+    expect(uniformCount, fairness.detail).toBeLessThanOrEqual(adaptiveCount * UNIFORM_MAX_RATIO);
+    expect(comparison().converged).toBe(true);
   });
 
   it("achieves a LOWER global error than uniform refinement at no more elements", () => {
@@ -180,9 +287,20 @@ describe.skipIf(!probe.found)("adaptive vs uniform at matched element count (iss
     // elements where the error indicator says they are worth spending, so on a
     // part with a real stress concentration it should win per element — and here
     // it is handicapped, since the uniform mesh is allowed to be larger.
+    //
+    // This margin is the point of the file and is never loosened to absorb
+    // meshing drift; the premise test above exists so drift is diagnosed there
+    // instead. The message repeats both meshes so a genuine failure can be read
+    // without re-running anything.
     const adaptiveErr = adaptive.adaptiveRefinement!.finalGlobalError;
-    const uniformErr  = uniform.globalRelativeError ?? Number.POSITIVE_INFINITY;
-    expect(adaptiveErr).toBeLessThan(uniformErr);
+    const uniformErr  = comparison().globalRelativeError ?? Number.POSITIVE_INFINITY;
+    expect(
+      adaptiveErr,
+      `adaptive ZZ error ${adaptiveErr.toFixed(4)} on ${adaptiveCount} elements did not beat ` +
+      `uniform ${uniformErr.toFixed(4)} on ${uniformCount} elements ` +
+      `(${(uniformCount / adaptiveCount).toFixed(2)}x). If the premise test above passed, the meshes were ` +
+      `comparable and this is a real adaptivity regression`,
+    ).toBeLessThan(uniformErr);
   });
 
   it("resolves a peak stress at least as high as uniform, and within a factor of 2", () => {
@@ -196,8 +314,8 @@ describe.skipIf(!probe.found)("adaptive vs uniform at matched element count (iss
     // So: assert the direction, with a factor-of-2 band as the sanity bound. The
     // lower edge carries a small tolerance because the singularity-exclusion ball
     // (issue #147) can legitimately hold the adaptive peak back.
-    expect(adaptive.maxVonMisesMPa).toBeGreaterThan(uniform.maxVonMisesMPa * 0.9);
-    expect(adaptive.maxVonMisesMPa).toBeLessThan(uniform.maxVonMisesMPa * 2);
+    expect(adaptive.maxVonMisesMPa).toBeGreaterThan(comparison().maxVonMisesMPa * 0.9);
+    expect(adaptive.maxVonMisesMPa).toBeLessThan(comparison().maxVonMisesMPa * 2);
   });
 
   it("a lower energy-norm error does not certify the safety factor", () => {
@@ -205,10 +323,11 @@ describe.skipIf(!probe.found)("adaptive vs uniform at matched element count (iss
     // the ZZ ENERGY-NORM error, and the two runs disagree on peak stress by far
     // more than they disagree on that error. Nobody should read "global error
     // improved" as "the safety factor is settled".
+    const uni = comparison();
     expect(adaptive.safetyFactor).not.toBeNull();
-    expect(uniform.safetyFactor).not.toBeNull();
-    const errGap  = Math.abs(adaptive.adaptiveRefinement!.finalGlobalError - (uniform.globalRelativeError ?? 0));
-    const peakGap = Math.abs(adaptive.maxVonMisesMPa - uniform.maxVonMisesMPa) / uniform.maxVonMisesMPa;
+    expect(uni.safetyFactor).not.toBeNull();
+    const errGap  = Math.abs(adaptive.adaptiveRefinement!.finalGlobalError - (uni.globalRelativeError ?? 0));
+    const peakGap = Math.abs(adaptive.maxVonMisesMPa - uni.maxVonMisesMPa) / uni.maxVonMisesMPa;
     expect(Number.isFinite(errGap)).toBe(true);
     expect(Number.isFinite(peakGap)).toBe(true);
   });
