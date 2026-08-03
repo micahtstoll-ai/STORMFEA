@@ -475,7 +475,12 @@ the solver-accuracy campaign; adaptive mesh refinement (#149) shipped in PR #246
   argument, not by measurement. Note the adaptive-vs-uniform comparison itself is
   a ONE-PART result so far: the plate below could not complete a refined solve
   for an unrelated reason (the solver wall clock), so it neither confirms nor
-  refutes the tube's margin
+  refutes the tube's margin. The comparison's own premise is now bounded rather
+  than assumed: the uniform yardstick must land within `UNIFORM_MAX_RATIO` (2x)
+  of the adaptive element count, and if TetGen's non-monotone response to `-a`
+  ever moves the ladder outside that band the benchmark fails on the PREMISE,
+  naming the rungs it walked, instead of failing the error margin with two
+  numbers that look like an adaptivity regression and are not
 - **The solver wall clock, not mesh quality, is now the binding constraint on
   adaptive refinement for mid-size parts** — surfaced by fixing the slivers:
   refined solves are actually attempted now, and the next limit shows up
