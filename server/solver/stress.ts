@@ -639,6 +639,285 @@ export function recoverElementStress(
 }
 
 // ─── SPR (Superconvergent Patch Recovery) stress smoothing ───────────────────
+
+/**
+ * Shared SPR patch geometry: the node-centred, radius-scaled normal matrix.
+ * Built ONCE per node and reused across stress components.
+ *
+ * Why centred and scaled. The recovery fits σ = a0 + a1·x + a2·y + a3·z to the
+ * patch's element-centroid stresses. Doing that in RAW GLOBAL coordinates makes
+ * the normal-matrix entries scale like the coordinate magnitudes squared
+ * (~1e4–1e6 mm² for an ordinary part, far worse for a part modelled away from
+ * the origin — the issue #156 offset phenomenon). Two consequences: the fit is
+ * needlessly ill-conditioned, and a rank check written as an ABSOLUTE pivot
+ * threshold (`|pivot| < 1e-12`) is a test against zero rather than against the
+ * matrix's own scale, so it can never fire.
+ *
+ * Taking coordinates relative to the node and dividing by the patch radius makes
+ * the basis O(1), makes the leading normal-matrix entry exactly the patch size,
+ * and turns the rank test into a RELATIVE one. It also removes an evaluation
+ * error: because the fit is centred ON the node and the polynomial is evaluated
+ * AT the node, the recovered value is simply a0 — no cancellation from evaluating
+ * a globally-referenced polynomial far from where its coefficients were fitted.
+ *
+ * This is a pure conditioning improvement: for a well-posed patch it is
+ * algebraically the same fit, so SPR's exact reproduction of a linear stress
+ * field (locked by solver_validation groups 20 and 31) is preserved.
+ */
+interface SprPatchFit {
+  /** Node-centred, radius-scaled 4×4 normal matrix (row-major, symmetric). */
+  readonly A: Float64Array;
+  /** Inverse patch radius; multiply a centred coordinate by this to scale it. */
+  readonly invH: number;
+  /**
+   * False when the fit must not be used: the patch is degenerate, or it would
+   * amplify data error by more than SPR_MAX_AMPLIFICATION. The caller averages
+   * instead — the same fallback SPR already uses for patches under 4 elements.
+   */
+  readonly usable: boolean;
+}
+
+/**
+ * Largest noise amplification an SPR patch fit may have, relative to the plain
+ * average it would otherwise fall back to, before the fit is rejected.
+ *
+ * The recovered value at the node is a0 = wᵀs, a fixed linear functional of the
+ * patch's element stresses s. Its sensitivity to perturbations in s is ‖w‖, and
+ * because the basis is centred on the node, w = (AᵀA)⁻¹Aᵀe₀ gives the identity
+ *   ‖w‖² = [(AᵀA)⁻¹]₀₀
+ * — one entry of the inverse normal matrix, available from a single solve. The
+ * fallback (averaging) has ‖w_avg‖ = 1/√n for a patch of n elements, so
+ *   G = √(n · [(AᵀA)⁻¹]₀₀)
+ * is the dimensionless factor by which the fit amplifies data error compared with
+ * averaging. This is the quantity that actually matters — SPR exists to improve
+ * on averaging, so a fit that amplifies error by more than this factor is not
+ * worth having — and unlike a pivot threshold it is scale- and
+ * position-invariant.
+ *
+ * G diverges exactly when a patch cannot resolve a direction. The pathological
+ * cases are patches whose element centroids are (nearly) coplanar: on a C3D10
+ * mesh every MIDSIDE node's patch is the ring of tets sharing ONE EDGE, and some
+ * corner patches are flat too — e.g. at the corners of a Kuhn (body-diagonal)
+ * subdivision, where all six patch centroids lie on one x+y+z = const plane. The
+ * old guard was an ABSOLUTE `|pivot| < 1e-12` test on a normal matrix built in
+ * raw global mm coordinates (entries ~1e6), so it was a test against zero rather
+ * than against the matrix's own scale and could never fire. Those patches were
+ * therefore solved anyway, and the resulting spurious gradient is what drove
+ * recovered stresses far above the data.
+ *
+ * The value is calibrated against measurement, not taste. Over the structured
+ * fixtures whose linear-field exactness solver_validation group 20 asserts, the
+ * largest G at any checked node is 12.2. Over real unstructured TetGen meshes,
+ * corner patches that are genuinely well-posed reach G ≈ 97, while the degenerate
+ * ones reach G ≈ 1e8 — a gap of six orders of magnitude. 30 sits above every node
+ * the suite requires to stay exact and far below the degenerate population, so it
+ * separates them without straddling either.
+ */
+const SPR_MAX_AMPLIFICATION = 30;
+
+/**
+ * Build the centred + scaled normal matrix for one patch. Pure geometry —
+ * independent of the stress component being recovered, so the 6-component
+ * recovery builds it once and reuses it six times.
+ */
+function buildSprPatchFit(
+  patch:     readonly number[],
+  elemCentX: Float64Array,
+  elemCentY: Float64Array,
+  elemCentZ: Float64Array,
+  nx: number, ny: number, nz: number,
+): SprPatchFit {
+  const A = new Float64Array(16);
+  let h = 0;
+  for (const e of patch) {
+    h = Math.max(h, Math.hypot((elemCentX[e] ?? 0) - nx, (elemCentY[e] ?? 0) - ny, (elemCentZ[e] ?? 0) - nz));
+  }
+  // A degenerate patch (every centroid on the node) carries no gradient
+  // information at all — average instead of dividing by zero.
+  if (!(h > 0)) return { A, invH: 0, usable: false };
+  const invH = 1 / h;
+
+  const p = [1, 0, 0, 0];
+  for (const e of patch) {
+    p[1] = ((elemCentX[e] ?? 0) - nx) * invH;
+    p[2] = ((elemCentY[e] ?? 0) - ny) * invH;
+    p[3] = ((elemCentZ[e] ?? 0) - nz) * invH;
+    for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) A[i * 4 + j] = (A[i * 4 + j] ?? 0) + p[i]! * p[j]!;
+  }
+
+  // Amplification verdict: solve A·y = e₀ so that y₀ = [(AᵀA)⁻¹]₀₀, then compare
+  // G = √(n·y₀) against SPR_MAX_AMPLIFICATION. Gaussian elimination with partial
+  // pivoting on a 4×5 scratch copy.
+  const M = new Float64Array(20);
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 4; j++) M[i * 5 + j] = A[i * 4 + j] ?? 0;
+    M[i * 5 + 4] = i === 0 ? 1 : 0;
+  }
+  for (let col = 0; col < 4; col++) {
+    let maxRow = col, maxVal = Math.abs(M[col * 5 + col] ?? 0);
+    for (let row = col + 1; row < 4; row++) {
+      const v = Math.abs(M[row * 5 + col] ?? 0);
+      if (v > maxVal) { maxVal = v; maxRow = row; }
+    }
+    // Exactly singular — no fit exists at all.
+    if (maxVal === 0) return { A, invH, usable: false };
+    if (maxRow !== col) {
+      for (let k = col; k <= 4; k++) {
+        const t = M[col * 5 + k] ?? 0;
+        M[col * 5 + k] = M[maxRow * 5 + k] ?? 0;
+        M[maxRow * 5 + k] = t;
+      }
+    }
+    const pivot = M[col * 5 + col] ?? 0;
+    for (let row = col + 1; row < 4; row++) {
+      const factor = (M[row * 5 + col] ?? 0) / pivot;
+      for (let k = col; k <= 4; k++) M[row * 5 + k] = (M[row * 5 + k] ?? 0) - factor * (M[col * 5 + k] ?? 0);
+    }
+  }
+  const y = [0, 0, 0, 0];
+  for (let row = 3; row >= 0; row--) {
+    let sum = M[row * 5 + 4] ?? 0;
+    for (let col = row + 1; col < 4; col++) sum -= (M[row * 5 + col] ?? 0) * y[col]!;
+    y[row] = sum / (M[row * 5 + row] ?? 1);
+  }
+  // y₀ = [(AᵀA)⁻¹]₀₀ ≥ 1/n for any patch; a non-finite or non-positive value
+  // means the solve degenerated, which is itself a rejection.
+  const g2 = y[0]!;
+  const usable = Number.isFinite(g2) && g2 > 0
+    && patch.length * g2 <= SPR_MAX_AMPLIFICATION * SPR_MAX_AMPLIFICATION;
+
+  return { A, invH, usable };
+}
+
+/**
+ * Solve one component's centred+scaled patch fit and return its value AT the
+ * node. Because the basis is centred on the node, that value is exactly a0, so
+ * no polynomial is evaluated away from the patch centre.
+ *
+ * Rank and conditioning are already screened by buildSprPatchFit; this returns
+ * null only if the solve still degenerates, so the caller can fall back to
+ * averaging.
+ */
+function solveSprValueAtNode(
+  fit:       SprPatchFit,
+  patch:     readonly number[],
+  elemCentX: Float64Array,
+  elemCentY: Float64Array,
+  elemCentZ: Float64Array,
+  nx: number, ny: number, nz: number,
+  valueOf:   (e: number) => number,
+  scratch:   Float64Array,   // 20 slots: 4×5 augmented matrix
+): number | null {
+  const M = scratch;
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 4; j++) M[i * 5 + j] = fit.A[i * 4 + j] ?? 0;
+    M[i * 5 + 4] = 0;
+  }
+  const invH = fit.invH;
+  for (const e of patch) {
+    const sv = valueOf(e);
+    M[4]  = (M[4]  ?? 0) + sv;
+    M[9]  = (M[9]  ?? 0) + sv * ((elemCentX[e] ?? 0) - nx) * invH;
+    M[14] = (M[14] ?? 0) + sv * ((elemCentY[e] ?? 0) - ny) * invH;
+    M[19] = (M[19] ?? 0) + sv * ((elemCentZ[e] ?? 0) - nz) * invH;
+  }
+
+  for (let col = 0; col < 4; col++) {
+    let maxRow = col, maxVal = Math.abs(M[col * 5 + col] ?? 0);
+    for (let row = col + 1; row < 4; row++) {
+      const v = Math.abs(M[row * 5 + col] ?? 0);
+      if (v > maxVal) { maxVal = v; maxRow = row; }
+    }
+    // Rank is screened by buildSprPatchFit; this only catches an exact zero.
+    if (maxVal === 0) return null;
+    if (maxRow !== col) {
+      for (let k = col; k <= 4; k++) {
+        const t = M[col * 5 + k] ?? 0;
+        M[col * 5 + k] = M[maxRow * 5 + k] ?? 0;
+        M[maxRow * 5 + k] = t;
+      }
+    }
+    const pivot = M[col * 5 + col] ?? 0;
+    for (let row = col + 1; row < 4; row++) {
+      const factor = (M[row * 5 + col] ?? 0) / pivot;
+      for (let k = col; k <= 4; k++) M[row * 5 + k] = (M[row * 5 + k] ?? 0) - factor * (M[col * 5 + k] ?? 0);
+    }
+  }
+  // Back-substitution for a0 — the value at the node (the local origin).
+  const a = [0, 0, 0, 0];
+  for (let row = 3; row >= 0; row--) {
+    let sum = M[row * 5 + 4] ?? 0;
+    for (let col = row + 1; col < 4; col++) sum -= (M[row * 5 + col] ?? 0) * a[col]!;
+    a[row] = sum / (M[row * 5 + row] ?? 1);
+  }
+  const v0 = a[0]!;
+  return Number.isFinite(v0) ? v0 : null;
+}
+
+/**
+ * Mask of C3D10 midside nodes (1 = midside). Null for C3D4 meshes, which have
+ * none — callers treat null as "every node is a corner node".
+ */
+function midsideNodeMask(mesh: TetMesh): Uint8Array | null {
+  if ((mesh.nodesPerElem ?? 4) !== 10) return null;
+  const mask = new Uint8Array(mesh.nodeCount);
+  for (let e = 0; e < mesh.elementCount; e++) {
+    const base = e * 10;
+    for (let k = 4; k < 10; k++) mask[mesh.elements[base + k] ?? 0] = 1;
+  }
+  return mask;
+}
+
+/**
+ * C3D10 midside nodes: recover by linear interpolation from the two corner nodes
+ * of their edge, rather than by fitting their own patch.
+ *
+ * A midside node's element patch is the ring of tets sharing ONE EDGE — typically
+ * 4–5 elements whose centroids are nearly coplanar. Fitting a 3-D linear
+ * polynomial to them is genuinely underdetermined along the edge direction, and
+ * the near-null direction is what makes the solve explode: a huge fitted gradient
+ * multiplied by the small offset between the node and the ring's centroid mean.
+ * On a smooth cylinder in bending this produced a recovered σ* of 105 MPa where
+ * the true peak stress is 1.27 MPa, driving the reported ZZ global relative error
+ * to 80.6% on the FINEST mesh (and the displayed heatmap peak to 18× the real
+ * peak stress).
+ *
+ * Interpolating from the two corners is the standard construction — SPR patches
+ * are assembled at vertex nodes, and midside values follow from them — and it is
+ * unconditionally well-posed: corner patches are 3-D balls of ~20 elements, so
+ * they are well-conditioned. It also preserves SPR's exact reproduction of a
+ * linear stress field, since linear interpolation between two exact corner values
+ * IS the exact value at the edge midpoint.
+ *
+ * Applies to every component uniformly (scalar von Mises or the 6 tensor
+ * components), and is a no-op for C3D4 meshes, which have no midside nodes.
+ */
+function interpolateMidsideFromCorners(
+  mesh:      TetMesh,
+  values:    Float64Array,
+  stride:    number,   // 1 for scalar von Mises, 6 for the stress tensor
+): void {
+  if ((mesh.nodesPerElem ?? 4) !== 10) return;
+  // [cornerSlotA, cornerSlotB, midSlot] for the 6 edges of a C3D10 tet.
+  const EDGES: readonly (readonly [number, number, number])[] = [
+    [0, 1, 4], [1, 2, 5], [0, 2, 6], [0, 3, 7], [1, 3, 8], [2, 3, 9],
+  ];
+  const done = new Uint8Array(mesh.nodeCount);
+  for (let e = 0; e < mesh.elementCount; e++) {
+    const base = e * 10;
+    for (const [ca, cb, cm] of EDGES) {
+      const m = mesh.elements[base + cm] ?? 0;
+      if (done[m]) continue;
+      done[m] = 1;
+      const a = mesh.elements[base + ca] ?? 0;
+      const b = mesh.elements[base + cb] ?? 0;
+      for (let k = 0; k < stride; k++) {
+        values[m * stride + k] = 0.5 * ((values[a * stride + k] ?? 0) + (values[b * stride + k] ?? 0));
+      }
+    }
+  }
+}
+
 /**
  * Zienkiewicz-Zhu SPR stress recovery for C3D4 elements.
  *
@@ -691,18 +970,17 @@ export function sprSmoothedStress(
     elemCentZ[e] = cz / 4;
   }
 
-  // Pre-allocate SPR scratch arrays outside node loop to avoid per-node heap allocations.
-  // M rows are fully overwritten each iteration, so no zeroing is needed.
-  const _sprM: [Float64Array, Float64Array, Float64Array, Float64Array] = [
-    new Float64Array(5),
-    new Float64Array(5),
-    new Float64Array(5),
-    new Float64Array(5),
-  ];
-  const _sprA = new Float64Array(4);  // back-substitution result
+  // Pre-allocated 4×5 augmented scratch — fully overwritten per node/component.
+  const _sprM = new Float64Array(20);
 
-  // For each node: SPR fit or fallback to averaging
+  // C3D10 midside nodes are skipped here and interpolated from their corners
+  // afterwards (see interpolateMidsideFromCorners) — their edge-ring patch
+  // cannot support a 3-D linear fit. Empty for C3D4.
+  const isMidside = midsideNodeMask(mesh);
+
+  // For each corner node: SPR fit or fallback to averaging
   for (let n = 0; n < mesh.nodeCount; n++) {
+    if (isMidside && isMidside[n]) continue;
     const patch = nodeElements[n]!;
     if (patch.length === 0) continue;
 
@@ -710,94 +988,33 @@ export function sprSmoothedStress(
     const ny = mesh.nodes[n * 3 + 1] ?? 0;
     const nz = mesh.nodes[n * 3 + 2] ?? 0;
 
+    const average = (): void => {
+      let sum = 0;
+      for (const e of patch) sum += vonMises[e] ?? 0;
+      nodeStress[n] = Math.max(0, sum / patch.length);
+      nodeCount[n]  = patch.length;
+    };
+
     if (patch.length < 4) {
       // Insufficient patch — direct average
-      let sum = 0;
-      for (const e of patch) sum += vonMises[e] ?? 0;
-      nodeStress[n] = sum / patch.length;
-      nodeCount[n]  = patch.length;
+      average();
       continue;
     }
 
-    // Build least-squares system A·a = b
-    // A is (patchSize × 4), b is (patchSize × 1)
-    // Polynomial basis: [1, x, y, z]
-    // Normal equations: (Aᵀ A) a = Aᵀ b  →  4×4 system
+    const fit = buildSprPatchFit(patch, elemCentX, elemCentY, elemCentZ, nx, ny, nz);
+    if (!fit.usable) { average(); continue; }
 
-    let AtA00=0, AtA01=0, AtA02=0, AtA03=0;
-    let AtA11=0, AtA12=0, AtA13=0;
-    let AtA22=0, AtA23=0, AtA33=0;
-    let Atb0=0, Atb1=0, Atb2=0, Atb3=0;
+    const smoothed = solveSprValueAtNode(
+      fit, patch, elemCentX, elemCentY, elemCentZ, nx, ny, nz,
+      e => vonMises[e] ?? 0, _sprM);
+    if (smoothed === null) { average(); continue; }
 
-    for (const e of patch) {
-      const cx = elemCentX[e] ?? 0;
-      const cy = elemCentY[e] ?? 0;
-      const cz = elemCentZ[e] ?? 0;
-      const sv = vonMises[e] ?? 0;
-
-      AtA00 += 1;      AtA01 += cx;     AtA02 += cy;     AtA03 += cz;
-      AtA11 += cx*cx;  AtA12 += cx*cy;  AtA13 += cx*cz;
-      AtA22 += cy*cy;  AtA23 += cy*cz;
-      AtA33 += cz*cz;
-      Atb0  += sv;     Atb1  += sv*cx;  Atb2  += sv*cy;  Atb3  += sv*cz;
-    }
-
-    // Solve 4×4 symmetric system via Gaussian elimination with partial pivoting
-    // Build augmented matrix [AtA | Atb] using pre-allocated rows
-    const M = _sprM;
-    M[0][0]=AtA00; M[0][1]=AtA01; M[0][2]=AtA02; M[0][3]=AtA03; M[0][4]=Atb0;
-    M[1][0]=AtA01; M[1][1]=AtA11; M[1][2]=AtA12; M[1][3]=AtA13; M[1][4]=Atb1;
-    M[2][0]=AtA02; M[2][1]=AtA12; M[2][2]=AtA22; M[2][3]=AtA23; M[2][4]=Atb2;
-    M[3][0]=AtA03; M[3][1]=AtA13; M[3][2]=AtA23; M[3][3]=AtA33; M[3][4]=Atb3;
-
-    // Gaussian elimination
-    let solveFailed = false;
-    for (let col = 0; col < 4; col++) {
-      // Partial pivoting
-      let maxRow = col, maxVal = Math.abs(M[col]![col]!);
-      for (let row = col + 1; row < 4; row++) {
-        if (Math.abs(M[row]![col]!) > maxVal) {
-          maxVal = Math.abs(M[row]![col]!);
-          maxRow = row;
-        }
-      }
-      if (maxVal < 1e-12) { solveFailed = true; break; }
-      [M[col], M[maxRow]] = [M[maxRow]!, M[col]!];
-
-      const pivot = M[col]![col]!;
-      for (let row = col + 1; row < 4; row++) {
-        const factor = M[row]![col]! / pivot;
-        for (let k = col; k <= 4; k++) {
-          M[row]![k]! -= factor * M[col]![k]!;
-        }
-      }
-    }
-
-    if (solveFailed) {
-      // Fallback to average
-      let sum = 0;
-      for (const e of patch) sum += vonMises[e] ?? 0;
-      nodeStress[n] = sum / patch.length;
-      nodeCount[n]  = patch.length;
-      continue;
-    }
-
-    // Back substitution — use pre-allocated buffer
-    const a = _sprA;
-    for (let row = 3; row >= 0; row--) {
-      let sum = M[row]![4]!;
-      for (let col = row + 1; col < 4; col++) {
-        sum -= M[row]![col]! * a[col]!;
-      }
-      a[row] = sum / M[row]![row]!;
-    }
-
-    // Evaluate polynomial at node position
-    const smoothed = a[0]! + a[1]! * nx + a[2]! * ny + a[3]! * nz;
     // Clamp to non-negative (stress can't be negative in von Mises sense)
     nodeStress[n] = Math.max(0, smoothed);
     nodeCount[n]  = patch.length;
   }
+
+  interpolateMidsideFromCorners(mesh, nodeStress, 1);
 
   return nodeStress;
 }
@@ -836,12 +1053,15 @@ export function sprSmoothedStress6(
     elemCentZ[e] = cz / 4;
   }
 
-  const _sprM: [Float64Array, Float64Array, Float64Array, Float64Array] = [
-    new Float64Array(5), new Float64Array(5), new Float64Array(5), new Float64Array(5),
-  ];
-  const _sprA = new Float64Array(4);
+  // Pre-allocated 4×5 augmented scratch — fully overwritten per node/component.
+  const _sprM = new Float64Array(20);
+
+  // C3D10 midside nodes are interpolated from their corners afterwards; see
+  // interpolateMidsideFromCorners. Empty for C3D4.
+  const isMidside = midsideNodeMask(mesh);
 
   for (let n = 0; n < NC; n++) {
+    if (isMidside && isMidside[n]) continue;
     const patch = nodeElements[n]!;
     if (patch.length === 0) continue;
 
@@ -849,80 +1069,36 @@ export function sprSmoothedStress6(
     const ny = mesh.nodes[n * 3 + 1] ?? 0;
     const nz = mesh.nodes[n * 3 + 2] ?? 0;
 
+    const averageComponent = (c: number): void => {
+      let sum = 0;
+      for (const e of patch) sum += elemStress6[e * 6 + c] ?? 0;
+      nodeStress6[n * 6 + c] = sum / patch.length;
+    };
+
     if (patch.length < 4) {
       // Direct average
-      for (let c = 0; c < 6; c++) {
-        let sum = 0;
-        for (const e of patch) sum += elemStress6[e * 6 + c] ?? 0;
-        nodeStress6[n * 6 + c] = sum / patch.length;
-      }
+      for (let c = 0; c < 6; c++) averageComponent(c);
       continue;
     }
 
-    // Build normal equations (same structure as sprSmoothedStress, reused per component)
-    let AtA00=0, AtA01=0, AtA02=0, AtA03=0;
-    let AtA11=0, AtA12=0, AtA13=0;
-    let AtA22=0, AtA23=0, AtA33=0;
-
-    for (const e of patch) {
-      const cx = elemCentX[e] ?? 0;
-      const cy = elemCentY[e] ?? 0;
-      const cz = elemCentZ[e] ?? 0;
-      AtA00 += 1;      AtA01 += cx;     AtA02 += cy;     AtA03 += cz;
-      AtA11 += cx*cx;  AtA12 += cx*cy;  AtA13 += cx*cz;
-      AtA22 += cy*cy;  AtA23 += cy*cz;
-      AtA33 += cz*cz;
+    // Patch geometry is component-independent: build the centred + scaled normal
+    // matrix ONCE, then reuse it for all six components.
+    const fit = buildSprPatchFit(patch, elemCentX, elemCentY, elemCentZ, nx, ny, nz);
+    if (!fit.usable) {
+      for (let c = 0; c < 6; c++) averageComponent(c);
+      continue;
     }
 
     for (let c = 0; c < 6; c++) {
-      let Atb0=0, Atb1=0, Atb2=0, Atb3=0;
-      for (const e of patch) {
-        const cx = elemCentX[e] ?? 0;
-        const cy = elemCentY[e] ?? 0;
-        const cz = elemCentZ[e] ?? 0;
-        const sv = elemStress6[e * 6 + c] ?? 0;
-        Atb0 += sv; Atb1 += sv*cx; Atb2 += sv*cy; Atb3 += sv*cz;
-      }
-
-      const M = _sprM;
-      M[0][0]=AtA00; M[0][1]=AtA01; M[0][2]=AtA02; M[0][3]=AtA03; M[0][4]=Atb0;
-      M[1][0]=AtA01; M[1][1]=AtA11; M[1][2]=AtA12; M[1][3]=AtA13; M[1][4]=Atb1;
-      M[2][0]=AtA02; M[2][1]=AtA12; M[2][2]=AtA22; M[2][3]=AtA23; M[2][4]=Atb2;
-      M[3][0]=AtA03; M[3][1]=AtA13; M[3][2]=AtA23; M[3][3]=AtA33; M[3][4]=Atb3;
-
-      let solveFailed = false;
-      for (let col = 0; col < 4; col++) {
-        let maxRow = col, maxVal = Math.abs(M[col]![col]!);
-        for (let row = col + 1; row < 4; row++) {
-          if (Math.abs(M[row]![col]!) > maxVal) {
-            maxVal = Math.abs(M[row]![col]!); maxRow = row;
-          }
-        }
-        if (maxVal < 1e-12) { solveFailed = true; break; }
-        [M[col], M[maxRow]] = [M[maxRow]!, M[col]!];
-        const pivot = M[col]![col]!;
-        for (let row = col + 1; row < 4; row++) {
-          const factor = M[row]![col]! / pivot;
-          for (let k = col; k <= 4; k++) M[row]![k]! -= factor * M[col]![k]!;
-        }
-      }
-
-      if (solveFailed) {
-        let sum = 0;
-        for (const e of patch) sum += elemStress6[e * 6 + c] ?? 0;
-        nodeStress6[n * 6 + c] = sum / patch.length;
-        continue;
-      }
-
-      const a = _sprA;
-      for (let row = 3; row >= 0; row--) {
-        let sum = M[row]![4]!;
-        for (let col = row + 1; col < 4; col++) sum -= M[row]![col]! * a[col]!;
-        a[row] = sum / M[row]![row]!;
-      }
-      nodeStress6[n * 6 + c] = a[0]! + a[1]! * nx + a[2]! * ny + a[3]! * nz;
+      const v = solveSprValueAtNode(
+        fit, patch, elemCentX, elemCentY, elemCentZ, nx, ny, nz,
+        e => elemStress6[e * 6 + c] ?? 0, _sprM);
+      if (v === null) averageComponent(c);
+      else nodeStress6[n * 6 + c] = v;
     }
   }
+
+  interpolateMidsideFromCorners(mesh, nodeStress6, 6);
 
   return nodeStress6;
 }
