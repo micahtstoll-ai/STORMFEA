@@ -377,13 +377,29 @@ export interface LoopState {
   readonly refinedNodeCount: number | null;
 }
 
+/**
+ * Why the adaptive loop stopped.
+ *
+ * The first group is decided by `shouldStopRefinement` from the loop state. The
+ * second group can only be produced by the DRIVER (`runAdaptiveAnalysis`), which
+ * owns the binary-dependent and failure paths the pure stop-criterion function
+ * cannot see. Both groups are part of the response contract (`docs/API.md`), so
+ * they live in one union — a driver reason that is not listed here is a bug in
+ * the contract, not a free-form string.
+ */
 export type StopReason =
+  // Decided by shouldStopRefinement:
   | "continue"
   | "target-error-reached"
   | "max-iterations"
   | "element-growth-cap"
   | "stalled"
-  | "no-refinement-requested";
+  | "no-refinement-requested"
+  // Produced by the driver (runAdaptiveAnalysis):
+  | "remesh-failed"
+  | "resolve-failed"
+  | "no-error-field"
+  | "degraded-to-tier";
 
 /**
  * Decide whether the adaptive loop should stop AFTER completing `state`. Order
