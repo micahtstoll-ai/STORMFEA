@@ -123,7 +123,7 @@ endpoint.
 | `boltFasteners[]` | array | Optional per-hole fastener spec |
 | `forces[]` | array | `{ magnitude, direction[3], position[3], loadDistribution? }` |
 | `print` | object | `{ materialId, infillPct, wallCount, pattern, orientation, layerHeightMm, extrusionWidthMm?, topLayers?, bottomLayers?, process? }`. `extrusionWidthMm` (default 0.45, clamped [0.1, 2.0]) sets the wall band = `wallCount × extrusionWidthMm`; `topLayers`/`bottomLayers` set the independent floor/ceiling solid-skin bands (× layer height) for the two-region model. `process` (`{ nozzleTempC?, bedTempC?, printSpeedMmS?, coolingFanPct?, ambientTempC? }`) activates the bead-penetration bond model — **absent → legacy layer-height factor only.** |
-| `analysis` | object | Optional numerical-method knobs, separated from print settings: `{ meshQuality?, meshOrder?, analysisType?, computeBuckling?, uncertaintyMode?, useCLT?, beadProps?, twoRegion? }`. `meshQuality` ∈ `coarse｜standard｜fine`. `meshOrder` `1` (C3D4) or `2` (C3D10, default). `analysisType` `linear_static` (default) or `modal`. `computeBuckling: true` opts into linear buckling. `twoRegion: true` enables the two-region (walls vs infill) material model — the infill core follows Gibson-Ashby power laws in density per pattern family (see `materialModel.core` in the response). |
+| `analysis` | object | Optional numerical-method knobs, separated from print settings: `{ meshQuality?, meshOrder?, analysisType?, computeBuckling?, uncertaintyMode?, useCLT?, beadProps?, twoRegion?, criterion?, includeVolumeField?, adaptiveRefinement? }`. `meshQuality` ∈ `coarse｜standard｜fine`. `meshOrder` `1` (C3D4) or `2` (C3D10, default). `analysisType` `linear_static` (default) or `modal`. `computeBuckling: true` opts into linear buckling. `twoRegion: true` enables the two-region (walls vs infill) material model — the infill core follows Gibson-Ashby power laws in density per pattern family (see `materialModel.core` in the response). `criterion` ∈ `fdm-interface` (default) ｜ `hill-legacy` selects the yield criterion. `includeVolumeField: true` adds the volumetric interior-stress payload used by the section view (off by default to keep ordinary responses light). `adaptiveRefinement: true` runs the error-driven adaptive remesh loop instead of a single solve — see below. |
 | `gravity` | `{ g, direction[3] }` | Optional body-force load |
 | `pressures[]` | array | Optional surface loads `{ magnitude, direction[3], normal?, region? }`. `magnitude` in MPa (negative = outward/suction). `normal:true` follows each triangle's own outward normal. `region` ∈ `"face"` (default, extreme face toward `direction`), `"facing"` (all faces toward `direction`), `"all"` (whole surface / hydrostatic). |
 | `fatigueLoadRatio` | number | Optional fatigue load ratio `R = σ_min/σ_max` (default `0`; clamped to `[-1, 0.95]`) |
@@ -192,6 +192,52 @@ Large numeric arrays (per-vertex stress, displacement, principal stresses,
 utilisation, mode shapes) are base64-encoded Float32 buffers. Errors: `400`
 invalid body / undecodable `positionsB64`, `503` TetGen not installed (with
 install hint), `500` solver failure, timeout after 120 s.
+
+**Adaptive refinement** (`analysis.adaptiveRefinement: true`, issue #149). Runs
+solve, ZZ error estimate, regional size field, TetGen re-mesh, re-solve — and
+reports the iteration with the LOWEST global error, not the last one. Defaults:
+3% target global relative error, at most 4 solves, hard cap 8× the base element
+count, and it stops early when a step improves the error by less than 5%. It only
+ever refines (never coarsens), and it keeps a 2 mm ball around a detected
+singularity coarse, because refining a true singularity does not converge.
+
+Default `false` is bit-identical to the single-solve path. The loop needs the
+STL/TetGen path and a TetGen binary; on the STEP/Gmsh path, on the box-mesh
+fallback, or with no binary it degrades to the selected mesh tier and says so via
+`degradedToTier` plus a human-readable `note`. `summary.adaptiveRefinement` is
+always present on the response — `null` on the default single-solve path, and
+otherwise an object (a degraded run still reports, with `degradedToTier: true`):
+
+```json
+"adaptiveRefinement": {
+  "iterations": 3,
+  "stopReason": "target-error-reached",
+  "initialGlobalError": 0.081, "finalGlobalError": 0.026,
+  "initialElementCount": 1240, "finalElementCount": 6800,
+  "history": [
+    { "globalRelativeError": 0.081, "elementCount": 1240 },
+    { "globalRelativeError": 0.042, "elementCount": 3100 },
+    { "globalRelativeError": 0.026, "elementCount": 6800 }
+  ],
+  "degradedToTier": false,
+  "note": "Adaptive refinement: 3 solve(s), stopped on 'target-error-reached'."
+}
+```
+
+`stopReason` is one of `target-error-reached`, `max-iterations`,
+`element-growth-cap`, `no-refinement-requested`, `stalled` (a step improved the
+error by less than 5%, or the error grew), `remesh-failed`, `resolve-failed`,
+`no-error-field`, or `degraded-to-tier` — the `StopReason` union in
+`server/solver/adaptiveMesh.ts`, which the response type references directly so
+this list cannot drift from the code.
+
+`resolve-failed` is worth calling out: TetGen can RETURN a refined mesh that the
+hard mesh-quality gate then REJECTS, because an aggressive size field around a
+stress concentration can leave a few sliver elements. The loop keeps the best
+solve it already has and stops, rather than failing the request.
+
+Note that the loop targets the ZZ energy-norm error. A lower global error does
+not by itself guarantee a changed safety factor or governing failure mode.
 
 ---
 

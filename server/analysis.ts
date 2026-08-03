@@ -100,7 +100,7 @@ import {
 import {
   buildSizeField, relaxSizeFieldToBudget, shouldStopRefinement,
   targetPerElementError, DEFAULT_LOOP_OPTIONS, DEFAULT_SIZE_FIELD_FACTORS,
-  type LoopControlOptions, type SingularityRegion,
+  type LoopControlOptions, type SingularityRegion, type StopReason,
 } from "./solver/adaptiveMesh.js";
 
 // ─── Safety-factor verdict tiers (issue #141) ──────────────────────────────────
@@ -1671,8 +1671,8 @@ export interface AnalysisSettings {
 export interface AdaptiveRefinementInfo {
   /** Number of solves performed (1 = no refinement happened). */
   iterations:            number;
-  /** Why the loop stopped. */
-  stopReason:            string;
+  /** Why the loop stopped. Union-typed so the API.md contract stays enforceable. */
+  stopReason:            StopReason;
   /** Global relative error of the FIRST (tier) solve. */
   initialGlobalError:    number;
   /** Global relative error of the FINAL (reported) solve. */
@@ -6281,7 +6281,7 @@ export async function runAdaptiveAnalysis(
   let curMesh = cap0.mesh;
   let curError = cap0.errorEstimate;
   let iterations = 1;
-  let stopReason = "max-iterations";
+  let stopReason: StopReason = "max-iterations";
 
   // Loop state reflects the iteration just COMPLETED (starts at the tier solve).
   let state = {
@@ -6320,16 +6320,35 @@ export async function runAdaptiveAnalysis(
     }
 
     // ── Re-solve on the refined mesh ─────────────────────────────────────────
+    // Guarded for the same reason the re-mesh above is: a refined mesh can be
+    // REJECTED downstream even when TetGen returned it happily. A size field
+    // that shrinks elements hard near a stress concentration can leave a
+    // handful of slivers, and the hard mesh-quality gate (#166) then throws
+    // rather than solving an ill-conditioned system — observed on a Ø5-bore
+    // tube, where the first refinement produced 13 slivers out of 115k
+    // elements and killed the whole analysis.
+    //
+    // Without this catch the exception escapes runAdaptiveAnalysis entirely, so
+    // an OPT-IN accuracy feature turns a perfectly good tier solve into a 500 —
+    // and `best` already holds that good solve. Degrade to it, exactly as this
+    // function's contract promises, instead of losing it.
     const capN: NonNullable<AnalysisRequest["_captureInternals"]> = {};
-    const next = await runAnalysis({
-      ...req,
-      _prebuiltMesh: {
-        mesh:          remesh.mesh,
-        surfaceToNode: remesh.surfaceToNode,
-        surfaceFaces:  remesh.surfaceFaces,
-      },
-      _captureInternals: capN,
-    });
+    let next: AnalysisResult;
+    try {
+      next = await runAnalysis({
+        ...req,
+        _prebuiltMesh: {
+          mesh:          remesh.mesh,
+          surfaceToNode: remesh.surfaceToNode,
+          surfaceFaces:  remesh.surfaceFaces,
+        },
+        _captureInternals: capN,
+      });
+    } catch (err) {
+      console.warn("[analysis] adaptive re-solve failed, keeping best-so-far:", err);
+      stopReason = "resolve-failed";
+      break;
+    }
     iterations++;
     const nextGRE = next.globalRelativeError ?? 0;
     history.push({ globalRelativeError: nextGRE, elementCount: next.elementCount });

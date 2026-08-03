@@ -400,20 +400,84 @@ paths now run a runtime midside self-check instead of trusting the binary (#167)
       check (#201); face-pressure selection scales its proximity band so coarse
       meshes cannot silently select zero triangles and apply no load (#157)
 
+### Adaptive mesh refinement (issue #149, the campaign's one deferral — shipped)
+- [x] Error-driven adaptive refinement loop (`server/solver/adaptiveMesh.ts`,
+      `runAdaptiveAnalysis` in `analysis.ts`) — solve, ZZ error estimate, build a
+      regional size field concentrating elements where the error indicator is
+      worst, re-mesh with TetGen sizing, re-solve; reports the BEST (lowest
+      global-error) iteration, not the last. Defaults: 3% target global relative
+      error, at most 4 solves, hard cap 8× the base element count, stop when a
+      step improves error by <5%. Refinement-only (never coarsens), and one step
+      never shrinks an element below ~1/3 its size. A detected singularity gets a
+      2 mm exclusion ball — refining a true singularity never converges (#147).
+      OPT-IN: default false is bit-identical to the legacy single solve
+      (`adaptive-default-identical.test.ts`), and it degrades cleanly with a
+      stated reason on the STEP/Gmsh path, the box-mesh fallback, and a missing
+      TetGen binary
+- [x] The deferral's root cause, fixed — the earlier TetGen regional sizing
+      attempt COARSENED instead of refining because of two undocumented TetGen
+      behaviours, both re-verified empirically against tetgen 1.5.0: `-Y`
+      (preserve input surface triangulation) forbids Steiner points on facets and
+      segments, so sizes near a surface are simply unreachable — dropping it took
+      the reference case from 12 to 314 elements; and the `.b.mtr` metric is only
+      read alongside `-q`, so the old `-pmYQ` "sizing only" fallback silently
+      emitted the minimal tetrahedralisation. The switch chain is now
+      `-pmq1.4Q` → `-pmq2.0Q` → `-pq1.4Q` → `-pQ`, abandoning the size field only
+      after two genuine sized attempts. Dropping `-Y` does not cost the O(1)
+      surface-to-volume node map, which is locked by its own round-trip test
+- [x] Degradation contract enforced on the RE-SOLVE, not just the re-mesh — the
+      loop guarded `meshWithTetGenSizing` but left the solve on the refined mesh
+      unguarded, so a mesh TetGen returned happily and the hard mesh-quality gate
+      (#166) then rejected threw straight out of `runAdaptiveAnalysis`. An opt-in
+      accuracy feature could therefore turn a part that solved fine at its tier
+      into a 500, discarding the good tier result the loop was already holding.
+      Now caught as `resolve-failed`, keeping best-so-far. Found by measurement,
+      not review; locked by `adaptive-resolve-failure.test.ts` (tetgen-gated,
+      verified to fail without the fix). The `StopReason` union was extended to
+      cover the driver-produced reasons, so the documented API contract is
+      type-enforced instead of free-form strings
+
 ---
 
 ## IN PROGRESS / NEXT
 
-_Both previous entries (DFA core yield, per-failure-mode yield selection) shipped
-in the solver-accuracy campaign — see above._
+_Previous entries (DFA core yield, per-failure-mode yield selection) shipped in
+the solver-accuracy campaign; adaptive mesh refinement (#149) shipped in PR #246
+— see above._
 
-- **Adaptive mesh refinement (issue #149, the campaign's one deferral)** —
-  `topErrorElements` is computed "for refinement guidance" and drives nothing.
-  Held back because the attempted TetGen regional sizing (`-m`) COARSENED
-  instead of refining; needs a working sizing-field mechanism before the
-  error-driven remesh loop can close. Everything upstream is ready: the ZZ
-  estimator is now a real volume-weighted energy norm and the observed
-  convergence order is measured, so the refinement target is trustworthy
+- **Surface the adaptive-refinement loop in the client** — #246 landed the solver
+  path (`analysis.adaptiveRefinement` on `/api/analyse`, full
+  `AdaptiveRefinementInfo` on the response), but the client has no toggle and no
+  readout, so the feature is unreachable from the UI. The payload already carries
+  everything a results panel needs: iteration count, stop reason, initial vs
+  final global error and element count, and the per-iteration history
+- **The adaptive size field is too aggressive in one step, and the growth budget
+  is only a prediction** — a first measurement on a Ø5-bore tube (the geometry
+  the #108 gate uses) had the first refinement jump 13,340 → 115,544 elements,
+  which is 8.7× the base count against a documented 8× cap, and produce 13 sliver
+  elements that the hard mesh-quality gate (#166) rejects. Two causes, both open:
+  `relaxSizeFieldToBudget` relaxes against `predictRefinedElementCount`, a MODEL
+  of what TetGen will emit, and nothing re-checks the ACTUAL element count after
+  the re-mesh; and the growth cap is only consulted by `shouldStopRefinement` on
+  the following iteration, so the loop can overshoot it by a whole solve. The
+  per-step `minSizeFactor` of 0.35 is a ~23× local volume-density increase in one
+  jump, which is the likely sliver source. Fixing this is a precondition for the
+  benchmark below being meaningful — on that geometry the loop currently never
+  completes a single refined solve
+- **Benchmark adaptive against uniform refinement at matched element count** —
+  the suite locks the adaptive MECHANISM (size-field construction, stop criteria,
+  budget relaxation, bit-identical default, degradation contract, and — with a
+  TetGen binary — that the field genuinely refines the requested region), but
+  nothing measures what adaptivity BUYS over simply selecting the fine tier. The
+  first attempt at this measurement was inconclusive for the reason above (no
+  refined solve completed) and additionally surfaced a separate question worth
+  its own investigation: on that tube the ZZ global relative error read 89%
+  (coarse), 213% (standard), 20% (fine) — non-monotone and implausibly large,
+  with peak stress unsettled across tiers (4.44 / 3.91 / 5.50 MPa). That is
+  plausibly a singular load/constraint case rather than an estimator defect, but
+  it needs a non-singular benchmark part to tell the two apart. Until then the 3%
+  default target and 8× growth cap remain unvalidated defaults, and a UI toggle
+  would ship an asserted rather than demonstrated benefit
 - **Anisotropic (honeycomb) DFA extension** — the shipped core yield criterion
   is the isotropic-foam form. Extending pressure sensitivity per-axis would
   match the per-axis stiffness and strength laws the core already uses;
@@ -474,8 +538,15 @@ waiting for a consistent empirical table._
   between layers is not simulated (see DEFERRED)
 - Curved C3D10 elements are under-integrated by the default 4-point Gauss rule
   (exact only for straight-edged elements); a higher-order rule is opt-in
-- Refinement is user-driven — the error estimator identifies the worst elements
-  but does not yet remesh them (see NEXT, issue #149)
+- Adaptive refinement is opt-in, API-only, and STL-only — the error-driven
+  remesh loop exists (#149/#246) but is reachable only via
+  `analysis.adaptiveRefinement` on `/api/analyse`, not from the UI. It degrades
+  to the selected mesh tier on the STEP/Gmsh path, on the box-mesh fallback, and
+  where no TetGen binary is found. It targets the ZZ global relative error, which
+  does not by itself guarantee a changed safety factor or governing failure mode,
+  and it deliberately leaves a 2 mm ball around a detected singularity coarse
+  (refining a true singularity never converges). Its benefit relative to simply
+  selecting the fine tier is not yet benchmarked (see NEXT)
 - The per-analysis validation coverage map reports whether a configuration's
   KIND is exercised somewhere in the suite, not that a specific geometry, load
   case, or material is proven correct — and it names its combination gaps (e.g.
