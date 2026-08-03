@@ -20,7 +20,7 @@ import { fileURLToPath } from "url";
 import { spawn }         from "child_process";
 import { parseSTL }      from "./stl.js";
 import { detectHoles, flagMergedHoleWarnings }   from "./holes.js";
-import { runAnalysis, AnalysisAbortError }   from "./analysis.js";
+import { runAnalysis, runAdaptiveAnalysis, AnalysisAbortError }   from "./analysis.js";
 import { MATERIALS, layerHeightFactor, literatureYieldZRatio } from "./analysis.js";
 import type { ForceSpec, PrintSettings, AnalysisSettings, AnalysisResult } from "./analysis.js";
 import { expect as expectShape, ValidationError } from "./validate.js";
@@ -263,6 +263,7 @@ const ANALYSE_SPEC: Spec = {
     "twoRegion?":       "boolean",
     "criterion?":       "fdm-interface|hill-legacy",
     "includeVolumeField?": "boolean",
+    "adaptiveRefinement?": "boolean",
   },
   "gravity?":      { g: "number", direction: "vec3" },
   "pressures?":    [{ magnitude: "number", direction: "vec3", "normal?": "boolean", "region?": "face|facing|all" }],
@@ -344,7 +345,14 @@ app.post("/api/analyse", async (req, res) => {
       ...(body.analysis?.beadProps ? { beadProps: body.analysis.beadProps } : {}),
       twoRegion:       body.analysis?.twoRegion === true,
       includeVolumeField: body.analysis?.includeVolumeField === true,
+      adaptiveRefinement: body.analysis?.adaptiveRefinement === true,
     };
+
+    // Opt-in error-driven adaptive refinement (issue #149). Default false ⇒
+    // runAnalysis (single tier solve, bit-identical). When on, the driver runs
+    // the solve→estimate→remesh→resolve loop and degrades cleanly to the tier
+    // path when adaptivity can't run (STEP, box fallback, no TetGen binary).
+    const runSolve = analysis.adaptiveRefinement ? runAdaptiveAnalysis : runAnalysis;
 
     console.log(`[analyse] fileType=${body.fileType} bolts=[${body.boltHoleIds}] forces=${body.forces.length} mesh=${analysis.meshQuality}`);
 
@@ -427,6 +435,7 @@ app.post("/api/analyse", async (req, res) => {
         // characteristics have no direct anchor. Always present (computed
         // from characteristics the solve already has, no extra opt-in).
         validationCoverage:   result.validationCoverage,
+        adaptiveRefinement:   result.adaptiveRefinement ?? null,
       },
       vertexStressB64:              Buffer.from(result.vertexStress.buffer).toString("base64"),
       vertexSignedVonMisesB64:      Buffer.from(result.vertexSignedVonMises.buffer).toString("base64"),
@@ -519,7 +528,7 @@ app.post("/api/analyse", async (req, res) => {
       };
 
       try {
-        const result = await runAnalysis({
+        const result = await runSolve({
           ...runArgs,
           signal:  ac.signal,
           onPhase: (ev) => sse("phase", ev),
@@ -557,7 +566,7 @@ app.post("/api/analyse", async (req, res) => {
       )), ANALYSE_TIMEOUT_MS)
     );
 
-    const result = await Promise.race([ runAnalysis(runArgs), timeoutPromise ]);
+    const result = await Promise.race([ runSolve(runArgs), timeoutPromise ]);
     console.log(`[analyse] done in ${result.solverMs}ms: maxVM=${result.maxVonMisesMPa.toFixed(2)}MPa SF=${result.safetyFactor !== null ? result.safetyFactor.toFixed(2) : '(unavailable)'} converged=${result.converged}`);
     res.json(buildPayload(result));
 
