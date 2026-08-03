@@ -44,7 +44,7 @@ import type { TetMesh }                       from "./solver/types.js";
 import { verifyC3D10MidsideOrdering }         from "./c3d10_ordering.js";
 import { extractSurfaceFaces }                from "./solver/meshgen.js";
 import {
-  sizeFieldToMtr, meshToNodeFile, meshToEleFile, type SizeField,
+  sizeFieldToVolFile, meshToNodeFile, meshToEleFile, extractCornerBackground, type SizeField,
 } from "./solver/adaptiveMesh.js";
 
 const execFileAsync = promisify(execFile);
@@ -573,34 +573,52 @@ function buildSmesh(weld: WeldResult): string {
 
 /**
  * meshWithTetGenSizing — issue #149, the BINARY-DEPENDENT step of the adaptive
- * refinement loop. Re-meshes the SAME surface PLC but honours a per-node target
- * SIZE FIELD (built by server/solver/adaptiveMesh.ts from the ZZ error field)
- * so elements shrink only where the error concentrates.
+ * refinement loop. Produces a mesh of the SAME part that honours a per-node
+ * target SIZE FIELD (built by server/solver/adaptiveMesh.ts from the ZZ error
+ * field) so elements shrink only where the error concentrates.
  *
- * Mechanism: TetGen's `-m` (mesh sizing function) with a BACKGROUND MESH. The
- * previous volume mesh is written as `<base>.b.node` / `<base>.b.ele`, and the
- * target sizes as `<base>.b.mtr`. TetGen interpolates the sizing function from
- * that background mesh through the new volume.
+ * Mechanism: TetGen's `-r` (REFINE an existing mesh) driven by a per-element
+ * maximum-volume constraint. The previous volume mesh is written, corner-only
+ * and linear, as `<base>.node` / `<base>.ele`, and the size field as per-element
+ * volume caps in `<base>.vol`; `-r ... -a` reads the caps and subdivides until
+ * they are met.
+ *
+ * WHY NOT `-m`, THE OBVIOUS CHOICE. This used to write a background mesh plus a
+ * `.b.mtr` metric and re-tetrahedralise the PLC from scratch under `-pm`. That
+ * mechanism produces SLIVERS on curved boundaries, and the size field is not
+ * what provokes them: measured against TetGen 1.5.0 on a Ø5-bore tube, a
+ * perfectly CONSTANT metric through `-pm` still left 5 / 33 / 56 hard-gate
+ * violations at 18k / 68k / 121k elements — all of them on the outer wall, and
+ * getting worse with density. Adding a dihedral-angle bound (`-q1.4/10`), raising
+ * the optimisation level (`-O10/7`), tightening the radius-edge ratio, and adding
+ * a global `-a` cap alongside `-m` each changed the count by a few and fixed
+ * nothing. The refined mesh was then rejected by the hard mesh-quality gate
+ * (#166), so before this change NO refined solve ever completed on that part.
+ * The `-r` path returns zero hard violations on the same geometry and field.
+ *
+ * The likely reason is structural, and it is also the better argument for `-r`:
+ * `-pm` re-meshes the raw PLC, whose facets here are 32 tall quads, and has to
+ * re-derive a fine boundary triangulation from them under a sizing function.
+ * `-r` starts from the tier mesh's boundary — already fine and well-shaped,
+ * having been produced by the `-pq1.4a` path that measurably does not sliver —
+ * and only subdivides it. Refining the mesh you have is what adaptive
+ * refinement means; re-meshing from scratch each iteration was never the intent.
  *
  * Two TetGen facts this depends on, both verified empirically against TetGen
  * 1.5.0 (the build CI installs) and locked by adaptive-remesh.test.ts:
  *
- *  1. The metric is only consulted when refinement is enabled, i.e. TOGETHER
- *     WITH `-q`. `-pm` alone silently ignores the `.b.mtr` and emits the
- *     minimal tetrahedralisation of the PLC (6 elements for a cube). Every
- *     switch set that is supposed to honour the size field therefore carries a
- *     `-q`.
- *  2. `-Y` (preserve the input surface triangulation) DEFEATS the size field:
- *     with no Steiner points allowed on facets or segments, a coarse boundary
- *     cannot be subdivided, so the mesh cannot shrink to the requested sizes
- *     near a surface — a 4 mm cube asked to refine to 0.67 mm came back with
- *     12 elements, COARSER than the 22-element base mesh. `-Y` is deliberately
- *     absent here for that reason.
+ *  1. `-r` reads `<base>.vol` only together with `-a` (given with no number),
+ *     and only refines where `-q` also allows it. Every switch set that is
+ *     supposed to honour the size field therefore carries both.
+ *  2. `-r` emits its input vertices as the first N output nodes, in input order,
+ *     which is what keeps `surfaceToNode` an identity map (the same property
+ *     meshWithTetGen relies on). It holds exactly — measured coordinate drift
+ *     over all 3,221 input nodes of the tube's base mesh was 0.
  *
- * Dropping `-Y` does not cost us the O(1) surface→volume map: TetGen emits the
- * input vertices as the first N output nodes in input order whether or not `-Y`
- * is given (the same property meshWithTetGen already relies on, and asserted
- * for this path in adaptive-remesh.test.ts).
+ * That second property is why `extractCornerBackground` renumbers corner nodes
+ * in ASCENDING ORIGINAL ORDER: the welded STL surface vertices are the first N
+ * nodes of the mesh handed in, and they must still be the first N nodes going
+ * out.
  *
  * This function CANNOT be exercised without a tetgen binary. Callers must guard
  * with probeTetGen() (or catch TetGenNotFoundError) and fall back to the tier
@@ -624,47 +642,50 @@ export async function meshWithTetGenSizing(
     );
   }
 
-  // ── 1. Weld surface + write PLC ────────────────────────────────────────────
+  // ── 1. Weld surface + write the mesh to refine ─────────────────────────────
+  // The weld is only needed for the surface→node contract (vertex count and the
+  // boundary triangle list); the geometry TetGen refines comes from the previous
+  // volume mesh, not from the PLC.
   const weld = weldVertices(stlPositions, triangleCount);
-  const smesh = buildSmesh(weld);
 
-  const tmpBase   = path.join(tmpdir(), `stormfea_adapt_${Date.now()}`);
-  const smeshPath = tmpBase + ".smesh";
-  // Background mesh files share the input base name with a ".b" infix, which is
-  // how TetGen locates them under -m.
-  const bNodePath = tmpBase + ".b.node";
-  const bElePath  = tmpBase + ".b.ele";
-  const bMtrPath  = tmpBase + ".b.mtr";
+  // Corner-only and order-preserving — see extractCornerBackground for why both
+  // properties are load-bearing here.
+  const bg = extractCornerBackground(backgroundMesh, sizeField);
+
+  const tmpBase  = path.join(tmpdir(), `stormfea_adapt_${Date.now()}`);
+  // TetGen's -r reads <base>.node / <base>.ele, and <base>.vol under -a.
+  const inNodePath = tmpBase + ".node";
+  const inElePath  = tmpBase + ".ele";
+  const inVolPath  = tmpBase + ".vol";
 
   await Promise.all([
-    writeFile(smeshPath, smesh, "utf8"),
-    writeFile(bNodePath, meshToNodeFile(backgroundMesh), "utf8"),
-    writeFile(bElePath,  meshToEleFile(backgroundMesh),  "utf8"),
-    writeFile(bMtrPath,  sizeFieldToMtr(sizeField),      "utf8"),
+    writeFile(inNodePath, meshToNodeFile(bg.mesh), "utf8"),
+    writeFile(inElePath,  meshToEleFile(bg.mesh),  "utf8"),
+    writeFile(inVolPath,  sizeFieldToVolFile(bg.mesh, bg.field), "utf8"),
   ]);
 
-  // ── 2. Run TetGen with the sizing function ─────────────────────────────────
-  // -p  PLC, -m  sizing from background mesh, -q<r> quality (radius-edge
-  // ratio), -Q quiet. See the header comment for why `-q` is mandatory for the
-  // metric to be read at all, and why `-Y` must NOT appear.
+  // ── 2. Run TetGen to refine under the volume constraints ───────────────────
+  // -r  refine the mesh named by the input file, -a  honour <base>.vol,
+  // -q<r>  quality (radius-edge ratio), -Q quiet, -o2 second-order output.
+  // See the header comment for why this is `-r` and not `-pm`.
   //
-  // Fallback chain: the first two attempts are both SIZED (they keep -m and a
-  // -q), the second merely relaxing the radius-edge bound for a PLC that 1.4
-  // cannot satisfy. Only if both fail do we give up on the size field and
-  // return a uniform quality mesh, then a bare tetrahedralisation.
+  // Fallback chain: the first two attempts are both SIZED (they keep -a and a
+  // -q), the second merely relaxing the radius-edge bound where 1.4 cannot be
+  // satisfied. The last drops the volume constraints and only re-runs quality
+  // improvement, which returns a mesh of roughly the input size — no refinement,
+  // but never a coarser or invalid one, so the loop can stop cleanly on it.
   const nodePath = tmpBase + ".1.node";
   const elePath  = tmpBase + ".1.ele";
   const o2 = elementOrder === 2 ? ["-o2"] : [];
   const switchSets = [
-    [`-pmq1.4Q`, ...o2],   // sized, standard quality
-    [`-pmq2.0Q`, ...o2],   // sized, relaxed quality
-    [`-pq1.4Q`,  ...o2],   // unsized fallback: uniform, but not coarser
-    [`-pQ`,      ...o2],   // last resort: just mesh the surface
+    [`-rq1.4aQ`, ...o2],   // sized, standard quality
+    [`-rq2.0aQ`, ...o2],   // sized, relaxed quality
+    [`-rq1.4Q`,  ...o2],   // unsized fallback: quality only, not coarser
   ];
 
   let meshed = false;
   for (const switches of switchSets) {
-    const outcome = await tryTetGen(smeshPath, switches);
+    const outcome = await tryTetGen(inElePath, switches);
     if (outcome === "ok") {
       console.log(`[tetgen] adaptive re-mesh succeeded with switches: ${switches.join(" ")}`);
       meshed = true;
@@ -672,7 +693,7 @@ export async function meshWithTetGenSizing(
     }
     if (outcome === "missing") {
       tetgenKnownMissing = true;
-      await Promise.allSettled([smeshPath, bNodePath, bElePath, bMtrPath].map(f => unlink(f)));
+      await Promise.allSettled([inNodePath, inElePath, inVolPath].map(f => unlink(f)));
       throw new TetGenNotFoundError(TETGEN_BIN);
     }
     console.log(`[tetgen] adaptive re-mesh failed with ${switches.join(" ")}, trying fallback...`);
@@ -695,8 +716,9 @@ export async function meshWithTetGenSizing(
   for (let i = 0; i < weld.vertCount; i++) surfaceToNode[i] = i;
 
   await Promise.allSettled([
-    smeshPath, bNodePath, bElePath, bMtrPath, nodePath, elePath,
+    inNodePath, inElePath, inVolPath, nodePath, elePath,
     tmpBase + ".1.face", tmpBase + ".1.edge", tmpBase + ".1.smesh",
+    tmpBase + ".1.vol",
   ].map(f => unlink(f)));
 
   console.log(`[tetgen] adaptive mesh: ${nodeCount} nodes, ${elementCount} elements (${nodesPerElem}-node)`);

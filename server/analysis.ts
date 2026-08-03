@@ -99,6 +99,8 @@ import {
 } from "./validation-coverage.js";
 import {
   buildSizeField, relaxSizeFieldToBudget, shouldStopRefinement,
+  smoothSizeFieldGradation, predictRefinedElementCount,
+  judgeRemeshAgainstBudget, effectiveElementBudget,
   targetPerElementError, DEFAULT_LOOP_OPTIONS, DEFAULT_SIZE_FIELD_FACTORS,
   type LoopControlOptions, type SingularityRegion, type StopReason,
 } from "./solver/adaptiveMesh.js";
@@ -1681,6 +1683,13 @@ export interface AdaptiveRefinementInfo {
   initialElementCount:   number;
   /** Element count of the final solve. */
   finalElementCount:     number;
+  /**
+   * Hard element ceiling the loop enforced (maxElementGrowth × the base count).
+   * Every entry in `history` is at or below it: a re-mesh that emitted more is
+   * discarded unsolved rather than reported. Absent on a degraded run, which
+   * never enters the loop.
+   */
+  elementBudget?:        number;
   /** Per-iteration (globalRelativeError, elementCount) history. */
   history:               Array<{ globalRelativeError: number; elementCount: number }>;
   /** True if the loop degraded to a single tier solve (no binary / STEP / box). */
@@ -6194,6 +6203,20 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
 
 // ─── Adaptive-refinement driver (issue #149) ─────────────────────────────────
 /**
+ * Size-transition ratio the re-mesh size field is held to (see
+ * smoothSizeFieldGradation). Applied to the raw field before the budget guard.
+ */
+const GRADATION = DEFAULT_SIZE_FIELD_FACTORS.gradation;
+
+/**
+ * How many extra re-meshes one refinement iteration may spend recovering from a
+ * budget overshoot before the loop gives up on that iteration. Two: the first
+ * retry uses a calibration measured from the actual overshoot, so it converges
+ * immediately unless the predictor is wrong in a way a scalar cannot capture.
+ */
+const MAX_REMESH_ATTEMPTS = 2;
+
+/**
  * runAdaptiveAnalysis — the OPT-IN error-driven adaptive refinement loop.
  *
  * Runs the normal analysis once at the selected mesh tier, then, while the ZZ
@@ -6207,10 +6230,16 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
  * STEP/Gmsh path, the box-mesh fallback, a missing TetGen binary, or no error
  * field. This keeps the default single-solve behaviour reachable and unchanged.
  *
- * The size-field construction, budget guard, and stop criteria are unit-tested
- * without any binary (server/tests/unit/adaptive-mesh.test.ts). Only the
- * meshWithTetGenSizing re-mesh needs the binary; where it is absent the loop
- * degrades on the first iteration.
+ * The element-growth cap is enforced against the mesh TetGen ACTUALLY emitted,
+ * before that mesh is solved — not against the first-order prediction alone, and
+ * not one iteration late off the completed loop state. An overshoot re-meshes
+ * with a calibrated-tighter budget, and if that still overshoots the loop stops
+ * on `budget-overshoot` having spent no solve on the over-budget mesh.
+ *
+ * The size-field construction, gradation limit, budget guard, and stop criteria
+ * are unit-tested without any binary (server/tests/unit/adaptive-mesh.test.ts).
+ * Only the meshWithTetGenSizing re-mesh needs the binary; where it is absent the
+ * loop degrades on the first iteration.
  */
 export async function runAdaptiveAnalysis(
   req: AnalysisRequest,
@@ -6276,6 +6305,11 @@ export async function runAdaptiveAnalysis(
   const baseElementCount = first.elementCount;
   const budget = Math.max(baseElementCount + 1, Math.floor(baseElementCount * opts.maxElementGrowth));
 
+  // Running calibration of predictRefinedElementCount against what TetGen
+  // actually emits. 1 = the predictor is trusted; >1 = it under-predicts by
+  // that factor and the budget handed to the guard is divided by it.
+  let sizingBias = 1;
+
   let best = first;
   let bestGRE = first.globalRelativeError ?? Infinity;
   let curMesh = cap0.mesh;
@@ -6299,23 +6333,87 @@ export async function runAdaptiveAnalysis(
 
     // ── Build the regional size field from the current error field ───────────
     const targetErr = targetPerElementError(opts.targetGlobalError, curMesh.elementCount);
-    let field = buildSizeField(curMesh, curError, {
+    const raw = buildSizeField(curMesh, curError, {
       targetError:   targetErr,
       order,
       minSizeFactor: DEFAULT_SIZE_FIELD_FACTORS.minSizeFactor,
       maxSizeFactor: DEFAULT_SIZE_FIELD_FACTORS.maxSizeFactor,
       singularities,
     });
-    if (field.refinedNodeCount === 0) { stopReason = "no-refinement-requested"; break; }
-    field = relaxSizeFieldToBudget(curMesh, field, budget);
+    if (raw.refinedNodeCount === 0) { stopReason = "no-refinement-requested"; break; }
+    // Bound the size transition between refined and unrefined regions BEFORE
+    // the budget guard, so the elements the graded band costs are inside the
+    // budget rather than a surprise on top of it.
+    const graded = smoothSizeFieldGradation(curMesh, raw, GRADATION);
 
-    // ── Re-mesh with the sizing field (binary-dependent) ─────────────────────
-    let remesh;
-    try {
-      remesh = await meshWithTetGenSizing(req.positions, req.triangleCount, curMesh, field, order);
-    } catch (err) {
-      console.warn("[analysis] adaptive re-mesh failed, keeping best-so-far:", err);
-      stopReason = "remesh-failed";
+    // ── Re-mesh with the sizing field, and hold it to the budget ─────────────
+    // The budget guard is a PREDICTION (predictRefinedElementCount is
+    // first-order by construction), and nothing used to compare it against what
+    // TetGen actually emitted — so an under-prediction silently blew the cap and
+    // the over-budget mesh went on to consume a full solve before anything
+    // noticed. Observed on a Ø5-bore tube: 13,340 → 115,544 elements, 8.7×
+    // against the documented 8× cap, 13 slivers, and the mesh-quality gate
+    // (#166) then rejected the whole thing.
+    //
+    // So: measure the ACTUAL count, and if it overshoots, use the overshoot as a
+    // multiplicative calibration on the predictor and re-mesh with a
+    // correspondingly tighter effective budget. A re-mesh is cheap next to a
+    // solve; an over-budget solve is the expensive mistake. The calibration is
+    // monotone (it only ever tightens) and carries across iterations, so a
+    // predictor that is optimistic on this geometry stays corrected.
+    let remesh: Awaited<ReturnType<typeof meshWithTetGenSizing>> | null = null;
+    let attemptStop: StopReason | null = null;
+    let acceptedRefinedNodes = 0;
+    for (let attempt = 0; attempt <= MAX_REMESH_ATTEMPTS; attempt++) {
+      const effBudget = effectiveElementBudget(budget, curMesh.elementCount, sizingBias);
+      const field = relaxSizeFieldToBudget(curMesh, graded, effBudget, GRADATION);
+      if (field.refinedNodeCount === 0) {
+        // The budget left no room to refine anything at all.
+        attemptStop = "no-refinement-requested";
+        break;
+      }
+      const predicted = predictRefinedElementCount(curMesh, field);
+      let candidate;
+      try {
+        candidate = await meshWithTetGenSizing(req.positions, req.triangleCount, curMesh, field, order);
+      } catch (err) {
+        console.warn("[analysis] adaptive re-mesh failed, keeping best-so-far:", err);
+        attemptStop = "remesh-failed";
+        break;
+      }
+      const actual = candidate.mesh.elementCount;
+      console.log(
+        `[analysis] adaptive re-mesh: ${curMesh.elementCount} → ${actual} elements ` +
+        `(predicted ${Math.round(predicted)}, effective budget ${effBudget} of ${budget}, ` +
+        `bias ${sizingBias.toFixed(2)})`,
+      );
+      const verdict = judgeRemeshAgainstBudget(actual, predicted, budget, curMesh.elementCount);
+      if (verdict.accepted) {
+        sizingBias = verdict.sizingBias;
+        remesh = candidate;
+        acceptedRefinedNodes = field.refinedNodeCount;
+        break;
+      }
+      console.warn(
+        `[analysis] adaptive re-mesh overshot the element budget ` +
+        `(${actual} > ${budget}, predicted ${Math.round(predicted)}); ` +
+        `bias ${sizingBias.toFixed(3)} → ${verdict.sizingBias.toFixed(3)}, ` +
+        `attempt ${attempt + 1}/${MAX_REMESH_ATTEMPTS + 1}`,
+      );
+      if (verdict.sizingBias <= sizingBias * 1.01) {
+        // The calibration barely moved, so the next attempt would rebuild
+        // essentially the same field and re-mesh to the same result. Stop rather
+        // than repeat it.
+        attemptStop = "budget-overshoot";
+        break;
+      }
+      sizingBias = verdict.sizingBias;
+    }
+    if (attemptStop) { stopReason = attemptStop; break; }
+    if (!remesh) {
+      // Every attempt overshot. Stop WITHOUT solving — the whole point of the
+      // cap is to not spend a solve on a mesh that exceeds it.
+      stopReason = "budget-overshoot";
       break;
     }
 
@@ -6349,6 +6447,22 @@ export async function runAdaptiveAnalysis(
       stopReason = "resolve-failed";
       break;
     }
+    // A refined solve that did not converge must never become the reported
+    // result: its stress field is unresolved, and the ZZ error estimate computed
+    // from it is not meaningful — so comparing its `globalRelativeError` against
+    // bestGRE below could adopt it on the strength of a number that means
+    // nothing. This used to be enforced indirectly, by the CG wall clock
+    // THROWING into the catch above. That clock is now a hang guard which
+    // returns its current iterate with converged: false instead (the iteration
+    // cap always behaved that way), so the check has to be explicit. Same
+    // outcome as before — degrade to the best solve so far and say why.
+    if (!next.converged) {
+      console.warn(
+        `[analysis] adaptive re-solve did not converge ` +
+        `(${next.elementCount} elements, ${next.cgIterations} CG iterations); keeping best-so-far`);
+      stopReason = "resolve-failed";
+      break;
+    }
     iterations++;
     const nextGRE = next.globalRelativeError ?? 0;
     history.push({ globalRelativeError: nextGRE, elementCount: next.elementCount });
@@ -6363,7 +6477,7 @@ export async function runAdaptiveAnalysis(
       elementCount:                next.elementCount,
       baseElementCount,
       previousGlobalRelativeError: prevGRE,
-      refinedNodeCount:            field.refinedNodeCount,
+      refinedNodeCount:            acceptedRefinedNodes,
     };
 
     if (!capN.mesh || !capN.errorEstimate) { stopReason = "no-error-field"; break; }
@@ -6380,6 +6494,7 @@ export async function runAdaptiveAnalysis(
       finalGlobalError:    Number.isFinite(bestGRE) ? bestGRE : (first.globalRelativeError ?? 0),
       initialElementCount: baseElementCount,
       finalElementCount:   best.elementCount,
+      elementBudget:       budget,
       history,
       degradedToTier:      false,
       note:                `Adaptive refinement: ${iterations} solve(s), stopped on '${stopReason}'.`,

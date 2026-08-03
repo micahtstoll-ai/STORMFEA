@@ -450,39 +450,80 @@ the solver-accuracy campaign; adaptive mesh refinement (#149) shipped in PR #246
   `AdaptiveRefinementInfo` on the response), but the client has no toggle and no
   readout, so the feature is unreachable from the UI. The payload already carries
   everything a results panel needs: iteration count, stop reason, initial vs
-  final global error and element count, and the per-iteration history
-- **The adaptive size field is too aggressive in one step, and the growth budget
-  is only a prediction** — a first measurement on a Ø5-bore tube (the geometry
-  the #108 gate uses) had the first refinement jump 13,340 → 115,544 elements,
-  which is 8.7× the base count against a documented 8× cap, and produce 13 sliver
-  elements that the hard mesh-quality gate (#166) rejects. Two causes, both open:
-  `relaxSizeFieldToBudget` relaxes against `predictRefinedElementCount`, a MODEL
-  of what TetGen will emit, and nothing re-checks the ACTUAL element count after
-  the re-mesh; and the growth cap is only consulted by `shouldStopRefinement` on
-  the following iteration, so the loop can overshoot it by a whole solve. The
-  per-step `minSizeFactor` of 0.35 is a ~23× local volume-density increase in one
-  jump, which is the likely sliver source. Fixing this is a precondition for the
-  benchmark below being meaningful — on that geometry the loop currently never
-  completes a single refined solve
-- **Benchmark adaptive against uniform refinement at matched element count** —
-  the suite locks the adaptive MECHANISM (size-field construction, stop criteria,
-  budget relaxation, bit-identical default, degradation contract, and — with a
-  TetGen binary — that the field genuinely refines the requested region), but
-  nothing measures what adaptivity BUYS over simply selecting the fine tier. The
-  first attempt at this measurement was inconclusive for the reason above (no
-  refined solve completed). The separate question it surfaced — the ZZ global
-  relative error reading 89% / 213% / 20% across tiers on that tube — is now
-  ANSWERED and was an estimator defect, not the suspected singular test case: on
-  a deliberately non-singular part (smooth cylinder, distributed constraint and
-  traction, no hole, no re-entrant corner) the C3D10 estimate still read
-  23.2% / 6.9% / 80.6%, worst on the FINEST mesh, while C3D4 on the identical
-  geometry decreased monotonically. Cause was SPR solving rank-deficient patches
-  — every C3D10 midside node's patch is the ring of tets sharing one edge — past
-  a rank guard written as an absolute pivot threshold on a matrix in raw global
-  mm coordinates, which could never fire. Fixed; the same sweep now reads
-  5.4% / 4.0% / 3.4%. The 3% default target and 8× growth cap remain unvalidated
-  defaults, and a UI toggle would still ship an asserted rather than
-  demonstrated benefit
+  final global error and element count, the element budget, and the per-iteration
+  history. The benefit is now demonstrated rather than asserted (see the
+  benchmark below), so the remaining blocker is the honesty of the readout: the
+  loop optimises the ENERGY-NORM error, and on the one part measured it moved
+  peak stress by 24% while moving that error by 8% — a panel that reports only
+  the error would overstate what the run settled
+- **Validate the 3% error target and 8× growth cap against a NON-SINGULAR part**
+  — the budget overshoot and the sliver failure are fixed (the re-mesh moved off
+  TetGen's `-m` background metric, which slivers on curved boundaries even with a
+  constant metric, onto `-r` with per-element volume constraints; the cap is now
+  enforced against the mesh actually emitted, before it is solved), and
+  `adaptive-benchmark.test.ts` shows adaptivity beating uniform refinement on the
+  Ø5-bore tube: 0.262 global error on 40,534 elements against 0.337 on 54,373.
+  What is still NOT settled is the estimator's behaviour on that geometry. The ZZ
+  global relative error reads 89% on the coarse tier and does not fall
+  monotonically under refinement — measured 0.894 → 0.262 → 0.279, with the loop
+  stopping on `stalled` because the third solve was WORSE. Peak von Mises is
+  likewise unsettled: adaptive resolves 4.91 MPa where uniform reads 3.97, a 24%
+  spread against an 8% spread in the error being optimised. The "singular bore or
+  estimator defect?" question is now PARTLY answered, and it was at least partly
+  the estimator: on a deliberately non-singular part (smooth cylinder,
+  distributed constraint and traction, no hole, no re-entrant corner) the C3D10
+  estimate read 23.2% / 6.9% / 80.6% across tiers — worst on the FINEST mesh —
+  while C3D4 on the identical geometry fell monotonically. Cause was SPR solving
+  rank-deficient patches (every C3D10 midside node's patch is the ring of tets
+  sharing one edge) past a rank guard written as an absolute pivot threshold on a
+  matrix in raw global mm coordinates, which could never fire. Fixed; that sweep
+  now reads 5.4% / 4.0% / 3.4%. What this does NOT establish is that the tube's
+  own numbers were the same defect — the 0.894 → 0.262 → 0.279 sequence above
+  predates the fix and should be re-measured before the bore is either blamed or
+  cleared. Until then the 3% target and 8× cap are defaults chosen by argument,
+  not by measurement. Note the adaptive-vs-uniform comparison itself is
+  a ONE-PART result so far: the plate below could not complete a refined solve
+  for an unrelated reason (the solver wall clock), so it neither confirms nor
+  refutes the tube's margin. The comparison's own premise is now bounded rather
+  than assumed: the uniform yardstick must land within `UNIFORM_MAX_RATIO` (2x)
+  of the adaptive element count, and if TetGen's non-monotone response to `-a`
+  ever moves the ladder outside that band the benchmark fails on the PREMISE,
+  naming the rungs it walked, instead of failing the error margin with two
+  numbers that look like an adaptivity regression and are not
+- **The solver wall clock, not mesh quality, is now the binding constraint on
+  adaptive refinement for mid-size parts** — surfaced by fixing the slivers:
+  refined solves are actually attempted now, and the next limit shows up
+  immediately behind them. On a 40x20x4 mm bracket plate the first refinement
+  built a CLEAN 51,743-element mesh (239k DOF, zero hard-gate violations, zero
+  poor elements, worst normalized Jacobian 0.112) and the PCG solver hit its 90 s
+  deadline at relRes 1.4e-2 while still converging, so the run degraded to the
+  tier solve with `resolve-failed`. The degradation is correct behaviour, but it
+  means the 8x element budget and the solver's time budget are set independently
+  and can contradict each other: the loop is allowed to build a mesh it is not
+  allowed to solve. Options are to derive the element budget from a DOF/time
+  model rather than a fixed multiple, to raise `CG_DEADLINE_MS`
+  (`server/solver/cg.ts`) for the adaptive path specifically, or to treat a
+  deadline miss as a budget signal and retry smaller. The second of those is now
+  DONE, and more besides: the wall clock is a hang guard rather than a verdict —
+  it no longer throws (the solve returns its current iterate with
+  `CGResult.timedOut` set, exactly as exhausting the iteration cap already did),
+  the default is 600 s via `CG_DEADLINE_DEFAULT_MS`, and it is per-solve
+  configurable through `SolverInput.cgDeadlineMs`. A 90 s limit sat INSIDE the
+  range a legitimate large solve needs, so the same mesh and inputs passed on an
+  idle host and failed on a loaded one; the fine tier of the smooth-cylinder
+  benchmark genuinely needs 181 s. That removes the hard failure but NOT the
+  underlying point: the element budget and the time budget are still set
+  independently, so deriving one from the other remains open. Measured on 4
+  cores; a faster host moves the threshold but does not remove it
+
+- **Pin `VOLUME_CAP_SCALE` with more than one geometry** — the scale converting a
+  target edge length to a TetGen `-a` volume cap (13, `adaptiveMesh.ts`) was
+  calibrated on the tube alone, where it brought predicted and emitted element
+  counts within 11%. It is confidence-LOW and the equivalent ratio on the tier
+  path's uniform caps drifts between ~2.5 and ~5.5 with density. The driver
+  measures and corrects the residual per-run, so a wrong seed costs a re-mesh
+  rather than correctness — but a second and third geometry would say whether 13
+  is a constant or a coincidence
 - **Gauss-point SPR sampling for C3D10** (`docs/spr-gauss-point-handoff.md`) —
   `recoverElementStress` evaluates C3D10 stress at all four Gauss points and then
   AVERAGES them into one value per element, so the recovered field `σ*` is built
