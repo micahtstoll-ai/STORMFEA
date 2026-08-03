@@ -1,5 +1,5 @@
 # STORMFEA — Development Roadmap
-## Nordic Storm FTC 5962 | Last updated: June 2026
+## Nordic Storm FTC 5962 | Last updated: August 2026
 
 ---
 
@@ -15,7 +15,14 @@
 - [x] Isotropic limit test — zero difference when E_z = E_xy
 - [x] Positive definiteness check on C matrix before every solve
 - [x] C3D10 second-order (10-node quadratic) tetrahedral elements — quadratic shape functions, B matrix, and assembly; 4-point Gauss integration with Gauss-point stress recovery. Reduces shear locking and resolves stress concentrations more accurately
-- [x] Automated validation suite (`server/tests/solver_validation.ts`) — 97 tests across 8 groups: patch test, cantilever linearity, orthotropic isotropic-limit, SPR smoothing, C3D10 element properties, Hill criterion (von Mises collapse + directional yield), and FEA-in-the-loop calibration
+- [x] Automated validation suite (`server/tests/solver_validation.ts`) — 180 tests
+      across 32 groups: patch test, cantilever linearity, orthotropic
+      isotropic-limit, SPR smoothing (incl. boundary-patch conditioning), C3D10
+      element properties and quadrature, the FDM/Hill criteria, energy-norm ZZ
+      error estimation with a manufactured-solution effectivity index, Kirsch and
+      Lekhnitskii open-hole anchors, and FEA-in-the-loop calibration. Counts on
+      every user-facing surface are CI-asserted against the suite as it actually
+      ran (`scripts/check-doc-test-counts.mjs`), so they cannot go stale silently
 
 ### Geometry Pipeline
 - [x] STL → TetGen → volume FEM
@@ -270,16 +277,163 @@
       gated cross-bead check on the BULK term; interface azimuth invariance
       preserved; bit-identical off/no-evidence (in-plane-anisotropy.test.ts)
 
+### Solver-accuracy campaign (69 issues, shipped July 2026)
+
+A single reviewed integration (issues #136–#205, minus #149) auditing the solver
+end to end. Suite after landing: 677 vitest unit tests across 66 files, 180
+solver-validation tests, parallel-assembly equivalence, 141 client-logic checks,
+plus three CI drift gates (doc test counts, API routes, invariant symbols).
+
+**Headline defect** — Gmsh's C3D10 midside node ordering was swapped, making
+every STEP-file element self-intersecting (mixed-sign Jacobian, ~0 mm³ isoparametric
+volume). Post-fix the isoparametric volume matches CAD exactly, and BOTH mesher
+paths now run a runtime midside self-check instead of trusting the binary (#167).
+
+- [x] Element formulation — C3D10 surface traction is now the correct quadratic
+      consistent load (was lumping A/3 onto corners, exactly inverted: midsides
+      got zero) (#137); C3D10 mass integrates isoparametrically like stiffness
+      rather than assuming an affine element, with its own higher-order rule
+      (#158); geometric stiffness keeps the linear stress gradient that drives
+      bending buckling instead of one element-constant stress (#164); an opt-in
+      higher-order Gauss rule for curved elements, with the affine-exact case
+      documented and locked (#163); tangled/inverted curved elements are
+      detected rather than silently integrated through |detJ| (#162)
+- [x] Boundary conditions, reactions & solver hygiene — true support reactions
+      are recovered from pristine pre-BC rows (they previously collapsed to ~0
+      through the penalty-modified K) (#136); Dirichlet handling gained
+      `row-penalty` and exact `elimination` schemes, with the static pipeline on
+      elimination, replacing the single global-max penalty that degraded CG
+      conditioning on soft-region DOFs (#154); the modal path shares that exact
+      elimination instead of its own inconsistent penalty (#155); CG re-checks
+      the recurrence residual against the true residual and the iteration cap is
+      no longer warn-only (#153)
+- [x] Eigenproblems — buckling moved to block subspace (Rayleigh–Ritz) inverse
+      iteration, so the smallest positive BLF is guaranteed rather than hoped for
+      from power iteration plus a single deflation (#138); modal gained a Sturm
+      missed-mode check, eigenvector convergence, and scaled shifts (#160);
+      participation factors cover all three directions with effective modal mass,
+      instead of X-only (#161); `assembleMass` no longer silently substitutes PLA
+      density for a material without `massRho` (#159)
+- [x] Error estimation & convergence — the ZZ estimator is a real volume-weighted
+      energy norm over the full stress tensor with shape-function interpolation
+      (it was an unweighted L2 norm of scalar von Mises differences, with the
+      material factor cancelling out) (#143, #144, #145), locked by a
+      manufactured-solution effectivity index (#150); Richardson reports the
+      observed order p_obs from the three mesh points instead of hardcoding p=2
+      (#146); the convergence study consults the singularity warning rather than
+      chasing a quantity that diverges (#147); singularity detection is
+      scale-relative, not a hardcoded 1 mm neighborhood (#148); SPR
+      boundary-patch conditioning is characterized with a boundary known-answer
+      test — exactly where FDM stress peaks live (#156); `globalRelativeError`
+      now actually reaches the user, with η explained (#151, #202)
+- [x] Mesh & geometry robustness — mesh quality is scale- and unit-invariant
+      (the Jacobian metric was a raw mm³ triple product judged against an
+      absolute threshold) (#165); sliver elements are gated as the real accuracy
+      killers rather than warned about (#166); the TetGen path no longer bakes in
+      millimetre assumptions for weld precision and default element volume
+      (#168); Gmsh top/bottom face detection and hole detection are relative to
+      part scale, so origin-centered, thin, or out-of-window parts stop
+      misclassifying faces and dropping bolt surfaces (#169, #170)
+- [x] Two-region & material model — the three conflicting infill→stiffness laws
+      (CLT linear-ρ vs 0.30-intercept scalar vs Gibson-Ashby ρ^n, differing 2–5×
+      at 20% infill) are unified (#176); core strength knockdown is per-axis like
+      core stiffness, so the model can no longer claim Z-stiffer and Z-weaker at
+      once (#177); wall-fraction quantization no longer lets a 0.01 change flip a
+      transition element ~100× (#178); `latticeStrengthFraction` no longer
+      hard-clips with a slope discontinuity at ρ≈0.94 (#183); wall-band volume
+      fractions use the C3D10 midside distances that were computed and discarded,
+      catching bands that enter an element without reaching a corner (#180);
+      solid-skin (top/bottom) classification gained its own thickness and a
+      cone-angle face test (#181); wall-loop perimeter excludes internal hole
+      bores (#182); material tables are key-checked, so orphan entries and
+      silent PLA-bond fallbacks are gone (#186); the upright scalar swap's
+      Poisson-ratio inconsistency is resolved and documented (#187)
+- [x] Deshpande–Fleck–Ashby core yield (#171) — pressure-dependent yield for the
+      cellular infill core, σ̂² = (σ_vm² + α²σ_m²)/(1+(α/3)²) with α(ρ) =
+      2.08·(1−ρ) (`solver/lattice.ts`), blended per bin core-fraction-weighted so
+      pure-shell bins are von Mises. α(1) = 0 exactly, so solid parts and every
+      non-core element are bit-identical to the pre-DFA path; uniaxial yield is
+      preserved at yieldXY for any α. Exponents LOW confidence, locked by
+      `dfa-core-yield.test.ts`
+- [x] Per-failure-mode yield selection (#175) — bearing and thread strip-out on
+      wall-lined holes use the SHELL allowables (slicers line holes with
+      perimeters), not the blended average material; a 20%-infill wall-lined hole
+      now matches the 100%-infill part at equal wall count
+      (`per-failure-mode-yield.test.ts`)
+- [x] Bond & calibration honesty — the bond model's fan reference is per-material
+      instead of anchoring every material to 100% fan, which skewed exactly the
+      fan-sensitive ones (ABS/ASA) (#184); wall-to-wall bond stopped passing
+      `lineWidth` into the `layerHeightMm` slot under a clamp derived for other
+      geometry (#185); calibration fits gate on residuals, so a bad ≥3-point
+      sweep no longer lifts confidence LOW→MEDIUM (#179); the bearing and
+      lap-shear Kt fixtures are real stress concentrators — a plate-with-hole and
+      an overlap-end peak — instead of hole-less boxes in uniform shear that made
+      the "peak-based" correction a no-op (#139, #140)
+- [x] Uncertainty & fatigue — the SF band now widens for the Gibson-Ashby
+      exponent uncertainty on low-infill two-region parts (#173) and for the
+      bond model's LOW-confidence constants when the process path is active
+      (#172), instead of being falsely tight exactly where the model is weakest;
+      interlayer fatigue is checked separately from bulk fatigue, since the
+      dominant FDM cyclic failure mode is at the interface (#174)
+- [x] Validation & traceability — a Lekhnitskii orthotropic open-hole
+      known-answer benchmark, the first anisotropic analytic anchor in a suite
+      that was otherwise entirely isotropic (#188); a per-analysis validation
+      coverage map (`validation-coverage.ts`) that reports which suites cover the
+      configuration you actually ran, states axis values with NO direct coverage
+      plainly, and flags known combination gaps (#191); `docs/INVARIANTS.md`, the
+      resolved index from each CLAUDE.md invariant to its implementing symbol and
+      locking test, including an honest list of partial-coverage gaps (#192);
+      `distance.ts` gained its first dedicated tests (#195)
+- [x] Verdict, reporting & docs — one shared `ACCEPTABLE_SF_THRESHOLD = 1.5`
+      constant, ending the disagreement between a green "Safe" verdict, a
+      "recommended minimum 2×" caption, and a report that ambered 1–2× (#141);
+      the stress legend maps color→stress through the same γ=0.55 warp as the
+      model, which had been over-reading mid-legend stress ~1.8× (#142); choosing
+      C3D4 now warns about its documented ~55% bending underprediction (#189);
+      the "will fail at X N" headline is captioned as a linear first-yield
+      extrapolation (#204); the printed report carries every reliability caveat
+      the app shows — non-convergence, mesh fallback, degraded two-region,
+      rigid-body (#196); `/api/methodology` describes the FDM dual criterion it
+      actually uses (#197); methodology numeric and material tables are generated
+      from the constants (#199); fatigue and the cross-bead ratio gained SOURCES
+      entries (#200, #205); `docs/API.md` covers every live route with a CI drift
+      check (#201); face-pressure selection scales its proximity band so coarse
+      meshes cannot silently select zero triangles and apply no load (#157)
+
 ---
 
 ## IN PROGRESS / NEXT
 
-- Deshpande–Fleck–Ashby core yield criterion — pressure-dependent yield for the
-  cellular infill core (σ̂² = (σ_vm² + α²σ_m²)/(1+(α/3)²)); plugs into the
-  per-bin yield hook in `recoverElementStress`; isotropic-DFA first, anisotropic
-  honeycomb extension later
-- Per-failure-mode yield selection — shell yield for bearing/thread checks on
-  wall-lined holes (slicers line holes with perimeters)
+_Both previous entries (DFA core yield, per-failure-mode yield selection) shipped
+in the solver-accuracy campaign — see above._
+
+- **Adaptive mesh refinement (issue #149, the campaign's one deferral)** —
+  `topErrorElements` is computed "for refinement guidance" and drives nothing.
+  Held back because the attempted TetGen regional sizing (`-m`) COARSENED
+  instead of refining; needs a working sizing-field mechanism before the
+  error-driven remesh loop can close. Everything upstream is ready: the ZZ
+  estimator is now a real volume-weighted energy norm and the observed
+  convergence order is measured, so the refinement target is trustworthy
+- **Anisotropic (honeycomb) DFA extension** — the shipped core yield criterion
+  is the isotropic-foam form. Extending pressure sensitivity per-axis would
+  match the per-axis stiffness and strength laws the core already uses;
+  currently α is one scalar per bin
+- **Close the invariant-coverage gaps catalogued in `docs/INVARIANTS.md`** —
+  five invariants are locked on their core numeric claim but only partially on
+  the structural half: exhaustive sign-case coverage for `tetFractionBelowIso`
+  (two-region #2); a direct test that boundary nodes seed at exactly 0
+  (two-region #4); an automated check that whole-part vs. per-element material
+  consumers stay on their correct side of the `material` / `ElementMaterialField`
+  split (two-region #6); a negative test keeping `yieldZShear` out of the
+  assembly-worker payload (interlayer #5); and a grep-style CI guard — the shape
+  `scripts/check-api-routes.mjs` already uses — against a second orientation
+  scalar entering the material-stiffness path (interlayer #8)
+- **Raise the LOW-confidence constants with data, not code** — the bond model
+  (h0, Ea, Φ-exponent, μ), the Gibson-Ashby exponents, and DFA's α₀/exponent are
+  all regression-locked engineering estimates. The fitting endpoints
+  (`/api/calibration/bond-sweep`, `/api/calibration/fatigue`) and the coupon
+  recommendation engine exist; what is missing is a printer process sweep and
+  Z-tension/lap-shear coupons actually run on the team's machine
 
 ---
 
@@ -300,19 +454,41 @@ reference settings, LOW confidence until process-sweep fitted) instead of
 waiting for a consistent empirical table._
 
 ## KNOWN LIMITATIONS (disclosed in app)
-- Bearing failure: LOW confidence — no FDM-specific bearing data
+- Bearing failure: LOW confidence — no FDM-specific bearing data. The Kt fixture
+  behind the calibrated path is now a real plate-with-hole rather than a
+  hole-less box, so calibration genuinely moves the allowable; the underlying
+  data gap is unchanged
 - Pattern multipliers: approximate — inconsistent literature
 - Layer height model: −15% to +10%, linear — process interaction now enters
   only via the bond model's τc (thinner roads more fan/speed sensitive)
-- Fatigue estimate: LOW confidence — sparse FDM S-N data
+- Fatigue estimate: LOW confidence — sparse FDM S-N data. Interlayer fatigue is
+  now checked separately from bulk, but on the same sparse basis
 - Filament color: known to affect strength (η²=97.3%) — not modeled
 - Interlayer allowables default to literature ratios (S_zt = 0.58·Y,
   S_zs = S_zt/√3) until the Z-tension and lap-shear coupons are run
 - Bond-model constants (h0, Ea, Φ-exponent, friction μ=0.3): LOW confidence
   engineering estimates until fitted from a printer process sweep
+- Core homogenization exponents (Gibson-Ashby ρ^n, DFA α₀ = 2.08 and its density
+  exponent): LOW confidence, regression-locked and calibration-overridable
 - Delamination is INITIATION-only (strength-based); crack propagation
   between layers is not simulated (see DEFERRED)
+- Curved C3D10 elements are under-integrated by the default 4-point Gauss rule
+  (exact only for straight-edged elements); a higher-order rule is opt-in
+- Refinement is user-driven — the error estimator identifies the worst elements
+  but does not yet remesh them (see NEXT, issue #149)
+- The per-analysis validation coverage map reports whether a configuration's
+  KIND is exercised somewhere in the suite, not that a specific geometry, load
+  case, or material is proven correct — and it names its combination gaps (e.g.
+  two-region validation runs exclusively on C3D10 meshes)
 
 _Resolved: the TetGen box-mesh fallback previously always produced C3D4 (≈55%
 bending underprediction) regardless of the element-order selector; it now honours
-the selector (C3D10 by default) — see the shipped list above._
+the selector (C3D10 by default) — see the shipped list above. Choosing C3D4
+explicitly now warns about the same underprediction._
+
+_Resolved: the stress legend read ~1.8× high mid-scale because model colors were
+gamma-warped (γ=0.55) while the legend was linear; both now share the warp._
+
+_Resolved: STEP-file C3D10 elements were self-intersecting from a swapped Gmsh
+midside node ordering; fixed, and both mesher paths self-check midside placement
+at runtime._
