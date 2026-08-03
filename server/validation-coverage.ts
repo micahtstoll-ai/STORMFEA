@@ -108,6 +108,7 @@ export const VALIDATION_ENTRIES: Record<string, ValidationEntry> = Object.fromEn
   solverGroup(25, "Two-region material field — solve equivalence + sandwich beam"),
   solverGroup(26, "Numerical homogenization — perforated-plate cell vs isolated-hole theory"),
 
+  unitSuite("spr-midside-recovery",       "SPR recovery stays bounded at C3D10 midside nodes"),
   unitSuite("fdm-criterion",              "FDM dual criterion — azimuth invariance + anchor locks"),
   unitSuite("hill-utilization",           "Hill-legacy utilization ratios U_XY/U_Z analytical benchmark"),
   unitSuite("verdict-hill-sf",            "Hill-legacy safety-factor verdict wiring"),
@@ -143,7 +144,10 @@ export const VALIDATION_ENTRIES: Record<string, ValidationEntry> = Object.fromEn
 
 export const COVERAGE_MAP: Record<CoverageAxisValue, string[]> = {
   "elementOrder:C3D4": ["solver:1", "solver:2", "solver:12", "solver:17", "solver:20", "solver:21", "solver:25"],
-  "elementOrder:C3D10": ["solver:5", "solver:6", "solver:19", "solver:20", "solver:25", "unit:tetgen-c3d10"],
+  "elementOrder:C3D10": [
+    "solver:5", "solver:6", "solver:19", "solver:20", "solver:25",
+    "unit:tetgen-c3d10", "unit:spr-midside-recovery",
+  ],
 
   "material:isotropic": ["solver:1", "solver:2", "solver:3", "solver:12", "solver:17"],
   "material:orthotropic": ["solver:3", "solver:7", "solver:23", "unit:orthotropic-compliance"],

@@ -259,6 +259,13 @@ export interface CGResult {
    */
   readonly recurrenceRelativeResidual: number;
   readonly preconditionerUsed: 'ic0' | 'jacobi';
+  /**
+   * True when the wall-clock backstop stopped the iteration (see
+   * CG_DEADLINE_DEFAULT_MS). Independent of `converged`: a solve can time out
+   * having ALREADY reached tolerance, and one that times out short of tolerance
+   * is a time-budget problem, not evidence of ill-conditioning.
+   */
+  readonly timedOut: boolean;
   readonly residualCheckpoints: readonly CGCheckpoint[];
   /**
    * Condition-number estimate κ ≈ λmax/λmin of the PRECONDITIONED operator
@@ -391,7 +398,31 @@ export interface SolvePCGOpts {
   signal?: AbortSignal;
   /** Invoked at CG residual checkpoints with (iteration, relativeResidual). */
   onProgress?: (iteration: number, relativeResidual: number) => void;
+  /**
+   * Wall-clock backstop in milliseconds (default CG_DEADLINE_DEFAULT_MS).
+   * Purely a hang guard — see the deadline check inside pcgSolve. Exposed so a
+   * long-running offline study can raise it and a latency-sensitive caller can
+   * lower it, rather than everyone inheriting one hardcoded number.
+   */
+  deadlineMs?: number;
 }
+
+/**
+ * Default wall-clock backstop for a single CG solve.
+ *
+ * This is a HANG guard, not a convergence deadline: `imax` (DOF-scaled, above)
+ * is the real iteration bound, and it is machine-independent. The wall clock
+ * exists only so a pathological solve cannot hang the Node process and leave a
+ * browser waiting forever.
+ *
+ * It was 90 s and it threw, which made it neither. 90 s is inside the range a
+ * legitimate large solve genuinely needs, so the same mesh and the same inputs
+ * would succeed on an idle machine and fail on a loaded one — a reproducibility
+ * hole in a tool whose output is meant to be trustworthy, and one that lands
+ * hardest on the fine tier the UI auto-upgrades to. Raised well clear of any
+ * legitimate solve so that only a true runaway reaches it.
+ */
+export const CG_DEADLINE_DEFAULT_MS = 600_000;
 
 /** Progress emitted at each CG residual checkpoint. */
 type CGProgress = { iteration: number; relativeResidual: number };
@@ -412,6 +443,7 @@ function* pcgSolve(
   maxIter:  number | undefined,
   preconditioner: 'jacobi' | 'ic0',
   prebuiltFactor: IC0Factor | null | undefined,
+  deadlineMs?: number,
 ): Generator<CGProgress, CGResult, void> {
   const n    = K.n;
   // DOF-scaled iteration cap (issue #153, defect 3).
@@ -429,8 +461,8 @@ function* pcgSolve(
   // get a proportionate budget (500 k DOF → ~14 000; 5 M → ~44 000) instead of
   // being starved by a flat 5 000. Hitting this cap does NOT throw — the loop
   // exits and `converged` is reported false so the caller can warn (the old
-  // fixed cap was warn-only too); the 90 s wall-clock deadline below remains
-  // the hard stop for genuinely runaway solves.
+  // fixed cap was warn-only too); the wall-clock backstop below behaves the same
+  // way, and is only there to stop a true runaway hanging the process.
   const imax = maxIter ?? Math.max(1000, Math.ceil(20 * Math.sqrt(n)));
 
   const debugCG     = process.env["STORMFEA_DEBUG_CG"]      === "1";
@@ -499,6 +531,7 @@ function* pcgSolve(
       trueRelativeResidual: 0,
       recurrenceRelativeResidual: 0,
       preconditionerUsed: preconditioner === 'ic0' ? 'ic0' : 'jacobi',
+      timedOut: false,
       residualCheckpoints: [],
       conditionEstimate: 1,
       ritzValueMin: undefined,
@@ -527,12 +560,14 @@ function* pcgSolve(
   let iter = 0;
   let relRes = norm(r) / fNorm;
 
-  // Wall-clock deadline: throw if the solve takes longer than 90 s.
-  // The 5 000-iteration cap is the primary guard, but for very large systems
-  // (or if a caller passes a custom maxIter) this catches runaway solves that
-  // would otherwise hang the Node process and leave the browser waiting forever.
-  const CG_DEADLINE_MS = 90_000;
-  const cgDeadline = Date.now() + CG_DEADLINE_MS;
+  // Wall-clock backstop (see CG_DEADLINE_DEFAULT_MS). The DOF-scaled `imax` is
+  // the primary, machine-INDEPENDENT bound; this only catches a solve that would
+  // otherwise hang the process. Like `imax`, reaching it does NOT throw — the
+  // loop exits and `converged` is reported from the true residual, so the caller
+  // warns on a provisional result instead of losing the whole analysis.
+  const cgDeadlineMs = deadlineMs ?? CG_DEADLINE_DEFAULT_MS;
+  const cgDeadline = Date.now() + cgDeadlineMs;
+  let timedOut = false;
 
   // Diagnostic logging at geometrically-spaced checkpoints (1, 2, 4, 8, 16...
   // iterations, then every 256 past that). This is cheap — it doesn't run on
@@ -577,14 +612,24 @@ function* pcgSolve(
       nextLogIter = iter < 256 ? iter * 2 : iter + 256;
     }
 
-    // Deadline check every 100 iterations (cheap: one Date.now() call per 100 matvecs)
+    // Deadline check every 128 iterations (cheap: one Date.now() call per 128 matvecs)
     if ((iter & 127) === 0 && Date.now() > cgDeadline) {
-      throw new Error(
-        `PCG solver exceeded ${CG_DEADLINE_MS / 1000}s wall-clock limit at iteration ${iter} ` +
+      // Stop iterating, but keep the work. The post-loop path still measures the
+      // TRUE residual and the condition estimate, so a solve that had already
+      // converged is still reported converged, and one that had not is reported
+      // `converged: false` with its residual — exactly what exhausting `imax`
+      // does. Diagnosing WHY is left to the machinery that can actually tell:
+      // the true-residual check, the Lanczos condition estimate, and
+      // detectUnconstrainedRigidBodyMode. The old throw asserted
+      // "may be ill-conditioned — verify that bolt holes are correctly bolted"
+      // unconditionally, which misdiagnosed a healthy solve on a slow host.
+      timedOut = true;
+      console.warn(
+        `[cg] wall-clock backstop reached at iteration ${iter} after ${cgDeadlineMs / 1000}s ` +
         `(relRes=${relRes.toExponential(2)}, started at ${initialRelRes.toExponential(2)}). ` +
-        `The system may be ill-conditioned — check constraints, mesh quality, and material constants. ` +
-        `Try a coarser mesh or verify that bolt holes are correctly bolted.`
+        `Returning the current iterate; results are provisional.`
       );
+      break;
     }
 
     // Ap = K·p  (written into pre-allocated buffer — no heap allocation per iteration)
@@ -675,6 +720,7 @@ function* pcgSolve(
     trueRelativeResidual:       trueRelRes,
     recurrenceRelativeResidual: recurrenceRelRes,
     preconditionerUsed:         useIC0 ? 'ic0' as const : 'jacobi' as const,
+    timedOut,
     residualCheckpoints:        residualCheckpoints,
     conditionEstimate,
     ritzValueMin:               ritz?.min,
@@ -716,7 +762,7 @@ export function solvePCG(
   prebuiltFactor?: IC0Factor | null,
   opts?: SolvePCGOpts,
 ): CGResult {
-  const gen = pcgSolve(K, f, diagIdx, tol, maxIter, preconditioner, prebuiltFactor ?? null);
+  const gen = pcgSolve(K, f, diagIdx, tol, maxIter, preconditioner, prebuiltFactor ?? null, opts?.deadlineMs);
   let step = gen.next();
   while (!step.done) {
     _applyPCGProgress(step.value, opts);
@@ -743,7 +789,7 @@ export async function solvePCGStreaming(
   prebuiltFactor?: IC0Factor | null,
   opts?: SolvePCGOpts,
 ): Promise<CGResult> {
-  const gen = pcgSolve(K, f, diagIdx, tol, maxIter, preconditioner, prebuiltFactor ?? null);
+  const gen = pcgSolve(K, f, diagIdx, tol, maxIter, preconditioner, prebuiltFactor ?? null, opts?.deadlineMs);
   let step = gen.next();
   while (!step.done) {
     _applyPCGProgress(step.value, opts);

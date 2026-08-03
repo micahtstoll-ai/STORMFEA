@@ -246,13 +246,22 @@ directly so this list cannot drift from the code.
 `budget-overshoot` means the re-mesh could not be brought under the element cap
 within its retry allowance; the loop reports the best solve it already has.
 `resolve-failed` means the refined mesh was built but could not be solved —
-either the hard mesh-quality gate REJECTED it, or the PCG solver hit its
-wall-clock deadline on it. The second case is the common one now that refined
-meshes are clean: an 8x budget on a mid-size part can produce a system larger
-than the solver's time limit allows, and the loop then keeps the best solve it
-already has rather than failing the request. Measured on a 40x20x4 mm bracket
-plate, the first refinement built a clean 51,743-element mesh (239k DOF, zero
-hard-gate violations) and timed out at 90 s while still converging.
+either the hard mesh-quality gate REJECTED it, or the solve did not converge
+(the PCG iteration cap or its wall-clock backstop stopped it short). The second
+case is the common one now that refined meshes are clean: an 8x budget on a
+mid-size part can produce a system larger than the solve budget allows, and the
+loop then keeps the best solve it already has rather than failing the request.
+Measured on a 40x20x4 mm bracket plate, the first refinement built a clean
+51,743-element mesh (239k DOF, zero hard-gate violations) and ran out of solve
+budget while still converging.
+
+The wall clock itself is a hang guard, not a verdict: it does not throw, it
+returns the current iterate with `CGResult.timedOut` set, and it defaults to
+600 s (`CG_DEADLINE_DEFAULT_MS`, per-solve overridable via
+`SolverInput.cgDeadlineMs`). The adaptive loop therefore tests the refined
+solve's `converged` flag directly rather than relying on an exception — same
+degradation, stated explicitly. The bracket-plate measurement above was taken
+against the former 90 s limit.
 
 Note that the loop targets the ZZ energy-norm error. A lower global error does
 not by itself guarantee a changed safety factor or governing failure mode.

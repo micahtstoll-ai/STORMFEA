@@ -66,6 +66,13 @@ export interface SolverInput {
   readonly forces:      readonly PointForce[];
   readonly cgTolerance?:   number;
   readonly cgMaxIter?:     number;
+  /**
+   * Wall-clock backstop for the CG solve, in milliseconds
+   * (default CG_DEADLINE_DEFAULT_MS). A hang guard only — `cgMaxIter` is the
+   * real, machine-independent iteration bound. Raise it for a long offline
+   * study; lower it where a bounded response time matters more than a result.
+   */
+  readonly cgDeadlineMs?:  number;
   readonly preconditioner?: 'jacobi' | 'ic0';
   /**
    * Keep a pristine (pre-Dirichlet-penalty) copy of K's value array in the
@@ -228,18 +235,27 @@ export async function runLinearStaticWithK(input: SolverInput): Promise<StaticSo
   // Use the cooperative (event-loop-yielding) solver on the streaming analysis
   // path so CG residuals stream live and a mid-solve abort is observed promptly
   // (issue #109); the blocking path keeps the tight synchronous solver.
-  const cgOpts = { signal: input.signal, onProgress: input.onCgProgress };
+  const cgOpts = {
+    signal: input.signal,
+    onProgress: input.onCgProgress,
+    ...(input.cgDeadlineMs !== undefined ? { deadlineMs: input.cgDeadlineMs } : {}),
+  };
   const cg = (input.signal || input.onCgProgress)
     ? await solvePCGStreaming(K, f, diagIdx, tol, maxIter, preconditioner, null, cgOpts)
-    : solvePCG(K, f, diagIdx, tol, maxIter, preconditioner);
+    : solvePCG(K, f, diagIdx, tol, maxIter, preconditioner, null, cgOpts);
   _snap("after solvePCG");
 
-  // Warn (but don't throw) if CG didn't converge — let caller inspect result
+  // Warn (but don't throw) if CG didn't converge — let caller inspect result.
+  // Name which bound was hit: running out of ITERATIONS and running out of TIME
+  // have different remedies, and only the first is a property of the problem.
   if (!cg.converged) {
     console.warn(
-      `[STORMFEA] CG did not converge after ${cg.iterations} iterations. ` +
+      `[STORMFEA] CG did not converge after ${cg.iterations} iterations` +
+      `${cg.timedOut ? ` (stopped by the wall-clock backstop, not the iteration cap)` : ``}. ` +
       `Relative residual = ${cg.finalRelativeResidual.toExponential(3)}. ` +
-      `Results may be inaccurate.`
+      `Results may be inaccurate.` +
+      `${cg.timedOut ? ` The solve was still running when time ran out — this is a time-budget ` +
+        `limit, not evidence of an ill-conditioned model. Raise cgDeadlineMs or use a coarser mesh.` : ``}`
     );
   }
 

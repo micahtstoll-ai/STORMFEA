@@ -130,7 +130,9 @@ Before submitting a PR that modifies mesh visualization or stress heatmap:
 ### References
 - Vertex Welding: `client/index.html` lines ~2210–2280 (computeSmoothedStressColors function)
 - Server Spatial Grid: `server/analysis.ts` lines 1712–1776 (nearestNodeStress function)
-- Stress Recovery: `server/solver/stress.ts` lines 376–515 (sprSmoothedStress function)
+- Stress Recovery: `server/solver/stress.ts` lines 934–1015 (sprSmoothedStress function),
+  built on the shared patch helpers at lines 641–933 (`buildSprPatchFit`,
+  `solveSprValueAtNode`, `interpolateMidsideFromCorners`)
 
 ## Two-Region Material Model — Invariants
 

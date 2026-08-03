@@ -21,7 +21,7 @@
  *   TETGEN_BIN=/path/to/tetgen npx vitest run server/tests/unit/adaptive-remesh.test.ts
  */
 import { describe, it, expect, beforeAll } from "vitest";
-import { meshWithTetGen, meshWithTetGenSizing, probeTetGen, type TetGenResult } from "../../tetgen.js";
+import { meshWithTetGen, meshWithTetGenSizing, probeTetGen, weldVertices, type TetGenResult } from "../../tetgen.js";
 import {
   buildSizeField, aggregateElementFieldsToNodes, type SizeField,
 } from "../../solver/adaptiveMesh.js";
@@ -175,24 +175,50 @@ describe.skipIf(!probe.found)("adaptive re-mesh honours the size field (requires
     // have invalidated it, so assert it against actual coordinates instead of
     // trusting the switch set.
     //
-    // Note the map is in WELDED vertex order (the order weldVertices first
-    // encounters each position while walking the triangle soup), not CUBE_VERTS
-    // order — so round-trip through surfaceFaces rather than comparing to
-    // CUBE_VERTS positionally.
+    // The order is WELDED vertex order (the order weldVertices first encounters
+    // each position while walking the triangle soup), not CUBE_VERTS order, so
+    // compare against weldVertices' own output. This used to round-trip through
+    // surfaceFaces instead; that only worked while surfaceFaces carried the
+    // INPUT triangulation, which it deliberately no longer does (it is now the
+    // mesh's true refined boundary, whose indices run past the input vertices).
     const { positions } = cubeTriangleSoup();
+    const weld = weldVertices(positions, CUBE_TRIS.length);
+
     expect(refined.surfaceToNode.length).toBe(CUBE_VERTS.length);
+    expect(weld.vertCount).toBe(CUBE_VERTS.length);
     for (let i = 0; i < refined.surfaceToNode.length; i++) {
       expect(refined.surfaceToNode[i]).toBe(i);   // identity, as the caller assumes
     }
-    // Every corner of every input triangle must land on the mesh node its
-    // surface index points at, with the coordinates it was submitted with.
-    for (let t = 0; t < CUBE_TRIS.length; t++) {
-      for (let k = 0; k < 3; k++) {
-        const n = refined.surfaceToNode[refined.surfaceFaces[t * 3 + k]!]!;
-        expect(refined.mesh.nodes[n * 3]!).toBeCloseTo(positions[t * 9 + k * 3]!, 9);
-        expect(refined.mesh.nodes[n * 3 + 1]!).toBeCloseTo(positions[t * 9 + k * 3 + 1]!, 9);
-        expect(refined.mesh.nodes[n * 3 + 2]!).toBeCloseTo(positions[t * 9 + k * 3 + 2]!, 9);
-      }
+    // Mesh node i must BE welded input vertex i, coordinate for coordinate.
+    for (let i = 0; i < weld.vertCount; i++) {
+      expect(refined.mesh.nodes[i * 3]!).toBeCloseTo(weld.positions[i * 3]!, 9);
+      expect(refined.mesh.nodes[i * 3 + 1]!).toBeCloseTo(weld.positions[i * 3 + 1]!, 9);
+      expect(refined.mesh.nodes[i * 3 + 2]!).toBeCloseTo(weld.positions[i * 3 + 2]!, 9);
+    }
+  });
+
+  it("returns the mesh's true refined boundary as surfaceFaces, not the input triangulation", () => {
+    // The defect this locks: surfaceFaces used to be the welded INPUT
+    // triangulation (12 triangles for this cube) even though TetGen refines the
+    // boundary. Surface-traction assembly spreads each triangle's load over that
+    // triangle's own nodes, so a "distributed" pressure landed as point loads on
+    // the original STL vertices — correct resultant, wrong distribution.
+    const inputTris = CUBE_TRIS.length;
+    const boundaryTris = refined.surfaceFaces.length / 3;
+    expect(boundaryTris).toBeGreaterThan(inputTris);
+
+    // Every returned face must be a real boundary face of the mesh: its three
+    // corners are corner nodes of some element, and no index is out of range.
+    const cornerNodes = new Set<number>();
+    const npe = refined.mesh.nodesPerElem;
+    for (let e = 0; e < refined.mesh.elementCount; e++) {
+      for (let k = 0; k < 4; k++) cornerNodes.add(refined.mesh.elements[e * npe + k]!);
+    }
+    for (let i = 0; i < refined.surfaceFaces.length; i++) {
+      const n = refined.surfaceFaces[i]!;
+      expect(n).toBeGreaterThanOrEqual(0);
+      expect(n).toBeLessThan(refined.mesh.nodeCount);
+      expect(cornerNodes.has(n)).toBe(true);
     }
   });
 });

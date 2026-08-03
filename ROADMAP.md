@@ -468,11 +468,20 @@ the solver-accuracy campaign; adaptive mesh refinement (#149) shipped in PR #246
   monotonically under refinement — measured 0.894 → 0.262 → 0.279, with the loop
   stopping on `stalled` because the third solve was WORSE. Peak von Mises is
   likewise unsettled: adaptive resolves 4.91 MPa where uniform reads 3.97, a 24%
-  spread against an 8% spread in the error being optimised. This is plausibly a
-  genuine singularity at the bolt-constrained bore rather than an estimator
-  defect, but it needs a benchmark part with a smooth stress concentration to
-  tell the two apart. Until then the 3% target and 8× cap are defaults chosen by
-  argument, not by measurement. Note the adaptive-vs-uniform comparison itself is
+  spread against an 8% spread in the error being optimised. The "singular bore or
+  estimator defect?" question is now PARTLY answered, and it was at least partly
+  the estimator: on a deliberately non-singular part (smooth cylinder,
+  distributed constraint and traction, no hole, no re-entrant corner) the C3D10
+  estimate read 23.2% / 6.9% / 80.6% across tiers — worst on the FINEST mesh —
+  while C3D4 on the identical geometry fell monotonically. Cause was SPR solving
+  rank-deficient patches (every C3D10 midside node's patch is the ring of tets
+  sharing one edge) past a rank guard written as an absolute pivot threshold on a
+  matrix in raw global mm coordinates, which could never fire. Fixed; that sweep
+  now reads 5.4% / 4.0% / 3.4%. What this does NOT establish is that the tube's
+  own numbers were the same defect — the 0.894 → 0.262 → 0.279 sequence above
+  predates the fix and should be re-measured before the bore is either blamed or
+  cleared. Until then the 3% target and 8× cap are defaults chosen by argument,
+  not by measurement. Note the adaptive-vs-uniform comparison itself is
   a ONE-PART result so far: the plate below could not complete a refined solve
   for an unrelated reason (the solver wall clock), so it neither confirms nor
   refutes the tube's margin. The comparison's own premise is now bounded rather
@@ -494,8 +503,18 @@ the solver-accuracy campaign; adaptive mesh refinement (#149) shipped in PR #246
   allowed to solve. Options are to derive the element budget from a DOF/time
   model rather than a fixed multiple, to raise `CG_DEADLINE_MS`
   (`server/solver/cg.ts`) for the adaptive path specifically, or to treat a
-  deadline miss as a budget signal and retry smaller. Measured on 4 cores; a
-  faster host moves the threshold but does not remove it
+  deadline miss as a budget signal and retry smaller. The second of those is now
+  DONE, and more besides: the wall clock is a hang guard rather than a verdict —
+  it no longer throws (the solve returns its current iterate with
+  `CGResult.timedOut` set, exactly as exhausting the iteration cap already did),
+  the default is 600 s via `CG_DEADLINE_DEFAULT_MS`, and it is per-solve
+  configurable through `SolverInput.cgDeadlineMs`. A 90 s limit sat INSIDE the
+  range a legitimate large solve needs, so the same mesh and inputs passed on an
+  idle host and failed on a loaded one; the fine tier of the smooth-cylinder
+  benchmark genuinely needs 181 s. That removes the hard failure but NOT the
+  underlying point: the element budget and the time budget are still set
+  independently, so deriving one from the other remains open. Measured on 4
+  cores; a faster host moves the threshold but does not remove it
 
 - **Pin `VOLUME_CAP_SCALE` with more than one geometry** — the scale converting a
   target edge length to a TetGen `-a` volume cap (13, `adaptiveMesh.ts`) was
@@ -505,6 +524,23 @@ the solver-accuracy campaign; adaptive mesh refinement (#149) shipped in PR #246
   measures and corrects the residual per-run, so a wrong seed costs a re-mesh
   rather than correctness — but a second and third geometry would say whether 13
   is a constant or a coincidence
+- **Gauss-point SPR sampling for C3D10** (`docs/spr-gauss-point-handoff.md`) —
+  `recoverElementStress` evaluates C3D10 stress at all four Gauss points and then
+  AVERAGES them into one value per element, so the recovered field `σ*` is built
+  from a single sample per element while the estimator compares it against `σ_h`
+  recomputed per Gauss point. The two sides of `η` are sampled asymmetrically, so
+  the estimate carries an O(h) floor unrelated to the true error: on a
+  manufactured quadratic field that C3D10 solves EXACTLY (‖u_h − u_exact‖ ~1e-13)
+  it still reports 1.46% / 0.53% / 0.26% at 4³/6³/8³, making the estimator not
+  asymptotically exact on C3D10. Conservative (it over-reports), and ~3× smaller
+  since the rank-deficient-patch fix, so this is an accuracy limit rather than a
+  defect — but the adaptive loop's default target is 3%, so at the coarse tier up
+  to half the target can be artifact. The handoff covers the fix (keep the
+  per-point stresses, raise the recovery basis to the element's own quadratic
+  order, re-measure whether midside interpolation is still needed) and the one
+  trap that matters: group 30's manufactured solution is quadratic, which C3D10
+  reproduces exactly, so it CANNOT anchor a C3D10 effectivity index — that needs
+  a cubic-or-higher exact solution
 - **Anisotropic (honeycomb) DFA extension** — the shipped core yield criterion
   is the isotropic-foam form. Extending pressure sensitivity per-axis would
   match the per-axis stiffness and strength laws the core already uses;

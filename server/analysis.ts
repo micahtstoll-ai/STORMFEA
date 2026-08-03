@@ -6447,6 +6447,22 @@ export async function runAdaptiveAnalysis(
       stopReason = "resolve-failed";
       break;
     }
+    // A refined solve that did not converge must never become the reported
+    // result: its stress field is unresolved, and the ZZ error estimate computed
+    // from it is not meaningful — so comparing its `globalRelativeError` against
+    // bestGRE below could adopt it on the strength of a number that means
+    // nothing. This used to be enforced indirectly, by the CG wall clock
+    // THROWING into the catch above. That clock is now a hang guard which
+    // returns its current iterate with converged: false instead (the iteration
+    // cap always behaved that way), so the check has to be explicit. Same
+    // outcome as before — degrade to the best solve so far and say why.
+    if (!next.converged) {
+      console.warn(
+        `[analysis] adaptive re-solve did not converge ` +
+        `(${next.elementCount} elements, ${next.cgIterations} CG iterations); keeping best-so-far`);
+      stopReason = "resolve-failed";
+      break;
+    }
     iterations++;
     const nextGRE = next.globalRelativeError ?? 0;
     history.push({ globalRelativeError: nextGRE, elementCount: next.elementCount });
