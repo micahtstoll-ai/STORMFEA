@@ -470,14 +470,36 @@ the solver-accuracy campaign; adaptive mesh refinement (#149) shipped in PR #246
   TetGen binary — that the field genuinely refines the requested region), but
   nothing measures what adaptivity BUYS over simply selecting the fine tier. The
   first attempt at this measurement was inconclusive for the reason above (no
-  refined solve completed) and additionally surfaced a separate question worth
-  its own investigation: on that tube the ZZ global relative error read 89%
-  (coarse), 213% (standard), 20% (fine) — non-monotone and implausibly large,
-  with peak stress unsettled across tiers (4.44 / 3.91 / 5.50 MPa). That is
-  plausibly a singular load/constraint case rather than an estimator defect, but
-  it needs a non-singular benchmark part to tell the two apart. Until then the 3%
-  default target and 8× growth cap remain unvalidated defaults, and a UI toggle
-  would ship an asserted rather than demonstrated benefit
+  refined solve completed). The separate question it surfaced — the ZZ global
+  relative error reading 89% / 213% / 20% across tiers on that tube — is now
+  ANSWERED and was an estimator defect, not the suspected singular test case: on
+  a deliberately non-singular part (smooth cylinder, distributed constraint and
+  traction, no hole, no re-entrant corner) the C3D10 estimate still read
+  23.2% / 6.9% / 80.6%, worst on the FINEST mesh, while C3D4 on the identical
+  geometry decreased monotonically. Cause was SPR solving rank-deficient patches
+  — every C3D10 midside node's patch is the ring of tets sharing one edge — past
+  a rank guard written as an absolute pivot threshold on a matrix in raw global
+  mm coordinates, which could never fire. Fixed; the same sweep now reads
+  5.4% / 4.0% / 3.4%. The 3% default target and 8× growth cap remain unvalidated
+  defaults, and a UI toggle would still ship an asserted rather than
+  demonstrated benefit
+- **Gauss-point SPR sampling for C3D10** (`docs/spr-gauss-point-handoff.md`) —
+  `recoverElementStress` evaluates C3D10 stress at all four Gauss points and then
+  AVERAGES them into one value per element, so the recovered field `σ*` is built
+  from a single sample per element while the estimator compares it against `σ_h`
+  recomputed per Gauss point. The two sides of `η` are sampled asymmetrically, so
+  the estimate carries an O(h) floor unrelated to the true error: on a
+  manufactured quadratic field that C3D10 solves EXACTLY (‖u_h − u_exact‖ ~1e-13)
+  it still reports 1.46% / 0.53% / 0.26% at 4³/6³/8³, making the estimator not
+  asymptotically exact on C3D10. Conservative (it over-reports), and ~3× smaller
+  since the rank-deficient-patch fix, so this is an accuracy limit rather than a
+  defect — but the adaptive loop's default target is 3%, so at the coarse tier up
+  to half the target can be artifact. The handoff covers the fix (keep the
+  per-point stresses, raise the recovery basis to the element's own quadratic
+  order, re-measure whether midside interpolation is still needed) and the one
+  trap that matters: group 30's manufactured solution is quadratic, which C3D10
+  reproduces exactly, so it CANNOT anchor a C3D10 effectivity index — that needs
+  a cubic-or-higher exact solution
 - **Anisotropic (honeycomb) DFA extension** — the shipped core yield criterion
   is the isotropic-foam form. Extending pressure sensitivity per-axis would
   match the per-axis stiffness and strength laws the core already uses;
