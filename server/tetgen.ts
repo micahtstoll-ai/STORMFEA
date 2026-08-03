@@ -42,6 +42,7 @@ import * as path                              from "path";
 import { fileURLToPath as ftu }               from "url";
 import type { TetMesh }                       from "./solver/types.js";
 import { verifyC3D10MidsideOrdering }         from "./c3d10_ordering.js";
+import { extractSurfaceFaces }                from "./solver/meshgen.js";
 import {
   sizeFieldToMtr, meshToNodeFile, meshToEleFile, type SizeField,
 } from "./solver/adaptiveMesh.js";
@@ -300,13 +301,34 @@ export interface TetGenResult {
   /** surfaceToNode[i] = index of STL surface vertex i in mesh.nodes */
   surfaceToNode: Int32Array;
   /**
-   * Surface triangles as mesh-node triples [a0,b0,c0, a1,b1,c1, …]. These are
-   * the welded boundary triangles; boundary vertices are the first N mesh nodes
-   * in order (see surfaceToNode), so these indices point directly into
-   * mesh.nodes. Used to apply consistent surface tractions (pressure loads).
+   * The mesh's ACTUAL boundary, as mesh-node triples [a0,b0,c0, a1,b1,c1, …],
+   * outward-oriented (see extractSurfaceFaces). Consumed by surface-traction
+   * assembly, pressure-region selection, the two-region distance field and the
+   * wall-perimeter estimate — all of which need the boundary the SOLVER has.
+   *
+   * This is NOT the input STL triangulation. TetGen runs without `-Y`, so it is
+   * free to add Steiner points on the boundary and does: a 192-triangle input
+   * surface comes back as ~6 500 boundary faces on an ordinary part. Returning
+   * the input triangulation here (as this once did) left a "distributed"
+   * pressure lumped onto the original STL vertices, since consistent-traction
+   * assembly spreads each triangle's load over that triangle's own nodes and
+   * knows nothing of the refined boundary nodes in between. The resultant came
+   * out right, so the error was invisible in any force check — but the load
+   * arrived as a grid of point loads, seeding artificial stress concentrations
+   * exactly where a pressure load is supposed to be smooth. It also silently
+   * disabled the C3D10 (T6) consistent rule in assembleSurfaceTraction, whose
+   * mid-side lookup can only succeed for triangles that are real element faces.
+   *
+   * If you need the input triangulation instead, weld it: `weldVertices` is
+   * exported, and its vertices are the first N mesh nodes in order.
    */
   surfaceFaces: Int32Array;
-  /** Number of Steiner points TetGen added (should be 0 with -Y) */
+  /**
+   * Number of nodes TetGen added beyond the welded input vertices (Steiner
+   * points). Non-zero in normal operation: `-Y` is deliberately NOT used, since
+   * freezing the input surface also blocks boundary refinement (see the
+   * switch-set comment in meshWithTetGenSizing).
+   */
   steinerCount: number;
 }
 
@@ -432,16 +454,12 @@ export async function meshWithTetGen(
 
   console.log(`[tetgen] mesh: ${nodeCount} nodes, ${elementCount} elements (${nodesPerElem}-node)`);
 
+  const mesh: TetMesh = { nodes, elements, nodeCount, elementCount, nodesPerElem };
+
   return {
-    mesh: {
-      nodes,
-      elements,
-      nodeCount,
-      elementCount,
-      nodesPerElem,
-    },
+    mesh,
     surfaceToNode,
-    surfaceFaces: weld.faces,
+    surfaceFaces: extractSurfaceFaces(mesh),
     steinerCount: nodeCount - weld.vertCount,
   };
 }
@@ -683,10 +701,12 @@ export async function meshWithTetGenSizing(
 
   console.log(`[tetgen] adaptive mesh: ${nodeCount} nodes, ${elementCount} elements (${nodesPerElem}-node)`);
 
+  const mesh: TetMesh = { nodes, elements, nodeCount, elementCount, nodesPerElem };
+
   return {
-    mesh: { nodes, elements, nodeCount, elementCount, nodesPerElem },
+    mesh,
     surfaceToNode,
-    surfaceFaces: weld.faces,
+    surfaceFaces: extractSurfaceFaces(mesh),
     steinerCount: nodeCount - weld.vertCount,
   };
 }

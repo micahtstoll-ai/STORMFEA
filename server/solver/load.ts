@@ -314,12 +314,24 @@ export function selectPressureRegion(
     const ax = nodes[a*3]??0, ay = nodes[a*3+1]??0, az = nodes[a*3+2]??0;
     const bx = nodes[b*3]??0, by = nodes[b*3+1]??0, bz = nodes[b*3+2]??0;
     const cx = nodes[c*3]??0, cy = nodes[c*3+1]??0, cz = nodes[c*3+2]??0;
+    const nx = (by-ay)*(cz-az)-(bz-az)*(cy-ay);
+    const ny = (bz-az)*(cx-ax)-(bx-ax)*(cz-az);
+    const nz = (bx-ax)*(cy-ay)-(by-ay)*(cx-ax);
+    const facing = (nx*ux + ny*uy + nz*uz) > 1e-9;
     if (region === "facing") {
-      const nx = (by-ay)*(cz-az)-(bz-az)*(cy-ay);
-      const ny = (bz-az)*(cx-ax)-(bx-ax)*(cz-az);
-      const nz = (bx-ax)*(cy-ay)-(by-ay)*(cx-ax);
-      out[t] = (nx*ux + ny*uy + nz*uz) > 1e-9;
+      out[t] = facing;
     } else { // face
+      // BOTH tests, not just the proximity band. The band alone is a slab of
+      // space, so on a fine mesh it wraps around the rim onto the ADJACENT,
+      // perpendicular surface: on a Ø20 cylinder loaded on its top face it
+      // picked up 48 side-wall triangles (39.2 mm² on top of the true 313.3 mm²
+      // disk), inflating the pressure resultant by 12%. A side wall is not part
+      // of the face being loaded, and its own normal says so. Requiring the
+      // triangle to face the load direction makes the selection depend on the
+      // GEOMETRY rather than on how finely it happens to be meshed — the coarse
+      // input triangulation only escaped this because its side facets were tall
+      // enough to fall outside the band.
+      if (!facing) continue;
       const proj = ((ax+bx+cx)/3)*ux + ((ay+by+cy)/3)*uy + ((az+bz+cz)/3)*uz;
       if (proj > bestProj) { bestProj = proj; bestTri = t; }
       out[t] = (maxProj - proj) <= band;
