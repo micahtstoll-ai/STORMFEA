@@ -196,10 +196,21 @@ install hint), `500` solver failure, timeout after 120 s.
 **Adaptive refinement** (`analysis.adaptiveRefinement: true`, issue #149). Runs
 solve, ZZ error estimate, regional size field, TetGen re-mesh, re-solve — and
 reports the iteration with the LOWEST global error, not the last one. Defaults:
-3% target global relative error, at most 4 solves, hard cap 8× the base element
+3% target global relative error, at most 5 solves, hard cap 8x the base element
 count, and it stops early when a step improves the error by less than 5%. It only
-ever refines (never coarsens), and it keeps a 2 mm ball around a detected
-singularity coarse, because refining a true singularity does not converge.
+ever refines (never coarsens), it holds the size field to a bounded gradation
+(target size grows by at most ~50% per element away from a refined region, so
+refined and unrefined regions are joined by a graded band rather than a step),
+and it keeps a 2 mm ball around a detected singularity coarse, because refining a
+true singularity does not converge.
+
+The element cap is enforced against the mesh the mesher ACTUALLY emitted, before
+that mesh is solved. The internal element-count prediction is first-order and can
+under-predict; when the emitted mesh overshoots, the loop re-meshes with a
+budget tightened by the measured error, and if that still overshoots it stops on
+`budget-overshoot` having spent no solve on the over-budget mesh. `elementBudget`
+on the response reports the ceiling, and every entry in `history` is at or under
+it.
 
 Default `false` is bit-identical to the single-solve path. The loop needs the
 STL/TetGen path and a TetGen binary; on the STEP/Gmsh path, on the box-mesh
@@ -214,6 +225,7 @@ otherwise an object (a degraded run still reports, with `degradedToTier: true`):
   "stopReason": "target-error-reached",
   "initialGlobalError": 0.081, "finalGlobalError": 0.026,
   "initialElementCount": 1240, "finalElementCount": 6800,
+  "elementBudget": 9920,
   "history": [
     { "globalRelativeError": 0.081, "elementCount": 1240 },
     { "globalRelativeError": 0.042, "elementCount": 3100 },
@@ -225,19 +237,26 @@ otherwise an object (a degraded run still reports, with `degradedToTier: true`):
 ```
 
 `stopReason` is one of `target-error-reached`, `max-iterations`,
-`element-growth-cap`, `no-refinement-requested`, `stalled` (a step improved the
-error by less than 5%, or the error grew), `remesh-failed`, `resolve-failed`,
-`no-error-field`, or `degraded-to-tier` — the `StopReason` union in
-`server/solver/adaptiveMesh.ts`, which the response type references directly so
-this list cannot drift from the code.
+`element-growth-cap`, `budget-overshoot`, `no-refinement-requested`, `stalled` (a
+step improved the error by less than 5%, or the error grew), `remesh-failed`,
+`resolve-failed`, `no-error-field`, or `degraded-to-tier` — the `StopReason`
+union in `server/solver/adaptiveMesh.ts`, which the response type references
+directly so this list cannot drift from the code.
 
-`resolve-failed` is worth calling out: TetGen can RETURN a refined mesh that the
-hard mesh-quality gate then REJECTS, because an aggressive size field around a
-stress concentration can leave a few sliver elements. The loop keeps the best
-solve it already has and stops, rather than failing the request.
+`budget-overshoot` means the re-mesh could not be brought under the element cap
+within its retry allowance; the loop reports the best solve it already has.
+`resolve-failed` means the mesher RETURNED a refined mesh that the hard
+mesh-quality gate then REJECTED — again, the loop keeps the best solve it has
+rather than failing the request.
 
 Note that the loop targets the ZZ energy-norm error. A lower global error does
 not by itself guarantee a changed safety factor or governing failure mode.
+Measured on a Ø5-bore tube (`server/tests/unit/adaptive-benchmark.test.ts`),
+adaptive reached a 0.262 global error on 40,534 elements where a uniform mesh of
+54,373 elements reached only 0.337 — but the two disagreed on peak von Mises by
+24% (4.91 vs 3.97 MPa), far more than they disagreed on the error they were
+optimising. Adaptivity buys error per element; it does not by itself settle the
+peak stress.
 
 ---
 

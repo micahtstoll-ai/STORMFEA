@@ -28,6 +28,9 @@
  *
  * Guards against runaway refinement:
  *   - per-node minFactor floor (a hard cap on how much smaller one step goes);
+ *   - a BOUNDED GRADATION (smoothSizeFieldGradation) so the target size varies
+ *     Lipschitz-continuously between refined and unrefined regions instead of
+ *     stepping discontinuously at the refinement boundary;
  *   - a global element-count budget (predictRefinedElementCount +
  *     relaxSizeFieldToBudget inflate all targets uniformly when the requested
  *     field would blow the budget);
@@ -38,6 +41,11 @@
  * Loop control (shouldStopRefinement) stops on: target global error reached,
  * iteration cap, element-growth cap, a stalled improvement, or when the size
  * field requests no refinement at all.
+ *
+ * The budget guard is a PREDICTION, and predictRefinedElementCount is explicitly
+ * first-order. The driver must therefore also check the count TetGen actually
+ * emitted against the same budget before committing to a solve — see
+ * `judgeRemeshAgainstBudget` and the `budget-overshoot` stop reason.
  */
 
 import type { TetMesh } from "./types.js";
@@ -268,6 +276,156 @@ export function buildSizeField(
   };
 }
 
+// ─── Size-field gradation (Lipschitz smoothing) ──────────────────────────────
+/**
+ * Unique corner-to-corner edges of the tet mesh, with their lengths. Only the
+ * four CORNER nodes carry geometry (a C3D10's midside nodes sit on these very
+ * edges), which matches every other consumer in this file — aggregation,
+ * prediction, and the background `.ele` file TetGen interpolates the metric
+ * over are all corner-only.
+ */
+export interface TetEdgeList {
+  readonly a: Int32Array;
+  readonly b: Int32Array;
+  /** Euclidean length of edge k, in mm. */
+  readonly len: Float64Array;
+}
+
+export function buildTetEdgeList(mesh: TetMesh): TetEdgeList {
+  const npe = mesh.nodesPerElem ?? 4;
+  const seen = new Set<number>();
+  const ea: number[] = [], eb: number[] = [], el: number[] = [];
+  const n = mesh.nodeCount;
+  // The 6 corner-pairs of a tet.
+  const PAIRS: ReadonlyArray<readonly [number, number]> = [
+    [0, 1], [0, 2], [0, 3], [1, 2], [1, 3], [2, 3],
+  ];
+  for (let e = 0; e < mesh.elementCount; e++) {
+    const base = e * npe;
+    for (const [p, q] of PAIRS) {
+      const i0 = mesh.elements[base + p] ?? 0;
+      const i1 = mesh.elements[base + q] ?? 0;
+      if (i0 === i1) continue;
+      const lo = i0 < i1 ? i0 : i1;
+      const hi = i0 < i1 ? i1 : i0;
+      const key = lo * n + hi;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const dx = (mesh.nodes[hi * 3] ?? 0) - (mesh.nodes[lo * 3] ?? 0);
+      const dy = (mesh.nodes[hi * 3 + 1] ?? 0) - (mesh.nodes[lo * 3 + 1] ?? 0);
+      const dz = (mesh.nodes[hi * 3 + 2] ?? 0) - (mesh.nodes[lo * 3 + 2] ?? 0);
+      ea.push(lo); eb.push(hi); el.push(Math.sqrt(dx * dx + dy * dy + dz * dz));
+    }
+  }
+  return { a: Int32Array.from(ea), b: Int32Array.from(eb), len: Float64Array.from(el) };
+}
+
+/** Max relaxation sweeps for the gradation solve; convergence is monotone. */
+const GRADATION_MAX_SWEEPS = 200;
+
+/**
+ * Bound the GRADATION of a size field — the third defect behind the sliver
+ * failure. `buildSizeField` can drop the target size by minSizeFactor at one
+ * node while its immediate neighbour keeps the current (coarse) size, so the
+ * mesher is asked to absorb the whole transition across a single edge. Mesh
+ * generators want a bounded size-transition ratio; nothing previously imposed
+ * one, and TetGen resolved the discontinuity with slivers at the refinement
+ * boundary (13 of them, normalized Jacobian down to 0.0037, on the Ø5-bore tube).
+ *
+ * The classic remedy (Borouchaki, Hecht & Frey 1998) is to make the size field
+ * Lipschitz-continuous: for every mesh edge (i,j) of length d,
+ *
+ *     h_i <= h_j + (gradation - 1) · d
+ *
+ * so the target size can grow by at most a factor ≈ `gradation` per element
+ * step away from a refined region. Enforced by repeated relaxation sweeps
+ * (forward + backward for faster propagation) until no value changes.
+ *
+ * Only nodes that are actually BEING REFINED (target below their own current
+ * size) act as constraint sources. This is what keeps the operator a no-op on a
+ * field that requests no refinement: an already-adaptively-refined mesh has a
+ * genuine size gradient of its own, and re-imposing a Lipschitz bound on those
+ * CURRENT sizes would demand refinement that has nothing to do with the error
+ * estimate — enough of it, measured, to consume the whole remaining element
+ * budget and stall the loop a step early. A node lowered by the constraint
+ * becomes a source itself, so the graded band still propagates outward from the
+ * refined region with the right decay.
+ *
+ * The operator only ever LOWERS targets — it spreads refinement outward into
+ * the transition band rather than pulling any region coarser — and never below
+ * `field.minTargetSize`, the smallest size the input field already requested.
+ * Those bounds are what keep it composable with the budget guard: smoothing
+ * costs elements, so `relaxSizeFieldToBudget` evaluates its budget prediction on
+ * the SMOOTHED field, never on the raw one.
+ *
+ * `gradation <= 1` is degenerate (it would force a globally uniform field) and
+ * is treated as "no gradation limit", returning the field untouched.
+ */
+export function smoothSizeFieldGradation(
+  mesh: TetMesh,
+  field: SizeField,
+  gradation: number,
+): SizeField {
+  return smoothWithEdges(field, buildTetEdgeList(mesh), gradation);
+}
+
+function smoothWithEdges(field: SizeField, edges: TetEdgeList, gradation: number): SizeField {
+  if (!Number.isFinite(gradation) || gradation <= 1) return field;
+  const beta = gradation - 1;
+  const m = edges.a.length;
+  const h = Float64Array.from(field.targetSize);
+  // Never smooth below the finest size the input field already asked for: the
+  // gradation limit must not defeat absMinSize or the minSizeFactor floor.
+  const floor = field.minTargetSize > 0 ? field.minTargetSize : 0;
+
+  // A node is a constraint SOURCE only while it is itself being refined.
+  const refining = (n: number): boolean => h[n]! < field.currentSize[n]! * (1 - 1e-12);
+
+  for (let sweep = 0; sweep < GRADATION_MAX_SWEEPS; sweep++) {
+    let changed = false;
+    // Forward then backward: a one-directional sweep propagates a constraint
+    // only along increasing edge index, so alternating halves the sweep count.
+    for (let pass = 0; pass < 2; pass++) {
+      for (let k = 0; k < m; k++) {
+        const e = pass === 0 ? k : m - 1 - k;
+        const i = edges.a[e]!, j = edges.b[e]!, d = edges.len[e]!;
+        const hi = h[i]!, hj = h[j]!;
+        if (hi > hj + beta * d && refining(j)) {
+          const nv = Math.max(hj + beta * d, floor);
+          if (nv < hi - 1e-12) { h[i] = nv; changed = true; }
+        } else if (hj > hi + beta * d && refining(i)) {
+          const nv = Math.max(hi + beta * d, floor);
+          if (nv < hj - 1e-12) { h[j] = nv; changed = true; }
+        }
+      }
+    }
+    if (!changed) break;
+  }
+
+  return withTargets(field, h);
+}
+
+/** Rebuild a SizeField around a new target array, recomputing its statistics. */
+function withTargets(field: SizeField, targetSize: Float64Array): SizeField {
+  let refinedNodeCount = 0;
+  let minTargetSize = Infinity, maxTargetSize = 0;
+  for (let i = 0; i < targetSize.length; i++) {
+    const ts = targetSize[i]!;
+    if (ts < field.currentSize[i]! * 0.99) refinedNodeCount++;
+    if (ts < minTargetSize) minTargetSize = ts;
+    if (ts > maxTargetSize) maxTargetSize = ts;
+  }
+  if (!Number.isFinite(minTargetSize)) minTargetSize = 0;
+  return {
+    targetSize,
+    currentSize: field.currentSize,
+    refinedNodeCount,
+    excludedNodeCount: field.excludedNodeCount,
+    minTargetSize,
+    maxTargetSize,
+  };
+}
+
 // ─── Element-count prediction & budget guard ─────────────────────────────────
 /**
  * Estimate the element count a size field would produce. Refining a region
@@ -276,19 +434,33 @@ export function buildSizeField(
  * finest target among the element's corner nodes) gives a first-order estimate
  * of the resulting element count — enough to enforce a growth budget BEFORE
  * spending a re-mesh.
+ *
+ * FIRST-ORDER, and knowingly so: it takes the AVERAGE current size over an
+ * element's four corners but the FINEST target among them, ignores what the
+ * mesher does to satisfy the transition between the two, and assumes perfect
+ * (h_cur/h_tgt)³ density scaling. It under-predicted by ~8% on the Ø5-bore tube.
+ * Callers must therefore treat it as an estimate and check the count TetGen
+ * actually emitted (`budgetOvershootFactor`) rather than trusting this number.
  */
 export function predictRefinedElementCount(mesh: TetMesh, field: SizeField): number {
   const npe = mesh.nodesPerElem ?? 4;
   let predicted = 0;
   for (let e = 0; e < mesh.elementCount; e++) {
     const base = e * npe;
-    let hCur = 0, hTgt = Infinity;
+    let hCur = Infinity, hTgt = Infinity;
     for (let k = 0; k < 4; k++) {
       const n = mesh.elements[base + k] ?? 0;
-      hCur += field.currentSize[n]!;
-      if (field.targetSize[n]! < hTgt) hTgt = field.targetSize[n]!;
+      // MIN on both sides, not mean-current vs min-target. Mixing the two makes
+      // the ratio exceed 1 even for a field that requests NO refinement, so the
+      // prediction had a floor above the current element count — which in turn
+      // let the budget bisection bottom out over budget and spin the driver's
+      // re-mesh retries on an identical field. Taking the same statistic on both
+      // sides makes an unrefined field predict exactly mesh.elementCount, which
+      // is the calibration the whole guard rests on.
+      if (field.currentSize[n]! < hCur) hCur = field.currentSize[n]!;
+      if (field.targetSize[n]!  < hTgt) hTgt = field.targetSize[n]!;
     }
-    hCur /= 4;
+    if (!Number.isFinite(hCur) || hCur <= 0) { predicted += 1; continue; }
     if (hTgt <= 0 || !Number.isFinite(hTgt)) hTgt = hCur;
     const ratio = hCur / hTgt;
     predicted += ratio > 1 ? ratio * ratio * ratio : 1;
@@ -302,14 +474,38 @@ export function predictRefinedElementCount(mesh: TetMesh, field: SizeField): num
  * prediction fits. Returns a NEW size field; leaves already-in-budget fields
  * unchanged. This is the runaway-refinement guard: we still refine the highest-
  * error regions, just less aggressively, rather than blowing up the DOF count.
+ *
+ * `gradation`, when given (> 1), makes every trial field Lipschitz-smoothed
+ * before its count is predicted, so the budget accounts for the elements the
+ * transition band costs. Smoothing is monotone in β — a smaller β means larger
+ * targets means a smaller smoothed field means fewer predicted elements — so
+ * the bisection stays valid. Omitting it reproduces the un-graded behaviour
+ * exactly.
  */
 export function relaxSizeFieldToBudget(
   mesh: TetMesh,
   field: SizeField,
   elementBudget: number,
+  gradation?: number,
 ): SizeField {
+  const graded = gradation !== undefined && gradation > 1
+    ? { edges: buildTetEdgeList(mesh), gradation }
+    : null;
+  const shape = (beta: number): SizeField => {
+    const scaled = applyShrinkExponent(field, beta);
+    return graded ? smoothWithEdges(scaled, graded.edges, graded.gradation) : scaled;
+  };
+
   const predicted = predictRefinedElementCount(mesh, field);
   if (predicted <= elementBudget || elementBudget <= 0) return field;
+
+  // β=0 is the no-refinement field. If even that cannot fit, the budget is
+  // already spent and there is nothing honest to hand the mesher — return the
+  // unrefined field (never the smoothed one, which would still request work) so
+  // the caller sees refinedNodeCount === 0 and stops, instead of re-meshing to
+  // no purpose.
+  const unrefined = applyShrinkExponent(field, 0);
+  if (predictRefinedElementCount(mesh, shape(0)) > elementBudget) return unrefined;
 
   // Binary-search an exponent β in (0,1] applied to each shrink ratio:
   //   h_new' = h_cur · (h_tgt / h_cur)^β
@@ -318,36 +514,94 @@ export function relaxSizeFieldToBudget(
   let lo = 0, hi = 1, best = 0;
   for (let iter = 0; iter < 40; iter++) {
     const beta = (lo + hi) / 2;
-    const trial = applyShrinkExponent(field, beta);
-    const pred = predictRefinedElementCount(mesh, trial);
+    const pred = predictRefinedElementCount(mesh, shape(beta));
     if (pred <= elementBudget) { best = beta; lo = beta; } else { hi = beta; }
   }
-  return applyShrinkExponent(field, best);
+  return best > 0 ? shape(best) : unrefined;
+}
+
+export interface RemeshBudgetVerdict {
+  /** True if the emitted mesh fits the budget and may be solved. */
+  readonly accepted: boolean;
+  /**
+   * Predictor calibration to carry into the next attempt: 1 = trust
+   * `predictRefinedElementCount`, >1 = it under-predicts the GROWTH by that
+   * factor. Feed it to `effectiveElementBudget`. Never below 1 — the guard
+   * corrects for under-prediction, and treating an over-prediction as licence
+   * to refine harder would defeat the cap it exists to enforce.
+   */
+  readonly sizingBias: number;
+}
+
+/**
+ * The reality check the budget guard lacked. `relaxSizeFieldToBudget` only ever
+ * compared a PREDICTION to the budget, and `predictRefinedElementCount` is
+ * first-order, so when it under-predicted the budget was silently exceeded —
+ * and because `shouldStopRefinement` sees only the iteration just COMPLETED,
+ * the over-budget mesh had already cost a full solve by the time anything
+ * noticed. On the Ø5-bore tube that was 115,544 elements against a 106,720
+ * budget (8.7× the 13,340-element base, versus the documented 8× cap), 13
+ * slivers, and a rejected solve.
+ *
+ * Given what TetGen ACTUALLY emitted, decide whether to admit the mesh and how
+ * much to distrust the predictor next time.
+ *
+ * The bias is measured on the GROWTH above the current mesh, not on the totals:
+ * `(actual − current) / (predicted − current)`. A field requesting no refinement
+ * reproduces the current mesh exactly no matter how wrong the predictor is, so
+ * the error lives entirely in the increment. Calibrating on totals instead makes
+ * the correction blow up as the mesh grows — measured on the tube, a totals bias
+ * of 1.75 after the first refinement drove the next iteration's effective budget
+ * BELOW the current element count, which reads as "no refinement is possible"
+ * and stalled the loop a full step early.
+ */
+export function judgeRemeshAgainstBudget(
+  actualElementCount: number,
+  predictedElementCount: number,
+  elementBudget: number,
+  currentElementCount: number,
+): RemeshBudgetVerdict {
+  const predictedGrowth = predictedElementCount - currentElementCount;
+  const actualGrowth    = actualElementCount - currentElementCount;
+  const ratio = predictedGrowth > 0 && Number.isFinite(actualGrowth)
+    ? actualGrowth / predictedGrowth
+    : 1;
+  return {
+    accepted: elementBudget <= 0 || actualElementCount <= elementBudget,
+    sizingBias: Math.max(ratio, 1),
+  };
+}
+
+/**
+ * The budget to hand `relaxSizeFieldToBudget` so that the mesh TetGen actually
+ * emits lands under `elementBudget`, given a measured `sizingBias`.
+ *
+ * Inverse of the growth model in `judgeRemeshAgainstBudget`: if the mesher
+ * delivers `bias ×` the predicted growth, then to end up with at most
+ * `elementBudget` elements we may only PREDICT a growth of
+ * `(elementBudget − current) / bias`. Never returns less than the current count
+ * — an effective budget below it would ask for negative refinement.
+ */
+export function effectiveElementBudget(
+  elementBudget: number,
+  currentElementCount: number,
+  sizingBias: number,
+): number {
+  if (elementBudget <= 0) return elementBudget;
+  const bias = Number.isFinite(sizingBias) && sizingBias > 1 ? sizingBias : 1;
+  const room = Math.max(0, elementBudget - currentElementCount);
+  return Math.floor(currentElementCount + room / bias);
 }
 
 function applyShrinkExponent(field: SizeField, beta: number): SizeField {
   const n = field.targetSize.length;
   const targetSize = new Float64Array(n);
-  let refinedNodeCount = 0;
-  let minTargetSize = Infinity, maxTargetSize = 0;
   for (let i = 0; i < n; i++) {
     const hCur = field.currentSize[i]!;
     const ratio = hCur > 0 ? field.targetSize[i]! / hCur : 1;
-    const ts = ratio < 1 ? hCur * Math.pow(ratio, beta) : field.targetSize[i]!;
-    targetSize[i] = ts;
-    if (ts < hCur * 0.99) refinedNodeCount++;
-    if (ts < minTargetSize) minTargetSize = ts;
-    if (ts > maxTargetSize) maxTargetSize = ts;
+    targetSize[i] = ratio < 1 ? hCur * Math.pow(ratio, beta) : field.targetSize[i]!;
   }
-  if (!Number.isFinite(minTargetSize)) minTargetSize = 0;
-  return {
-    targetSize,
-    currentSize: field.currentSize,
-    refinedNodeCount,
-    excludedNodeCount: field.excludedNodeCount,
-    minTargetSize,
-    maxTargetSize,
-  };
+  return withTargets(field, targetSize);
 }
 
 // ─── Loop control ────────────────────────────────────────────────────────────
@@ -396,6 +650,7 @@ export type StopReason =
   | "stalled"
   | "no-refinement-requested"
   // Produced by the driver (runAdaptiveAnalysis):
+  | "budget-overshoot"
   | "remesh-failed"
   | "resolve-failed"
   | "no-error-field"
@@ -405,6 +660,13 @@ export type StopReason =
  * Decide whether the adaptive loop should stop AFTER completing `state`. Order
  * of checks matters: success (target reached) first, then the hard guards
  * (iteration + growth caps), then the soft guards (stall, nothing to refine).
+ *
+ * NOTE the element-growth check here is a BACKSTOP, not the primary enforcement
+ * of the cap. It reads the state of the iteration just completed, so on its own
+ * it can only notice an over-budget mesh after that mesh has already cost a full
+ * solve. The driver enforces the cap against the mesh TetGen actually emitted,
+ * BEFORE solving it (`budgetOvershootFactor` → `budget-overshoot`); by the time
+ * a state reaches this function the count has already been admitted.
  */
 export function shouldStopRefinement(
   state: LoopState,
@@ -437,29 +699,179 @@ export function shouldStopRefinement(
 // ─── Default options ──────────────────────────────────────────────────────────
 export const DEFAULT_LOOP_OPTIONS: LoopControlOptions = {
   targetGlobalError: 0.03,       // 3% global relative error target
-  maxIterations: 4,              // cap total solves at 1 base + up to 3 refines
+  // Cap total solves at 1 base + up to 4 refines. One more than the original 4
+  // because minSizeFactor was softened from 0.35 to 0.55 below: the same total
+  // refinement now needs roughly one extra step to reach. The 8× element budget,
+  // not this cap, is what bounds the worst-case cost of a run.
+  maxIterations: 5,
   maxElementGrowth: 8,           // never exceed 8× the base element count
   minRelativeImprovement: 0.05,  // stop when a step improves error <5%
 };
 
 export const DEFAULT_SIZE_FIELD_FACTORS = {
-  minSizeFactor: 0.35,  // one step never shrinks an element below ~1/3 its size
+  /**
+   * Floor on h_new/h_cur in ONE step. Was 0.35, which is a ~23× jump in local
+   * element DENSITY ((1/0.35)³) that the mesher has to absorb across the
+   * refinement boundary in a single re-mesh — the prime suspect for the slivers
+   * on the Ø5-bore tube. 0.55 is a ~6× density step instead, reached over more
+   * iterations (maxIterations went 4 → 5) rather than one violent one.
+   */
+  minSizeFactor: 0.55,
   maxSizeFactor: 1.0,   // never coarsen (refinement-only), keeps low-error coarse
+  /**
+   * Maximum size-transition ratio per element step (the Lipschitz slope is
+   * gradation − 1). 1.5 is the usual mesh-generation default: the target size
+   * may grow by at most ~50% per element away from a refined region, so the
+   * refined and unrefined regions are joined by a graded band instead of a
+   * step. See smoothSizeFieldGradation.
+   */
+  gradation: 1.5,
 } as const;
 
-// ─── TetGen background-metric file serialization ─────────────────────────────
+// ─── TetGen refinement-input file serialization ──────────────────────────────
 /**
- * Serialize a per-node metric to TetGen's `.mtr` format. One header line
- * "<nodeCount> 1" (one scalar value per node = isotropic target edge length),
- * then one value per line. TetGen reads this alongside a background mesh
- * (.b.node/.b.ele) under `-m` and interpolates the target size through the
- * volume. Pure string output — unit-testable with no binary.
+ * Reduce a mesh + size field to the CORNER-ONLY linear mesh TetGen's refinement
+ * pass is handed. Returns a compacted mesh (nodesPerElem 4) plus the size field
+ * restricted to those nodes.
+ *
+ * Two properties this must have, both relied on by `meshWithTetGenSizing`:
+ *
+ *  1. CORNER-ONLY. `aggregateElementFieldsToNodes` only visits an element's four
+ *     corner nodes (midside nodes carry no independent geometry or error), so a
+ *     C3D10 mesh's midside nodes never receive a real target size —
+ *     `buildSizeField` falls through to the mean-size placeholder for them. On
+ *     the Ø5-bore tube that was 18,664 of 21,885 nodes, i.e. 85% of the field
+ *     was one constant (0.4375 mm) against a real field spanning 0.149–0.447 mm.
+ *     Feeding those placeholder values to the mesher describes a sizing function
+ *     nobody asked for.
+ *
+ *  2. ORDER-PRESERVING. Corner nodes keep their relative order from the input
+ *     mesh, so the welded STL surface vertices — always tet corners, and always
+ *     the first N nodes of a mesh this module is given — stay the first N nodes
+ *     of the compacted mesh. TetGen's `-r` emits its input vertices first and in
+ *     order, so that is what keeps `surfaceToNode` an identity map through a
+ *     re-mesh. Renumbering in first-seen-in-elements order would silently break
+ *     it.
+ *
+ * On a linear (nodesPerElem 4) mesh every node is a corner, so this is an
+ * identity apart from discarding unreferenced nodes.
  */
-export function sizeFieldToMtr(field: SizeField): string {
-  const n = field.targetSize.length;
-  const lines: string[] = [`${n} 1`];
-  for (let i = 0; i < n; i++) {
-    lines.push(`${field.targetSize[i]!.toPrecision(8)}`);
+export function extractCornerBackground(
+  mesh: TetMesh,
+  field: SizeField,
+): { mesh: TetMesh; field: SizeField } {
+  const npe = mesh.nodesPerElem ?? 4;
+  const isCorner = new Uint8Array(mesh.nodeCount);
+  for (let e = 0; e < mesh.elementCount; e++) {
+    for (let k = 0; k < 4; k++) isCorner[mesh.elements[e * npe + k] ?? 0] = 1;
+  }
+  // Ascending original index — see property 2 above.
+  const remap = new Int32Array(mesh.nodeCount).fill(-1);
+  let cornerCount = 0;
+  for (let n = 0; n < mesh.nodeCount; n++) if (isCorner[n]) remap[n] = cornerCount++;
+
+  const elements = new Int32Array(mesh.elementCount * 4);
+  for (let e = 0; e < mesh.elementCount; e++) {
+    for (let k = 0; k < 4; k++) {
+      elements[e * 4 + k] = remap[mesh.elements[e * npe + k] ?? 0]!;
+    }
+  }
+
+  const nodes = new Float64Array(cornerCount * 3);
+  const targetSize = new Float64Array(cornerCount);
+  const currentSize = new Float64Array(cornerCount);
+  let refinedNodeCount = 0;
+  let minTargetSize = Infinity, maxTargetSize = 0;
+  for (let n = 0; n < mesh.nodeCount; n++) {
+    const c = remap[n]!;
+    if (c < 0) continue;
+    nodes[c * 3]     = mesh.nodes[n * 3]     ?? 0;
+    nodes[c * 3 + 1] = mesh.nodes[n * 3 + 1] ?? 0;
+    nodes[c * 3 + 2] = mesh.nodes[n * 3 + 2] ?? 0;
+    const ts = field.targetSize[n] ?? 0;
+    const cs = field.currentSize[n] ?? 0;
+    targetSize[c] = ts;
+    currentSize[c] = cs;
+    if (ts < cs * 0.99) refinedNodeCount++;
+    if (ts < minTargetSize) minTargetSize = ts;
+    if (ts > maxTargetSize) maxTargetSize = ts;
+  }
+  if (!Number.isFinite(minTargetSize)) minTargetSize = 0;
+
+  return {
+    mesh: { nodes, elements, nodeCount: cornerCount, elementCount: mesh.elementCount, nodesPerElem: 4 },
+    field: {
+      targetSize,
+      currentSize,
+      refinedNodeCount,
+      excludedNodeCount: field.excludedNodeCount,
+      minTargetSize,
+      maxTargetSize,
+    },
+  };
+}
+
+/**
+ * Empirical scale from "target edge length" to the TetGen `-a` volume CAP that
+ * actually yields elements of that size.
+ *
+ * A volume cap is an upper bound, not a target: TetGen's refinement keeps
+ * splitting until every tet is under the cap, so the sizes it settles on are
+ * well below it. Feeding the exact regular-tet volume h³/(6√2) therefore
+ * over-refines badly — on the Ø5-bore tube it delivered 2.1× the predicted
+ * element GROWTH, turning one step into 5.7× of an 8× budget. Scaling the cap
+ * makes it mean "elements of about this size" rather than "elements at most this
+ * size", which is what the size field asks for and what
+ * predictRefinedElementCount assumes.
+ *
+ * 13 is where prediction met reality on that part: predicted 43,829 elements
+ * against 40,534 emitted (growth ratio 0.89, versus 2.08 at the unscaled value).
+ * Calibrating the predictor is the point — the budget guard, the relaxation
+ * bisection and the retry correction all reason in predicted counts, so a
+ * predictor that is right to ~10% is worth more here than one that is
+ * conservative.
+ *
+ * Confidence LOW and geometry-dependent (the equivalent measurement over the
+ * tier path's uniform caps drifts between ~2.5 and ~5.5 as the cap tightens), so
+ * it is only a SEED: the driver measures the residual against what TetGen
+ * actually emits and corrects per-run (`judgeRemeshAgainstBudget` →
+ * `effectiveElementBudget`). Nothing downstream trusts this number — the budget
+ * is enforced on the real count, never on this.
+ */
+export const VOLUME_CAP_SCALE = 13;
+
+/**
+ * Serialize a size field to TetGen's `.vol` format: a per-element maximum
+ * volume constraint, read under `-r -a`. Header "<elementCount>", then one
+ * "<1-based index> <max volume>" line per element.
+ *
+ * This is the sizing mechanism the adaptive re-mesh uses, in place of the `-m`
+ * background metric — see the meshWithTetGenSizing header for the measurements
+ * behind that choice. Each element's cap comes from the FINEST target among its
+ * four corner
+ * nodes, matching predictRefinedElementCount's convention exactly so the budget
+ * prediction and the constraint describe the same mesh.
+ *
+ * `mesh` must be the corner-only mesh from extractCornerBackground (indices are
+ * read as 4-per-element).
+ */
+export function sizeFieldToVolFile(
+  mesh: TetMesh,
+  field: SizeField,
+  volumeCapScale: number = VOLUME_CAP_SCALE,
+): string {
+  const lines: string[] = [`${mesh.elementCount}`];
+  const scale = volumeCapScale / (6 * Math.SQRT2);
+  for (let e = 0; e < mesh.elementCount; e++) {
+    let h = Infinity;
+    for (let k = 0; k < 4; k++) {
+      const t = field.targetSize[mesh.elements[e * 4 + k] ?? 0] ?? 0;
+      if (t > 0 && t < h) h = t;
+    }
+    // A non-positive or unreachable target means "no constraint here"; -1 is
+    // TetGen's own encoding for an unconstrained element.
+    const vol = Number.isFinite(h) && h > 0 ? h * h * h * scale : -1;
+    lines.push(`${e + 1} ${vol > 0 ? vol.toPrecision(8) : "-1"}`);
   }
   return lines.join("\n") + "\n";
 }

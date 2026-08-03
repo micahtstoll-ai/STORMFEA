@@ -24,13 +24,20 @@ import {
   predictRefinedElementCount,
   relaxSizeFieldToBudget,
   shouldStopRefinement,
-  sizeFieldToMtr,
+  smoothSizeFieldGradation,
+  buildTetEdgeList,
+  extractCornerBackground,
+  judgeRemeshAgainstBudget,
+  effectiveElementBudget,
+  sizeFieldToVolFile,
   meshToNodeFile,
   meshToEleFile,
+  VOLUME_CAP_SCALE,
   DEFAULT_LOOP_OPTIONS,
   DEFAULT_SIZE_FIELD_FACTORS,
   type LoopState,
   type LoopControlOptions,
+  type SizeField,
 } from "../../solver/adaptiveMesh.js";
 import type { TetMesh } from "../../solver/types.js";
 
@@ -66,6 +73,61 @@ function buildRowOfTets(count: number, spacing: number): TetMesh {
     }
   }
   return { nodes, elements, nodeCount: count * 4, elementCount: count, nodesPerElem: 4 };
+}
+
+// A CONNECTED mesh, which buildRowOfTets deliberately is not: `count` unit cubes
+// stacked along x, each split into 6 tets by Kuhn's subdivision (all sharing the
+// cube's main diagonal, all of volume s³/6). Adjacent cubes share a face, so the
+// edge graph is connected — which is what the gradation tests need, since a
+// Lipschitz constraint can only propagate along edges.
+function buildTetGrid(count: number, s: number): TetMesh {
+  const nodeAt = (i: number, j: number, k: number) => i * 4 + j * 2 + k;
+  const nodeCount = (count + 1) * 4;
+  const nodes = new Float64Array(nodeCount * 3);
+  for (let i = 0; i <= count; i++) {
+    for (let j = 0; j < 2; j++) {
+      for (let k = 0; k < 2; k++) {
+        const n = nodeAt(i, j, k);
+        nodes[n * 3] = i * s; nodes[n * 3 + 1] = j * s; nodes[n * 3 + 2] = k * s;
+      }
+    }
+  }
+  // Kuhn decomposition of a cube into 6 tets, as (j,k) offsets from corner i.
+  const KUHN: ReadonlyArray<ReadonlyArray<readonly [number, number, number]>> = [
+    [[0, 0, 0], [1, 0, 0], [1, 1, 0], [1, 1, 1]],
+    [[0, 0, 0], [1, 0, 0], [1, 0, 1], [1, 1, 1]],
+    [[0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 1, 1]],
+    [[0, 0, 0], [0, 1, 0], [0, 1, 1], [1, 1, 1]],
+    [[0, 0, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1]],
+    [[0, 0, 0], [0, 0, 1], [0, 1, 1], [1, 1, 1]],
+  ];
+  const elements = new Int32Array(count * 6 * 4);
+  let e = 0;
+  for (let i = 0; i < count; i++) {
+    for (const tet of KUHN) {
+      for (let k = 0; k < 4; k++) {
+        const [di, dj, dk] = tet[k]!;
+        elements[e * 4 + k] = nodeAt(i + di, dj, dk);
+      }
+      e++;
+    }
+  }
+  return { nodes, elements, nodeCount, elementCount: count * 6, nodesPerElem: 4 };
+}
+
+/** A size field with an explicit per-node target, for operator-level tests. */
+function fieldFrom(current: Float64Array, target: Float64Array): SizeField {
+  let refined = 0, min = Infinity, max = 0;
+  for (let i = 0; i < target.length; i++) {
+    if (target[i]! < current[i]! * 0.99) refined++;
+    if (target[i]! < min) min = target[i]!;
+    if (target[i]! > max) max = target[i]!;
+  }
+  return {
+    targetSize: target, currentSize: current,
+    refinedNodeCount: refined, excludedNodeCount: 0,
+    minTargetSize: Number.isFinite(min) ? min : 0, maxTargetSize: max,
+  };
 }
 
 describe("tetCharacteristicSize", () => {
@@ -219,6 +281,293 @@ describe("predictRefinedElementCount & relaxSizeFieldToBudget (runaway guard)", 
   });
 });
 
+describe("buildTetEdgeList", () => {
+  const mesh = buildTetGrid(3, 1.0);
+
+  it("emits unique, non-degenerate edges with positive lengths", () => {
+    const edges = buildTetEdgeList(mesh);
+    expect(edges.a.length).toBeGreaterThan(0);
+    expect(edges.b.length).toBe(edges.a.length);
+    expect(edges.len.length).toBe(edges.a.length);
+    const seen = new Set<string>();
+    for (let k = 0; k < edges.a.length; k++) {
+      const i = edges.a[k]!, j = edges.b[k]!;
+      expect(i).not.toBe(j);
+      const key = `${Math.min(i, j)}-${Math.max(i, j)}`;
+      expect(seen.has(key)).toBe(false); // deduplicated
+      seen.add(key);
+      expect(edges.len[k]!).toBeGreaterThan(0);
+      expect(edges.len[k]!).toBeCloseTo(
+        Math.hypot(
+          mesh.nodes[i * 3]! - mesh.nodes[j * 3]!,
+          mesh.nodes[i * 3 + 1]! - mesh.nodes[j * 3 + 1]!,
+          mesh.nodes[i * 3 + 2]! - mesh.nodes[j * 3 + 2]!,
+        ), 12);
+    }
+  });
+
+  it("connects the mesh — adjacent cubes share edges", () => {
+    // The whole point of this fixture: a Lipschitz constraint can only travel
+    // along edges, so a disconnected fixture would make the gradation tests
+    // vacuous.
+    const edges = buildTetEdgeList(mesh);
+    const adj = new Map<number, Set<number>>();
+    for (let k = 0; k < edges.a.length; k++) {
+      if (!adj.has(edges.a[k]!)) adj.set(edges.a[k]!, new Set());
+      if (!adj.has(edges.b[k]!)) adj.set(edges.b[k]!, new Set());
+      adj.get(edges.a[k]!)!.add(edges.b[k]!);
+      adj.get(edges.b[k]!)!.add(edges.a[k]!);
+    }
+    const seen = new Set<number>([0]);
+    const stack = [0];
+    while (stack.length) {
+      for (const n of adj.get(stack.pop()!) ?? []) if (!seen.has(n)) { seen.add(n); stack.push(n); }
+    }
+    expect(seen.size).toBe(mesh.nodeCount);
+  });
+});
+
+describe("smoothSizeFieldGradation — bounded size transition", () => {
+  const mesh = buildTetGrid(6, 1.0);
+  const G = DEFAULT_SIZE_FIELD_FACTORS.gradation;
+  const current = new Float64Array(mesh.nodeCount).fill(1.0);
+
+  it("is a NO-OP on a field that requests no refinement", () => {
+    // The property that keeps it composable with the budget guard. An already
+    // adaptively-refined mesh has a real size gradient of its own; re-grading
+    // THAT would demand refinement the error estimator never asked for, and
+    // measured on a real part it consumed the entire remaining element budget.
+    const target = Float64Array.from(current);
+    const out = smoothSizeFieldGradation(mesh, fieldFrom(current, target), G);
+    for (let n = 0; n < mesh.nodeCount; n++) expect(out.targetSize[n]!).toBeCloseTo(current[n]!, 12);
+    expect(out.refinedNodeCount).toBe(0);
+  });
+
+  it("satisfies the Lipschitz bound h_i <= h_j + (gradation-1)*d on every edge", () => {
+    const target = Float64Array.from(current);
+    target[0] = 0.2;                       // one hard-refined node at the x=0 end
+    const out = smoothSizeFieldGradation(mesh, fieldFrom(current, target), G);
+    const edges = buildTetEdgeList(mesh);
+    const beta = G - 1;
+    for (let k = 0; k < edges.a.length; k++) {
+      const i = edges.a[k]!, j = edges.b[k]!, d = edges.len[k]!;
+      const hi = out.targetSize[i]!, hj = out.targetSize[j]!;
+      expect(Math.abs(hi - hj)).toBeLessThanOrEqual(beta * d + 1e-9);
+    }
+  });
+
+  it("spreads refinement outward — a neighbour of the refined node is pulled down", () => {
+    const target = Float64Array.from(current);
+    target[0] = 0.2;
+    const out = smoothSizeFieldGradation(mesh, fieldFrom(current, target), G);
+    // Node 4 is the next cube corner along x, one unit edge away from node 0.
+    expect(out.targetSize[4]!).toBeLessThan(current[4]!);
+    expect(out.refinedNodeCount).toBeGreaterThan(1);
+  });
+
+  it("only ever LOWERS targets, and never below the field's own minimum", () => {
+    const target = Float64Array.from(current);
+    target[0] = 0.2;
+    const input = fieldFrom(current, target);
+    const out = smoothSizeFieldGradation(mesh, input, G);
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      expect(out.targetSize[n]!).toBeLessThanOrEqual(input.targetSize[n]! + 1e-12);
+      expect(out.targetSize[n]!).toBeGreaterThanOrEqual(input.minTargetSize - 1e-12);
+    }
+  });
+
+  it("treats gradation <= 1 as 'no limit' and returns the field untouched", () => {
+    const target = Float64Array.from(current);
+    target[0] = 0.2;
+    const input = fieldFrom(current, target);
+    expect(smoothSizeFieldGradation(mesh, input, 1)).toBe(input);
+    expect(smoothSizeFieldGradation(mesh, input, 0.5)).toBe(input);
+  });
+});
+
+describe("predictRefinedElementCount — calibration against 'no refinement'", () => {
+  it("predicts EXACTLY the current element count for an unrefined field", () => {
+    // The property the budget bisection rests on. It used to mix a MEAN current
+    // size with a MIN target size, so even a field requesting nothing predicted
+    // more elements than the mesh already had — a floor that let the bisection
+    // bottom out over budget and spin the driver's re-mesh retries.
+    const mesh = buildTetGrid(4, 1.0);
+    const current = new Float64Array(mesh.nodeCount).fill(0.7);
+    const field = fieldFrom(current, Float64Array.from(current));
+    expect(predictRefinedElementCount(mesh, field)).toBeCloseTo(mesh.elementCount, 9);
+  });
+
+  it("scales as the cube of the size ratio where the field refines", () => {
+    const mesh = buildTetGrid(1, 1.0);          // 6 tets, all nodes shared
+    const current = new Float64Array(mesh.nodeCount).fill(1.0);
+    const target  = new Float64Array(mesh.nodeCount).fill(0.5);
+    expect(predictRefinedElementCount(mesh, fieldFrom(current, target)))
+      .toBeCloseTo(mesh.elementCount * 8, 6);  // (1/0.5)^3
+  });
+});
+
+describe("judgeRemeshAgainstBudget & effectiveElementBudget (reality check)", () => {
+  it("accepts a mesh inside the budget and rejects one outside it", () => {
+    expect(judgeRemeshAgainstBudget(90_000, 90_000, 106_720, 13_340).accepted).toBe(true);
+    expect(judgeRemeshAgainstBudget(115_544, 106_000, 106_720, 13_340).accepted).toBe(false);
+  });
+
+  it("measures the bias on GROWTH, not on totals", () => {
+    // The observed first refinement: 13,340 → 76,651 actual against a 43,829
+    // prediction. On growth that is 63,311/30,489 = 2.08; on totals it would be
+    // 76,651/43,829 = 1.75, and dividing the budget by THAT drove the next
+    // iteration's effective budget below the current element count — which reads
+    // as "no refinement is possible" and stalled the loop a step early.
+    const v = judgeRemeshAgainstBudget(76_651, 43_829, 106_720, 13_340);
+    expect(v.sizingBias).toBeCloseTo((76_651 - 13_340) / (43_829 - 13_340), 6);
+    expect(effectiveElementBudget(106_720, 76_651, v.sizingBias)).toBeGreaterThan(76_651);
+  });
+
+  it("never reports a bias below 1 — the guard tightens, it never loosens", () => {
+    // An over-prediction is not licence to refine harder than the field asked.
+    expect(judgeRemeshAgainstBudget(20_000, 40_000, 106_720, 13_340).sizingBias).toBe(1);
+    expect(effectiveElementBudget(106_720, 13_340, 0.2)).toBe(106_720);
+  });
+
+  it("round-trips: a budget corrected by the bias lands back on the budget", () => {
+    // If the mesher delivers `bias ×` the predicted growth, then predicting up to
+    // effectiveElementBudget must yield at most elementBudget elements.
+    const budget = 106_720, current = 40_534, bias = 2.5;
+    const eff = effectiveElementBudget(budget, current, bias);
+    const deliveredIfPredictionMaxedOut = current + (eff - current) * bias;
+    expect(deliveredIfPredictionMaxedOut).toBeLessThanOrEqual(budget + 1);
+  });
+
+  it("leaves no room when the mesh has already reached the budget", () => {
+    expect(effectiveElementBudget(106_720, 106_720, 3)).toBe(106_720);
+    expect(effectiveElementBudget(106_720, 120_000, 3)).toBe(120_000);
+  });
+});
+
+describe("relaxSizeFieldToBudget — gradation-aware budgeting", () => {
+  const mesh = buildTetGrid(8, 1.0);
+  const current = new Float64Array(mesh.nodeCount).fill(1.0);
+  const target = new Float64Array(mesh.nodeCount).fill(1.0);
+  for (let n = 0; n < 8; n++) target[n] = 0.25;   // refine the x=0 end hard
+  const field = fieldFrom(current, target);
+  const G = DEFAULT_SIZE_FIELD_FACTORS.gradation;
+
+  it("counts the graded transition band INSIDE the budget", () => {
+    // Smoothing costs elements. If the budget were evaluated on the raw field
+    // and the smoothing applied afterwards, the band would be spent on top of
+    // the budget rather than within it.
+    const budget = Math.floor(mesh.elementCount * 3);
+    const relaxed = relaxSizeFieldToBudget(mesh, field, budget, G);
+    expect(predictRefinedElementCount(mesh, relaxed)).toBeLessThanOrEqual(budget * 1.02);
+  });
+
+  it("returns a field requesting NO refinement when the budget has no room", () => {
+    // Signals the driver to stop instead of paying for a re-mesh that cannot help.
+    const relaxed = relaxSizeFieldToBudget(mesh, field, mesh.elementCount, G);
+    expect(relaxed.refinedNodeCount).toBe(0);
+  });
+
+  it("still refines when there IS room", () => {
+    const relaxed = relaxSizeFieldToBudget(mesh, field, mesh.elementCount * 4, G);
+    expect(relaxed.refinedNodeCount).toBeGreaterThan(0);
+  });
+});
+
+describe("extractCornerBackground — corner-only, order-preserving", () => {
+  // A synthetic C3D10: the linear grid plus fake midside nodes appended after
+  // the corners, exactly as TetGen's -o2 output is laid out.
+  const lin = buildTetGrid(2, 1.0);
+  function asC3D10(m: TetMesh): TetMesh {
+    const extra = m.elementCount * 6;
+    const nodes = new Float64Array((m.nodeCount + extra) * 3);
+    nodes.set(m.nodes);
+    const elements = new Int32Array(m.elementCount * 10);
+    for (let e = 0; e < m.elementCount; e++) {
+      for (let k = 0; k < 4; k++) elements[e * 10 + k] = m.elements[e * 4 + k]!;
+      for (let k = 0; k < 6; k++) {
+        const mid = m.nodeCount + e * 6 + k;
+        elements[e * 10 + 4 + k] = mid;
+        nodes[mid * 3] = 0.5; nodes[mid * 3 + 1] = 0.5; nodes[mid * 3 + 2] = 0.5;
+      }
+    }
+    return { nodes, elements, nodeCount: m.nodeCount + extra, elementCount: m.elementCount, nodesPerElem: 10 };
+  }
+  const quad = asC3D10(lin);
+
+  it("drops the midside nodes that never received a real target size", () => {
+    const current = new Float64Array(quad.nodeCount).fill(1.0);
+    const target  = new Float64Array(quad.nodeCount).fill(0.4375); // the placeholder
+    for (let n = 0; n < lin.nodeCount; n++) target[n] = 0.3;       // the real field
+    const bg = extractCornerBackground(quad, fieldFrom(current, target));
+    expect(bg.mesh.nodeCount).toBe(lin.nodeCount);
+    expect(bg.mesh.nodesPerElem).toBe(4);
+    expect(bg.mesh.elementCount).toBe(quad.elementCount);
+    for (const ts of bg.field.targetSize) expect(ts).toBeCloseTo(0.3, 12);
+  });
+
+  it("preserves node ORDER — the STL surface vertices stay first", () => {
+    // TetGen's -r emits its input vertices first and in order, which is what
+    // makes surfaceToNode an identity map through a re-mesh. Renumbering in
+    // first-seen-in-elements order would silently break that.
+    const current = new Float64Array(quad.nodeCount).fill(1.0);
+    const bg = extractCornerBackground(quad, fieldFrom(current, Float64Array.from(current)));
+    for (let n = 0; n < lin.nodeCount; n++) {
+      expect(bg.mesh.nodes[n * 3]!).toBeCloseTo(lin.nodes[n * 3]!, 12);
+      expect(bg.mesh.nodes[n * 3 + 1]!).toBeCloseTo(lin.nodes[n * 3 + 1]!, 12);
+      expect(bg.mesh.nodes[n * 3 + 2]!).toBeCloseTo(lin.nodes[n * 3 + 2]!, 12);
+    }
+  });
+
+  it("remaps element connectivity to the compacted indices", () => {
+    const current = new Float64Array(quad.nodeCount).fill(1.0);
+    const bg = extractCornerBackground(quad, fieldFrom(current, Float64Array.from(current)));
+    for (let e = 0; e < bg.mesh.elementCount; e++) {
+      for (let k = 0; k < 4; k++) {
+        expect(bg.mesh.elements[e * 4 + k]!).toBe(lin.elements[e * 4 + k]!);
+      }
+    }
+  });
+
+  it("is an identity on a linear mesh whose nodes are all used", () => {
+    const current = new Float64Array(lin.nodeCount).fill(1.0);
+    const bg = extractCornerBackground(lin, fieldFrom(current, Float64Array.from(current)));
+    expect(bg.mesh.nodeCount).toBe(lin.nodeCount);
+    expect(Array.from(bg.mesh.elements)).toEqual(Array.from(lin.elements));
+  });
+});
+
+describe("sizeFieldToVolFile — per-element volume constraints", () => {
+  const mesh = buildTetGrid(1, 1.0);
+  const current = new Float64Array(mesh.nodeCount).fill(1.0);
+
+  it("has the '<elementCount>' header and one line per element", () => {
+    const target = new Float64Array(mesh.nodeCount).fill(0.5);
+    const lines = sizeFieldToVolFile(mesh, fieldFrom(current, target)).trim().split("\n");
+    expect(lines[0]).toBe(`${mesh.elementCount}`);
+    expect(lines.length).toBe(mesh.elementCount + 1);
+    expect(lines[1]!.trim().split(/\s+/)[0]).toBe("1");   // 1-based indices
+  });
+
+  it("caps each element from its FINEST corner target, scaled by VOLUME_CAP_SCALE", () => {
+    // Same convention as predictRefinedElementCount, so the budget prediction and
+    // the constraint handed to the mesher describe the same mesh.
+    const target = new Float64Array(mesh.nodeCount).fill(1.0);
+    target[mesh.elements[0]!] = 0.5;   // one corner of element 0 refined
+    const lines = sizeFieldToVolFile(mesh, fieldFrom(current, target)).trim().split("\n");
+    const vol0 = Number(lines[1]!.trim().split(/\s+/)[1]);
+    const exact = VOLUME_CAP_SCALE * 0.5 ** 3 / (6 * Math.SQRT2);
+    expect(vol0 / exact).toBeCloseTo(1, 7);   // the file carries 8 significant digits
+  });
+
+  it("emits TetGen's -1 (unconstrained) for a non-positive target", () => {
+    const target = new Float64Array(mesh.nodeCount); // all zero
+    const lines = sizeFieldToVolFile(mesh, fieldFrom(current, target)).trim().split("\n");
+    for (let i = 1; i < lines.length; i++) {
+      expect(lines[i]!.trim().split(/\s+/)[1]).toBe("-1");
+    }
+  });
+});
+
 describe("shouldStopRefinement — loop control", () => {
   const opts: LoopControlOptions = {
     targetGlobalError: 0.03,
@@ -330,31 +679,6 @@ describe("simulated adaptive loop convergence (no binary)", () => {
 
 describe("TetGen file serialization (pure, binary-independent)", () => {
   const mesh = buildRowOfTets(2, 1.0);
-  const err = new Float32Array([0.9, 0.01]);
-  const field = buildSizeField(mesh, err, {
-    targetError: 0.02, order: 2, minSizeFactor: 0.35, maxSizeFactor: 1.0,
-  });
-
-  it("sizeFieldToMtr has the '<count> 1' header and one value per node", () => {
-    const mtr = sizeFieldToMtr(field);
-    const lines = mtr.trim().split("\n");
-    expect(lines[0]).toBe(`${mesh.nodeCount} 1`);
-    expect(lines.length).toBe(mesh.nodeCount + 1);
-    // Every value is a finite positive number.
-    for (let i = 1; i < lines.length; i++) {
-      const v = parseFloat(lines[i]!);
-      expect(Number.isFinite(v)).toBe(true);
-      expect(v).toBeGreaterThan(0);
-    }
-  });
-
-  it("the .mtr metric encodes the refinement (high-error node value < low-error node value)", () => {
-    const mtr = sizeFieldToMtr(field);
-    const vals = mtr.trim().split("\n").slice(1).map(parseFloat);
-    const hiMin = Math.min(vals[0]!, vals[1]!, vals[2]!, vals[3]!); // element-0 nodes
-    const loMax = Math.max(vals[4]!, vals[5]!, vals[6]!, vals[7]!); // element-1 nodes
-    expect(hiMin).toBeLessThan(loMax); // metric requests smaller size where error is high
-  });
 
   it("meshToNodeFile / meshToEleFile emit 1-based TetGen files with correct headers", () => {
     const nodeFile = meshToNodeFile(mesh);
