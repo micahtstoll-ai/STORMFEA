@@ -472,7 +472,26 @@ the solver-accuracy campaign; adaptive mesh refinement (#149) shipped in PR #246
   genuine singularity at the bolt-constrained bore rather than an estimator
   defect, but it needs a benchmark part with a smooth stress concentration to
   tell the two apart. Until then the 3% target and 8× cap are defaults chosen by
-  argument, not by measurement
+  argument, not by measurement. Note the adaptive-vs-uniform comparison itself is
+  a ONE-PART result so far: the plate below could not complete a refined solve
+  for an unrelated reason (the solver wall clock), so it neither confirms nor
+  refutes the tube's margin
+- **The solver wall clock, not mesh quality, is now the binding constraint on
+  adaptive refinement for mid-size parts** — surfaced by fixing the slivers:
+  refined solves are actually attempted now, and the next limit shows up
+  immediately behind them. On a 40x20x4 mm bracket plate the first refinement
+  built a CLEAN 51,743-element mesh (239k DOF, zero hard-gate violations, zero
+  poor elements, worst normalized Jacobian 0.112) and the PCG solver hit its 90 s
+  deadline at relRes 1.4e-2 while still converging, so the run degraded to the
+  tier solve with `resolve-failed`. The degradation is correct behaviour, but it
+  means the 8x element budget and the solver's time budget are set independently
+  and can contradict each other: the loop is allowed to build a mesh it is not
+  allowed to solve. Options are to derive the element budget from a DOF/time
+  model rather than a fixed multiple, to raise `CG_DEADLINE_MS`
+  (`server/solver/cg.ts`) for the adaptive path specifically, or to treat a
+  deadline miss as a budget signal and retry smaller. Measured on 4 cores; a
+  faster host moves the threshold but does not remove it
+
 - **Pin `VOLUME_CAP_SCALE` with more than one geometry** — the scale converting a
   target edge length to a TetGen `-a` volume cap (13, `adaptiveMesh.ts`) was
   calibrated on the tube alone, where it brought predicted and emitted element
