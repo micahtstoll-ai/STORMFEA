@@ -52,7 +52,7 @@ STORMFEA models the anisotropic reality.
 - **Onshape integration** — import directly from Part Studio via REST API, no export step
 - **Client-side PDF export** — full report generated in-browser, works offline at competition venues
 - **Automatic mesh convergence** — fine mesh runs in the background; you get a result and then it quietly improves
-- **Error-driven adaptive refinement** (opt-in, API-only for now) — instead of refining the whole part a tier at a time, the ZZ error estimate drives a size field that concentrates elements where the error actually is, then re-meshes and re-solves until a 3% global relative error target, an iteration cap, or an element-growth cap is hit. Reachable today via `analysis.adaptiveRefinement` on `/api/analyse` (STL/TetGen path; degrades to the selected tier with a stated reason elsewhere) — there is no UI toggle yet, and its advantage over simply selecting the fine tier is not yet benchmarked
+- **Error-driven adaptive refinement** (opt-in, API-only for now) — instead of refining the whole part a tier at a time, the ZZ error estimate drives a size field that concentrates elements where the error actually is, then re-meshes and re-solves until a 3% global relative error target, an iteration cap, or an element-growth cap is hit. Reachable today via `analysis.adaptiveRefinement` on `/api/analyse` (STL/TetGen path; degrades to the selected tier with a stated reason elsewhere) — there is no UI toggle yet. Benchmarked against uniform refinement on a Ø5-bore tube: 0.262 global error on 40,534 elements where a uniform mesh of 54,373 elements reached only 0.337. Two caveats, both measured: the loop optimises the ENERGY-NORM error, and on that part the two meshes disagreed on peak stress by 24% — a lower global error is not a settled safety factor; and on a larger part the refined mesh can exceed the solver's wall-clock budget, in which case the run degrades to the tier solve and says so
 - **Accessible audio feedback** — per-stage tones for upload → mesh → solve → completion, with volume control and disable toggle. Especially useful in loud lab/competition environments. Enable/disable in the PREFS tab
 
 ---
@@ -290,7 +290,7 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the ful
 
 1. Fork → create a branch (`git checkout -b fix/my-fix`)
 2. Make changes; if touching physics, verify the 65% stiffness / 58% bond constants are unchanged
-3. Run `npm run test` — everything must pass: 720 vitest unit tests across 70 files, 180 solver validation tests in `solver_validation.ts`, the parallel-assembly equivalence suite, and 141 client logic checks (a few vitest tests self-skip where the TetGen/Gmsh binaries are absent, so the raw totals show a handful of skips)
+3. Run `npm run test` — everything must pass: 750 vitest unit tests across 71 files, 180 solver validation tests in `solver_validation.ts`, the parallel-assembly equivalence suite, and 141 client logic checks (a few vitest tests self-skip where the TetGen/Gmsh binaries are absent, so the raw totals show a handful of skips)
 4. Open a pull request using the provided template
 
 ---

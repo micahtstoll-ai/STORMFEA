@@ -450,34 +450,56 @@ the solver-accuracy campaign; adaptive mesh refinement (#149) shipped in PR #246
   `AdaptiveRefinementInfo` on the response), but the client has no toggle and no
   readout, so the feature is unreachable from the UI. The payload already carries
   everything a results panel needs: iteration count, stop reason, initial vs
-  final global error and element count, and the per-iteration history
-- **The adaptive size field is too aggressive in one step, and the growth budget
-  is only a prediction** — a first measurement on a Ø5-bore tube (the geometry
-  the #108 gate uses) had the first refinement jump 13,340 → 115,544 elements,
-  which is 8.7× the base count against a documented 8× cap, and produce 13 sliver
-  elements that the hard mesh-quality gate (#166) rejects. Two causes, both open:
-  `relaxSizeFieldToBudget` relaxes against `predictRefinedElementCount`, a MODEL
-  of what TetGen will emit, and nothing re-checks the ACTUAL element count after
-  the re-mesh; and the growth cap is only consulted by `shouldStopRefinement` on
-  the following iteration, so the loop can overshoot it by a whole solve. The
-  per-step `minSizeFactor` of 0.35 is a ~23× local volume-density increase in one
-  jump, which is the likely sliver source. Fixing this is a precondition for the
-  benchmark below being meaningful — on that geometry the loop currently never
-  completes a single refined solve
-- **Benchmark adaptive against uniform refinement at matched element count** —
-  the suite locks the adaptive MECHANISM (size-field construction, stop criteria,
-  budget relaxation, bit-identical default, degradation contract, and — with a
-  TetGen binary — that the field genuinely refines the requested region), but
-  nothing measures what adaptivity BUYS over simply selecting the fine tier. The
-  first attempt at this measurement was inconclusive for the reason above (no
-  refined solve completed) and additionally surfaced a separate question worth
-  its own investigation: on that tube the ZZ global relative error read 89%
-  (coarse), 213% (standard), 20% (fine) — non-monotone and implausibly large,
-  with peak stress unsettled across tiers (4.44 / 3.91 / 5.50 MPa). That is
-  plausibly a singular load/constraint case rather than an estimator defect, but
-  it needs a non-singular benchmark part to tell the two apart. Until then the 3%
-  default target and 8× growth cap remain unvalidated defaults, and a UI toggle
-  would ship an asserted rather than demonstrated benefit
+  final global error and element count, the element budget, and the per-iteration
+  history. The benefit is now demonstrated rather than asserted (see the
+  benchmark below), so the remaining blocker is the honesty of the readout: the
+  loop optimises the ENERGY-NORM error, and on the one part measured it moved
+  peak stress by 24% while moving that error by 8% — a panel that reports only
+  the error would overstate what the run settled
+- **Validate the 3% error target and 8× growth cap against a NON-SINGULAR part**
+  — the budget overshoot and the sliver failure are fixed (the re-mesh moved off
+  TetGen's `-m` background metric, which slivers on curved boundaries even with a
+  constant metric, onto `-r` with per-element volume constraints; the cap is now
+  enforced against the mesh actually emitted, before it is solved), and
+  `adaptive-benchmark.test.ts` shows adaptivity beating uniform refinement on the
+  Ø5-bore tube: 0.262 global error on 40,534 elements against 0.337 on 54,373.
+  What is still NOT settled is the estimator's behaviour on that geometry. The ZZ
+  global relative error reads 89% on the coarse tier and does not fall
+  monotonically under refinement — measured 0.894 → 0.262 → 0.279, with the loop
+  stopping on `stalled` because the third solve was WORSE. Peak von Mises is
+  likewise unsettled: adaptive resolves 4.91 MPa where uniform reads 3.97, a 24%
+  spread against an 8% spread in the error being optimised. This is plausibly a
+  genuine singularity at the bolt-constrained bore rather than an estimator
+  defect, but it needs a benchmark part with a smooth stress concentration to
+  tell the two apart. Until then the 3% target and 8× cap are defaults chosen by
+  argument, not by measurement. Note the adaptive-vs-uniform comparison itself is
+  a ONE-PART result so far: the plate below could not complete a refined solve
+  for an unrelated reason (the solver wall clock), so it neither confirms nor
+  refutes the tube's margin
+- **The solver wall clock, not mesh quality, is now the binding constraint on
+  adaptive refinement for mid-size parts** — surfaced by fixing the slivers:
+  refined solves are actually attempted now, and the next limit shows up
+  immediately behind them. On a 40x20x4 mm bracket plate the first refinement
+  built a CLEAN 51,743-element mesh (239k DOF, zero hard-gate violations, zero
+  poor elements, worst normalized Jacobian 0.112) and the PCG solver hit its 90 s
+  deadline at relRes 1.4e-2 while still converging, so the run degraded to the
+  tier solve with `resolve-failed`. The degradation is correct behaviour, but it
+  means the 8x element budget and the solver's time budget are set independently
+  and can contradict each other: the loop is allowed to build a mesh it is not
+  allowed to solve. Options are to derive the element budget from a DOF/time
+  model rather than a fixed multiple, to raise `CG_DEADLINE_MS`
+  (`server/solver/cg.ts`) for the adaptive path specifically, or to treat a
+  deadline miss as a budget signal and retry smaller. Measured on 4 cores; a
+  faster host moves the threshold but does not remove it
+
+- **Pin `VOLUME_CAP_SCALE` with more than one geometry** — the scale converting a
+  target edge length to a TetGen `-a` volume cap (13, `adaptiveMesh.ts`) was
+  calibrated on the tube alone, where it brought predicted and emitted element
+  counts within 11%. It is confidence-LOW and the equivalent ratio on the tier
+  path's uniform caps drifts between ~2.5 and ~5.5 with density. The driver
+  measures and corrects the residual per-run, so a wrong seed costs a re-mesh
+  rather than correctness — but a second and third geometry would say whether 13
+  is a constant or a coincidence
 - **Anisotropic (honeycomb) DFA extension** — the shipped core yield criterion
   is the isotropic-foam form. Extending pressure sensitivity per-axis would
   match the per-axis stiffness and strength laws the core already uses;

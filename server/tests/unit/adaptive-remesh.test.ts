@@ -5,6 +5,13 @@
  * meshWithTetGenSizing must honour a per-node size field so elements shrink
  * where the field requests small sizes and stay coarse elsewhere.
  *
+ * The mechanism is TetGen's `-r` (refine an existing mesh) under per-element
+ * volume constraints, NOT the `-m` background metric it originally used — `-m`
+ * leaves slivers on curved boundaries even with a constant metric, which is what
+ * kept the refined solve from ever completing. See the meshWithTetGenSizing
+ * header for the measurements, and adaptive-benchmark.test.ts for the
+ * end-to-end acceptance gate.
+ *
  * Locally (no tetgen) this suite self-skips with a notice — the same pattern as
  * tetgen-c3d10.test.ts. It only runs where a tetgen binary is available (CI, or
  * via TETGEN_BIN). The size-FIELD construction and loop control are covered
@@ -88,8 +95,15 @@ describe.skipIf(!probe.found)("adaptive re-mesh honours the size field (requires
 
   beforeAll(async () => {
     const { positions, triangleCount } = cubeTriangleSoup();
-    // Coarse base mesh (linear tets keep the assertions simple).
-    coarse = await meshWithTetGen(positions, triangleCount, 1, 20);
+    // Coarse base mesh (linear tets keep the assertions simple), but NOT the
+    // minimal tetrahedralisation. At maxVol 20 on this 64 mm³ cube TetGen
+    // returns 22 elements — so coarse that the re-mesh's own `-q1.4` quality
+    // refinement does all the work and swamps the size field, and the corner
+    // density contrast measured below collapses to 1.04. At maxVol 4 (129
+    // elements) the base already satisfies the quality bound, the volume
+    // constraints dominate as intended, and the contrast is 2.1×. The fixture
+    // has to leave the size field something to act on.
+    coarse = await meshWithTetGen(positions, triangleCount, 1, 4);
 
     // Fake an error field concentrated in the corner near (0,0,0): elements
     // whose centroid is close to that corner get high error, the rest ~0.
@@ -143,11 +157,13 @@ describe.skipIf(!probe.found)("adaptive re-mesh honours the size field (requires
   });
 
   it("adds boundary points — the size field is not blocked by a frozen surface", () => {
-    // Regression guard for the `-Y` defect: with the input surface preserved,
-    // TetGen cannot subdivide the 4 mm cube facets, so the requested ~0.67 mm
-    // corner size is unreachable and the "refined" mesh came back COARSER than
-    // the base (12 elements vs 22). Refinement near a surface REQUIRES new
-    // boundary vertices, so demand strictly more nodes than the 8 input corners.
+    // Regression guard for the `-Y` defect: with the input surface triangulation
+    // preserved, TetGen may not subdivide boundary facets, so a requested size
+    // smaller than the existing boundary triangles is unreachable and the
+    // "refined" mesh can come back COARSER than the base (measured on the old
+    // `-pm` path: 12 elements against a 22-element base). Refinement near a
+    // surface REQUIRES new boundary vertices, so demand strictly more nodes than
+    // the 8 input corners. `-Y` is deliberately absent from every switch set.
     expect(refined.steinerCount).toBeGreaterThan(0);
     expect(refined.mesh.nodeCount).toBeGreaterThan(CUBE_VERTS.length);
   });
