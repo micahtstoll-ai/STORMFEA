@@ -104,18 +104,36 @@ iterations instead of running out of things it is allowed to improve. But the
 gain is **0.9 percentage points for one extra solve**, which is honest to call
 modest.
 
-**The safety factor moved 38%.** Peak stress rose 5.56 → 8.49 MPa and minimum SF
-fell 8.99 → 5.58 — the CONSERVATIVE direction, which is the acceptable one for
-this tool, and all 8 of `adaptive-benchmark.test.ts`'s guards (including "peak
-stress at least as high as uniform, within a factor of 2") still pass. The
-likely mechanism is that budget freed from the unresolvable rim goes to the bore
-wall INTERIOR, which is a real, resolvable bearing concentration that the coarse
-mesh was under-reading. That explanation is inferred from where the exclusion
-band sits, not directly proven, and it rests on one fixture. Treat a 38% SF
-swing between two defensible meshes as evidence that peak stress near a rigid
-clamp is not a converged quantity — which is what
-`adaptive-benchmark.test.ts`'s "a lower energy-norm error does not certify the
-safety factor" already says.
+### The safety factor moved 38%, and it is NOT this feature
+
+Peak stress rose 5.56 → 8.49 MPa and minimum SF fell 8.99 → 5.58. That looked
+alarming enough to be worth chasing, and two explanations were offered and then
+discarded: first that freed budget was resolving a real bearing concentration
+(a fine uniform mesh disagreed), then that the mask carved a size discontinuity
+(gradation bounds the transition, so it cannot).
+
+The measurement that settled it: run the loop with NO exclusion at all and vary
+only `maxElementGrowth`.
+
+| growth | elements | min SF | peak von Mises |
+|---|---|---|---|
+| 4 | 44 875 | 7.28 | 6.864 MPa |
+| 6 | 65 358 | 6.24 | **8.017 MPa** |
+| 8 | 80 866 | **8.99** | 5.564 MPa |
+
+Peak stress swings **44%**, non-monotonically, across three defensible meshes of
+the same part with this feature switched off entirely. The exclusion run's
+5.58 / 8.485 sits inside that spread. **The swing is a property of the part, not
+of the feature.**
+
+The real finding is the one that survives: on a part with a rigid-clamp
+singularity, peak stress and safety factor are NOT converged quantities, and
+element count is not a proxy for their accuracy — the 65 k mesh reports a higher
+peak than the 81 k one. `adaptive-benchmark.test.ts` already asserts "a lower
+energy-norm error does not certify the safety factor"; this is how emphatically
+true that is. Anyone reading a safety factor off a bolt-constrained adaptive run
+should treat it as ±40%, and that is a limitation of the idealization rather
+than of the mesh or the estimator.
 
 **CI cost.** The benchmark's `beforeAll` now spends the loop's full 5 iterations
 instead of stalling at 4, so its budget was raised from 900 s to 1 800 s. That
@@ -157,3 +175,22 @@ The third option — replacing the rigid clamp with a compliant bearing model �
 removes the discontinuity at source and is the only one that reduces the TRUE
 error rather than avoiding or re-labelling it. Much larger scope: it would move
 every bolt-constrained result the project has validated.
+
+---
+
+## Caveat on `bcSingularityErrorFraction`: do not compare it across densities
+
+The band is defined TOPOLOGICALLY — the patch rim plus `BC_SINGULARITY_DILATE_HOPS`
+rings of mesh adjacency — so it thins geometrically as the mesh refines. Measured
+on the same part with no exclusion, at three densities:
+
+| elements | 44 875 | 65 358 | 80 866 |
+|---|---|---|---|
+| `bcSingularityErrorFraction` | 40.6 % | 33.1 % | 27.7 % |
+
+The falling trend is mostly the band shrinking, not the singularity weakening.
+The number is meaningful as "how much of THIS solve's error sits at the BC" and
+is the right thing to show a user next to that solve. It is NOT a convergence
+metric and must not be read as one across refinement levels; a fixed-radius band
+would be needed for that, which would in turn need a length scale the topological
+definition deliberately avoids.

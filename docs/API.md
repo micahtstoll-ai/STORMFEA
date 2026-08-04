@@ -249,6 +249,14 @@ loop deliberately does NOT target the remainder: doing so would let it announce
 `target-error-reached` on a filtered number while the honest total was several
 times higher. Absent when no mask could be built (no surface, or a degraded run).
 
+Read it for THIS solve only. The band is defined topologically (the patch rim
+plus a fixed number of mesh-adjacency rings), so it thins as the mesh refines and
+the fraction falls with density for that reason alone — measured 40.6% → 33.1% →
+27.7% across 45k → 65k → 81k elements of the same part. It is not a convergence
+metric. Related, and worth knowing when reading any bolt-constrained result: peak
+stress and safety factor near a rigid constraint are not converged quantities
+either, swinging ~40% non-monotonically across those same three meshes.
+
 `stopReason` is one of `target-error-reached`, `max-iterations`,
 `element-growth-cap`, `budget-overshoot`, `no-refinement-requested`, `stalled` (a
 step improved the error by less than 5%, or the error grew), `remesh-failed`,
