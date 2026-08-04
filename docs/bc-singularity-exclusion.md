@@ -195,6 +195,30 @@ metric and must not be read as one across refinement levels; a fixed-radius band
 would be needed for that, which would in turn need a length scale the topological
 definition deliberately avoids.
 
+### Correction: the DIRECTION is fixture-specific (issue #261)
+
+The table above is the Ø5-bore tube, and the "falls with density" reading was
+generalised from it alone. It does not survive a second part. On the cross plate
+(`server/tests/unit/adaptive-fixture-cross.test.ts` — partial bore clamp,
+re-entrant corners, distributed load), uniform tiers give:
+
+| elements | 32 377 | 44 693 | 74 298 |
+|---|---|---|---|
+| `bcSingularityErrorFraction` | 41.1 % | 48.9 % | 48.2 % |
+
+It RISES from coarse to standard and then flattens. So band thinning is one
+effect among several — how much error the band holds also depends on how fast
+the interior error is falling, and on this part the two roughly cancel.
+
+What this does NOT change, and in fact strengthens: **do not read the fraction
+as a trend across densities.** The original caveat assumed the number at least
+moved predictably (downward, from thinning). It does not even do that. Compare
+it across meshes for nothing; read it as a property of the solve in front of you.
+
+`adaptive-fixture-cross.test.ts` asserts the fraction does not fall
+monotonically on that part, so if this ever changes the doc gets revisited
+rather than silently drifting.
+
 ---
 
 ## Split vs diagnose, decided (issue #259)
