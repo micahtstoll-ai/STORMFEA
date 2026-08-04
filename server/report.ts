@@ -349,9 +349,21 @@ export function generateHtmlReport(
     <div>
       <div class="section-title">Design Suggestions</div>
       <ul style="padding-left:14px;color:#444;line-height:1.7">${topoList}</ul>
-      ${singularity?.detected ? `<div style="margin-top:6px;padding:6px 8px;background:#fff8e0;border-radius:3px;font-size:10px;color:#5c3a00">⚠ ${singularity.message.slice(0,160)}</div>` : ''}
     </div>` : '<div></div>'}
   </div>
+
+  <!-- Singularity caveat. Deliberately OUTSIDE the design-suggestions block and
+       printed in full. It used to be nested inside it, so a detected singularity
+       vanished from the report whenever there were no topology suggestions; and
+       it was truncated to 160 characters, which now cuts off exactly the part
+       that says what to do about it. This is the caveat that tells the reader
+       the headline safety factor is not a converged number (issues #257, #256,
+       and the report-drops-caveats complaint in #196) — it does not get cut. -->
+  ${singularity?.detected ? `
+  <div style="margin-top:10px;padding:8px 10px;background:#fff8e0;border:1px solid #e8cf8a;border-radius:3px;font-size:10px;color:#5c3a00;line-height:1.7">
+    <strong>⚠ ${singularity.cause === "constraint-edge" ? "Constraint-edge singularity" : singularity.cause === "load-point" ? "Load-point singularity" : "Stress singularity"} detected (${singularity.confidence} confidence)</strong><br>
+    ${singularity.message}
+  </div>` : ''}
 
   <!-- Footer -->
   <div class="footer">

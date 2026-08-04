@@ -249,6 +249,48 @@ general claim.
   recovery. Upgrading it would change user-facing numbers with no lock demanding
   it. This is the obvious next candidate if the display field is ever revisited.
 
+## The scalar question, decided (issue #258)
+
+Moving the display heatmap off centroid sampling needs a choice first, because
+there are two different operations and only one of them is SPR:
+
+**(A) Recover the TENSOR from Gauss samples, take von Mises at the node.**
+**(B) Evaluate von Mises AT the Gauss points, recover that scalar field.**
+
+**Decision: (A).** Three reasons, in order of weight.
+
+1. **Superconvergence is a property of the tensor, not of von Mises.** The whole
+   reason to sample at Gauss points is that σ's components are superconvergent
+   there. Von Mises is a nonlinear (convex) functional of σ; its Gauss-point
+   values carry no such guarantee, so (B) keeps the sampling change while
+   discarding the theorem that motivated it. (B) is a heuristic that happens to
+   look like SPR.
+
+2. **(B) has a known-SIGN bias.** Von Mises is convex, so by Jensen's inequality
+   a patch fit through von-Mises-at-Gauss-points sits at or above the von Mises
+   of the fitted tensor. (B) therefore over-reports the heatmap peak
+   systematically — in the same direction as the artifact this work exists to
+   remove, and on the display field a user reads a safety factor off.
+
+3. **(A) makes the heatmap and the ZZ estimator the same recovered field.**
+   Today they are two independent recoveries of one physical field and can
+   disagree with each other; the error estimate can improve while the picture
+   the user is looking at does not. Under (A) the displayed heatmap IS the field
+   the estimator judged.
+
+A practical consequence worth stating: under (A) `sprSmoothedStress` stops being
+an independent recovery pass and becomes a projection of `sprSmoothedStress6`,
+so the scalar recovery loop disappears rather than being re-tuned.
+
+**Not yet implemented, and the reason is not effort.** (A) moves every displayed
+heatmap value and every nodal utilization number. The acceptance bar in #258 is a
+VISIBLE IMPROVEMENT on a part with convex corners, measured before and after —
+not parity, and not "the theory says so". That measurement is the work; this
+section only fixes which of the two operations is worth measuring, so the next
+session does not re-litigate it. Note also that `analysis.ts` computes
+`elemStress6` conditionally, so (A) makes the heatmap depend on a tensor the
+normal path does not always build today.
+
 ## Locks
 
 - `server/tests/solver_validation.ts` group 33 — `[33.2]` the exactness floor

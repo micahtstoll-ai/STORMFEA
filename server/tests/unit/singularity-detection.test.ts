@@ -13,6 +13,19 @@
  * 100×, must classify identically (detected, ratio, confidence, evidence). It
  * also checks the linear scaling of the local-size helper, the peakLocation
  * payload, and that a smooth (non-singular) field is not flagged.
+ *
+ * Issue #257 adds the other half of that invariance. #148 made the decision
+ * independent of LENGTH scale; the detector still gated on `peakVal > 50` MPa,
+ * a hardcoded "2× yield" for PLA, which made it depend on LOAD scale instead.
+ * Measured: an identical field with a 12× concentration ratio was flagged at
+ * 51 MPa and silent at 50 — so the same part, same mesh, same geometry gained
+ * its warning by scaling the applied force. That is why `singularity` was null
+ * on every run of the bolt-constrained Ø5-bore tube (peak 5.5–8.0 MPa), and it
+ * silenced BC-edge and sharp-corner singularities alike. The gate is gone; the
+ * yield comparison survives as `nearYield`, which changes wording only.
+ *
+ * #257 also splits the REMEDY by cause: a rigid clamp over part of a surface is
+ * singular where the patch stops, and "add a fillet" is useless advice there.
  */
 
 import { describe, it, expect } from "vitest";
@@ -125,6 +138,181 @@ describe("scale-invariant singularity detection (issue #148)", () => {
 
   it("returns null for trivial (near-zero) stress", () => {
     const { positions, stress } = buildPatch(N, 1.0, () => 0.01);
+    expect(detectSingularity(stress, positions)).toBeNull();
+  });
+});
+
+// ── Issue #257: invariance in the LOAD dimension ─────────────────────────────
+describe("singularity detection is independent of load magnitude (issue #257)", () => {
+  /** Same 12× concentration shape at any peak magnitude. */
+  const shapeAt = (peak: number) => (gx: number, gy: number): number =>
+    gx === CENTER && gy === CENTER ? peak : peak / 12;
+
+  it("classifies IDENTICALLY for the same field scaled in MAGNITUDE", () => {
+    // 120 MPa was flagged before this fix; 8 MPa — the Ø5-bore tube's actual
+    // peak — was not, despite being the same field times a constant.
+    const hi = buildPatch(N, 1.0, shapeAt(120));
+    const lo = buildPatch(N, 1.0, shapeAt(8));
+    const wHi = detectSingularity(hi.stress, hi.positions);
+    const wLo = detectSingularity(lo.stress, lo.positions);
+
+    expect(wHi).not.toBeNull();
+    expect(wLo).not.toBeNull();
+    expect(wLo!.detected).toBe(wHi!.detected);
+    expect(wLo!.confidence).toBe(wHi!.confidence);
+    // The ratio is the scale-free quantity, so it must be untouched by the scaling.
+    expect(wLo!.concentrationRatio).toBeCloseTo(wHi!.concentrationRatio, 6);
+  });
+
+  it("no longer has a cliff at the old hardcoded 50 MPa gate", () => {
+    // The exact failure: 50 -> null, 51 -> detected, on one identical shape.
+    for (const peak of [8, 20, 40, 50, 51, 120]) {
+      const p = buildPatch(N, 1.0, shapeAt(peak));
+      expect(detectSingularity(p.stress, p.positions), `peak ${peak} MPa`).not.toBeNull();
+    }
+  });
+
+  it("reports nearYield as WORDING only, never as suppression", () => {
+    const p = buildPatch(N, 1.0, shapeAt(8));
+    // Well under yield: still detected, but flagged as not verdict-critical.
+    const low = detectSingularity(p.stress, p.positions, { yieldMPa: 50 });
+    expect(low).not.toBeNull();
+    expect(low!.nearYield).toBe(false);
+    // Same field, weaker material: same detection, different wording.
+    const high = detectSingularity(p.stress, p.positions, { yieldMPa: 4 });
+    expect(high).not.toBeNull();
+    expect(high!.nearYield).toBe(true);
+    expect(high!.detected).toBe(low!.detected);
+    expect(high!.concentrationRatio).toBeCloseTo(low!.concentrationRatio, 6);
+  });
+});
+
+// ── Issue #257: the remedy must match the CAUSE ───────────────────────────────
+describe("singularity cause classification (issue #257)", () => {
+  const spikeField = buildPatch(N, 1.0, spike);
+
+  it("defaults to a geometric cause and recommends a fillet", () => {
+    const w = detectSingularity(spikeField.stress, spikeField.positions);
+    expect(w).not.toBeNull();
+    expect(w!.cause).toBe("geometry");
+    expect(w!.message).toMatch(/fillet/i);
+  });
+
+  it("names the CONSTRAINT when the peak sits on a BC patch rim", () => {
+    // A rim node coincident with the peak (grid centre, spacing 1mm).
+    const rim = Float64Array.from([CENTER, CENTER, 0]);
+    const w = detectSingularity(spikeField.stress, spikeField.positions, { bcRimPoints: rim });
+    expect(w).not.toBeNull();
+    expect(w!.cause).toBe("constraint-edge");
+    // Fillet advice is WRONG here — that was the substance of the complaint.
+    expect(w!.message).not.toMatch(/fillet/i);
+    expect(w!.message).toMatch(/bolt|clamp|constraint/i);
+  });
+
+  it("stays geometric when the BC rim is far from the peak", () => {
+    // Same field, rim placed well outside the sampling neighborhood.
+    const rim = Float64Array.from([100, 100, 100]);
+    const w = detectSingularity(spikeField.stress, spikeField.positions, { bcRimPoints: rim });
+    expect(w).not.toBeNull();
+    expect(w!.cause).toBe("geometry");
+  });
+
+  it("names the LOAD when the peak sits on a loaded rim, and does not blame the bolt", () => {
+    const rim = Float64Array.from([CENTER, CENTER, 0]);
+    const w = detectSingularity(spikeField.stress, spikeField.positions, { loadRimPoints: rim });
+    expect(w).not.toBeNull();
+    expect(w!.cause).toBe("load-point");
+    expect(w!.message).not.toMatch(/fillet/i);
+    // Telling the user to reconsider their BOLT for a load-point singularity is
+    // as wrong as telling them to add a fillet.
+    expect(w!.message).not.toMatch(/bolt/i);
+    expect(w!.message).toMatch(/load/i);
+  });
+
+  it("attributes to the NEAREST rim when both are inside the sampling radius", () => {
+    // The Ø5-bore tube case: radius 8.95mm on a part 12mm across puts both rims
+    // in range, and a first-match test blamed the constraint for a peak sitting
+    // exactly on the loaded node.
+    const onPeak = Float64Array.from([CENTER, CENTER, 0]);
+    const nearby = Float64Array.from([CENTER + 2, CENTER, 0]);
+
+    const loadWins = detectSingularity(spikeField.stress, spikeField.positions, {
+      bcRimPoints: nearby, loadRimPoints: onPeak,
+    });
+    expect(loadWins!.cause).toBe("load-point");
+
+    const bcWins = detectSingularity(spikeField.stress, spikeField.positions, {
+      bcRimPoints: onPeak, loadRimPoints: nearby,
+    });
+    expect(bcWins!.cause).toBe("constraint-edge");
+  });
+
+  it("breaks an exact tie toward the constraint", () => {
+    const same = Float64Array.from([CENTER, CENTER, 0]);
+    const w = detectSingularity(spikeField.stress, spikeField.positions, {
+      bcRimPoints: same, loadRimPoints: same,
+    });
+    expect(w!.cause).toBe("constraint-edge");
+  });
+
+  it("always explains that the peak does not converge under refinement", () => {
+    // The reason the warning exists at all (issue #256): the number moves.
+    for (const rim of [null, Float64Array.from([CENTER, CENTER, 0])]) {
+      const w = detectSingularity(spikeField.stress, spikeField.positions, { bcRimPoints: rim });
+      expect(w!.message).toMatch(/does NOT converge/i);
+    }
+  });
+});
+
+// ── Issue #257: guard against over-firing now the magnitude gate is gone ──────
+describe("a convex 90° edge is NOT a singularity (issue #257 over-firing guard)", () => {
+  /**
+   * Two traction-free faces meeting at a convex 90° edge — the Ø5-bore tube's
+   * outer rim. A convex wedge (material angle < 180°) is BOUNDED, not singular:
+   * measured, it carries 0.2–0.4% of the error energy and does not grow under
+   * refinement. The detector must not flag it. Built as an L in the x–z plane,
+   * extruded along y, with the edge at x=EDGE.
+   */
+  function buildConvexEdge(
+    n: number,
+    h: number,
+    stressAt: (s: number, gy: number) => number,
+  ): { positions: Float32Array; stress: Float32Array } {
+    // Arc-length parameter s runs up the vertical face, over the edge, and out
+    // along the horizontal face, so the surface is a single strip.
+    const pointAt = (s: number): [number, number] =>
+      s <= n ? [n * h, (n - s) * h] : [(2 * n - s) * h, 0];
+    const tris: number[] = [];
+    const str: number[] = [];
+    const push = (s: number, gy: number): void => {
+      const [x, z] = pointAt(s);
+      tris.push(x, gy * h, z);
+      str.push(stressAt(s, gy));
+    };
+    for (let gy = 0; gy < n; gy++) {
+      for (let s = 0; s < 2 * n; s++) {
+        push(s, gy); push(s + 1, gy); push(s, gy + 1);
+        push(s + 1, gy); push(s + 1, gy + 1); push(s, gy + 1);
+      }
+    }
+    return { positions: new Float32Array(tris), stress: new Float32Array(str) };
+  }
+
+  const EDGE = 4;
+
+  it("does not flag a bounded stress rise over a convex edge", () => {
+    // A real convex edge concentrates stress mildly and boundedly. 2× the
+    // background at the edge is a concentration, not a singularity.
+    const { positions, stress } = buildConvexEdge(EDGE, 1.0, (s) =>
+      10 * (1 + Math.exp(-Math.abs(s - EDGE))));
+    expect(detectSingularity(stress, positions)).toBeNull();
+  });
+
+  it("does not flag it at high absolute stress either", () => {
+    // The old gate would have let this through on magnitude alone had the shape
+    // qualified; the shape is what must decide, in both directions.
+    const { positions, stress } = buildConvexEdge(EDGE, 1.0, (s) =>
+      400 * (1 + Math.exp(-Math.abs(s - EDGE))));
     expect(detectSingularity(stress, positions)).toBeNull();
   });
 });

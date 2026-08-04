@@ -194,3 +194,41 @@ is the right thing to show a user next to that solve. It is NOT a convergence
 metric and must not be read as one across refinement levels; a fixed-radius band
 would be needed for that, which would in turn need a length scale the topological
 definition deliberately avoids.
+
+---
+
+## Split vs diagnose, decided (issue #259)
+
+Whether to keep reporting ONE total error with the BC share as a diagnosis (a),
+or to report a genuine two-way split and let the loop target the resolvable part
+(b).
+
+**Decision: (a).** The table above is the argument. A user-facing split number
+inherits the band's topological definition, so it moves from 40.6% to 27.7% on
+ONE part across three densities, mostly because the band thinned — and it would
+move again if anyone retuned `BC_SINGULARITY_DILATE_HOPS`. A headline number
+that responds to an internal constant is worse than today's ambiguous total,
+which has no such dependency. (b) is not ruled out forever, but it is blocked on
+a band definition that is stable under refinement, and that needs a physical
+length scale nobody has justified yet. Adopting (b) first and discovering the
+band problem afterwards is the expensive order.
+
+The second trap stands regardless and is already respected in code: the loop
+must never announce `target-error-reached` against a filtered figure while the
+honest total is materially higher. `maskedErrorFraction` is documented as a
+reported number and not a target for exactly this reason.
+
+**What (a) still owes the user.** The fraction is computed and returned, but
+nothing consumes it — not the client, not the printed report. The gap is not the
+number, it is that the number never arrives. Concretely:
+
+- The client's discretization readout keys purely on the total and says
+  "high — refine the mesh before trusting margins" above 10%. On a bolt-
+  constrained part that is precisely the wrong instruction: the error is
+  BC-dominated and refinement cannot remove it. The advice has to become
+  conditional on the BC share.
+- `bcSingularityErrorFraction` currently lives only on `adaptiveRefinement`, so
+  it is absent on ordinary single solves — which is most runs. The mask
+  machinery now runs on the normal path too (wired there for #257's cause
+  attribution), so computing the share on every solve is a small extension
+  rather than a new mechanism.

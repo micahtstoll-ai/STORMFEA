@@ -1954,6 +1954,18 @@ export interface SingularityWarning {
    *  divergence across a multi-mesh study. The client upgrades this field when
    *  it corroborates the flag with refinement evidence (issue #147). */
   evidence:      "single-mesh-heuristic" | "refinement";
+  /** WHAT is singular (issue #257). A rigid displacement constraint applied over
+   *  part of a surface is singular at the curve where the patch stops, exactly
+   *  as a re-entrant geometric corner is — but the remedies are opposite. A
+   *  fillet does nothing for a constraint edge; the answer there concerns the
+   *  bolt idealization (#260). "constraint-edge" when the peak sits on the rim
+   *  of a constrained/loaded patch, "geometry" otherwise. */
+  cause:         "geometry" | "constraint-edge" | "load-point";
+  /** True when the peak is a large enough fraction of yield to matter for the
+   *  verdict. Drives WORDING ONLY — never suppresses the warning. A singularity
+   *  makes the peak stress mesh-dependent whether or not it is near yield, and
+   *  that mesh-dependence is what the user is being told about (issue #256). */
+  nearYield:     boolean;
 }
 
 export interface TopologySuggestion {
@@ -3109,9 +3121,21 @@ export interface AnalysisResult {
  *      scale-invariant: on a 5mm part 1mm spanned much of the geometry (false
  *      positives); on a 500mm part 1mm was sub-element (missed) — issue #148.
  *   3. Compute the average stress in that neighborhood; if peak/neighborhood
- *      ratio > 3.0 (and the peak is well above yield), flag as likely singular.
+ *      ratio > 3.0, flag as likely singular.
  *   4. Additional check: if the peak vertex has NO neighbors within the radius
  *      (isolated point), that is a strong singularity indicator.
+ *
+ * The decision is on the SHAPE of the field (the ratio), never on the absolute
+ * stress. It used to also require `peakVal > 50` MPa, commented as "2x yield" —
+ * a hardcoded PLA number that made detection depend on how hard the part was
+ * loaded. Measured (issue #257): an identical field with a 12x concentration
+ * ratio was flagged at 51 MPa and silent at 50, so the same part with the same
+ * mesh and the same geometry gained or lost its warning purely by scaling the
+ * applied force. That silently defeated the scale-invariance #148 established
+ * for the neighborhood radius, in the load dimension instead of the length one,
+ * and it is why `singularity` came back null on every run of the bolt-
+ * constrained Ø5-bore tube, whose peak sits at 5.5-8.0 MPa. Whether the peak is
+ * near yield is still reported, as `nearYield`, but it governs wording only.
  *
  * This is a SINGLE-MESH GEOMETRIC heuristic (evidence: "single-mesh-heuristic").
  * The stronger, scale- and unit-independent test — the peak growing
@@ -3348,6 +3372,20 @@ export function localEdgeLengthAtPeak(
 export function detectSingularity(
   vertexStress:  Float32Array,
   positions:     Float32Array | Float64Array,
+  ctx?: {
+    /** World-mm (x,y,z) triples of nodes on the RIM of a CONSTRAINED patch —
+     *  `bcDiscontinuityMask` output, mapped through `mesh.nodes`. When the peak
+     *  lands within the sampling neighborhood of one, the singularity is the
+     *  constraint idealization rather than the geometry. */
+    bcRimPoints?: Float64Array | null;
+    /** Same, for LOADED nodes. Kept separate from `bcRimPoints` because the two
+     *  need opposite advice: a load rim is singular because the load was applied
+     *  to a patch (or a point) rather than spread as a real contact pressure,
+     *  and telling the user to reconsider their BOLT there is simply wrong. */
+    loadRimPoints?: Float64Array | null;
+    /** Material yield (MPa) for the `nearYield` wording flag. */
+    yieldMPa?:    number;
+  },
 ): SingularityWarning | null {
   if (vertexStress.length === 0) return null;
 
@@ -3381,6 +3419,48 @@ export function detectSingularity(
   // coincidence tolerance of the peak; counting them would deflate the ratio.
   const coincident2 = (localH * 0.05) ** 2;
 
+  // Is the peak on the rim of a constrained/loaded patch? Same radius the stress
+  // neighborhood uses, so the test scales with the local element size for the
+  // same reason (#148) and needs no absolute length of its own.
+  // NEAREST rim, not the first one within range. The sampling radius is a
+  // generous 2.5x the local element size, and on a compact part that can put
+  // BOTH the constrained rim and the loaded rim inside it — measured on the
+  // Ø5-bore tube, the radius is 8.95 mm on a part 12 mm across, so a
+  // first-match test reported "constraint-edge" for a peak sitting exactly on
+  // the loaded node 3.5 mm from the nearest bore rim. Comparing distances makes
+  // the attribution mean something; ties still go to the constraint, which is
+  // the idealization with a design consequence (#260).
+  const nearestRim2 = (rim: Float64Array | null | undefined): number => {
+    if (!rim || rim.length < 3) return Infinity;
+    let best = Infinity;
+    for (let i = 0; i + 2 < rim.length; i += 3) {
+      const dx = rim[i]! - px, dy = rim[i + 1]! - py, dz = rim[i + 2]! - pz;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < best) best = d2;
+    }
+    return best;
+  };
+  const dBc2   = nearestRim2(ctx?.bcRimPoints);
+  const dLoad2 = nearestRim2(ctx?.loadRimPoints);
+  const cause: "geometry" | "constraint-edge" | "load-point" =
+    Math.min(dBc2, dLoad2) > radius2 ? "geometry"
+    : dBc2 <= dLoad2                 ? "constraint-edge"
+    : "load-point";
+  const nearYield = ctx?.yieldMPa !== undefined && ctx.yieldMPa > 0
+    ? peakVal > 0.5 * ctx.yieldMPa
+    : false;
+
+  /** Cause-appropriate remedy. A fillet does nothing for a constraint edge. */
+  const advice =
+    cause === "constraint-edge"
+      ? `This is the CONSTRAINT, not your part: a bolt is modelled as a rigid clamp over the whole bore wall, which is singular at the edge where the clamp stops. A real bolt bears on part of the wall with some joint compliance and has no such edge. Treat the peak here as an artifact of that idealization — judge the part on the stress a short distance away, not at the constrained rim.`
+    : cause === "load-point"
+      ? `This is where the LOAD is applied, not a feature of your part. A force applied to a point or a small patch is singular there, exactly as pressing with an infinitely sharp tip would be; a real load is spread over a contact area. Judge the part on the stress away from the loaded region, and if the peak matters to your decision, re-run with the load spread over the area it really acts on.`
+      : `This looks like a geometric singularity at a sharp re-entrant corner. The true stress is lower. Add a fillet radius of >=0.5mm at this location in your CAD model.`;
+
+  /** Why the number moves between meshes — the point of the warning (#256). */
+  const meshNote = `Peak stress at a singularity is set by the local element size, so it does NOT converge: refining the mesh changes it rather than settling it, and the safety factor moves with it.`;
+
   let neighborSum = 0, neighborCount = 0;
   const nVerts = vertexStress.length;
 
@@ -3410,15 +3490,17 @@ export function detectSingularity(
       concentrationRatio: 999,
       confidence:         "medium",
       evidence:           "single-mesh-heuristic",
-      message: `Peak stress vertex (${peakVal.toFixed(1)} MPa) has no neighbors within ${radius.toFixed(2)}mm (2.5× the local element size) — isolated point stress. This is likely a geometric singularity at a sharp corner. The true stress is lower. Add a fillet radius of ≥0.5mm to resolve.`,
+      cause,
+      nearYield,
+      message: `Peak stress vertex (${peakVal.toFixed(1)} MPa) has no neighbors within ${radius.toFixed(2)}mm (2.5× the local element size) — isolated point stress, a strong singularity indicator. ${advice} ${meshNote}`,
     };
   }
 
   const avgNeighbor = neighborSum / neighborCount;
   const ratio       = avgNeighbor > 0.1 ? peakVal / avgNeighbor : 0;
 
-  // Ratio > 3 AND stress > 2× yield → likely singularity
-  const likelySingularity = ratio > 3.0 && peakVal > 50;
+  // Shape only. See the header note on why the old `&& peakVal > 50` is gone.
+  const likelySingularity = ratio > 3.0;
 
   if (!likelySingularity) return null;
 
@@ -3436,7 +3518,13 @@ export function detectSingularity(
     concentrationRatio: +ratio.toFixed(1),
     confidence,
     evidence:           "single-mesh-heuristic",
-    message: `Peak stress ${peakVal.toFixed(1)} MPa is ${ratio.toFixed(1)}× higher than the surrounding neighborhood average (${avgNeighbor.toFixed(1)} MPa, within ${radius.toFixed(2)}mm ≈ 2.5× the local element size). This gradient suggests a geometric singularity at a sharp re-entrant corner. The safety factor may be artificially low. Add a fillet radius ≥0.5mm at this location in your CAD model.`,
+    cause,
+    nearYield,
+    message: `Peak stress ${peakVal.toFixed(1)} MPa is ${ratio.toFixed(1)}× higher than the surrounding neighborhood average (${avgNeighbor.toFixed(1)} MPa, within ${radius.toFixed(2)}mm ≈ 2.5× the local element size). ${advice} ${meshNote}${
+      nearYield
+        ? " The peak is also within reach of yield, so the safety factor here is both mesh-dependent AND close to the limit — treat this result as unresolved."
+        : " The peak is well below yield on this run, so the verdict is unlikely to hinge on it — but the reported safety factor is still not a converged number."
+    }`,
   };
 }
 
@@ -5685,9 +5773,38 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // so the peak's coordinate and its neighborhood are read in the SAME index
   // space as vertexStress (both indexed by display vertex). The radius is scaled
   // to the local element size inside detectSingularity (issue #148).
+  //
+  // The BC rim is passed so the warning can name the right CAUSE (issue #257).
+  // A bolt is a rigid clamp over a finite patch and is singular where the patch
+  // stops, but the old message always recommended a fillet — advice that does
+  // nothing for a constraint edge. Reuses the same `bcDiscontinuityMask` the
+  // adaptive loop uses, mapped from node indices to world mm because the
+  // detector works in display-vertex space.
+  // Constrained and loaded sets are masked SEPARATELY, not unioned as the
+  // adaptive loop does. The loop only needs to know a node is on some BC rim so
+  // it can stop refining it; the warning has to tell the user WHICH, because the
+  // two call for opposite responses (rethink the bolt vs spread the load).
+  const rimPointsFor = (nodeSet: readonly number[]): Float64Array | null => {
+    if (!surfaceFaces || surfaceFaces.length === 0 || nodeSet.length === 0) return null;
+    const surf = new Uint8Array(mesh.nodeCount);
+    for (const n of surfaceFaces) if (n >= 0 && n < surf.length) surf[n] = 1;
+    const mask = bcDiscontinuityMask(mesh, [nodeSet], BC_SINGULARITY_DILATE_HOPS, surf);
+    const pts: number[] = [];
+    for (let n = 0; n < mask.length; n++) {
+      if (mask[n] !== 1) continue;
+      pts.push(mesh.nodes[n * 3] ?? 0, mesh.nodes[n * 3 + 1] ?? 0, mesh.nodes[n * 3 + 2] ?? 0);
+    }
+    return pts.length ? Float64Array.from(pts) : null;
+  };
+
   const singularity = detectSingularity(
     vertexStress,
     req.positions,
+    {
+      bcRimPoints:   rimPointsFor(constraints.flatMap(c => c.nodeIndices)),
+      loadRimPoints: rimPointsFor(solverForces.map(f => f.nodeIndex)),
+      yieldMPa:      baseMat2.yieldMPa,
+    },
   );
 
   // ── Topology suggestions ──────────────────────────────────────────────────
@@ -6313,12 +6430,29 @@ export async function runAdaptiveAnalysis(
 
   // ── Singularity exclusion (issue #147): keep a small radius around a flagged
   //    singular corner coarse — refining a true singularity never converges. ──
+  //    Only for a GEOMETRIC singularity. A constraint-edge or load-point one is
+  //    already handled, and handled better, by the BC-discontinuity mask below:
+  //    that band is topological, so it scales with the local element size, where
+  //    this ball is a fixed 2 mm regardless of part size. Stacking both on the
+  //    same singularity double-excludes it. This distinction did not exist
+  //    before issue #257 because the detector's absolute 50 MPa gate meant
+  //    `detected` was essentially never true on the parts this tool analyses, so
+  //    this branch was dead code; removing that gate made it live, and it moved
+  //    the #149 benchmark's adaptive peak from 8.485 to 8.860 MPa (past its
+  //    2x-uniform bound) on the first run where it fired. Gating it by cause
+  //    restores the measured baseline and keeps the ball for the case it was
+  //    designed for.
   const singularities: SingularityRegion[] = [];
-  if (first.singularity?.detected && cap0.mesh) {
-    const idx = first.singularity.peakVertexIdx;
-    const nx = cap0.mesh.nodes[idx * 3];
-    const ny = cap0.mesh.nodes[idx * 3 + 1];
-    const nz = cap0.mesh.nodes[idx * 3 + 2];
+  if (first.singularity?.detected && first.singularity.cause === "geometry" && cap0.mesh) {
+    // `peakLocation`, NOT `peakVertexIdx` indexed into mesh.nodes. Those are two
+    // different index spaces: peakVertexIdx indexes the DISPLAY mesh (3 vertices
+    // per surface triangle, what detectSingularity was handed), while mesh.nodes
+    // is the FEA node array. Using one to index the other put the exclusion ball
+    // at an unrelated node — in range, so it failed silently. It stayed dormant
+    // only because the detector's old absolute 50 MPa gate meant `detected` was
+    // essentially never true (issue #257); removing that gate makes this live.
+    // peakLocation is already world mm, which is what SingularityRegion wants.
+    const [nx, ny, nz] = first.singularity.peakLocation;
     if (nx !== undefined && ny !== undefined && nz !== undefined) {
       // 2 mm exclusion ball — comfortably larger than the ~1 mm neighbourhood
       // the detector samples, so the singular tip and its immediate ring are
