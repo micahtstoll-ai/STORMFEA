@@ -99,6 +99,7 @@ import {
 } from "./validation-coverage.js";
 import {
   buildSizeField, relaxSizeFieldToBudget, shouldStopRefinement,
+  bcDiscontinuityMask, BC_SINGULARITY_DILATE_HOPS,
   smoothSizeFieldGradation, predictRefinedElementCount,
   judgeRemeshAgainstBudget, effectiveElementBudget,
   targetPerElementError, DEFAULT_LOOP_OPTIONS, DEFAULT_SIZE_FIELD_FACTORS,
@@ -1878,6 +1879,10 @@ export interface AnalysisRequest {
     surfaceToNode?: Int32Array;
     surfaceFaces?:  Int32Array | null;
     meshFallback?:  boolean;
+    /** Nodes carrying a displacement constraint (bolt walls) — BC-singularity input. */
+    constrainedNodes?: Int32Array;
+    /** Nodes carrying an applied nodal force — BC-singularity input. */
+    loadedNodes?:      Int32Array;
   };
 }
 
@@ -4741,6 +4746,12 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     req._captureInternals.surfaceToNode = surfaceToNode;
     req._captureInternals.surfaceFaces  = surfaceFaces;
     req._captureInternals.meshFallback  = meshFallback;
+    // BC node sets, for the adaptive driver's singularity exclusion. The EDGE
+    // of each of these sets is where the solution is genuinely singular.
+    req._captureInternals.constrainedNodes =
+      Int32Array.from(constraints.flatMap(c => c.nodeIndices));
+    req._captureInternals.loadedNodes =
+      Int32Array.from(solverForces.map(f => f.nodeIndex));
   }
 
   let modalResult: ModalAnalysisResult | undefined;
@@ -6302,6 +6313,30 @@ export async function runAdaptiveAnalysis(
     }
   }
 
+  // ── BC-discontinuity exclusion ─────────────────────────────────────────────
+  // The edge of a constrained patch, and the rim of a loaded patch, are genuine
+  // singularities of the IDEALIZATION: refining them never converges, so an
+  // equidistribution loop pours elements into a region that cannot improve and
+  // stalls short of its target. Marking the interface (one ring either side)
+  // lets the budget go to the interior, which does converge. See
+  // bcDiscontinuityMask for the measurement this rests on.
+  const bcMaskFor = (cap: NonNullable<AnalysisRequest["_captureInternals"]>): Uint8Array | undefined => {
+    if (!cap.mesh) return undefined;
+    // Surface-node mask: the patch-rim test is only meaningful within the
+    // boundary surface (see bcDiscontinuityMask). No surface ⇒ no exclusion.
+    if (!cap.surfaceFaces) return undefined;
+    const surf = new Uint8Array(cap.mesh.nodeCount);
+    for (const n of cap.surfaceFaces) if (n >= 0 && n < surf.length) surf[n] = 1;
+    return bcDiscontinuityMask(
+      cap.mesh,
+      [cap.constrainedNodes ?? [], cap.loadedNodes ?? []],
+      BC_SINGULARITY_DILATE_HOPS,
+      surf,
+    );
+  };
+  // Node indices are per-mesh, so this is rebuilt after every accepted re-mesh.
+  let bcExclude = bcMaskFor(cap0);
+
   const baseElementCount = first.elementCount;
   const budget = Math.max(baseElementCount + 1, Math.floor(baseElementCount * opts.maxElementGrowth));
 
@@ -6339,6 +6374,7 @@ export async function runAdaptiveAnalysis(
       minSizeFactor: DEFAULT_SIZE_FIELD_FACTORS.minSizeFactor,
       maxSizeFactor: DEFAULT_SIZE_FIELD_FACTORS.maxSizeFactor,
       singularities,
+      excludeNodes: bcExclude,
     });
     if (raw.refinedNodeCount === 0) { stopReason = "no-refinement-requested"; break; }
     // Bound the size transition between refined and unrefined regions BEFORE
@@ -6483,6 +6519,7 @@ export async function runAdaptiveAnalysis(
     if (!capN.mesh || !capN.errorEstimate) { stopReason = "no-error-field"; break; }
     curMesh = capN.mesh;
     curError = capN.errorEstimate;
+    bcExclude = bcMaskFor(capN);
   }
 
   return {

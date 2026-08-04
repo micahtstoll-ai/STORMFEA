@@ -223,7 +223,15 @@ stalls at 11 %, nowhere near 3 %, because of that BC singularity.
 `max-iterations` are — so any other value would have produced the same run.
 The `SingularityRegion` exclusion in `buildSizeField` (`opts.singularities`) is
 the right mechanism, but it must be fed the CONSTRAINT and LOAD boundaries, not
-the part's sharp edges. That is a separate feature, deliberately out of scope.
+the part's sharp edges.
+
+That has since been built — see **`docs/bc-singularity-exclusion.md`**. Read it
+before assuming it solved the problem: it stops the loop stalling and moves the
+tube from 11.14% to 10.23%, which is real but modest, and it CANNOT approach 3%
+on its own. Excluding a region from refinement while still counting it in the
+reported error leaves ~75% of the error energy frozen by construction, which is
+a floor no amount of refinement gets below. Closing that gap is a reporting
+change, not a solver change.
 
 Caveat: one fixture. The one-fewer-solve result in particular turns on a stop
 reason flipping from `max-iterations` to `stalled`, which is not a robust
