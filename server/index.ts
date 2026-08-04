@@ -1533,7 +1533,7 @@ SF = min(SF_bulk, SF_int)</div>
 
 <h2>Solver Validation</h2>
 <p>
-  STORMFEA includes a 180-test automated validation suite run against problems with known analytical
+  STORMFEA includes a 187-test automated validation suite run against problems with known analytical
   solutions. All tests must pass before a release is packaged. Results can be reproduced live from
   the DEBUG tab in the application.
 </p>

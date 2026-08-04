@@ -20,6 +20,8 @@ import {
   buildOrthotropicConstitutiveMatrix,
   c3d10ShapeFunctions,
   c3d10ElementStiffness,
+  buildB_c3d10,
+  C3D10_GAUSS_HIGH_ORDER,
 } from "../solver/element.js";
 import fs   from "fs";
 import path from "path";
@@ -2789,6 +2791,172 @@ console.log("\n[32] Lekhnitskii orthotropic open-hole Kt — anisotropic known-a
     }
   } catch (err) {
     test("[32] Lekhnitskii orthotropic benchmark did not throw", false, String(err));
+  }
+}
+
+// ── Test group 33: C3D10 ZZ estimator — exactness floor + effectivity (#158) ──
+// Group 30 locks the estimator's MAGNITUDE, but on a C3D4 box. The C3D10 path
+// had no anchor at all, and carried a floor unrelated to discretization error:
+// SPR was fed ONE centroid sample per element, so patches with fewer elements
+// than the fit has unknowns — every convex model corner — fell back to plain
+// averaging, which is biased by O(h·|∇σ|) even when the FE solution is EXACT.
+// Gauss-point sampling (4 samples/element, quadratic recovery basis) removes it.
+console.log("\n[33] C3D10 ZZ estimator: exactness floor and effectivity index (#158)");
+{
+  const E = 3500, nu = 0.36, L = 10;
+  const iso = { E, nu, yieldStrength: 1e9, label: "zz-c3d10" };
+  const Ciso = buildConstitutiveMatrix(iso);
+  const Siso = invert6x6(Ciso);
+
+  /** Solve a Dirichlet-MMS problem: u_exact prescribed on the whole boundary. */
+  const solveMMS = async (
+    mesh: TetMesh, lo: number, hi: number,
+    uex: (x: number, y: number, z: number) => [number, number, number],
+  ) => {
+    const eps = 1e-6;
+    const bnodes: number[] = [], pd: [number, number, number][] = [];
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      const x = mesh.nodes[n * 3] ?? 0, y = mesh.nodes[n * 3 + 1] ?? 0, z = mesh.nodes[n * 3 + 2] ?? 0;
+      if (x < lo + eps || x > hi - eps || y < lo + eps || y > hi - eps || z < lo + eps || z > hi - eps) {
+        bnodes.push(n); pd.push(uex(x, y, z));
+      }
+    }
+    // Same tight CG tolerance as group 30, and for the same reason: the
+    // Dirichlet penalty makes K stiff, and here the quantity under test is
+    // itself near machine zero, so CG residual must sit far below it.
+    const r = await runLinearStatic({
+      mesh, material: iso,
+      constraints: [{ nodeIndices: bnodes, prescribedDisplacement: pd }],
+      forces: [], cgTolerance: 1e-13, cgMaxIter: 40000,
+    });
+    return r.displacement;
+  };
+
+  // ── (a) The exactness lock: a field C3D10 represents EXACTLY ───────────────
+  // Group 30's pure-bending MMS (σ_xx = α·z) comes from a QUADRATIC displacement
+  // field, which a C3D10 mesh reproduces to CG tolerance. The true
+  // discretization error is therefore ~0, so ANY reported η is pure estimator
+  // artifact. Before Gauss sampling this read 1.46% / 0.53% at 4³ / 6³; it must
+  // now collapse to round-off, tracking ‖u_h − u_exact‖ rather than h.
+  {
+    const alpha = 1.0;
+    const uex = (x: number, y: number, z: number): [number, number, number] =>
+      [(alpha / E) * x * z, -(nu * alpha / E) * y * z, (alpha / (2 * E)) * (-x * x + nu * y * y - nu * z * z)];
+
+    for (const nDiv of [4, 6]) {
+      const mesh = generateBoxMeshC3D10(0, 0, 0, L, L, L, nDiv, nDiv, nDiv);
+      const disp = await solveMMS(mesh, 0, L, uex);
+
+      // The premise: confirm the FE solution really is exact on this mesh.
+      let maxErr = 0, maxU = 0;
+      for (let n = 0; n < mesh.nodeCount; n++) {
+        const x = mesh.nodes[n * 3] ?? 0, y = mesh.nodes[n * 3 + 1] ?? 0, z = mesh.nodes[n * 3 + 2] ?? 0;
+        const ue = uex(x, y, z);
+        for (let k = 0; k < 3; k++) {
+          maxErr = Math.max(maxErr, Math.abs((disp[n * 3 + k] ?? 0) - ue[k]!));
+          maxU   = Math.max(maxU, Math.abs(ue[k]!));
+        }
+      }
+      const uRel = maxErr / maxU;
+      test(`[33.1] div=${nDiv}: C3D10 reproduces the quadratic MMS exactly (premise of 33.2)`,
+        uRel < 1e-10, `‖u_h−u_exact‖∞/‖u‖∞=${uRel.toExponential(2)}`);
+
+      const { elemStress6 } = recoverElementStress(mesh, disp, iso);
+      const { globalRelativeError } = computeZZErrorEstimate(mesh, disp, elemStress6, iso);
+      // 1e-8 is ~5 orders below the pre-#158 floor at these densities (1.46e-2,
+      // 5.30e-3) and ~5 orders ABOVE the measured round-off (3.2e-13, 4.9e-13),
+      // so it fails loudly on regression without tracking CG jitter.
+      test(`[33.2] div=${nDiv}: η on an exactly-representable field is round-off, not O(h)`,
+        globalRelativeError < 1e-8, `η=${globalRelativeError.toExponential(3)}`);
+    }
+  }
+
+  // ── (b) The effectivity anchor: a field C3D10 CANNOT represent ─────────────
+  // A quadratic MMS cannot measure effectivity — θ = η/0. This needs genuine,
+  // refinement-converging discretization error, so the field must be CUBIC or
+  // higher. Family used (isotropic, and self-equilibrated so no body force is
+  // needed): u = β·(y³ − 3y·z², 0, 0). u_x is independent of x ⇒ div u = 0, and
+  // y³ − 3y·z² is harmonic ⇒ ∇²u_x = 0, so Navier holds with f = 0 for ANY λ, μ.
+  // The resulting stress is pure shear, τ_xy = 3μβ(y²−z²), τ_xz = −6μβ·y·z,
+  // and div σ = 0 identically.
+  {
+    const beta = 1e-4, mu = E / (2 * (1 + nu));
+    const uex = (_x: number, y: number, z: number): [number, number, number] =>
+      [beta * (y * y * y - 3 * y * z * z), 0, 0];
+    const sigex = (_x: number, y: number, z: number): number[] =>
+      [0, 0, 0, mu * beta * (3 * y * y - 3 * z * z), 0, mu * beta * (-6 * y * z)];
+
+    const thetas: number[] = [], trueRels: number[] = [];
+    for (const nDiv of [3, 4, 6]) {
+      const mesh = generateBoxMeshC3D10(-L / 2, -L / 2, -L / 2, L / 2, L / 2, L / 2, nDiv, nDiv, nDiv);
+      const disp = await solveMMS(mesh, -L / 2, L / 2, uex);
+      const { elemStress6 } = recoverElementStress(mesh, disp, iso);
+      const { globalRelativeError } = computeZZErrorEstimate(mesh, disp, elemStress6, iso);
+
+      // TRUE error, integrated INDEPENDENTLY of the estimator: the 64-point
+      // degree-7 Duffy rule, with σ_h = C·B·u evaluated pointwise. σ_exact−σ_h
+      // is quadratic here, so the energy integrand is quartic — well inside
+      // degree-7 exactness, and it never touches the estimator's 4-point loop.
+      const nc = new Float64Array(30), ue = new Float64Array(30);
+      const ev = new Float64Array(6), sh = new Float64Array(6), d = new Float64Array(6);
+      let trueSq = 0, normSq = 0;
+      for (let e = 0; e < mesh.elementCount; e++) {
+        for (let ni = 0; ni < 10; ni++) {
+          const n = mesh.elements[e * 10 + ni] ?? 0;
+          for (let k = 0; k < 3; k++) {
+            nc[ni * 3 + k] = mesh.nodes[n * 3 + k] ?? 0;
+            ue[ni * 3 + k] = disp[n * 3 + k] ?? 0;
+          }
+        }
+        for (const gp of C3D10_GAUSS_HIGH_ORDER) {
+          let B: Float64Array, detJ: number;
+          try { ({ B, detJ } = buildB_c3d10(nc, gp.xi, gp.eta, gp.zeta)); } catch { continue; }
+          const vol = Math.abs(detJ) * gp.w;
+          for (let a = 0; a < 6; a++) { let s = 0; for (let c = 0; c < 30; c++) s += (B[a * 30 + c] ?? 0) * (ue[c] ?? 0); ev[a] = s; }
+          for (let a = 0; a < 6; a++) { let s = 0; for (let c = 0; c < 6;  c++) s += (Ciso[a * 6 + c] ?? 0) * (ev[c] ?? 0); sh[a] = s; }
+          const N = c3d10ShapeFunctions(gp.xi, gp.eta, gp.zeta);
+          let px = 0, py = 0, pz = 0;
+          for (let ni = 0; ni < 10; ni++) {
+            const w = N[ni] ?? 0;
+            px += w * (nc[ni * 3] ?? 0); py += w * (nc[ni * 3 + 1] ?? 0); pz += w * (nc[ni * 3 + 2] ?? 0);
+          }
+          const se = sigex(px, py, pz);
+          for (let a = 0; a < 6; a++) d[a] = se[a]! - (sh[a] ?? 0);
+          trueSq += vol * stressEnergyDensity(d, Siso);
+          normSq += vol * stressEnergyDensity(sh, Siso);
+        }
+      }
+      const trueErr = Math.sqrt(trueSq), etaZZ = globalRelativeError * Math.sqrt(normSq);
+      thetas.push(etaZZ / trueErr);
+      trueRels.push(trueErr / Math.sqrt(normSq));
+    }
+
+    // Consistency of the MMS itself, exactly as [30.2] does for C3D4: the
+    // genuine FE stress error must FALL under refinement, or θ is measuring
+    // CG non-convergence rather than the estimator.
+    test("[33.3] cubic MMS: true FE error decreases under refinement (consistent MMS)",
+      trueRels[0]! > trueRels[1]! && trueRels[1]! > trueRels[2]!,
+      `trueRelErr=${trueRels.map(v => v.toExponential(3)).join(" → ")}`);
+
+    // θ > 1 is the safety-critical direction (never under-predicting).
+    test("[33.4] C3D10 effectivity index is conservative (θ > 1 at every density)",
+      thetas.every(t => t > 1), `θ=${thetas.map(v => v.toFixed(4)).join(" → ")}`);
+
+    // The regression lock with teeth. Centroid sampling gave θ = 2.81 → 2.85 →
+    // 2.84 on this fixture: nearly 3× over-estimation, and NOT converging (on a
+    // quartic variant it actively diverged, 2.34 → 2.64). Gauss sampling gives
+    // 1.68 → 1.64 → 1.57, monotone toward 1. The ceiling of 2.0 and the
+    // monotonicity requirement both fail on the old path.
+    //
+    // Honest limitation: 1.57 is still outside the classic [0.7, 1.3]
+    // effectivity window that [30.1] holds C3D4 to. The C3D10 estimator is
+    // asymptotically exact in TREND but has not reached that window at these
+    // densities; this locks the direction and the magnitude ceiling, not
+    // membership in the classic band.
+    test("[33.5] C3D10 effectivity index converges monotonically toward 1 (θ→1, θ<2)",
+      thetas[0]! > thetas[1]! && thetas[1]! > thetas[2]! && thetas[2]! < 2.0 &&
+      Math.abs(thetas[2]! - 1) < Math.abs(thetas[0]! - 1),
+      `θ=${thetas.map(v => v.toFixed(4)).join(" → ")}`);
   }
 }
 

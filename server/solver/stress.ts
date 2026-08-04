@@ -665,16 +665,187 @@ export function recoverElementStress(
  * field (locked by solver_validation groups 20 and 31) is preserved.
  */
 interface SprPatchFit {
-  /** Node-centred, radius-scaled 4×4 normal matrix (row-major, symmetric). */
+  /** Node-centred, radius-scaled nTerms×nTerms normal matrix (row-major, symmetric). */
   readonly A: Float64Array;
   /** Inverse patch radius; multiply a centred coordinate by this to scale it. */
   readonly invH: number;
+  /** Number of polynomial terms this fit was built for (4 linear, 10 quadratic). */
+  readonly nTerms: number;
   /**
-   * False when the fit must not be used: the patch is degenerate, or it would
-   * amplify data error by more than SPR_MAX_AMPLIFICATION. The caller averages
-   * instead — the same fallback SPR already uses for patches under 4 elements.
+   * False when the fit must not be used: the patch is degenerate, it has fewer
+   * samples than unknowns, or it would amplify data error by more than the
+   * basis's SPR_MAX_AMPLIFICATION. The caller falls back — to a lower-order
+   * basis where one is available, and to averaging otherwise.
    */
   readonly usable: boolean;
+}
+
+// ─── SPR sample sets ─────────────────────────────────────────────────────────
+
+/**
+ * The point cloud an SPR patch fit is built from.
+ *
+ * Two shapes exist, and the difference is the whole point of issue #158:
+ *
+ *  • **Centroid sampling** (`perElem = 1`) — one value per element at its
+ *    corner-average centroid. This is what C3D4 has (its stress genuinely IS
+ *    constant per element) and what C3D10 used to have, because
+ *    `recoverElementStress` averaged its four Gauss-point tensors into one.
+ *  • **Gauss sampling** (`perElem = 4`) — the four superconvergent points of
+ *    each C3D10, at their real isoparametric positions, un-averaged.
+ *
+ * Samples are stored ELEMENT-MAJOR: element `e` owns sample indices
+ * `[e*perElem, (e+1)*perElem)`. A patch is a list of element indices, so its
+ * sample indices follow without any extra indirection.
+ */
+export interface SprSamples {
+  /** Samples per element. */
+  readonly perElem: number;
+  /** Physical coordinates, 3 per sample. */
+  readonly xyz: Float64Array;
+  /** Cauchy stress (Voigt6) at each sample, 6 per sample. */
+  readonly stress6: Float64Array;
+  /**
+   * |detJ|·w per sample — the quadrature weight `computeZZErrorEstimate`
+   * integrates with. Also the validity flag: a degenerate Gauss point leaves
+   * this at 0 and is excluded from both the patch fit and the integral.
+   */
+  readonly volWeight: Float64Array;
+}
+
+/**
+ * Evaluate σ = C·B·u at all four C3D10 Gauss points of every element and keep
+ * them, along with each point's physical position x(ξ) = Σ Nᵢ(ξ)·xᵢ.
+ *
+ * This is deliberately NOT folded into `recoverElementStress`: that function's
+ * `elemStress6` (the four-point average) is what the failure criterion, safety
+ * factor and per-element heatmap want, and several locks depend on it. This is
+ * the same arithmetic kept at full resolution for the recovery/estimator path.
+ *
+ * Returns null for C3D4 meshes, whose stress is constant per element — there is
+ * nothing to un-average, and the centroid IS the correct single sample point.
+ */
+export function buildGaussSamples(
+  mesh:         TetMesh,
+  displacement: Float64Array,
+  mat:          AnyMaterial,
+  field?:       ElementMaterialField,
+): SprSamples | null {
+  if ((mesh.nodesPerElem ?? 4) !== 10) return null;
+
+  const nGP = C3D10_GAUSS.length;
+  const nEl = mesh.elementCount;
+  const xyz       = new Float64Array(nEl * nGP * 3);
+  const stress6   = new Float64Array(nEl * nGP * 6);
+  const volWeight = new Float64Array(nEl * nGP);
+
+  const Cs = field ? field.C : buildAnyConstitutiveMatrix(mat);
+  const binCount = Cs.length / 36;
+  const Cviews: Float64Array[] = [];
+  for (let b = 0; b < binCount; b++) Cviews.push(Cs.subarray(b * 36, b * 36 + 36));
+  const binOf = field ? field.binOfElement : null;
+
+  // Shape functions at the four Gauss points are fixed geometry — hoist them.
+  const Ngp = C3D10_GAUSS.map(gp => c3d10ShapeFunctions(gp.xi, gp.eta, gp.zeta));
+
+  const nodeCoords = new Float64Array(30);
+  const ue         = new Float64Array(30);
+  const eps        = new Float64Array(6);
+
+  for (let e = 0; e < nEl; e++) {
+    const base = e * 10;
+    const C = Cviews[binOf ? (binOf[e] ?? 0) : 0]!;
+    for (let ni = 0; ni < 10; ni++) {
+      const n = mesh.elements[base + ni] ?? 0;
+      nodeCoords[ni * 3]     = mesh.nodes[n * 3]     ?? 0;
+      nodeCoords[ni * 3 + 1] = mesh.nodes[n * 3 + 1] ?? 0;
+      nodeCoords[ni * 3 + 2] = mesh.nodes[n * 3 + 2] ?? 0;
+      ue[ni * 3]     = displacement[n * 3]     ?? 0;
+      ue[ni * 3 + 1] = displacement[n * 3 + 1] ?? 0;
+      ue[ni * 3 + 2] = displacement[n * 3 + 2] ?? 0;
+    }
+
+    for (let g = 0; g < nGP; g++) {
+      const gp = C3D10_GAUSS[g]!;
+      let B: Float64Array, detJ: number;
+      // Degenerate Gauss point: leave volWeight at 0, which excludes this sample
+      // from the patch fit AND from the energy integral. `recoverElementStress`
+      // is the place that throws when an element has no usable point at all.
+      try { ({ B, detJ } = buildB_c3d10(nodeCoords, gp.xi, gp.eta, gp.zeta)); }
+      catch { continue; }
+
+      const s = e * nGP + g;
+      volWeight[s] = Math.abs(detJ) * gp.w;
+
+      const N = Ngp[g]!;
+      let px = 0, py = 0, pz = 0;
+      for (let ni = 0; ni < 10; ni++) {
+        const wN = N[ni] ?? 0;
+        px += wN * (nodeCoords[ni * 3]     ?? 0);
+        py += wN * (nodeCoords[ni * 3 + 1] ?? 0);
+        pz += wN * (nodeCoords[ni * 3 + 2] ?? 0);
+      }
+      xyz[s * 3] = px; xyz[s * 3 + 1] = py; xyz[s * 3 + 2] = pz;
+
+      for (let r = 0; r < 6; r++) { let a = 0; for (let c = 0; c < 30; c++) a += (B[r * 30 + c] ?? 0) * (ue[c] ?? 0); eps[r] = a; }
+      for (let r = 0; r < 6; r++) { let a = 0; for (let c = 0; c < 6;  c++) a += (C[r * 6 + c] ?? 0) * (eps[c] ?? 0); stress6[s * 6 + r] = a; }
+    }
+  }
+
+  return { perElem: nGP, xyz, stress6, volWeight };
+}
+
+/**
+ * Centroid sample set — one sample per element, at the corner-average centroid,
+ * carrying the per-element stress. This is the legacy SPR input, and remains
+ * correct for C3D4 (constant strain ⇒ the element stress genuinely is a single
+ * value, and the centroid is where it belongs).
+ */
+export function buildCentroidSamples(mesh: TetMesh, elemStress6: Float64Array): SprSamples {
+  const npe = mesh.nodesPerElem ?? 4;
+  const nEl = mesh.elementCount;
+  const xyz = new Float64Array(nEl * 3);
+  for (let e = 0; e < nEl; e++) {
+    const base = e * npe;
+    let cx = 0, cy = 0, cz = 0;
+    // Corner-node average: the first 4 entries for both C3D4 and C3D10 (midside
+    // nodes are linear combinations of the corners), strided by npe — issue #96.
+    for (let ni = 0; ni < 4; ni++) {
+      const n = mesh.elements[base + ni] ?? 0;
+      cx += mesh.nodes[n * 3]     ?? 0;
+      cy += mesh.nodes[n * 3 + 1] ?? 0;
+      cz += mesh.nodes[n * 3 + 2] ?? 0;
+    }
+    xyz[e * 3] = cx / 4; xyz[e * 3 + 1] = cy / 4; xyz[e * 3 + 2] = cz / 4;
+  }
+  // volWeight is unused on this path (no integration, no degenerate samples);
+  // an all-ones array keeps the validity test uniform with the Gauss path.
+  return { perElem: 1, xyz, stress6: elemStress6, volWeight: new Float64Array(nEl).fill(1) };
+}
+
+/** Linear recovery basis [1, x, y, z] — the right order for C3D4. */
+const SPR_BASIS_LINEAR = 4;
+/**
+ * Full quadratic recovery basis [1, x, y, z, x², y², z², xy, yz, zx] — the
+ * right order for C3D10. SPR's accuracy argument (Zienkiewicz–Zhu 1992 §3)
+ * wants the recovery polynomial to match the element's own order; with a linear
+ * recovery a quadratic element's within-element stress variation cannot be
+ * represented no matter how the samples are placed.
+ */
+const SPR_BASIS_QUADRATIC = 10;
+
+/**
+ * Evaluate the recovery basis at a node-centred, radius-scaled point.
+ * The quadratic terms extend the linear ones, so the linear basis is exactly
+ * the first 4 entries — which is why a quadratic fit contains the linear space
+ * and solver_validation group 20's exactness claim survives the upgrade.
+ */
+function sprBasis(p: Float64Array, X: number, Y: number, Z: number, nTerms: number): void {
+  p[0] = 1; p[1] = X; p[2] = Y; p[3] = Z;
+  if (nTerms > SPR_BASIS_LINEAR) {
+    p[4] = X * X; p[5] = Y * Y; p[6] = Z * Z;
+    p[7] = X * Y; p[8] = Y * Z; p[9] = Z * X;
+  }
 }
 
 /**
@@ -716,77 +887,142 @@ interface SprPatchFit {
 const SPR_MAX_AMPLIFICATION = 30;
 
 /**
+ * The same budget for the 10-term quadratic basis.
+ *
+ * G is basis-dependent: a higher-order fit necessarily amplifies data noise
+ * more than a lower-order one on the same cloud, because it spends more degrees
+ * of freedom on the same data. Reusing the linear budget would therefore reject
+ * quadratic fits that are perfectly well posed, silently demoting them and
+ * giving back the accuracy this change exists to gain.
+ *
+ * Measured G over Gauss-sampled CORNER patches: median 4.2 with p90 = 9.5 on
+ * the structured C3D10 box, median 4.3 with p90 = 5.8 on an unstructured TetGen
+ * cylinder, with a thin tail reaching ~170. 60 sits ~6× above the well-posed
+ * population and below that tail.
+ *
+ * It is deliberately NOT a sensitive knob, and the measurement says so: sweeping
+ * it from 8 to 1e6 moves the manufactured-solution effectivity index θ only in
+ * the third decimal (1.3767 → 1.3487 at worst, on the coarse TetGen cube MMS).
+ * The reason is the cascade. A rejected quadratic fit does not fall through to
+ * averaging; it retries the LINEAR basis on the same Gauss cloud, and that fit
+ * is well posed essentially everywhere — max G of 3.56 (structured) and 2.89
+ * (TetGen), with not one non-finite case at any node of either mesh. So the
+ * budget chooses between two good options, where its linear sibling chooses
+ * between a fit and plain averaging. Do not read the two constants as
+ * comparable risks.
+ */
+const SPR_MAX_AMPLIFICATION_QUADRATIC = 60;
+
+/** Iterate the valid sample indices of `patch`, in element-major order. */
+function forEachPatchSample(
+  patch:   readonly number[],
+  samples: SprSamples,
+  visit:   (s: number) => void,
+): void {
+  const { perElem, volWeight } = samples;
+  for (const e of patch) {
+    const s0 = e * perElem;
+    for (let s = s0; s < s0 + perElem; s++) {
+      if (!((volWeight[s] ?? 0) > 0)) continue;
+      visit(s);
+    }
+  }
+}
+
+/**
  * Build the centred + scaled normal matrix for one patch. Pure geometry —
  * independent of the stress component being recovered, so the 6-component
  * recovery builds it once and reuses it six times.
  */
 function buildSprPatchFit(
-  patch:     readonly number[],
-  elemCentX: Float64Array,
-  elemCentY: Float64Array,
-  elemCentZ: Float64Array,
+  patch:   readonly number[],
+  samples: SprSamples,
   nx: number, ny: number, nz: number,
+  nTerms:  number,
 ): SprPatchFit {
-  const A = new Float64Array(16);
-  let h = 0;
-  for (const e of patch) {
-    h = Math.max(h, Math.hypot((elemCentX[e] ?? 0) - nx, (elemCentY[e] ?? 0) - ny, (elemCentZ[e] ?? 0) - nz));
-  }
-  // A degenerate patch (every centroid on the node) carries no gradient
-  // information at all — average instead of dividing by zero.
-  if (!(h > 0)) return { A, invH: 0, usable: false };
+  const A = new Float64Array(nTerms * nTerms);
+  const xyz = samples.xyz;
+
+  let h = 0, nSamples = 0;
+  forEachPatchSample(patch, samples, s => {
+    nSamples++;
+    h = Math.max(h, Math.hypot((xyz[s * 3] ?? 0) - nx, (xyz[s * 3 + 1] ?? 0) - ny, (xyz[s * 3 + 2] ?? 0) - nz));
+  });
+  // A degenerate patch (every sample on the node) carries no gradient
+  // information at all — average instead of dividing by zero. Fewer samples
+  // than unknowns is underdetermined outright.
+  if (!(h > 0) || nSamples < nTerms) return { A, invH: 0, nTerms, usable: false };
   const invH = 1 / h;
 
-  const p = [1, 0, 0, 0];
-  for (const e of patch) {
-    p[1] = ((elemCentX[e] ?? 0) - nx) * invH;
-    p[2] = ((elemCentY[e] ?? 0) - ny) * invH;
-    p[3] = ((elemCentZ[e] ?? 0) - nz) * invH;
-    for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) A[i * 4 + j] = (A[i * 4 + j] ?? 0) + p[i]! * p[j]!;
-  }
+  const p = new Float64Array(nTerms);
+  forEachPatchSample(patch, samples, s => {
+    sprBasis(p, ((xyz[s * 3] ?? 0) - nx) * invH, ((xyz[s * 3 + 1] ?? 0) - ny) * invH, ((xyz[s * 3 + 2] ?? 0) - nz) * invH, nTerms);
+    for (let i = 0; i < nTerms; i++) for (let j = 0; j < nTerms; j++) A[i * nTerms + j] = (A[i * nTerms + j] ?? 0) + p[i]! * p[j]!;
+  });
 
   // Amplification verdict: solve A·y = e₀ so that y₀ = [(AᵀA)⁻¹]₀₀, then compare
-  // G = √(n·y₀) against SPR_MAX_AMPLIFICATION. Gaussian elimination with partial
-  // pivoting on a 4×5 scratch copy.
-  const M = new Float64Array(20);
-  for (let i = 0; i < 4; i++) {
-    for (let j = 0; j < 4; j++) M[i * 5 + j] = A[i * 4 + j] ?? 0;
-    M[i * 5 + 4] = i === 0 ? 1 : 0;
+  // G = √(n·y₀) against the basis's budget. Gaussian elimination with partial
+  // pivoting on an nTerms×(nTerms+1) scratch copy.
+  const W = nTerms + 1;
+  const M = new Float64Array(nTerms * W);
+  for (let i = 0; i < nTerms; i++) {
+    for (let j = 0; j < nTerms; j++) M[i * W + j] = A[i * nTerms + j] ?? 0;
+    M[i * W + nTerms] = i === 0 ? 1 : 0;
   }
-  for (let col = 0; col < 4; col++) {
-    let maxRow = col, maxVal = Math.abs(M[col * 5 + col] ?? 0);
-    for (let row = col + 1; row < 4; row++) {
-      const v = Math.abs(M[row * 5 + col] ?? 0);
-      if (v > maxVal) { maxVal = v; maxRow = row; }
-    }
-    // Exactly singular — no fit exists at all.
-    if (maxVal === 0) return { A, invH, usable: false };
-    if (maxRow !== col) {
-      for (let k = col; k <= 4; k++) {
-        const t = M[col * 5 + k] ?? 0;
-        M[col * 5 + k] = M[maxRow * 5 + k] ?? 0;
-        M[maxRow * 5 + k] = t;
-      }
-    }
-    const pivot = M[col * 5 + col] ?? 0;
-    for (let row = col + 1; row < 4; row++) {
-      const factor = (M[row * 5 + col] ?? 0) / pivot;
-      for (let k = col; k <= 4; k++) M[row * 5 + k] = (M[row * 5 + k] ?? 0) - factor * (M[col * 5 + k] ?? 0);
-    }
-  }
-  const y = [0, 0, 0, 0];
-  for (let row = 3; row >= 0; row--) {
-    let sum = M[row * 5 + 4] ?? 0;
-    for (let col = row + 1; col < 4; col++) sum -= (M[row * 5 + col] ?? 0) * y[col]!;
-    y[row] = sum / (M[row * 5 + row] ?? 1);
-  }
+  if (!gaussEliminate(M, nTerms)) return { A, invH, nTerms, usable: false };
+  const y = backSubstitute(M, nTerms);
+
   // y₀ = [(AᵀA)⁻¹]₀₀ ≥ 1/n for any patch; a non-finite or non-positive value
   // means the solve degenerated, which is itself a rejection.
   const g2 = y[0]!;
-  const usable = Number.isFinite(g2) && g2 > 0
-    && patch.length * g2 <= SPR_MAX_AMPLIFICATION * SPR_MAX_AMPLIFICATION;
+  const gMax = nTerms > SPR_BASIS_LINEAR ? SPR_MAX_AMPLIFICATION_QUADRATIC : SPR_MAX_AMPLIFICATION;
+  // G = √(nSamples·g2) is the amplification itself; the comparison is squared to
+  // avoid the square root. Reinstate G as a returned field if it ever needs
+  // measuring again — that is how the two budgets above were calibrated.
+  const usable = Number.isFinite(g2) && g2 > 0 && nSamples * g2 <= gMax * gMax;
 
-  return { A, invH, usable };
+  return { A, invH, nTerms, usable };
+}
+
+/**
+ * In-place forward elimination with partial pivoting on an n×(n+1) augmented
+ * matrix. Returns false if a column is exactly singular.
+ */
+function gaussEliminate(M: Float64Array, n: number): boolean {
+  const W = n + 1;
+  for (let col = 0; col < n; col++) {
+    let maxRow = col, maxVal = Math.abs(M[col * W + col] ?? 0);
+    for (let row = col + 1; row < n; row++) {
+      const v = Math.abs(M[row * W + col] ?? 0);
+      if (v > maxVal) { maxVal = v; maxRow = row; }
+    }
+    if (maxVal === 0) return false;
+    if (maxRow !== col) {
+      for (let k = col; k <= n; k++) {
+        const t = M[col * W + k] ?? 0;
+        M[col * W + k] = M[maxRow * W + k] ?? 0;
+        M[maxRow * W + k] = t;
+      }
+    }
+    const pivot = M[col * W + col] ?? 0;
+    for (let row = col + 1; row < n; row++) {
+      const factor = (M[row * W + col] ?? 0) / pivot;
+      for (let k = col; k <= n; k++) M[row * W + k] = (M[row * W + k] ?? 0) - factor * (M[col * W + k] ?? 0);
+    }
+  }
+  return true;
+}
+
+/** Back-substitution on an already-eliminated n×(n+1) augmented matrix. */
+function backSubstitute(M: Float64Array, n: number): Float64Array {
+  const W = n + 1;
+  const a = new Float64Array(n);
+  for (let row = n - 1; row >= 0; row--) {
+    let sum = M[row * W + n] ?? 0;
+    for (let col = row + 1; col < n; col++) sum -= (M[row * W + col] ?? 0) * a[col]!;
+    a[row] = sum / (M[row * W + row] ?? 1);
+  }
+  return a;
 }
 
 /**
@@ -801,56 +1037,31 @@ function buildSprPatchFit(
 function solveSprValueAtNode(
   fit:       SprPatchFit,
   patch:     readonly number[],
-  elemCentX: Float64Array,
-  elemCentY: Float64Array,
-  elemCentZ: Float64Array,
+  samples:   SprSamples,
   nx: number, ny: number, nz: number,
-  valueOf:   (e: number) => number,
-  scratch:   Float64Array,   // 20 slots: 4×5 augmented matrix
+  valueOf:   (s: number) => number,
+  scratch:   Float64Array,   // ≥ nTerms×(nTerms+1) slots
+  basis:     Float64Array,   // ≥ nTerms slots
 ): number | null {
+  const nTerms = fit.nTerms;
+  const W = nTerms + 1;
   const M = scratch;
-  for (let i = 0; i < 4; i++) {
-    for (let j = 0; j < 4; j++) M[i * 5 + j] = fit.A[i * 4 + j] ?? 0;
-    M[i * 5 + 4] = 0;
+  for (let i = 0; i < nTerms; i++) {
+    for (let j = 0; j < nTerms; j++) M[i * W + j] = fit.A[i * nTerms + j] ?? 0;
+    M[i * W + nTerms] = 0;
   }
   const invH = fit.invH;
-  for (const e of patch) {
-    const sv = valueOf(e);
-    M[4]  = (M[4]  ?? 0) + sv;
-    M[9]  = (M[9]  ?? 0) + sv * ((elemCentX[e] ?? 0) - nx) * invH;
-    M[14] = (M[14] ?? 0) + sv * ((elemCentY[e] ?? 0) - ny) * invH;
-    M[19] = (M[19] ?? 0) + sv * ((elemCentZ[e] ?? 0) - nz) * invH;
-  }
+  const xyz = samples.xyz;
+  forEachPatchSample(patch, samples, s => {
+    const sv = valueOf(s);
+    sprBasis(basis, ((xyz[s * 3] ?? 0) - nx) * invH, ((xyz[s * 3 + 1] ?? 0) - ny) * invH, ((xyz[s * 3 + 2] ?? 0) - nz) * invH, nTerms);
+    for (let i = 0; i < nTerms; i++) M[i * W + nTerms] = (M[i * W + nTerms] ?? 0) + sv * basis[i]!;
+  });
 
-  for (let col = 0; col < 4; col++) {
-    let maxRow = col, maxVal = Math.abs(M[col * 5 + col] ?? 0);
-    for (let row = col + 1; row < 4; row++) {
-      const v = Math.abs(M[row * 5 + col] ?? 0);
-      if (v > maxVal) { maxVal = v; maxRow = row; }
-    }
-    // Rank is screened by buildSprPatchFit; this only catches an exact zero.
-    if (maxVal === 0) return null;
-    if (maxRow !== col) {
-      for (let k = col; k <= 4; k++) {
-        const t = M[col * 5 + k] ?? 0;
-        M[col * 5 + k] = M[maxRow * 5 + k] ?? 0;
-        M[maxRow * 5 + k] = t;
-      }
-    }
-    const pivot = M[col * 5 + col] ?? 0;
-    for (let row = col + 1; row < 4; row++) {
-      const factor = (M[row * 5 + col] ?? 0) / pivot;
-      for (let k = col; k <= 4; k++) M[row * 5 + k] = (M[row * 5 + k] ?? 0) - factor * (M[col * 5 + k] ?? 0);
-    }
-  }
+  // Rank is screened by buildSprPatchFit; this only catches an exact zero.
+  if (!gaussEliminate(M, nTerms)) return null;
   // Back-substitution for a0 — the value at the node (the local origin).
-  const a = [0, 0, 0, 0];
-  for (let row = 3; row >= 0; row--) {
-    let sum = M[row * 5 + 4] ?? 0;
-    for (let col = row + 1; col < 4; col++) sum -= (M[row * 5 + col] ?? 0) * a[col]!;
-    a[row] = sum / (M[row * 5 + row] ?? 1);
-  }
-  const v0 = a[0]!;
+  const v0 = backSubstitute(M, nTerms)[0]!;
   return Number.isFinite(v0) ? v0 : null;
 }
 
@@ -891,6 +1102,20 @@ function midsideNodeMask(mesh: TetMesh): Uint8Array | null {
  *
  * Applies to every component uniformly (scalar von Mises or the 6 tensor
  * components), and is a no-op for C3D4 meshes, which have no midside nodes.
+ *
+ * KEPT UNDER GAUSS SAMPLING, and the decision was measured rather than assumed
+ * (issue #158). The hope was that four samples per element would spread an edge
+ * ring's cloud enough in 3-D to make a direct midside fit well posed. It does
+ * not: the amplification G at midside nodes under the QUADRATIC basis has a
+ * median of 2.2e8 on the structured C3D10 box and reaches non-finite (outright
+ * rank-deficient) at 913 of 1854 midside nodes there, and 946 of 4245 on an
+ * unstructured TetGen cylinder. A ring of tets around one edge is simply not a
+ * 3-D neighbourhood, however densely each tet is sampled.
+ *
+ * A LINEAR midside fit on the same cloud IS well posed (max G = 2.45), but it
+ * would be a step DOWN: the corner values it would replace now come from a
+ * quadratic fit, and interpolating between two quadratic-recovered corners
+ * carries that order to the edge midpoint, while a local linear fit would not.
  */
 function interpolateMidsideFromCorners(
   mesh:      TetMesh,
@@ -945,33 +1170,19 @@ export function sprSmoothedStress(
 
   // Build node → element connectivity (shared helper — issue #104).
   // Uses all nodes (corner + midside) — SPR handles small patches via fallback.
-  const npe = mesh.nodesPerElem ?? 4;
   const nodeElements = buildNodeElementLists(mesh);
 
-  // Compute element centroid coordinates.
-  // Stride by nodesPerElem (4 or 10) — a hardcoded stride of 4 read node
-  // indices from the WRONG element for C3D10 meshes (issue #96). The centroid
-  // itself is the average of the 4 corner nodes, which are the first 4 entries
-  // for both C3D4 and C3D10 (midside nodes are linear combinations of corners).
-  const elemCentX = new Float64Array(mesh.elementCount);
-  const elemCentY = new Float64Array(mesh.elementCount);
-  const elemCentZ = new Float64Array(mesh.elementCount);
-  for (let e = 0; e < mesh.elementCount; e++) {
-    const base = e * npe;
-    let cx = 0, cy = 0, cz = 0;
-    for (let ni = 0; ni < 4; ni++) {
-      const n = mesh.elements[base + ni] ?? 0;
-      cx += mesh.nodes[n * 3]     ?? 0;
-      cy += mesh.nodes[n * 3 + 1] ?? 0;
-      cz += mesh.nodes[n * 3 + 2] ?? 0;
-    }
-    elemCentX[e] = cx / 4;
-    elemCentY[e] = cy / 4;
-    elemCentZ[e] = cz / 4;
-  }
+  // Scalar von Mises recovery stays on CENTROID sampling with the LINEAR basis,
+  // for both C3D4 and C3D10. This is the display heatmap's field; von Mises is a
+  // nonlinear functional of σ, so Gauss-sampling it is not the same operation as
+  // Gauss-sampling the tensor, and it would move every heatmap value under the
+  // user. The tensor path (sprSmoothedStress6), which feeds the ZZ estimator,
+  // is where issue #158's Gauss sampling applies.
+  const samples = buildCentroidSamples(mesh, vonMises);
 
-  // Pre-allocated 4×5 augmented scratch — fully overwritten per node/component.
-  const _sprM = new Float64Array(20);
+  // Pre-allocated augmented scratch — fully overwritten per node/component.
+  const _sprM  = new Float64Array(SPR_BASIS_LINEAR * (SPR_BASIS_LINEAR + 1));
+  const _basis = new Float64Array(SPR_BASIS_LINEAR);
 
   // C3D10 midside nodes are skipped here and interpolated from their corners
   // afterwards (see interpolateMidsideFromCorners) — their edge-ring patch
@@ -995,18 +1206,12 @@ export function sprSmoothedStress(
       nodeCount[n]  = patch.length;
     };
 
-    if (patch.length < 4) {
-      // Insufficient patch — direct average
-      average();
-      continue;
-    }
-
-    const fit = buildSprPatchFit(patch, elemCentX, elemCentY, elemCentZ, nx, ny, nz);
+    const fit = buildSprPatchFit(patch, samples, nx, ny, nz, SPR_BASIS_LINEAR);
     if (!fit.usable) { average(); continue; }
 
     const smoothed = solveSprValueAtNode(
-      fit, patch, elemCentX, elemCentY, elemCentZ, nx, ny, nz,
-      e => vonMises[e] ?? 0, _sprM);
+      fit, patch, samples, nx, ny, nz,
+      s => vonMises[s] ?? 0, _sprM, _basis);
     if (smoothed === null) { average(); continue; }
 
     // Clamp to non-negative (stress can't be negative in von Mises sense)
@@ -1020,41 +1225,53 @@ export function sprSmoothedStress(
 }
 
 /**
- * SPR-smooth all 6 stress tensor components [σxx,σyy,σzz,τxy,τyz,τxz] per element
+ * SPR-smooth all 6 stress tensor components [σxx,σyy,σzz,τxy,τyz,τxz]
  * independently and return nodeStress6: Float64Array(nodeCount * 6).
- * Uses the same patch/fallback logic as sprSmoothedStress.
+ *
+ * `samples` selects the recovery's fidelity, and is the substance of issue #158:
+ *
+ *  • **Omitted** (or a `perElem = 1` set) — legacy centroid recovery with the
+ *    linear basis. Correct for C3D4, and the shape every existing caller and
+ *    lock uses. Bit-identical to the pre-#158 implementation.
+ *  • **A C3D10 Gauss set** (`buildGaussSamples`, `perElem = 4`) — fits the full
+ *    quadratic basis to the four superconvergent points of every patch element,
+ *    at their real isoparametric positions.
+ *
+ * Why the Gauss set matters is sharper than "more data". A C3D10 patch's
+ * centroid cloud is one point per element; at a re-entrant or convex model
+ * CORNER a patch can hold as few as 2–3 elements, which is fewer points than a
+ * 3-D linear fit has unknowns. Those patches fell back to plain averaging — and
+ * averaging over a one-sided patch is biased by O(h·|∇σ|) even when the FE
+ * solution is EXACT. That bias, not any within-element averaging, is what put a
+ * floor of 1.46%/0.53%/0.26% under the ZZ estimate on a manufactured field a
+ * C3D10 mesh reproduces to 1e-13. Four samples per element turn the same
+ * 2-element corner patch into an 8-point cloud that genuinely spans 3-D, so the
+ * fit is well posed and the floor collapses to round-off.
+ *
+ * The basis cascades: quadratic → linear → averaging. A patch that cannot
+ * support 10 terms is far better served by a linear fit on the same Gauss cloud
+ * than by an average, so demotion never skips a rung.
  */
 export function sprSmoothedStress6(
-  mesh:       TetMesh,
+  mesh:        TetMesh,
   elemStress6: Float64Array,
+  samples?:    SprSamples | null,
 ): Float64Array {
   const NC = mesh.nodeCount;
   const nodeStress6 = new Float64Array(NC * 6);
 
   // Build node → element connectivity (all nodes, same as sprSmoothedStress)
-  const npe = mesh.nodesPerElem ?? 4;
   const nodeElements = buildNodeElementLists(mesh);
 
-  // Compute element centroids (corner-node average; stride by npe — issue #96)
-  const elemCentX = new Float64Array(mesh.elementCount);
-  const elemCentY = new Float64Array(mesh.elementCount);
-  const elemCentZ = new Float64Array(mesh.elementCount);
-  for (let e = 0; e < mesh.elementCount; e++) {
-    const base = e * npe;
-    let cx = 0, cy = 0, cz = 0;
-    for (let ni = 0; ni < 4; ni++) {
-      const n = mesh.elements[base + ni] ?? 0;
-      cx += mesh.nodes[n * 3]     ?? 0;
-      cy += mesh.nodes[n * 3 + 1] ?? 0;
-      cz += mesh.nodes[n * 3 + 2] ?? 0;
-    }
-    elemCentX[e] = cx / 4;
-    elemCentY[e] = cy / 4;
-    elemCentZ[e] = cz / 4;
-  }
+  const set = samples ?? buildCentroidSamples(mesh, elemStress6);
+  // Only a multi-sample set can support the quadratic basis; a centroid set has
+  // one point per element and must stay on the linear fit it was calibrated for.
+  const topBasis = set.perElem > 1 ? SPR_BASIS_QUADRATIC : SPR_BASIS_LINEAR;
+  const sv6 = set.stress6;
 
-  // Pre-allocated 4×5 augmented scratch — fully overwritten per node/component.
-  const _sprM = new Float64Array(20);
+  // Pre-allocated augmented scratch — fully overwritten per node/component.
+  const _sprM  = new Float64Array(topBasis * (topBasis + 1));
+  const _basis = new Float64Array(topBasis);
 
   // C3D10 midside nodes are interpolated from their corners afterwards; see
   // interpolateMidsideFromCorners. Empty for C3D4.
@@ -1070,20 +1287,18 @@ export function sprSmoothedStress6(
     const nz = mesh.nodes[n * 3 + 2] ?? 0;
 
     const averageComponent = (c: number): void => {
-      let sum = 0;
-      for (const e of patch) sum += elemStress6[e * 6 + c] ?? 0;
-      nodeStress6[n * 6 + c] = sum / patch.length;
+      let sum = 0, cnt = 0;
+      forEachPatchSample(patch, set, s => { sum += sv6[s * 6 + c] ?? 0; cnt++; });
+      nodeStress6[n * 6 + c] = cnt > 0 ? sum / cnt : 0;
     };
 
-    if (patch.length < 4) {
-      // Direct average
-      for (let c = 0; c < 6; c++) averageComponent(c);
-      continue;
-    }
-
     // Patch geometry is component-independent: build the centred + scaled normal
-    // matrix ONCE, then reuse it for all six components.
-    const fit = buildSprPatchFit(patch, elemCentX, elemCentY, elemCentZ, nx, ny, nz);
+    // matrix ONCE, then reuse it for all six components. Cascade down a basis
+    // order rather than straight to averaging when the top order is rejected.
+    let fit = buildSprPatchFit(patch, set, nx, ny, nz, topBasis);
+    if (!fit.usable && topBasis !== SPR_BASIS_LINEAR) {
+      fit = buildSprPatchFit(patch, set, nx, ny, nz, SPR_BASIS_LINEAR);
+    }
     if (!fit.usable) {
       for (let c = 0; c < 6; c++) averageComponent(c);
       continue;
@@ -1091,8 +1306,8 @@ export function sprSmoothedStress6(
 
     for (let c = 0; c < 6; c++) {
       const v = solveSprValueAtNode(
-        fit, patch, elemCentX, elemCentY, elemCentZ, nx, ny, nz,
-        e => elemStress6[e * 6 + c] ?? 0, _sprM);
+        fit, patch, set, nx, ny, nz,
+        s => sv6[s * 6 + c] ?? 0, _sprM, _basis);
       if (v === null) averageComponent(c);
       else nodeStress6[n * 6 + c] = v;
     }
@@ -1295,17 +1510,17 @@ export function computeZZErrorEstimate(
   // handful for a two-region field). Never inverted per element.
   const Cs = field ? field.C : buildAnyConstitutiveMatrix(mat);
   const binCount = Cs.length / 36;
-  const Cviews: Float64Array[] = [];
   const Sinv:   Float64Array[] = [];
-  for (let b = 0; b < binCount; b++) {
-    const Cb = Cs.subarray(b * 36, b * 36 + 36);
-    Cviews.push(Cb);
-    Sinv.push(invert6x6(Cb));
-  }
+  for (let b = 0; b < binCount; b++) Sinv.push(invert6x6(Cs.subarray(b * 36, b * 36 + 36)));
   const binOf = field ? field.binOfElement : null;
 
   // ── Recovered field σ*: 6-component SPR nodal stress ────────────────────────
-  const nodeStress6 = sprSmoothedStress6(mesh, elemStress6);
+  // On C3D10 the recovery is fed the four un-averaged Gauss-point tensors per
+  // element (issue #158) rather than one centroid value. The same samples then
+  // serve as σ_h in the energy loop below, so σ = C·B·u is evaluated ONCE per
+  // Gauss point instead of once here and again there.
+  const samples = buildGaussSamples(mesh, displacement, mat, field);
+  const nodeStress6 = sprSmoothedStress6(mesh, elemStress6, samples);
 
   // Centroids (corner-node average) for topErrorElements reporting.
   const elemCentX = new Float64Array(mesh.elementCount);
@@ -1313,9 +1528,9 @@ export function computeZZErrorEstimate(
   const elemCentZ = new Float64Array(mesh.elementCount);
 
   // Per-element scratch (no per-element heap allocations in the hot loop).
-  const nodeCoords = new Float64Array(30);
-  const ue         = new Float64Array(30);
-  const epsG       = new Float64Array(6);
+  // B and u are no longer gathered here: on C3D10 σ_h comes from `samples`
+  // (built once above) and on C3D4 it is elemStress6, so neither branch
+  // re-derives C·B·u.
   const sigH       = new Float64Array(6);
   const sigStar    = new Float64Array(6);
   const dsig       = new Float64Array(6);
@@ -1327,34 +1542,28 @@ export function computeZZErrorEstimate(
     const base = e * npe;
     const bin  = binOf ? (binOf[e] ?? 0) : 0;
     const S    = Sinv[bin]!;
-    const C    = Cviews[bin]!;
 
-    // Gather node coordinates + displacements; accumulate corner-node centroid.
+    // Corner-node centroid, for topErrorElements reporting.
     let cx = 0, cy = 0, cz = 0;
-    for (let ni = 0; ni < npe; ni++) {
+    for (let ni = 0; ni < 4; ni++) {
       const n = mesh.elements[base + ni] ?? 0;
-      const x = mesh.nodes[n * 3] ?? 0, y = mesh.nodes[n * 3 + 1] ?? 0, z = mesh.nodes[n * 3 + 2] ?? 0;
-      nodeCoords[ni * 3] = x; nodeCoords[ni * 3 + 1] = y; nodeCoords[ni * 3 + 2] = z;
-      ue[ni * 3]     = displacement[n * 3]     ?? 0;
-      ue[ni * 3 + 1] = displacement[n * 3 + 1] ?? 0;
-      ue[ni * 3 + 2] = displacement[n * 3 + 2] ?? 0;
-      if (ni < 4) { cx += x; cy += y; cz += z; }
+      cx += mesh.nodes[n * 3] ?? 0; cy += mesh.nodes[n * 3 + 1] ?? 0; cz += mesh.nodes[n * 3 + 2] ?? 0;
     }
     elemCentX[e] = cx / 4; elemCentY[e] = cy / 4; elemCentZ[e] = cz / 4;
 
     let eErr2 = 0, eNorm2 = 0;
 
     if (npe === 10) {
-      // ── C3D10: σ_h = C·B·u recomputed at each Gauss point; σ* from the 10
-      // quadratic shape functions (midside SPR values included). ──────────────
-      for (const gp of C3D10_GAUSS) {
-        let B: Float64Array, detJ: number;
-        try { ({ B, detJ } = buildB_c3d10(nodeCoords, gp.xi, gp.eta, gp.zeta)); }
-        catch { continue; } // degenerate Gauss point — skip (mesh handled upstream)
-        const vol = Math.abs(detJ) * gp.w;
-
-        for (let r = 0; r < 6; r++) { let s = 0; for (let c = 0; c < 30; c++) s += (B[r * 30 + c] ?? 0) * (ue[c] ?? 0); epsG[r] = s; }
-        for (let r = 0; r < 6; r++) { let s = 0; for (let c = 0; c < 6;  c++) s += (C[r * 6 + c] ?? 0) * (epsG[c] ?? 0); sigH[r] = s; }
+      // ── C3D10: σ_h read back from the Gauss samples built above (same
+      // σ = C·B·u, evaluated once); σ* from the 10 quadratic shape functions
+      // (midside SPR values included). ────────────────────────────────────────
+      const gs = samples!;
+      for (let g = 0; g < C3D10_GAUSS.length; g++) {
+        const gp = C3D10_GAUSS[g]!;
+        const sIdx = e * gs.perElem + g;
+        const vol = gs.volWeight[sIdx] ?? 0;
+        if (!(vol > 0)) continue; // degenerate Gauss point — skip (mesh handled upstream)
+        for (let r = 0; r < 6; r++) sigH[r] = gs.stress6[sIdx * 6 + r] ?? 0;
 
         const N = c3d10ShapeFunctions(gp.xi, gp.eta, gp.zeta);
         sigStar.fill(0);
