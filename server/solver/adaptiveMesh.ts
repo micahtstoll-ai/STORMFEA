@@ -543,6 +543,47 @@ export function bcDiscontinuityMask(
  */
 export const BC_SINGULARITY_DILATE_HOPS = 1;
 
+/**
+ * Fraction of the total estimated error ENERGY carried by elements touching a
+ * masked (BC-singularity) node. In [0, 1]; 0 when nothing is masked.
+ *
+ * This is the diagnosis the adaptive loop reports, and it is why the loop can
+ * stop well short of `targetGlobalError` without anything being wrong with the
+ * mesh. The masked band converges at a measured rate of ~0.15 against the
+ * smooth-C3D10 expectation of 2.0 — halving that component would take on the
+ * order of 10⁶× the elements — so once it dominates, refinement has nothing
+ * left to buy. A user reading a stalled 10% needs to know whether to reach for
+ * a finer mesh or for a better bolt idealization, and this number is the
+ * difference between those two answers.
+ *
+ * Energies add in quadrature, so this sums η_e², NOT η_e. An element counts as
+ * masked if ANY of its corner nodes is: the error is a per-element quantity and
+ * the mask is per-node, so touching the band at all is what matters.
+ *
+ * Deliberately a REPORTED number and not a TARGET. Letting the loop chase the
+ * unmasked remainder would let it announce `target-error-reached` at 3% while
+ * the honest total was 10% — a worse claim than the single number it replaced.
+ */
+export function maskedErrorFraction(
+  mesh:          TetMesh,
+  errorEstimate: Float32Array | Float64Array,
+  mask:          Uint8Array | null | undefined,
+): number {
+  if (!mask) return 0;
+  const npe = mesh.nodesPerElem ?? 4;
+  let masked = 0, total = 0;
+  for (let e = 0; e < mesh.elementCount; e++) {
+    const eta = errorEstimate[e] ?? 0;
+    const e2 = eta * eta;
+    total += e2;
+    const base = e * npe;
+    for (let k = 0; k < 4; k++) {
+      if (mask[mesh.elements[base + k] ?? 0] === 1) { masked += e2; break; }
+    }
+  }
+  return total > 0 ? masked / total : 0;
+}
+
 // ─── Element-count prediction & budget guard ─────────────────────────────────
 /**
  * Estimate the element count a size field would produce. Refining a region

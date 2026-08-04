@@ -99,7 +99,7 @@ import {
 } from "./validation-coverage.js";
 import {
   buildSizeField, relaxSizeFieldToBudget, shouldStopRefinement,
-  bcDiscontinuityMask, BC_SINGULARITY_DILATE_HOPS,
+  bcDiscontinuityMask, BC_SINGULARITY_DILATE_HOPS, maskedErrorFraction,
   smoothSizeFieldGradation, predictRefinedElementCount,
   judgeRemeshAgainstBudget, effectiveElementBudget,
   targetPerElementError, DEFAULT_LOOP_OPTIONS, DEFAULT_SIZE_FIELD_FACTORS,
@@ -1691,6 +1691,20 @@ export interface AdaptiveRefinementInfo {
    * never enters the loop.
    */
   elementBudget?:        number;
+  /**
+   * Fraction (0–1) of the reported solve's estimated error ENERGY sitting at a
+   * boundary-condition discontinuity — the rim of a constrained or loaded patch.
+   *
+   * A DIAGNOSIS, not a target. That band converges at a measured rate of ~0.15
+   * against the smooth-C3D10 expectation of 2.0, so once it dominates, the loop
+   * can sit well short of `targetGlobalError` with nothing wrong with the mesh:
+   * what is crude is the rigid-constraint idealization, not the discretization.
+   * A high value means reach for a better bolt model, not a finer mesh.
+   *
+   * The reported `finalGlobalError` is unchanged by this and remains the TOTAL.
+   * Absent when no mask could be built (no surface, or a degraded run).
+   */
+  bcSingularityErrorFraction?: number;
   /** Per-iteration (globalRelativeError, elementCount) history. */
   history:               Array<{ globalRelativeError: number; elementCount: number }>;
   /** True if the loop degraded to a single tier solve (no binary / STEP / box). */
@@ -6336,6 +6350,8 @@ export async function runAdaptiveAnalysis(
   };
   // Node indices are per-mesh, so this is rebuilt after every accepted re-mesh.
   let bcExclude = bcMaskFor(cap0);
+  let bestBcFraction: number | undefined =
+    maskedErrorFraction(cap0.mesh, cap0.errorEstimate, bcExclude);
 
   const baseElementCount = first.elementCount;
   const budget = Math.max(baseElementCount + 1, Math.floor(baseElementCount * opts.maxElementGrowth));
@@ -6503,7 +6519,13 @@ export async function runAdaptiveAnalysis(
     const nextGRE = next.globalRelativeError ?? 0;
     history.push({ globalRelativeError: nextGRE, elementCount: next.elementCount });
 
-    if (nextGRE < bestGRE) { best = next; bestGRE = nextGRE; }
+    const nextMask = bcMaskFor(capN);
+    if (nextGRE < bestGRE) {
+      best = next; bestGRE = nextGRE;
+      bestBcFraction = (capN.mesh && capN.errorEstimate)
+        ? maskedErrorFraction(capN.mesh, capN.errorEstimate, nextMask)
+        : undefined;
+    }
 
     // Advance loop state for the next stop decision.
     const prevGRE = state.globalRelativeError;
@@ -6519,7 +6541,7 @@ export async function runAdaptiveAnalysis(
     if (!capN.mesh || !capN.errorEstimate) { stopReason = "no-error-field"; break; }
     curMesh = capN.mesh;
     curError = capN.errorEstimate;
-    bcExclude = bcMaskFor(capN);
+    bcExclude = nextMask;
   }
 
   return {
@@ -6532,9 +6554,18 @@ export async function runAdaptiveAnalysis(
       initialElementCount: baseElementCount,
       finalElementCount:   best.elementCount,
       elementBudget:       budget,
+      bcSingularityErrorFraction: bestBcFraction,
       history,
       degradedToTier:      false,
-      note:                `Adaptive refinement: ${iterations} solve(s), stopped on '${stopReason}'.`,
+      // The BC sentence is appended whenever the fraction is known — no
+      // threshold, because a threshold would be one more tunable constant
+      // sitting under a user-facing string. The reader can judge 5% or 75%.
+      note: `Adaptive refinement: ${iterations} solve(s), stopped on '${stopReason}'.` +
+        (bestBcFraction === undefined ? "" :
+          ` ${(bestBcFraction * 100).toFixed(0)}% of the remaining estimated error sits at ` +
+          `boundary-condition discontinuities (the rim of a constrained or loaded patch), ` +
+          `which refinement cannot reduce — that share reflects the constraint idealization, ` +
+          `not the mesh.`),
     },
   };
 }

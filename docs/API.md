@@ -226,15 +226,28 @@ otherwise an object (a degraded run still reports, with `degradedToTier: true`):
   "initialGlobalError": 0.081, "finalGlobalError": 0.026,
   "initialElementCount": 1240, "finalElementCount": 6800,
   "elementBudget": 9920,
+  "bcSingularityErrorFraction": 0.12,
   "history": [
     { "globalRelativeError": 0.081, "elementCount": 1240 },
     { "globalRelativeError": 0.042, "elementCount": 3100 },
     { "globalRelativeError": 0.026, "elementCount": 6800 }
   ],
   "degradedToTier": false,
-  "note": "Adaptive refinement: 3 solve(s), stopped on 'target-error-reached'."
+  "note": "Adaptive refinement: 3 solve(s), stopped on 'target-error-reached'. 12% of the remaining estimated error sits at boundary-condition discontinuities (the rim of a constrained or loaded patch), which refinement cannot reduce — that share reflects the constraint idealization, not the mesh."
 }
 ```
+
+`bcSingularityErrorFraction` is a DIAGNOSIS, not a second accuracy target, and
+`finalGlobalError` remains the TOTAL estimated error regardless of it. A rigid
+displacement constraint applied over part of a surface is singular exactly where
+it stops, as is the rim of a loaded patch; the error there converges at a
+measured rate of ~0.15 against the ~2.0 a smooth region gives, so halving it
+would take on the order of 10⁶× the elements. Once that band dominates, the loop
+can stop well short of `targetGlobalError` with nothing wrong with the mesh —
+a high value says reach for a better constraint model, not a finer mesh. The
+loop deliberately does NOT target the remainder: doing so would let it announce
+`target-error-reached` on a filtered number while the honest total was several
+times higher. Absent when no mask could be built (no surface, or a degraded run).
 
 `stopReason` is one of `target-error-reached`, `max-iterations`,
 `element-growth-cap`, `budget-overshoot`, `no-refinement-requested`, `stalled` (a

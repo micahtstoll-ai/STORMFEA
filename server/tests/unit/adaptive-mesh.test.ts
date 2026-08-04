@@ -28,6 +28,7 @@ import {
   buildTetEdgeList,
   bcDiscontinuityMask,
   BC_SINGULARITY_DILATE_HOPS,
+  maskedErrorFraction,
   extractCornerBackground,
   judgeRemeshAgainstBudget,
   effectiveElementBudget,
@@ -786,5 +787,42 @@ describe("buildSizeField — excludeNodes mask", () => {
     const b = buildSizeField(mesh, err, { ...opts, excludeNodes: new Uint8Array(mesh.nodeCount) });
     expect(Array.from(b.targetSize)).toEqual(Array.from(a.targetSize));
     expect(b.excludedNodeCount).toBe(0);
+  });
+});
+
+describe("maskedErrorFraction — the BC diagnosis", () => {
+  const mesh = buildRowOfTets(4, 1);   // 4 tets, 4 private nodes each
+
+  it("is 0 with no mask, and 0 when nothing is marked", () => {
+    const err = new Float32Array([1, 1, 1, 1]);
+    expect(maskedErrorFraction(mesh, err, null)).toBe(0);
+    expect(maskedErrorFraction(mesh, err, new Uint8Array(mesh.nodeCount))).toBe(0);
+  });
+
+  it("is 1 when every element touches the mask", () => {
+    const err = new Float32Array([1, 2, 3, 4]);
+    expect(maskedErrorFraction(mesh, err, new Uint8Array(mesh.nodeCount).fill(1))).toBeCloseTo(1, 12);
+  });
+
+  it("sums energy in QUADRATURE, not linearly", () => {
+    // Element 0 masked, η = [3, 4]. Energy share is 9/25 = 0.36; a linear sum
+    // would give 3/7 = 0.43. Energies add in quadrature, so 0.36 is correct.
+    const err = new Float32Array([3, 4, 0, 0]);
+    const mask = new Uint8Array(mesh.nodeCount);
+    for (let n = 0; n < 4; n++) mask[n] = 1;          // element 0's nodes
+    expect(maskedErrorFraction(mesh, err, mask)).toBeCloseTo(0.36, 12);
+  });
+
+  it("counts an element that touches the band by a SINGLE node", () => {
+    // The mask is per-node and the error per-element, so any contact counts.
+    const err = new Float32Array([1, 0, 0, 0]);
+    const mask = new Uint8Array(mesh.nodeCount);
+    mask[2] = 1;                                      // one corner of element 0
+    expect(maskedErrorFraction(mesh, err, mask)).toBeCloseTo(1, 12);
+  });
+
+  it("returns 0 rather than NaN when the error field is all zero", () => {
+    const mask = new Uint8Array(mesh.nodeCount).fill(1);
+    expect(maskedErrorFraction(mesh, new Float32Array(4), mask)).toBe(0);
   });
 });
