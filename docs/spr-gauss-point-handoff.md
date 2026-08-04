@@ -229,9 +229,10 @@ That has since been built — see **`docs/bc-singularity-exclusion.md`**. Read i
 before assuming it solved the problem: it stops the loop stalling and moves the
 tube from 11.14% to 10.23%, which is real but modest, and it CANNOT approach 3%
 on its own. Excluding a region from refinement while still counting it in the
-reported error leaves ~75% of the error energy frozen by construction, which is
-a floor no amount of refinement gets below. Closing that gap is a reporting
-change, not a solver change.
+reported error puts a floor under the reported number — measured at ~5% on that
+fixture (the masked band carries 23.8% of the error ENERGY, not the ~75% an
+earlier revision of this file claimed; see the correction in that doc). Closing
+the remaining gap is a reporting change, not a solver change.
 
 Caveat: one fixture. The one-fewer-solve result in particular turns on a stop
 reason flipping from `max-iterations` to `stalled`, which is not a robust

@@ -58,6 +58,17 @@ corners and quadratic for an interface of thousands of nodes.
 node indices are per-mesh. The BC node sets reach it through
 `_captureInternals`.
 
+**The exclusion is SOFT, which was not obvious and is worth stating.**
+`buildSizeField` pins a masked node's target to its current size, but
+`smoothSizeFieldGradation` runs afterwards and will pull that target back down
+whenever a refining neighbour demands it (`h[i] = h[j] + β·d` fires on the
+target node regardless of masking; only the SOURCE of a gradation constraint has
+to be refining). So a masked node adjacent to a heavily refined one does still
+shrink, the size transition across the band stays bounded by `gradation`, and
+"never refine" overstates what actually happens. That is desirable — it is what
+stops the mask from carving a size discontinuity into the mesh — but it means
+the band is a refinement DAMPER, not a hard freeze.
+
 ### The trap, which cost a measurement to find
 
 A BC set is a 2-D patch embedded in a 3-D mesh. In the VOLUME graph almost every
@@ -115,11 +126,24 @@ is the feature working as intended, not a regression, but it is a real cost.
 ## Why this cannot reach 3%, and what would
 
 Excluding a region from REFINEMENT while still counting it in the REPORTED
-global error is structurally incoherent. The BC band holds ~75% of the error
-energy and is now frozen by construction, so it sets a floor the loop cannot get
-below however many elements it spends. That is exactly what the numbers show:
-10.23% against a 3% target, with the loop hitting its iteration cap rather than
-its accuracy goal.
+global error means the excluded band sets a floor under the reported number.
+
+**Correcting an earlier overstatement.** A previous revision put that band at
+~75% of the error energy. That figure came from the uniform-refinement study,
+where it covered the bore rim PLUS the entire clamped wall. The band the code
+actually masks is the rim plus one ring, and `bcSingularityErrorFraction`
+measures it directly: **23.8%** with exclusion, 27.7% without. Decomposing the
+final 10.23%:
+
+| | total | BC-band component | refinable remainder |
+|---|---|---|---|
+| with exclusion | 10.23 % | 4.99 % | 8.93 % |
+| no exclusion | 11.14 % | 5.86 % | 9.47 % |
+
+So the floor is about **5%**, not "3% is unreachable in principle". Driving the
+refinable remainder to zero would still leave ~5%, which is above the 3% target
+but far closer than the earlier claim implied. The conclusion survives — this
+cannot reach 3% by refinement alone — but the margin is one factor, not three.
 
 Getting near 3% needs the reported error split into **resolvable discretization
 error** and **irreducible BC-idealization error**, with the loop targeting the
