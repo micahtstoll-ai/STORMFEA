@@ -26,6 +26,9 @@ import {
   shouldStopRefinement,
   smoothSizeFieldGradation,
   buildTetEdgeList,
+  bcDiscontinuityMask,
+  BC_SINGULARITY_DILATE_HOPS,
+  maskedErrorFraction,
   extractCornerBackground,
   judgeRemeshAgainstBudget,
   effectiveElementBudget,
@@ -689,5 +692,137 @@ describe("TetGen file serialization (pure, binary-independent)", () => {
     const firstEle = eleFile.trim().split("\n")[1]!.trim().split(/\s+/).map(Number);
     expect(firstEle[0]).toBe(1);          // element index (1-based)
     expect(Math.min(...firstEle.slice(1))).toBeGreaterThanOrEqual(1); // node indices 1-based
+  });
+});
+
+// ─── BC-discontinuity exclusion (docs/bc-singularity-exclusion.md) ───────────
+describe("bcDiscontinuityMask — the patch RIM, not the patch", () => {
+  // A row of `count` cubes along x, Kuhn-split. Every node of this slab lies on
+  // its boundary surface EXCEPT none — the slab is one element thick in y and z,
+  // so all nodes are surface nodes. That is what we want: it isolates the rim
+  // test from any question of what counts as "the surface".
+  const count = 6, s = 1;
+  const mesh = buildTetGrid(count, s);
+  const allSurface = new Uint8Array(mesh.nodeCount).fill(1);
+  /** Nodes with x <= xMax — a "constrained patch" covering part of the slab. */
+  const patch = (xMax: number): number[] => {
+    const out: number[] = [];
+    for (let n = 0; n < mesh.nodeCount; n++) if ((mesh.nodes[n * 3] ?? 0) <= xMax + 1e-9) out.push(n);
+    return out;
+  };
+
+  it("refuses to guess without a surface mask (marks nothing)", () => {
+    // Omitting the surface mask does not degrade the answer, it inverts it:
+    // in the VOLUME graph nearly every patch node has a neighbour outside the
+    // patch, so the whole patch would be masked. Measured consequence when this
+    // was wrong: the adaptive loop stalled after one step at 18.7% against
+    // 11.1% with no exclusion at all. Marking nothing is the safe failure.
+    const m = bcDiscontinuityMask(mesh, [patch(2 * s)], 0);
+    expect(Array.from(m).every(v => v === 0)).toBe(true);
+  });
+
+  it("marks the rim and NOT the patch interior", () => {
+    const m = bcDiscontinuityMask(mesh, [patch(2 * s)], 0, allSurface);
+    const marked = Array.from(m).filter(v => v === 1).length;
+    expect(marked).toBeGreaterThan(0);
+    // Deep inside the patch (x = 0) and far outside it (x = count*s) must both
+    // be untouched; only the x = 2s / x = 3s interface is a discontinuity.
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      const x = mesh.nodes[n * 3] ?? 0;
+      if (x < 1e-9) expect(m[n]).toBe(0);               // patch interior
+      if (x > count * s - 1e-9) expect(m[n]).toBe(0);   // far outside
+      if (Math.abs(x - 2 * s) < 1e-9) expect(m[n]).toBe(1); // the rim itself
+    }
+    // A patch edge on this slab is one plane of nodes either side of it.
+    expect(marked).toBeLessThan(mesh.nodeCount / 2);
+  });
+
+  it("marks nothing when the set covers everything or nothing", () => {
+    // A uniformly constrained or unconstrained body has no discontinuity.
+    expect(Array.from(bcDiscontinuityMask(mesh, [patch(count * s)], 0, allSurface)).every(v => v === 0)).toBe(true);
+    expect(Array.from(bcDiscontinuityMask(mesh, [[]], 0, allSurface)).every(v => v === 0)).toBe(true);
+    expect(Array.from(bcDiscontinuityMask(mesh, [], 0, allSurface)).every(v => v === 0)).toBe(true);
+  });
+
+  it("dilateHops widens the band monotonically", () => {
+    const n0 = Array.from(bcDiscontinuityMask(mesh, [patch(2 * s)], 0, allSurface)).filter(v => v).length;
+    const n1 = Array.from(bcDiscontinuityMask(mesh, [patch(2 * s)], 1, allSurface)).filter(v => v).length;
+    const n2 = Array.from(bcDiscontinuityMask(mesh, [patch(2 * s)], 2, allSurface)).filter(v => v).length;
+    expect(n1).toBeGreaterThan(n0);
+    expect(n2).toBeGreaterThan(n1);
+    expect(BC_SINGULARITY_DILATE_HOPS).toBeGreaterThanOrEqual(1);
+  });
+
+  it("unions several sets (constraints AND loads)", () => {
+    const lo = patch(1 * s);
+    const hi: number[] = [];
+    for (let n = 0; n < mesh.nodeCount; n++) if ((mesh.nodes[n * 3] ?? 0) >= 4 * s - 1e-9) hi.push(n);
+    const both = bcDiscontinuityMask(mesh, [lo, hi], 0, allSurface);
+    const onlyLo = bcDiscontinuityMask(mesh, [lo], 0, allSurface);
+    let extra = 0;
+    for (let n = 0; n < mesh.nodeCount; n++) if (both[n] === 1 && onlyLo[n] === 0) extra++;
+    expect(extra).toBeGreaterThan(0);
+  });
+});
+
+describe("buildSizeField — excludeNodes mask", () => {
+  const mesh = buildRowOfTets(6, 1);
+  const err = new Float32Array(mesh.elementCount).fill(1);   // uniformly high error
+
+  it("never refines a masked node, and counts it as excluded", () => {
+    const mask = new Uint8Array(mesh.nodeCount);
+    for (let n = 0; n < 4; n++) mask[n] = 1;                 // element 0's nodes
+    const f = buildSizeField(mesh, err, {
+      targetError: 1e-6, order: 2, minSizeFactor: 0.35, maxSizeFactor: 1.0, excludeNodes: mask,
+    });
+    expect(f.excludedNodeCount).toBe(4);
+    for (let n = 0; n < 4; n++) expect(f.targetSize[n]).toBeCloseTo(f.currentSize[n]!, 12);
+    // Control: an unmasked node under the same error IS refined.
+    expect(f.targetSize[4]!).toBeLessThan(f.currentSize[4]!);
+  });
+
+  it("is a no-op when the mask is absent or all-zero", () => {
+    const opts = { targetError: 1e-6, order: 2, minSizeFactor: 0.35, maxSizeFactor: 1.0 };
+    const a = buildSizeField(mesh, err, opts);
+    const b = buildSizeField(mesh, err, { ...opts, excludeNodes: new Uint8Array(mesh.nodeCount) });
+    expect(Array.from(b.targetSize)).toEqual(Array.from(a.targetSize));
+    expect(b.excludedNodeCount).toBe(0);
+  });
+});
+
+describe("maskedErrorFraction — the BC diagnosis", () => {
+  const mesh = buildRowOfTets(4, 1);   // 4 tets, 4 private nodes each
+
+  it("is 0 with no mask, and 0 when nothing is marked", () => {
+    const err = new Float32Array([1, 1, 1, 1]);
+    expect(maskedErrorFraction(mesh, err, null)).toBe(0);
+    expect(maskedErrorFraction(mesh, err, new Uint8Array(mesh.nodeCount))).toBe(0);
+  });
+
+  it("is 1 when every element touches the mask", () => {
+    const err = new Float32Array([1, 2, 3, 4]);
+    expect(maskedErrorFraction(mesh, err, new Uint8Array(mesh.nodeCount).fill(1))).toBeCloseTo(1, 12);
+  });
+
+  it("sums energy in QUADRATURE, not linearly", () => {
+    // Element 0 masked, η = [3, 4]. Energy share is 9/25 = 0.36; a linear sum
+    // would give 3/7 = 0.43. Energies add in quadrature, so 0.36 is correct.
+    const err = new Float32Array([3, 4, 0, 0]);
+    const mask = new Uint8Array(mesh.nodeCount);
+    for (let n = 0; n < 4; n++) mask[n] = 1;          // element 0's nodes
+    expect(maskedErrorFraction(mesh, err, mask)).toBeCloseTo(0.36, 12);
+  });
+
+  it("counts an element that touches the band by a SINGLE node", () => {
+    // The mask is per-node and the error per-element, so any contact counts.
+    const err = new Float32Array([1, 0, 0, 0]);
+    const mask = new Uint8Array(mesh.nodeCount);
+    mask[2] = 1;                                      // one corner of element 0
+    expect(maskedErrorFraction(mesh, err, mask)).toBeCloseTo(1, 12);
+  });
+
+  it("returns 0 rather than NaN when the error field is all zero", () => {
+    const mask = new Uint8Array(mesh.nodeCount).fill(1);
+    expect(maskedErrorFraction(mesh, new Float32Array(4), mask)).toBe(0);
   });
 });

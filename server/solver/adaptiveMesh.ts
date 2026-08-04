@@ -125,6 +125,19 @@ export interface SizeFieldOptions {
   readonly absMaxSize?: number;
   /** Regions to exclude from refinement (true singularities — issue #147). */
   readonly singularities?: readonly SingularityRegion[];
+  /**
+   * Per-node exclusion mask (1 = never refine this node), length nodeCount.
+   * OR-ed with `singularities`, which it exists alongside rather than replaces:
+   * a `SingularityRegion` is a GEOMETRIC ball, right for a detected singular
+   * corner whose position is known but whose mesh neighbourhood is not; a mask
+   * is a topological set, right for a boundary-condition discontinuity, which
+   * is defined by which nodes the BC was applied to and not by any radius.
+   *
+   * It is also the only shape that stays O(nodeCount). The region test is
+   * O(nodeCount × regions), fine for the handful of detected corners but
+   * quadratic for a BC interface, which can run to thousands of nodes.
+   */
+  readonly excludeNodes?: Uint8Array;
 }
 
 export interface SizeField {
@@ -234,8 +247,8 @@ export function buildSizeField(
     const eta = nodeError[n]!;
 
     // Singularity exclusion: never refine toward a flagged singular region.
-    let excluded = false;
-    if (sing.length > 0) {
+    let excluded = opts.excludeNodes ? opts.excludeNodes[n] === 1 : false;
+    if (!excluded && sing.length > 0) {
       const nx = mesh.nodes[n * 3] ?? 0, ny = mesh.nodes[n * 3 + 1] ?? 0, nz = mesh.nodes[n * 3 + 2] ?? 0;
       for (const s of sing) {
         const dx = nx - s.x, dy = ny - s.y, dz = nz - s.z;
@@ -424,6 +437,151 @@ function withTargets(field: SizeField, targetSize: Float64Array): SizeField {
     minTargetSize,
     maxTargetSize,
   };
+}
+
+// ─── Boundary-condition discontinuity exclusion ──────────────────────────────
+/**
+ * Mark the nodes sitting on a BOUNDARY-CONDITION discontinuity, so the adaptive
+ * loop does not refine toward them.
+ *
+ * WHY. Refining a singularity never converges, and a rigid displacement
+ * constraint applied over part of a surface creates one exactly where it stops:
+ * the solution has a genuine stress singularity along the edge of the
+ * constrained patch, and the same is true at the rim of a loaded patch, where
+ * traction jumps to zero. The elements there report large error at every
+ * density, so an equidistribution loop keeps pouring elements into a region
+ * that cannot improve, and stalls before reaching its target.
+ *
+ * This was measured on the Ø5-bore tube (see docs/spr-gauss-point-handoff.md).
+ * Under UNIFORM refinement from 6 763 to 19 308 elements the clamped bore and
+ * its rim grew from 52% to 75% of the total error energy while the smooth
+ * interior collapsed from 38% to 16%; the global convergence rate was 0.61
+ * against the smooth-C3D10 expectation of 2.0, and 1.56 when the clamped
+ * boundary was excluded from the norm.
+ *
+ * NOT geometry. It is worth being precise, because the obvious guess is wrong:
+ * the tube's sharp outer rim carried 0.2–0.4% of the error energy and did not
+ * grow. A sharp edge is only singular when the material wedge is RE-ENTRANT
+ * (> 180°); a convex 90° edge between two traction-free faces is bounded. What
+ * is singular here is the BC idealization, not the part.
+ *
+ * WHAT IS MARKED — and the trap. The patch EDGE only: the curve where the
+ * constrained (or loaded) patch stops. Interior nodes of the patch are NOT
+ * marked; they are a stress concentration, which is real, resolvable and
+ * exactly what this tool exists to resolve.
+ *
+ * Finding that edge needs `surfaceNodes`, and omitting it does not degrade the
+ * answer, it inverts it. A BC set is a 2-D patch embedded in a 3-D mesh, so in
+ * the VOLUME graph almost every node of the patch has a neighbour just beneath
+ * it that is not in the set — making "has a neighbour outside the set" true for
+ * the whole patch rather than its rim. Measured on the Ø5-bore tube, that
+ * mistake masked the entire bore wall, suppressed refinement so completely that
+ * the loop stalled after one step at 18.7% (against 11.1% with no exclusion at
+ * all). Restricting the test to edges whose BOTH endpoints lie on the surface
+ * confines it to the rim, which is what is actually singular.
+ *
+ * `dilateHops` then grows the band through mesh adjacency rather than by an
+ * absolute radius, so it scales with the local element size automatically and
+ * stays proportionate on a 5 mm part and a 500 mm one.
+ *
+ * A set covering the whole surface, or none of it, produces no rim and marks
+ * nothing — a uniformly constrained or unconstrained body has no discontinuity.
+ */
+export function bcDiscontinuityMask(
+  mesh:         TetMesh,
+  nodeSets:     readonly (readonly number[] | Int32Array)[],
+  dilateHops:   number,
+  surfaceNodes?: Uint8Array | null,
+): Uint8Array {
+  const NC = mesh.nodeCount;
+  const mask = new Uint8Array(NC);
+  const usable = nodeSets.filter(s => s.length > 0);
+  if (usable.length === 0) return mask;
+
+  const edges = buildTetEdgeList(mesh);
+  const member = new Uint8Array(NC);
+  // Without a surface mask the patch-edge test is not merely approximate, it is
+  // wrong (see above), so refuse to guess: mark nothing rather than mask a whole
+  // constrained face and starve the refinement the caller asked for.
+  if (!surfaceNodes) return mask;
+
+  for (const set of usable) {
+    member.fill(0);
+    for (const n of set) if (n >= 0 && n < NC) member[n] = 1;
+    for (let k = 0; k < edges.a.length; k++) {
+      const a = edges.a[k]!, b = edges.b[k]!;
+      // Only edges lying IN the surface can straddle the patch rim.
+      if (surfaceNodes[a] !== 1 || surfaceNodes[b] !== 1) continue;
+      // The discontinuity lies ON this edge, so both endpoints carry it.
+      if (member[a] !== member[b]) { mask[a] = 1; mask[b] = 1; }
+    }
+  }
+
+  // Dilate through the mesh graph. Each pass is one ring of neighbours; the
+  // frontier is snapshotted so a pass cannot cascade through itself.
+  for (let hop = 0; hop < dilateHops; hop++) {
+    const frontier = mask.slice();
+    for (let k = 0; k < edges.a.length; k++) {
+      const a = edges.a[k]!, b = edges.b[k]!;
+      if (frontier[a] === 1) mask[b] = 1;
+      if (frontier[b] === 1) mask[a] = 1;
+    }
+  }
+
+  return mask;
+}
+
+/**
+ * How many rings of mesh neighbours beyond the BC interface stay unrefined.
+ *
+ * 1 is deliberate and conservative. The singular field decays quickly, and
+ * every node excluded here is a node the loop will not refine — near a BOLT
+ * HOLE, which is the region this tool exists to get right. A wide band would
+ * trade a converging global error for a worse bearing-stress resolution, which
+ * is the wrong trade for the product. Widen only against a measurement showing
+ * the loop still stalls on the excluded band.
+ */
+export const BC_SINGULARITY_DILATE_HOPS = 1;
+
+/**
+ * Fraction of the total estimated error ENERGY carried by elements touching a
+ * masked (BC-singularity) node. In [0, 1]; 0 when nothing is masked.
+ *
+ * This is the diagnosis the adaptive loop reports, and it is why the loop can
+ * stop well short of `targetGlobalError` without anything being wrong with the
+ * mesh. The masked band converges at a measured rate of ~0.15 against the
+ * smooth-C3D10 expectation of 2.0 — halving that component would take on the
+ * order of 10⁶× the elements — so once it dominates, refinement has nothing
+ * left to buy. A user reading a stalled 10% needs to know whether to reach for
+ * a finer mesh or for a better bolt idealization, and this number is the
+ * difference between those two answers.
+ *
+ * Energies add in quadrature, so this sums η_e², NOT η_e. An element counts as
+ * masked if ANY of its corner nodes is: the error is a per-element quantity and
+ * the mask is per-node, so touching the band at all is what matters.
+ *
+ * Deliberately a REPORTED number and not a TARGET. Letting the loop chase the
+ * unmasked remainder would let it announce `target-error-reached` at 3% while
+ * the honest total was 10% — a worse claim than the single number it replaced.
+ */
+export function maskedErrorFraction(
+  mesh:          TetMesh,
+  errorEstimate: Float32Array | Float64Array,
+  mask:          Uint8Array | null | undefined,
+): number {
+  if (!mask) return 0;
+  const npe = mesh.nodesPerElem ?? 4;
+  let masked = 0, total = 0;
+  for (let e = 0; e < mesh.elementCount; e++) {
+    const eta = errorEstimate[e] ?? 0;
+    const e2 = eta * eta;
+    total += e2;
+    const base = e * npe;
+    for (let k = 0; k < 4; k++) {
+      if (mask[mesh.elements[base + k] ?? 0] === 1) { masked += e2; break; }
+    }
+  }
+  return total > 0 ? masked / total : 0;
 }
 
 // ─── Element-count prediction & budget guard ─────────────────────────────────

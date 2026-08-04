@@ -227,7 +227,18 @@ describe.skipIf(!probe.found)("adaptive vs uniform at matched element count (iss
           `${(uniform.globalRelativeError ?? NaN).toFixed(4)}, peak ${uniform.maxVonMisesMPa.toFixed(3)} MPa` +
           ` | fairness: ${fairness.detail}`),
     );
-  }, 900_000);
+    // Timeout budget. This hook runs the whole adaptive loop AND the uniform
+    // ladder, so it is by far the most expensive thing in the suite: ~440 s
+    // when this file runs alone. It was 900 s and passed comfortably until
+    // BC-singularity exclusion landed — that stops the loop stalling on the
+    // bolt-rim singularity, so it now spends its full 5 iterations instead of
+    // stalling at 4, which is the feature working as intended rather than a
+    // regression. Under `npm run test` this file also competes for CPU with
+    // every other test file, and the combination pushed it past 900 s. Raised
+    // with margin for a loaded machine; if it ever times out again, measure
+    // before raising it further — a loop that has started running its cap out
+    // on every part is a behaviour change worth knowing about, not a slow test.
+  }, 1_800_000);
 
   // ── 1. The regression: a refined solve must actually happen ────────────────
   it("completes at least one REFINED solve — the loop no longer degrades every run", () => {

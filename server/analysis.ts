@@ -99,6 +99,7 @@ import {
 } from "./validation-coverage.js";
 import {
   buildSizeField, relaxSizeFieldToBudget, shouldStopRefinement,
+  bcDiscontinuityMask, BC_SINGULARITY_DILATE_HOPS, maskedErrorFraction,
   smoothSizeFieldGradation, predictRefinedElementCount,
   judgeRemeshAgainstBudget, effectiveElementBudget,
   targetPerElementError, DEFAULT_LOOP_OPTIONS, DEFAULT_SIZE_FIELD_FACTORS,
@@ -1690,6 +1691,20 @@ export interface AdaptiveRefinementInfo {
    * never enters the loop.
    */
   elementBudget?:        number;
+  /**
+   * Fraction (0–1) of the reported solve's estimated error ENERGY sitting at a
+   * boundary-condition discontinuity — the rim of a constrained or loaded patch.
+   *
+   * A DIAGNOSIS, not a target. That band converges at a measured rate of ~0.15
+   * against the smooth-C3D10 expectation of 2.0, so once it dominates, the loop
+   * can sit well short of `targetGlobalError` with nothing wrong with the mesh:
+   * what is crude is the rigid-constraint idealization, not the discretization.
+   * A high value means reach for a better bolt model, not a finer mesh.
+   *
+   * The reported `finalGlobalError` is unchanged by this and remains the TOTAL.
+   * Absent when no mask could be built (no surface, or a degraded run).
+   */
+  bcSingularityErrorFraction?: number;
   /** Per-iteration (globalRelativeError, elementCount) history. */
   history:               Array<{ globalRelativeError: number; elementCount: number }>;
   /** True if the loop degraded to a single tier solve (no binary / STEP / box). */
@@ -1878,6 +1893,10 @@ export interface AnalysisRequest {
     surfaceToNode?: Int32Array;
     surfaceFaces?:  Int32Array | null;
     meshFallback?:  boolean;
+    /** Nodes carrying a displacement constraint (bolt walls) — BC-singularity input. */
+    constrainedNodes?: Int32Array;
+    /** Nodes carrying an applied nodal force — BC-singularity input. */
+    loadedNodes?:      Int32Array;
   };
 }
 
@@ -4741,6 +4760,12 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     req._captureInternals.surfaceToNode = surfaceToNode;
     req._captureInternals.surfaceFaces  = surfaceFaces;
     req._captureInternals.meshFallback  = meshFallback;
+    // BC node sets, for the adaptive driver's singularity exclusion. The EDGE
+    // of each of these sets is where the solution is genuinely singular.
+    req._captureInternals.constrainedNodes =
+      Int32Array.from(constraints.flatMap(c => c.nodeIndices));
+    req._captureInternals.loadedNodes =
+      Int32Array.from(solverForces.map(f => f.nodeIndex));
   }
 
   let modalResult: ModalAnalysisResult | undefined;
@@ -6302,6 +6327,32 @@ export async function runAdaptiveAnalysis(
     }
   }
 
+  // ── BC-discontinuity exclusion ─────────────────────────────────────────────
+  // The edge of a constrained patch, and the rim of a loaded patch, are genuine
+  // singularities of the IDEALIZATION: refining them never converges, so an
+  // equidistribution loop pours elements into a region that cannot improve and
+  // stalls short of its target. Marking the interface (one ring either side)
+  // lets the budget go to the interior, which does converge. See
+  // bcDiscontinuityMask for the measurement this rests on.
+  const bcMaskFor = (cap: NonNullable<AnalysisRequest["_captureInternals"]>): Uint8Array | undefined => {
+    if (!cap.mesh) return undefined;
+    // Surface-node mask: the patch-rim test is only meaningful within the
+    // boundary surface (see bcDiscontinuityMask). No surface ⇒ no exclusion.
+    if (!cap.surfaceFaces) return undefined;
+    const surf = new Uint8Array(cap.mesh.nodeCount);
+    for (const n of cap.surfaceFaces) if (n >= 0 && n < surf.length) surf[n] = 1;
+    return bcDiscontinuityMask(
+      cap.mesh,
+      [cap.constrainedNodes ?? [], cap.loadedNodes ?? []],
+      BC_SINGULARITY_DILATE_HOPS,
+      surf,
+    );
+  };
+  // Node indices are per-mesh, so this is rebuilt after every accepted re-mesh.
+  let bcExclude = bcMaskFor(cap0);
+  let bestBcFraction: number | undefined =
+    maskedErrorFraction(cap0.mesh, cap0.errorEstimate, bcExclude);
+
   const baseElementCount = first.elementCount;
   const budget = Math.max(baseElementCount + 1, Math.floor(baseElementCount * opts.maxElementGrowth));
 
@@ -6339,6 +6390,7 @@ export async function runAdaptiveAnalysis(
       minSizeFactor: DEFAULT_SIZE_FIELD_FACTORS.minSizeFactor,
       maxSizeFactor: DEFAULT_SIZE_FIELD_FACTORS.maxSizeFactor,
       singularities,
+      excludeNodes: bcExclude,
     });
     if (raw.refinedNodeCount === 0) { stopReason = "no-refinement-requested"; break; }
     // Bound the size transition between refined and unrefined regions BEFORE
@@ -6467,7 +6519,13 @@ export async function runAdaptiveAnalysis(
     const nextGRE = next.globalRelativeError ?? 0;
     history.push({ globalRelativeError: nextGRE, elementCount: next.elementCount });
 
-    if (nextGRE < bestGRE) { best = next; bestGRE = nextGRE; }
+    const nextMask = bcMaskFor(capN);
+    if (nextGRE < bestGRE) {
+      best = next; bestGRE = nextGRE;
+      bestBcFraction = (capN.mesh && capN.errorEstimate)
+        ? maskedErrorFraction(capN.mesh, capN.errorEstimate, nextMask)
+        : undefined;
+    }
 
     // Advance loop state for the next stop decision.
     const prevGRE = state.globalRelativeError;
@@ -6483,6 +6541,7 @@ export async function runAdaptiveAnalysis(
     if (!capN.mesh || !capN.errorEstimate) { stopReason = "no-error-field"; break; }
     curMesh = capN.mesh;
     curError = capN.errorEstimate;
+    bcExclude = nextMask;
   }
 
   return {
@@ -6495,9 +6554,18 @@ export async function runAdaptiveAnalysis(
       initialElementCount: baseElementCount,
       finalElementCount:   best.elementCount,
       elementBudget:       budget,
+      bcSingularityErrorFraction: bestBcFraction,
       history,
       degradedToTier:      false,
-      note:                `Adaptive refinement: ${iterations} solve(s), stopped on '${stopReason}'.`,
+      // The BC sentence is appended whenever the fraction is known — no
+      // threshold, because a threshold would be one more tunable constant
+      // sitting under a user-facing string. The reader can judge 5% or 75%.
+      note: `Adaptive refinement: ${iterations} solve(s), stopped on '${stopReason}'.` +
+        (bestBcFraction === undefined ? "" :
+          ` ${(bestBcFraction * 100).toFixed(0)}% of the remaining estimated error sits at ` +
+          `boundary-condition discontinuities (the rim of a constrained or loaded patch), ` +
+          `which refinement cannot reduce — that share reflects the constraint idealization, ` +
+          `not the mesh.`),
     },
   };
 }

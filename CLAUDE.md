@@ -130,9 +130,14 @@ Before submitting a PR that modifies mesh visualization or stress heatmap:
 ### References
 - Vertex Welding: `client/index.html` lines ~2210–2280 (computeSmoothedStressColors function)
 - Server Spatial Grid: `server/analysis.ts` lines 1712–1776 (nearestNodeStress function)
-- Stress Recovery: `server/solver/stress.ts` lines 934–1015 (sprSmoothedStress function),
-  built on the shared patch helpers at lines 641–933 (`buildSprPatchFit`,
-  `solveSprValueAtNode`, `interpolateMidsideFromCorners`)
+- Stress Recovery: `server/solver/stress.ts` — `sprSmoothedStress` (scalar, feeds
+  the heatmap) and `sprSmoothedStress6` (tensor, feeds the ZZ estimator), built on
+  the shared patch helpers `buildSprPatchFit`, `solveSprValueAtNode` and
+  `interpolateMidsideFromCorners`. Both fit an `SprSamples` point cloud:
+  `buildCentroidSamples` (one sample per element — C3D4, and the legacy shape) or
+  `buildGaussSamples` (four C3D10 Gauss points per element, quadratic recovery
+  basis — see `docs/spr-gauss-point-handoff.md`). Search the symbols;
+  line numbers drift.
 
 ## Two-Region Material Model — Invariants
 
