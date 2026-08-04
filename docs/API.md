@@ -293,6 +293,52 @@ adaptive reached a 0.262 global error on 40,534 elements where a uniform mesh of
 optimising. Adaptivity buys error per element; it does not by itself settle the
 peak stress.
 
+**Singularity warning** (`summary.singularity`, `null` when nothing is flagged).
+Says the peak stress is set by the mesh rather than by the part, so the safety
+factor derived from it is not a converged number:
+
+```json
+"singularity": {
+  "detected": true,
+  "cause": "constraint-edge",
+  "confidence": "high",
+  "evidence": "single-mesh-heuristic",
+  "nearYield": false,
+  "peakStressMPa": 3.99, "stressAt1mmMPa": 0.4,
+  "concentrationRatio": 9.7,
+  "neighborhoodRadiusMm": 8.954, "localElementSizeMm": 3.581,
+  "peakVertexIdx": 411, "peakLocation": [6.0, 0.0, 5.0],
+  "message": "…"
+}
+```
+
+`cause` (issue #257) is `geometry`, `constraint-edge`, or `load-point`, and it
+selects the remedy `message` gives. The three need opposite advice: a fillet for
+a re-entrant corner, a better bolt idealization for a clamp edge (#260), a load
+spread over its real contact area for a load rim. It is decided by which BC rim
+the peak is NEAREST — on a compact part the sampling neighborhood can contain
+both, and a first-match test blamed the constraint for a peak sitting on the
+loaded node. Exact ties go to the constraint.
+
+Detection keys on the SHAPE of the field (`concentrationRatio` > 3), never on
+absolute stress. It formerly also required a peak above a hardcoded 50 MPa,
+commented as "2× yield" for PLA, which made the warning depend on how hard the
+part was loaded: an identical field with a 12× ratio was flagged at 51 MPa and
+silent at 50. That is why the warning stayed silent on bolt-constrained parts,
+whose peaks sit in the single-digit MPa. `nearYield` reports the yield
+comparison that gate used to make, and changes the wording only — it never
+suppresses the warning, because a singular peak is mesh-dependent whether or not
+it is near yield, and that mesh-dependence is the thing being reported.
+
+`peakVertexIdx` indexes the DISPLAY mesh (3 vertices per surface triangle), not
+the FEA node array. Use `peakLocation` for anything spatial.
+
+Known limitation: `neighborhoodRadiusMm` is derived from the STL display
+tessellation, not the FEA mesh, so it does not shrink as the solve is refined —
+measured 8.95 mm on a part 12 mm across, identical at 13k and 71k elements. The
+ratio is therefore a peak-vs-surroundings contrast on a coarse STL rather than a
+local gradient, and it should be read as such.
+
 ---
 
 ## Demo
