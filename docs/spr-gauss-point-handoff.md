@@ -138,6 +138,63 @@ fit on the same Gauss cloud rather than to averaging.
 
 ---
 
+## Effect on the adaptive loop — measured, and `targetGlobalError` stays at 3%
+
+The motivation for doing this work at all was that `DEFAULT_LOOP_OPTIONS
+.targetGlobalError` is 3% while the coarse-tier floor was ~1.5%, so up to half
+the target could be artifact and the loop could spend iterations chasing error
+that does not exist. That reasoning came from the *smooth manufactured* fixture.
+Measured on a real part it is largely beside the point, so **the 3% target is
+unchanged** — see below for why.
+
+Fixture: the Ø5-bore tube from `adaptive-benchmark.test.ts` (bolt-constrained
+bore, 50 N transverse), coarse tier, C3D10, default loop options.
+
+| | before | after |
+|---|--------|-------|
+| tier (iteration 1) error | 22.80 % | **19.37 %** |
+| final error | 12.57 % | **11.14 %** |
+| solves | 5 | **4** |
+| stop reason | `max-iterations` | `stalled` |
+| final elements | 82 685 | **80 866** |
+
+So on this part the change is a real if modest win: one fewer solve of an
+~80 k-element mesh, reaching a *lower* final error with *fewer* elements, and
+terminating on diminishing returns rather than running out of its iteration
+budget.
+
+**Where the loop aims its refinement barely moved, and that is correct.** The
+per-element field drives `buildSizeField`, so it decides where elements get
+spent. By region, on the 13 340-element tier mesh:
+
+| region | share before | share after | absolute η² before | after | change |
+|--------|--------------|-------------|--------------------|-------|--------|
+| rim (sharp circular edge) | 31.7 % | 33.2 % | 164.8 | 124.6 | −24 % |
+| outer wall | 27.1 % | 29.7 % | 140.9 | 111.4 | −21 % |
+| interior | 21.0 % | 19.6 % | 109.2 | 73.5 | −33 % |
+| bore wall (real concentrator) | 20.1 % | 17.6 % | 104.5 | 66.0 | −37 % |
+
+Read the SHARES alone and it looks like the rim gained and the real
+concentrator lost, which would be a regression. It is not: the global error
+fell at the same time, so every region's ABSOLUTE estimate dropped. The rim
+dropped *least*, which is why its share rose. That is the expected signature —
+a sharp re-entrant edge is a genuine stress singularity whose error is real and
+irreducible, while smoother regions carried more of the removable artifact.
+
+**Why the 3% target is not worth re-tuning.** On this part the loop stalls at
+11 %, nowhere near 3%, and it does so because of the rim singularity, not
+because of the estimator. `targetGlobalError` is simply not the binding
+constraint here — `stalled` and `max-iterations` are — so setting it to any
+other value would not have changed this run at all. The lever that *would*
+help is the `SingularityRegion` exclusion already present in `buildSizeField`
+(`opts.singularities`), fed with the part's sharp edges so the loop stops
+refining toward a singularity it can never resolve. That is a separate feature
+and deliberately out of scope here.
+
+Caveat: one fixture. The one-fewer-solve result in particular turns on a stop
+reason flipping from `max-iterations` to `stalled`, which is not a robust
+general claim.
+
 ## Not done (deliberate scope holds)
 
 - **`sprSmoothedStress` (scalar von Mises) still uses centroid sampling.** It
