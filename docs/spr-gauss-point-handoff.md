@@ -177,19 +177,53 @@ spent. By region, on the 13 340-element tier mesh:
 Read the SHARES alone and it looks like the rim gained and the real
 concentrator lost, which would be a regression. It is not: the global error
 fell at the same time, so every region's ABSOLUTE estimate dropped. The rim
-dropped *least*, which is why its share rose. That is the expected signature —
-a sharp re-entrant edge is a genuine stress singularity whose error is real and
-irreducible, while smoother regions carried more of the removable artifact.
+dropped *least*, which is why its share rose — the residue there is real error
+the recovery fix cannot remove, while smoother regions carried more of the
+removable artifact.
 
-**Why the 3% target is not worth re-tuning.** On this part the loop stalls at
-11 %, nowhere near 3%, and it does so because of the rim singularity, not
-because of the estimator. `targetGlobalError` is simply not the binding
-constraint here — `stalled` and `max-iterations` are — so setting it to any
-other value would not have changed this run at all. The lever that *would*
-help is the `SingularityRegion` exclusion already present in `buildSizeField`
-(`opts.singularities`), fed with the part's sharp edges so the loop stops
-refining toward a singularity it can never resolve. That is a separate feature
-and deliberately out of scope here.
+### What the residual error actually is — it is the BOUNDARY CONDITION, not geometry
+
+An earlier revision of this section attributed that residue to the tube's sharp
+rim, calling it a geometric stress singularity. **That was wrong**, and the
+correction matters because it points at a different lever.
+
+A sharp edge is only singular when the material wedge is RE-ENTRANT (> 180°).
+The tube's rim is a 90° CONVEX wedge between two traction-free faces, which is
+bounded. Measured under UNIFORM refinement (clamp on the whole bore, consistent
+traction over the whole outer wall so the load has no patch edge, so the only
+BC discontinuity is where the clamp meets the free end faces):
+
+| region (fixed geometric band) | 6 763 el | 7 608 el | 15 382 el | 19 308 el |
+|---|---|---|---|---|
+| bore rim — clamp meets free face | 20.1 % | 23.2 % | 26.0 % | **27.7 %** |
+| outer rim — pure 90° geometry | 0.2 % | 0.4 % | 0.3 % | **0.4 %** |
+| bore wall — the clamped surface | 32.0 % | 35.6 % | 39.6 % | **47.7 %** |
+| outer wall | 0.4 % | 0.5 % | 1.8 % | 1.2 % |
+| end face | 9.6 % | 7.9 % | 8.1 % | 7.0 % |
+| interior | 37.7 % | 32.4 % | 24.1 % | **16.0 %** |
+
+The bands are FIXED volumes, so a growing share is genuine concentration, not a
+binning artifact. The pure-geometry rim carries ~0.3 % and is flat: not
+singular, exactly as theory says. The CLAMPED boundary and its edge grow from
+52 % to 75 % of the error energy, while the smooth interior collapses from 38 %
+to 16 %. Global convergence over the ladder is rate **0.61** against the
+smooth-C3D10 expectation of 2.0; restricted to elements away from the clamp it
+is **1.56**, 2.6× better. (The intermediate rates are erratic because TetGen's
+element count responds non-monotonically to `-a` — the same effect
+`adaptive-benchmark.test.ts` documents in its `UNIFORM_VOLUME_LADDER` comment;
+only the whole-ladder rates are quoted here.)
+
+So the residual error is dominated by the **rigid-clamp idealization** — a
+modelling choice, not physics and not geometry. Refining into it never
+converges, which is precisely why the adaptive loop stalls.
+
+**Why the 3% target is still not worth re-tuning.** On this part the loop
+stalls at 11 %, nowhere near 3 %, because of that BC singularity.
+`targetGlobalError` is not the binding constraint — `stalled` and
+`max-iterations` are — so any other value would have produced the same run.
+The `SingularityRegion` exclusion in `buildSizeField` (`opts.singularities`) is
+the right mechanism, but it must be fed the CONSTRAINT and LOAD boundaries, not
+the part's sharp edges. That is a separate feature, deliberately out of scope.
 
 Caveat: one fixture. The one-fewer-solve result in particular turns on a stop
 reason flipping from `max-iterations` to `stalled`, which is not a robust
