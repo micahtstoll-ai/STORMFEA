@@ -1,5 +1,6 @@
 /**
- * Gauss-point SPR sampling for C3D10 (issue #158).
+ * Gauss-point SPR sampling for C3D10.
+ * See docs/spr-gauss-point-handoff.md.
  *
  * `recoverElementStress` has always evaluated sigma = C*B*u at all four C3D10
  * Gauss points — the superconvergent sampling locations for a quadratic tet —

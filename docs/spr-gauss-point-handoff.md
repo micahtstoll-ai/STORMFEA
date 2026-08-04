@@ -1,6 +1,6 @@
 # Gauss-point SPR sampling for C3D10 — RESOLVED
 
-**Status:** done. Landed as issue #158. This document is kept as the record of
+**Status:** done. This document is kept as the record of
 what was measured, including where the original diagnosis was wrong.
 
 **Origin:** found while investigating the "ZZ global relative error reads

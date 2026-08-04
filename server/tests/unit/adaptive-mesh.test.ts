@@ -695,7 +695,7 @@ describe("TetGen file serialization (pure, binary-independent)", () => {
   });
 });
 
-// ─── BC-discontinuity exclusion (issue #158 follow-up) ───────────────────────
+// ─── BC-discontinuity exclusion (docs/bc-singularity-exclusion.md) ───────────
 describe("bcDiscontinuityMask — the patch RIM, not the patch", () => {
   // A row of `count` cubes along x, Kuhn-split. Every node of this slab lies on
   // its boundary surface EXCEPT none — the slab is one element thick in y and z,

@@ -685,7 +685,7 @@ interface SprPatchFit {
 /**
  * The point cloud an SPR patch fit is built from.
  *
- * Two shapes exist, and the difference is the whole point of issue #158:
+ * Two shapes exist, and the difference is the whole point of this change:
  *
  *  • **Centroid sampling** (`perElem = 1`) — one value per element at its
  *    corner-average centroid. This is what C3D4 has (its stress genuinely IS
@@ -1104,7 +1104,7 @@ function midsideNodeMask(mesh: TetMesh): Uint8Array | null {
  * components), and is a no-op for C3D4 meshes, which have no midside nodes.
  *
  * KEPT UNDER GAUSS SAMPLING, and the decision was measured rather than assumed
- * (issue #158). The hope was that four samples per element would spread an edge
+ * The hope was that four samples per element would spread an edge
  * ring's cloud enough in 3-D to make a direct midside fit well posed. It does
  * not: the amplification G at midside nodes under the QUADRATIC basis has a
  * median of 2.2e8 on the structured C3D10 box and reaches non-finite (outright
@@ -1177,7 +1177,7 @@ export function sprSmoothedStress(
   // nonlinear functional of σ, so Gauss-sampling it is not the same operation as
   // Gauss-sampling the tensor, and it would move every heatmap value under the
   // user. The tensor path (sprSmoothedStress6), which feeds the ZZ estimator,
-  // is where issue #158's Gauss sampling applies.
+  // is where Gauss sampling applies.
   const samples = buildCentroidSamples(mesh, vonMises);
 
   // Pre-allocated augmented scratch — fully overwritten per node/component.
@@ -1228,11 +1228,11 @@ export function sprSmoothedStress(
  * SPR-smooth all 6 stress tensor components [σxx,σyy,σzz,τxy,τyz,τxz]
  * independently and return nodeStress6: Float64Array(nodeCount * 6).
  *
- * `samples` selects the recovery's fidelity, and is the substance of issue #158:
+ * `samples` selects the recovery's fidelity, and is the substance of this change:
  *
  *  • **Omitted** (or a `perElem = 1` set) — legacy centroid recovery with the
  *    linear basis. Correct for C3D4, and the shape every existing caller and
- *    lock uses. Bit-identical to the pre-#158 implementation.
+ *    lock uses. Bit-identical to the pre-Gauss-sampling implementation.
  *  • **A C3D10 Gauss set** (`buildGaussSamples`, `perElem = 4`) — fits the full
  *    quadratic basis to the four superconvergent points of every patch element,
  *    at their real isoparametric positions.
@@ -1516,7 +1516,7 @@ export function computeZZErrorEstimate(
 
   // ── Recovered field σ*: 6-component SPR nodal stress ────────────────────────
   // On C3D10 the recovery is fed the four un-averaged Gauss-point tensors per
-  // element (issue #158) rather than one centroid value. The same samples then
+  // element rather than one centroid value. The same samples then
   // serve as σ_h in the energy loop below, so σ = C·B·u is evaluated ONCE per
   // Gauss point instead of once here and again there.
   const samples = buildGaussSamples(mesh, displacement, mat, field);

@@ -2794,14 +2794,14 @@ console.log("\n[32] Lekhnitskii orthotropic open-hole Kt — anisotropic known-a
   }
 }
 
-// ── Test group 33: C3D10 ZZ estimator — exactness floor + effectivity (#158) ──
+// ── Test group 33: C3D10 ZZ estimator — exactness floor + effectivity ─────────
 // Group 30 locks the estimator's MAGNITUDE, but on a C3D4 box. The C3D10 path
 // had no anchor at all, and carried a floor unrelated to discretization error:
 // SPR was fed ONE centroid sample per element, so patches with fewer elements
 // than the fit has unknowns — every convex model corner — fell back to plain
 // averaging, which is biased by O(h·|∇σ|) even when the FE solution is EXACT.
 // Gauss-point sampling (4 samples/element, quadratic recovery basis) removes it.
-console.log("\n[33] C3D10 ZZ estimator: exactness floor and effectivity index (#158)");
+console.log("\n[33] C3D10 ZZ estimator: exactness floor and effectivity index");
 {
   const E = 3500, nu = 0.36, L = 10;
   const iso = { E, nu, yieldStrength: 1e9, label: "zz-c3d10" };
@@ -2863,7 +2863,7 @@ console.log("\n[33] C3D10 ZZ estimator: exactness floor and effectivity index (#
 
       const { elemStress6 } = recoverElementStress(mesh, disp, iso);
       const { globalRelativeError } = computeZZErrorEstimate(mesh, disp, elemStress6, iso);
-      // 1e-8 is ~5 orders below the pre-#158 floor at these densities (1.46e-2,
+      // 1e-8 is ~5 orders below the pre-fix floor at these densities (1.46e-2,
       // 5.30e-3) and ~5 orders ABOVE the measured round-off (3.2e-13, 4.9e-13),
       // so it fails loudly on regression without tracking CG jitter.
       test(`[33.2] div=${nDiv}: η on an exactly-representable field is round-off, not O(h)`,

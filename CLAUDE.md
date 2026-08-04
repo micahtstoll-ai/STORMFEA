@@ -136,7 +136,7 @@ Before submitting a PR that modifies mesh visualization or stress heatmap:
   `interpolateMidsideFromCorners`. Both fit an `SprSamples` point cloud:
   `buildCentroidSamples` (one sample per element — C3D4, and the legacy shape) or
   `buildGaussSamples` (four C3D10 Gauss points per element, quadratic recovery
-  basis — issue #158, see `docs/spr-gauss-point-handoff.md`). Search the symbols;
+  basis — see `docs/spr-gauss-point-handoff.md`). Search the symbols;
   line numbers drift.
 
 ## Two-Region Material Model — Invariants
