@@ -1,7 +1,9 @@
 # Gauss-point SPR sampling for C3D10 — RESOLVED
 
-**Status:** done. This document is kept as the record of
-what was measured, including where the original diagnosis was wrong.
+**Status:** done, including the display-path scope this work originally held
+back (issue #258 — see "The scalar question" below). This document is kept as
+the record of what was measured, including where the original diagnosis was
+wrong and where this file's own framing was too narrow.
 
 **Origin:** found while investigating the "ZZ global relative error reads
 implausibly high on a real part" brief. That brief's headline defect (SPR
@@ -238,18 +240,19 @@ Caveat: one fixture. The one-fewer-solve result in particular turns on a stop
 reason flipping from `max-iterations` to `stalled`, which is not a robust
 general claim.
 
-## Not done (deliberate scope holds)
+## Scope held back here — and since released (issue #258)
 
-- **`sprSmoothedStress` (scalar von Mises) still uses centroid sampling.** It
-  feeds the display heatmap. Von Mises is a nonlinear functional of σ, so
-  Gauss-sampling it is a different operation from Gauss-sampling the tensor, and
-  it would move every heatmap value. Unchanged, and bit-identical.
+Two consumers were deliberately left on centroid sampling by this work, because
+moving them changes every number a user looks at and nothing forced it:
+
+- **`sprSmoothedStress` (scalar von Mises)**, which feeds the display heatmap.
 - **`analysis.ts`'s nodal-utilization `sprSmoothedStress6` call** (the per-node
-  U_XY / U_Z display field) still passes no samples, so it keeps the legacy
-  recovery. Upgrading it would change user-facing numbers with no lock demanding
-  it. This is the obvious next candidate if the display field is ever revisited.
+  U_XY / U_Z display field), which passed no samples.
 
-## The scalar question, decided (issue #258)
+Both have since moved. The section below records the decision that unblocked it
+and what the measurement found.
+
+## The scalar question, decided AND implemented (issue #258)
 
 Moving the display heatmap off centroid sampling needs a choice first, because
 there are two different operations and only one of them is SPR:
@@ -273,23 +276,91 @@ there are two different operations and only one of them is SPR:
    remove, and on the display field a user reads a safety factor off.
 
 3. **(A) makes the heatmap and the ZZ estimator the same recovered field.**
-   Today they are two independent recoveries of one physical field and can
-   disagree with each other; the error estimate can improve while the picture
-   the user is looking at does not. Under (A) the displayed heatmap IS the field
-   the estimator judged.
+   Before this, they were two independent recoveries of one physical field, free
+   to disagree with each other; the error estimate could improve while the
+   picture the user is looking at did not. Under (A) the displayed heatmap IS the
+   field the estimator judged.
 
 A practical consequence worth stating: under (A) `sprSmoothedStress` stops being
 an independent recovery pass and becomes a projection of `sprSmoothedStress6`,
 so the scalar recovery loop disappears rather than being re-tuned.
 
-**Not yet implemented, and the reason is not effort.** (A) moves every displayed
-heatmap value and every nodal utilization number. The acceptance bar in #258 is a
-VISIBLE IMPROVEMENT on a part with convex corners, measured before and after —
-not parity, and not "the theory says so". That measurement is the work; this
-section only fixes which of the two operations is worth measuring, so the next
-session does not re-litigate it. Note also that `analysis.ts` computes
-`elemStress6` conditionally, so (A) makes the heatmap depend on a tensor the
-normal path does not always build today.
+### Implemented, and the measurement was bigger than the framing predicted
+
+(A) shipped: `runAnalysis` recovers the tensor from the Gauss samples and takes
+von Mises at the node through the shared `vonMisesFromTensor6`. The acceptance
+bar in #258 was a VISIBLE IMPROVEMENT measured before and after — not parity,
+and not "the theory says so".
+
+Measured on a manufactured linear field the mesh reproduces exactly, so "better"
+is against TRUTH rather than against a finer mesh:
+
+| path | max error |
+|---|---|
+| new — von Mises of the recovered tensor | **6.31e-13** (round-off) |
+| old — independently recovered scalar | **1.000 absolute at corner (0,0,0)**, exact 5.000 → 20 % wrong |
+
+**It was never only corners, and this file's own framing said otherwise.** Worst
+relative error by boundary class:
+
+| interior | face | edge | corner |
+|---|---|---|---|
+| 8.33 % | 9.09 % | 9.68 % | **20.00 %** |
+
+Rank-deficient corner patches are the extreme case, not the mechanism's extent.
+The centroid recovery is biased wherever the incident element centroids sit
+off-centre from the node — everywhere in a tet mesh, merely least bad in the
+middle. So the whole displayed field went from ~8–20 % wrong to round-off on a
+field the mesh represents exactly, and the "46 nodes deviated" result at the top
+of this document is specific to the TENSOR path, which was already exact
+elsewhere.
+
+**How an 8 % bias in the displayed field went unnoticed:** solver_validation
+group 20 ("SPR linear-field exactness") exercises `sprSmoothedStress6`, the
+tensor path. There was no exactness test for the scalar path at all. The
+recovery that was proven exact was not the one users read a safety factor off.
+
+C3D4 is untouched by construction — `buildGaussSamples` returns null for linear
+elements, so `sprSmoothedStress` stays exactly as it was on that path.
+
+**The heatmap-artifact question from #258, answered: NO.** The artifacts in
+`CLAUDE.md` were straight lines across the model, root-caused to client-side
+vertex welding and fixed in 49bc5d6. This mechanism has a different spatial
+signature — edges carry 9.68 % against 8.33 % interior, a mild gradient across
+boundary classes rather than the sharp edge concentration that would paint a
+visible line. Its one sharply localized place is the eight corners, which are
+points. Two real bugs, unrelated.
+
+Locked by `server/tests/unit/spr-scalar-projection.test.ts`, which asserts the
+projection is exact, that the legacy scalar path is NOT, and — locking the
+DECISION rather than just the result — that projection and direct recovery
+genuinely differ, so if they ever coincide the argument for preferring one has
+quietly stopped applying.
+
+### The cost of (A), and why it turned out to be free
+
+"The heatmap and the estimator are now the same field" is a statement about the
+code as well as about the physics. Recovering that field in the display path
+means recovering, a second time, exactly what the ZZ estimator already recovered
+from the same mesh, displacement, material and material field — and the
+estimator always runs (`buildSolverResult` is called with
+`computeErrorEstimate: true` from the pipeline). Measured on a structured C3D10
+box, median of three runs:
+
+| | 6 000 el | 24 576 el |
+|---|---|---|
+| `buildGaussSamples` | 98 ms | 425 ms |
+| `sprSmoothedStress6` on those samples | 67 ms | 330 ms |
+| **duplicated per analysis** | **164 ms** | **755 ms** |
+| whole ZZ stage, for scale | 185 ms | 787 ms |
+
+The duplicate costs as much as the entire estimator stage it repeats. So σ* now
+comes back on `SolverResult.nodeStress6` and the display path reads it, which
+makes the shared-field claim literal rather than incidental: there is one
+recovery, and the picture and the error estimate are the same array. Bit-identity
+against an independent recovery is asserted with `toBe`, and the "no error
+estimate → no field" fallback is asserted too, so the `??` branch is not dead
+code by accident.
 
 ## Locks
 
@@ -301,5 +372,8 @@ normal path does not always build today.
   nodes. Mutation-checked: forcing the linear basis fails the quadratic test;
   ignoring the passed samples fails three; averaging the samples fails the
   within-element-variation test.
+- `server/tests/unit/spr-scalar-projection.test.ts` — the display path (#258):
+  the projection is exact at every node including corners, the legacy scalar
+  recovery demonstrably is not, and the two formulations differ.
 - Unchanged and still green: solver_validation groups 4, 20, 30, 31 and
   `server/tests/unit/spr-midside-recovery.test.ts`.
