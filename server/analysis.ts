@@ -3202,7 +3202,62 @@ export function detectUnconstrainedRigidBodyMode(
   // Gather all constrained node coordinates across all bolt holes
   const constrainedIdx: number[] = [];
   for (const c of constraints) constrainedIdx.push(...c.nodeIndices);
-  if (constrainedIdx.length < 2) return null; // need at least 2 points for a meaningful axis
+
+  // A SINGLE constrained node fixes three translational DOF and nothing else:
+  // the body is free to rotate about every axis through that point. That is
+  // strictly worse than the near-collinear case this function was written to
+  // catch, and it used to return null here — "cannot compute an axis" was being
+  // reported as "no problem", leaving the detector NON-MONOTONE in severity
+  // (it warned at 2 nodes and stayed silent at 1 and 0).
+  //
+  // Not hypothetical: `findStlBoltConstraintNodes` deliberately falls back to
+  // `[closestNode(...)]` — exactly one node — when it cannot find a hole wall,
+  // which happens when the mesh is too coarse to put nodes on a small bore.
+  // Measured on a Ø2.4 mm bore in a 4 797-element mesh: 1 wall node, a peak of
+  // 75 423 MPa, and a reported safety factor of 0.00, with no warning of any
+  // kind. Silent, catastrophic, and indistinguishable from a real result.
+  //
+  // There is no single unresisted axis to name, so the reported one is the axis
+  // the LOAD actually drives — the direction of the net torque about the
+  // constrained point, whose magnitude is a genuine driving torque in the same
+  // sense the collinear branch uses below.
+  if (constrainedIdx.length === 1) {
+    const p = constrainedIdx[0]!;
+    const ax = mesh.nodes[p * 3] ?? 0, ay = mesh.nodes[p * 3 + 1] ?? 0, az = mesh.nodes[p * 3 + 2] ?? 0;
+    let tx = 0, ty = 0, tz = 0;
+    for (const f of forces) {
+      const rx = (mesh.nodes[f.nodeIndex * 3] ?? 0) - ax;
+      const ry = (mesh.nodes[f.nodeIndex * 3 + 1] ?? 0) - ay;
+      const rz = (mesh.nodes[f.nodeIndex * 3 + 2] ?? 0) - az;
+      const [fx, fy, fz] = f.forceN;
+      tx += ry * fz - rz * fy;
+      ty += rz * fx - rx * fz;
+      tz += rx * fy - ry * fx;
+    }
+    const tMag = Math.sqrt(tx * tx + ty * ty + tz * tz);
+    const dir: [number, number, number] = tMag > 1e-12
+      ? [tx / tMag, ty / tMag, tz / tMag]
+      : [0, 0, 1];
+    return {
+      detected: true,
+      axisDirection: dir,
+      axisPoint: [ax, ay, az],
+      drivingTorqueNmm: tMag,
+      // Unlike the collinear branch, this is reported REGARDLESS of how large
+      // the torque is. A one-point constraint is not a borderline modelling
+      // choice that a small load makes acceptable — it is an invalid restraint,
+      // and the number it produces is meaningless at any load.
+      message: `Only ONE node is constrained, so the part is free to rotate about every axis through that point — this model is not restrained and no result from it is meaningful. This almost always means the mesh was too coarse to place nodes on a bolt hole's wall, so the constraint collapsed to a single fallback point rather than gripping the bore. Check that each bolted hole is large enough relative to your mesh: re-run at a finer mesh quality, or confirm the hole radius is correct. The applied load drives a torque of ${tMag.toFixed(0)} N·mm about this point with nothing resisting it.`,
+    };
+  }
+
+  // Zero constraints is deliberately left alone here. It is a different claim —
+  // translation is unresisted too, so there is no axis to report in the sense
+  // this warning's payload means — and it is already caught downstream, where a
+  // fully singular system fails to converge and the verdict says so. Whether a
+  // constraint-free request should be rejected outright is a product question,
+  // not one to settle inside a rotation detector.
+  if (constrainedIdx.length < 2) return null;
 
   const nC = constrainedIdx.length;
   let cx = 0, cy = 0, cz = 0;

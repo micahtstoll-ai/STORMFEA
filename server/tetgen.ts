@@ -38,6 +38,7 @@ import { writeFile, readFile, unlink }        from "fs/promises";
 import { existsSync }                         from "fs";
 import { promisify }                          from "util";
 import { tmpdir }                             from "os";
+import { randomBytes }                        from "crypto";
 import * as path                              from "path";
 import { fileURLToPath as ftu }               from "url";
 import type { TetMesh }                       from "./solver/types.js";
@@ -358,7 +359,7 @@ export async function meshWithTetGen(
   const weld = weldVertices(stlPositions, triangleCount);
   const off  = buildOFF(weld);
 
-  const tmpBase = path.join(tmpdir(), `stressform_${Date.now()}`);
+  const tmpBase = path.join(tmpdir(), `stressform_${uniqueTmpSuffix()}`);
   const offPath = tmpBase + ".off";
 
   await writeFile(offPath, off, "utf8");
@@ -498,6 +499,33 @@ function findTetGen(): string {
 }
 
 const TETGEN_BIN = findTetGen();
+
+/**
+ * Collision-free suffix for a TetGen scratch path.
+ *
+ * Both mesh entry points used `Date.now()` alone, which is only unique if no two
+ * TetGen invocations anywhere on the machine start in the same millisecond. That
+ * is not a safe assumption: the server can mesh concurrent requests, and the test
+ * suite runs several tetgen-using files in PARALLEL WORKER PROCESSES. A collision
+ * is silent and nasty — TetGen writes `<base>.1.node` and `<base>.1.ele`, so two
+ * runs sharing a base can have one read the other's node file with its own
+ * element file, producing a mesh whose midside nodes belong to a different part.
+ *
+ * HARDENING, not a diagnosed fix. It was observed once in three otherwise
+ * identical full-suite runs that `adaptive-benchmark.test.ts` rejected its own
+ * mesh with "[C3D10 node order] ... 0 affine witnesses" and silently degraded to
+ * a bounding-box mesh, while another file was meshing at the same moment. A
+ * temp-path collision fits that signature exactly — but so does TetGen simply
+ * emitting curved elements, and the two were not distinguished. Making the path
+ * unique costs nothing, removes one of the two candidate mechanisms, and is what
+ * makes a RECURRENCE diagnostic: if it happens again with unique paths, the
+ * mesher is the cause. See the issue for the discriminating experiment.
+ *
+ * pid + a random suffix, so it is unique across processes as well as within one.
+ */
+function uniqueTmpSuffix(): string {
+  return `${process.pid}_${Date.now()}_${randomBytes(6).toString("hex")}`;
+}
 
 /**
  * Whether we know the TetGen binary is absent. Set by probeTetGen at startup
@@ -652,7 +680,7 @@ export async function meshWithTetGenSizing(
   // properties are load-bearing here.
   const bg = extractCornerBackground(backgroundMesh, sizeField);
 
-  const tmpBase  = path.join(tmpdir(), `stormfea_adapt_${Date.now()}`);
+  const tmpBase  = path.join(tmpdir(), `stormfea_adapt_${uniqueTmpSuffix()}`);
   // TetGen's -r reads <base>.node / <base>.ele, and <base>.vol under -a.
   const inNodePath = tmpBase + ".node";
   const inElePath  = tmpBase + ".ele";
