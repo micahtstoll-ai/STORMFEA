@@ -43,9 +43,17 @@ function facetAreas(): { outerWall: number; boreWall: number; annuli: number; to
   return { outerWall, boreWall, annuli, total: outerWall + boreWall + annuli };
 }
 
-type Variant = "point" | "spread" | "edge-free" | "body-force";
+type Variant = "point" | "tapered" | "tapered-thin" | "spread" | "edge-free" | "body-force";
 
-const VARIANTS: readonly Variant[] = ["point", "spread", "edge-free", "body-force"];
+const ALL_VARIANTS: readonly Variant[] = [
+  "point", "tapered", "tapered-thin", "spread", "edge-free", "body-force",
+];
+/** MEASURE260_VARIANTS=point,tapered re-runs a subset without re-solving all six. */
+const VARIANTS: readonly Variant[] = (() => {
+  const want = (process.env["MEASURE260_VARIANTS"] ?? "").split(",").map(s => s.trim()).filter(Boolean);
+  if (want.length === 0) return ALL_VARIANTS;
+  return ALL_VARIANTS.filter(v => want.includes(v));
+})();
 
 const AREAS = facetAreas();
 /**
@@ -91,6 +99,25 @@ function makeRequest(variant: Variant): AnalysisRequest {
       // the extreme face in the load direction (|x - xmax| < 0.5 mm) — NOT at
       // `position`, which the force path never reads.
       return { ...base, forces: [{ magnitude: TARGET_N, direction: [1, 0, 0], position: [R, 0, H] }] };
+    case "tapered":
+      // The fix under test (#260): same 50 N on the same extreme face, but
+      // spread over a raised-cosine patch integrated as a consistent traction
+      // instead of equal-split over a hard-edged 0.5 mm band. Default depth =
+      // LOAD_PATCH_DEPTH_FRACTION of the 12 mm extent along x, so 1.8 mm.
+      return { ...base, forces: [{
+        magnitude: TARGET_N, direction: [1, 0, 0], position: [R, 0, H],
+        loadDistribution: "tapered_patch",
+      }] };
+    case "tapered-thin":
+      // A third of the default depth. The default fraction is a judgement, not
+      // a measurement, so the honest question is how much of any improvement
+      // is the TAPER and how much is merely a bigger patch. If a 0.6 mm
+      // tapered patch — barely wider than the legacy 0.5 mm band — already
+      // helps, the taper is doing the work.
+      return { ...base, forces: [{
+        magnitude: TARGET_N, direction: [1, 0, 0], position: [R, 0, H],
+        loadDistribution: "tapered_patch", loadPatchDepthMm: 0.6,
+      }] };
     case "spread":
       // The same resultant spread over the entire windward surface — as far as
       // the pressure API can spread a directional surface load. Still has a

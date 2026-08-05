@@ -22,7 +22,7 @@ import { runLinearBuckling }              from "./solver/buckling.js";
 import { assembleK, assembleKsigma, buildSparsityPattern } from "./solver/assembly.js";
 import { buildNodeElementAdjacency }       from "./solver/adjacency.js";
 import { applyDirichletBC }    from "./solver/boundary.js";
-import { assembleForceVector, assembleBodyForce, assembleSurfaceTraction, assembleSurfaceTractionNormal, selectPressureRegion } from "./solver/load.js";
+import { assembleForceVector, assembleBodyForce, assembleSurfaceTraction, assembleSurfaceTractionNormal, selectPressureRegion, assembleTaperedFaceLoad } from "./solver/load.js";
 import type { ModalAnalysisResult }        from "./solver/types.js";
 import {
   buildLaminateCMatrix,
@@ -1508,10 +1508,35 @@ export interface ForceSpec {
   magnitude: number;
   /** Unit direction vector [x, y, z] in STL file space */
   direction: [number, number, number];
-  /** Point of application in STL file space (mm) */
+  /**
+   * Point of application in STL file space (mm).
+   *
+   * NOT READ BY THE SOLVER (issue #271). Every distribution mode below selects
+   * its nodes from `direction` alone, so moving this field changes nothing —
+   * verified bit-identical to nine decimals across four application points,
+   * including one on the opposite side of the part. The client still sends it
+   * and draws an arrow with it; until #271 is decided, treat it as display
+   * metadata rather than as part of the model.
+   */
   position:  [number, number, number];
-  /** Load distribution mode: 'uniform' = equal across face, 'cosine_bearing' = concentrated at bearing point (default: 'uniform') */
-  loadDistribution?: 'uniform' | 'cosine_bearing';
+  /**
+   * Load distribution mode.
+   *   'uniform'        — equal split across the extreme-face band (legacy)
+   *   'cosine_bearing' — concentrated at a bolt bearing point
+   *   'tapered_patch'  — spread over a raised-cosine patch on the extreme face,
+   *                      integrated as a consistent (tributary-area) traction.
+   *                      Removes the hard patch rim the other two modes carry;
+   *                      see `assembleTaperedFaceLoad` and issue #260.
+   * Default (undefined) keeps the legacy selection exactly.
+   */
+  loadDistribution?: 'uniform' | 'cosine_bearing' | 'tapered_patch';
+  /**
+   * Depth of the 'tapered_patch' taper along the load direction, in mm — the
+   * REAL contact size when the caller knows it. Ignored by every other mode.
+   * Omitted → `LOAD_PATCH_DEPTH_FRACTION` of the part's extent along
+   * `direction`, which is a judgement rather than a measurement.
+   */
+  loadPatchDepthMm?: number;
 }
 
 /**
@@ -4828,6 +4853,40 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     const fx = dx/len * f.magnitude;
     const fy = dy/len * f.magnitude;
     const fz = dz/len * f.magnitude;
+
+    // ── Tapered patch (issue #260) ──────────────────────────────────────────
+    // Opt-in, and it returns before any of the extreme-face node selection
+    // below runs — so an absent or legacy `loadDistribution` reaches exactly
+    // the code it always did. Needs surface connectivity to integrate over;
+    // without it (a mesh path that carries none) fall through to the legacy
+    // selection with a loud note rather than silently applying a different
+    // load model than the caller asked for.
+    if (f.loadDistribution === 'tapered_patch') {
+      if (surfaceFaces) {
+        const tapered = assembleTaperedFaceLoad(
+          mesh, surfaceFaces, [dx/len, dy/len, dz/len], [fx, fy, fz], f.loadPatchDepthMm,
+        );
+        let applied = 0, resX = 0, resY = 0, resZ = 0;
+        for (let n = 0; n < mesh.nodeCount; n++) {
+          const nx = tapered.forces[n*3] ?? 0;
+          const ny = tapered.forces[n*3+1] ?? 0;
+          const nz = tapered.forces[n*3+2] ?? 0;
+          if (nx !== 0 || ny !== 0 || nz !== 0) {
+            solverForces.push({ nodeIndex: n, forceN: [nx, ny, nz] });
+            applied++; resX += nx; resY += ny; resZ += nz;
+          }
+        }
+        console.log(`[analysis] force ${f.magnitude}N in (${dx},${dy},${dz}): tapered patch ` +
+          `depth=${tapered.patchDepthMm.toFixed(3)}mm over ${tapered.loadedTriangles} triangles, ` +
+          `${applied} loaded nodes, |resultant|=${Math.hypot(resX, resY, resZ).toFixed(4)}N`);
+        continue;
+      }
+      console.warn(
+        `[analysis] force ${f.magnitude}N requested loadDistribution='tapered_patch', but this ` +
+        `mesh carries no surface connectivity to integrate a traction over. Falling back to the ` +
+        `legacy extreme-face selection — the result is the LEGACY load model, not the tapered one.`,
+      );
+    }
 
     let faceNodes: number[];
 

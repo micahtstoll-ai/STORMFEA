@@ -1576,8 +1576,9 @@ body:not(.has-results) #btn-stress { display: none !important; }
             <select id="fp-bearing-dist" style="width:100%;font-size:11px;margin-top:4px">
               <option value="uniform">Uniform across face</option>
               <option value="cosine_bearing">Cosine (bearing point)</option>
+              <option value="tapered_patch">Tapered contact patch</option>
             </select>
-            <div style="font-size:9px;color:var(--text-lo);margin-top:4px">Cosine: concentrated at bolt bearing point, realistic for bolt pull-through.</div>
+            <div style="font-size:9px;color:var(--text-lo);margin-top:4px">Cosine: concentrated at bolt bearing point, realistic for bolt pull-through. Tapered: spreads the load over a contact patch that fades to zero at its edge, instead of stopping dead at the edge of a one-element band — the hard edge is a stress singularity, so peak stress there does not settle down as you refine the mesh.</div>
           </div>
           <div style="display:flex;gap:6px">
             <button class="btn primary" style="flex:1" onclick="confirmForce()">Add Force</button>

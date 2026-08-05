@@ -409,3 +409,171 @@ export function assembleSurfaceTractionNormal(
 
   return f;
 }
+
+/**
+ * Default depth of the tapered load patch, as a fraction of the part's extent
+ * ALONG the load direction.
+ *
+ * Confidence: LOW. This is a judgement, not a measurement — no contact study
+ * backs the number, and a caller who knows the real contact size should pass
+ * `patchDepthMm` instead of inheriting it. It is deliberately part-relative
+ * rather than mesh-relative: a mesh-relative patch would shrink under
+ * refinement, which changes the load idealization from one mesh to the next
+ * and is precisely the non-convergence this mode exists to remove. Being
+ * part-relative also makes it scale-invariant, the property issue #168
+ * established for mesh density and issue #157 for the pressure band.
+ */
+export const LOAD_PATCH_DEPTH_FRACTION = 0.15;
+
+/**
+ * Raised-cosine taper on s ∈ [0, 1]: 1 at the patch centre-plane, 0 at its
+ * edge, with ZERO SLOPE at both ends.
+ *
+ * The zero slope at s = 1 is the whole point. A linear ramp still leaves a
+ * kink in the traction where the patch stops, and it is the traction
+ * DISCONTINUITY at a patch rim that is singular — not the patch's existence.
+ */
+function raisedCosineTaper(s: number): number {
+  if (!(s > 0)) return 1;
+  if (s >= 1) return 0;
+  return 0.5 * (1 + Math.cos(Math.PI * s));
+}
+
+/**
+ * Assemble consistent nodal forces for a point load SPREAD over a tapered
+ * patch on the extreme face toward `direction`.
+ *
+ * The legacy force path selects every node within a hard 0.5 mm of the extreme
+ * projection and splits the load equally between them. That has three defects
+ * this replaces:
+ *
+ *   1. The patch has a HARD RIM — traction jumps from full to zero across one
+ *      element — so the model contains a load singularity whose peak stress
+ *      does not converge. Measured on the Ø5-bore tube (issue #260's
+ *      de-risking sweep), the governing peak sat on that rim on every mesh and
+ *      the safety factor swung 26.6% non-monotonically across a 5x element
+ *      range.
+ *   2. The 0.5 mm band is ABSOLUTE, so the same part at two scales gets a
+ *      different load idealization (issue #271).
+ *   3. Equal-split-per-node is not a consistent load: it depends on how the
+ *      mesher happened to distribute nodes over the patch, not on area.
+ *
+ * Here the traction is w(t)·t̂ with w a raised cosine in projection depth, and
+ * it is integrated with the same tributary-area rule as a surface pressure
+ * (`assembleSurfaceTraction`'s T3/T6 split), then rescaled so the resultant is
+ * EXACTLY the requested force. The rescale is what keeps this comparable to
+ * the legacy path: same total load, different distribution.
+ *
+ * The patch is a SLAB — a band in the projection coordinate — not a disc,
+ * because a disc needs a centre and the only candidate is `ForceSpec.position`,
+ * which the force path does not read (issue #271). A slab is fully determined
+ * by the direction alone, so this mode does not quietly decide #271's open
+ * question. It therefore tapers the traction circumferentially but NOT where
+ * the patch runs off the end of the part at a free edge; see #271.
+ *
+ * @param mesh        tet mesh
+ * @param faces       surface triangles as corner-node triples
+ * @param direction   load direction (need not be unit length)
+ * @param force       total force [fx, fy, fz] in N — reproduced exactly
+ * @param patchDepthMm  depth of the taper along `direction`; non-finite or
+ *                      non-positive falls back to the part-relative default
+ * @returns Float64Array of length nodeCount × 3, and the patch depth used
+ */
+export function assembleTaperedFaceLoad(
+  mesh:         TetMesh,
+  faces:        Int32Array,
+  direction:    readonly [number, number, number],
+  force:        readonly [number, number, number],
+  patchDepthMm?: number,
+): { forces: Float64Array; patchDepthMm: number; loadedTriangles: number } {
+  const nodes = mesh.nodes;
+  const [dx, dy, dz] = direction;
+  const dl = Math.hypot(dx, dy, dz);
+  const empty = { forces: new Float64Array(nodes.length), patchDepthMm: 0, loadedTriangles: 0 };
+  if (!(dl > 0)) return empty;
+  const ux = dx/dl, uy = dy/dl, uz = dz/dl;
+
+  const triCount = Math.floor(faces.length / 3);
+  if (triCount === 0) return empty;
+
+  // Extent of the part along the load direction sets the default depth.
+  let maxProj = -Infinity, minProj = Infinity;
+  for (let n = 0; n < mesh.nodeCount; n++) {
+    const p = (nodes[n*3]??0)*ux + (nodes[n*3+1]??0)*uy + (nodes[n*3+2]??0)*uz;
+    if (p > maxProj) maxProj = p;
+    if (p < minProj) minProj = p;
+  }
+  const extent = maxProj - minProj;
+  let depth = (patchDepthMm !== undefined && Number.isFinite(patchDepthMm) && patchDepthMm > 0)
+    ? patchDepthMm
+    : extent * LOAD_PATCH_DEPTH_FRACTION;
+  // A degenerate part (zero extent along d) would divide by zero below. Fall
+  // back to the mesh's own size rather than returning an unloaded model.
+  if (!(depth > 0)) depth = medianTriEdgeLength(nodes, faces);
+  if (!(depth > 0)) return empty;
+
+  // Per-triangle taper weight from the centroid's projection depth.
+  const weights = new Float64Array(triCount);
+  let loadedTriangles = 0;
+  for (let t = 0; t < triCount; t++) {
+    const a = faces[t*3]??0, b = faces[t*3+1]??0, c = faces[t*3+2]??0;
+    const cxp = ((nodes[a*3]??0) + (nodes[b*3]??0) + (nodes[c*3]??0)) / 3;
+    const cyp = ((nodes[a*3+1]??0) + (nodes[b*3+1]??0) + (nodes[c*3+1]??0)) / 3;
+    const czp = ((nodes[a*3+2]??0) + (nodes[b*3+2]??0) + (nodes[c*3+2]??0)) / 3;
+    const proj = cxp*ux + cyp*uy + czp*uz;
+    const w = raisedCosineTaper((maxProj - proj) / depth);
+    weights[t] = w;
+    if (w > 0) loadedTriangles++;
+  }
+
+  // Integrate w·t̂ with the tributary-area rule, using a unit traction; the
+  // scale factor comes afterwards from the resultant, so the requested force is
+  // reproduced exactly whatever the patch area turned out to be.
+  const f = new Float64Array(nodes.length);
+  const edgeMid = buildEdgeMidsideMap(mesh);   // null for C3D4
+  const N = mesh.nodeCount;
+  const edgeKey = (p: number, q: number): number => (p < q ? p * N + q : q * N + p);
+  let areaWeighted = 0;
+
+  for (let t = 0; t < triCount; t++) {
+    const w = weights[t] ?? 0;
+    if (!(w > 0)) continue;
+    const a = faces[t*3] ?? 0, b = faces[t*3+1] ?? 0, c = faces[t*3+2] ?? 0;
+    const ax = nodes[a*3] ?? 0, ay = nodes[a*3+1] ?? 0, az = nodes[a*3+2] ?? 0;
+    const bx = nodes[b*3] ?? 0, by = nodes[b*3+1] ?? 0, bz = nodes[b*3+2] ?? 0;
+    const cx = nodes[c*3] ?? 0, cy = nodes[c*3+1] ?? 0, cz = nodes[c*3+2] ?? 0;
+    const vx1 = bx-ax, vy1 = by-ay, vz1 = bz-az;
+    const vx2 = cx-ax, vy2 = cy-ay, vz2 = cz-az;
+    const nx = vy1*vz2 - vz1*vy2, ny = vz1*vx2 - vx1*vz2, nz = vx1*vy2 - vy1*vx2;
+    const area = 0.5 * Math.hypot(nx, ny, nz);
+    if (!(area > 0)) continue;
+    const share = (w * area) / 3;
+    areaWeighted += w * area;
+
+    const mab = edgeMid?.get(edgeKey(a, b));
+    const mbc = edgeMid?.get(edgeKey(b, c));
+    const mca = edgeMid?.get(edgeKey(c, a));
+    const targets = (edgeMid && mab !== undefined && mbc !== undefined && mca !== undefined)
+      ? [mab, mbc, mca]
+      : [a, b, c];
+    for (const n of targets) {
+      f[n*3]   = (f[n*3]   ?? 0) + share;   // unit traction, scaled below
+    }
+  }
+
+  if (!(areaWeighted > 0)) return empty;
+
+  // Every node currently holds its ∫N_i w dA share in slot 0. Turn that into
+  // the requested force vector, normalised so Σ f = `force` exactly.
+  const [fx, fy, fz] = force;
+  const inv = 1 / areaWeighted;
+  for (let n = 0; n < mesh.nodeCount; n++) {
+    const share = (f[n*3] ?? 0) * inv;
+    if (share === 0) continue;
+    f[n*3]   = fx * share;
+    f[n*3+1] = fy * share;
+    f[n*3+2] = fz * share;
+  }
+
+  return { forces: f, patchDepthMm: depth, loadedTriangles };
+}

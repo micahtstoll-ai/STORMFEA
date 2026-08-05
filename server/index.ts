@@ -233,7 +233,9 @@ const ANALYSE_SPEC: Spec = {
   "boltFasteners?": [{ holeId: "number", "fastenerType?": "string", "washerOD?": "number" }],
   forces: [{
     magnitude: "number", direction: "vec3", position: "vec3",
-    "loadDistribution?": "uniform|cosine_bearing",
+    "loadDistribution?": "uniform|cosine_bearing|tapered_patch",
+    // Contact depth for 'tapered_patch' only; omitted → part-relative default.
+    "loadPatchDepthMm?": "number",
   }],
   print: {
     materialId: "string", infillPct: "number", wallCount: "number",
