@@ -271,9 +271,9 @@ describe("singularity cause classification (issue #257)", () => {
     const rim = Float64Array.from([CENTER, CENTER, 0]);
     const w = detectSingularity(spikeField.stress, spikeField.positions, { loadRimPoints: rim });
     expect(w).not.toBeNull();
-    expect(w!.cause).toBe("load-point");
+    expect(w!.cause).toBe("load-edge");
     expect(w!.message).not.toMatch(/fillet/i);
-    // Telling the user to reconsider their BOLT for a load-point singularity is
+    // Telling the user to reconsider their BOLT for a loaded-edge singularity is
     // as wrong as telling them to add a fillet.
     expect(w!.message).not.toMatch(/bolt/i);
     expect(w!.message).toMatch(/load/i);
@@ -289,7 +289,7 @@ describe("singularity cause classification (issue #257)", () => {
     const loadWins = detectSingularity(spikeField.stress, spikeField.positions, {
       bcRimPoints: nearby, loadRimPoints: onPeak,
     });
-    expect(loadWins!.cause).toBe("load-point");
+    expect(loadWins!.cause).toBe("load-edge");
 
     const bcWins = detectSingularity(spikeField.stress, spikeField.positions, {
       bcRimPoints: onPeak, loadRimPoints: nearby,

@@ -364,10 +364,13 @@ diagonal. A purely element-relative radius cannot detect a singularity at all �
 the field is self-similar near the tip, so a ball that shrinks with the mesh
 gives a constant, small ratio however severe the singularity is.
 
-`cause` (issue #257) is `geometry`, `constraint-edge`, or `load-point`, and it
+`cause` (issue #257) is `geometry`, `constraint-edge`, or `load-edge`, and it
 selects the remedy `message` gives. The three need opposite advice: a fillet for
-a re-entrant corner, a better bolt idealization for a clamp edge (#260), a load
-spread over its real contact area for a load rim. It is decided by which BC rim
+a re-entrant corner, a better bolt idealization for a clamp edge (#260), a
+realistic contact size for a loaded-patch rim. `load-edge` was called
+`load-point` before #271 — the name was wrong in a way that mattered, because
+the legacy load model spreads a force over a band of the extreme face, so what
+is singular is that band's RIM and never a point. It is decided by which BC rim
 the peak is NEAREST — on a compact part the sampling neighborhood can contain
 both, and a first-match test blamed the constraint for a peak sitting on the
 loaded node. Exact ties go to the constraint.

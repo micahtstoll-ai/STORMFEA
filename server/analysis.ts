@@ -2039,13 +2039,24 @@ export interface SingularityWarning {
    *  divergence across a multi-mesh study. The client upgrades this field when
    *  it corroborates the flag with refinement evidence (issue #147). */
   evidence:      "single-mesh-heuristic" | "refinement";
-  /** WHAT is singular (issue #257). A rigid displacement constraint applied over
-   *  part of a surface is singular at the curve where the patch stops, exactly
-   *  as a re-entrant geometric corner is — but the remedies are opposite. A
-   *  fillet does nothing for a constraint edge; the answer there concerns the
-   *  bolt idealization (#260). "constraint-edge" when the peak sits on the rim
-   *  of a constrained/loaded patch, "geometry" otherwise. */
-  cause:         "geometry" | "constraint-edge" | "load-point";
+  /** WHAT is singular (issue #257). A boundary condition applied over PART of a
+   *  surface is singular at the curve where that patch stops, exactly as a
+   *  re-entrant geometric corner is — but the remedies are opposite, so the
+   *  three cases are named separately:
+   *
+   *    "constraint-edge" — the peak is nearest the rim of a CONSTRAINED patch.
+   *                        The answer concerns the bolt idealization (#260).
+   *    "load-edge"       — the peak is nearest the rim of a LOADED patch.
+   *                        The answer concerns the contact area the load is
+   *                        spread over.
+   *    "geometry"        — neither rim is within the sampling radius. A fillet.
+   *
+   *  Both BC cases are decided by which rim the peak is NEAREST, and both are
+   *  patch EDGES — this was called "load-point" until #271, which is why the
+   *  name changed: the legacy load model spreads a force over a band of the
+   *  extreme face, so what is singular is that band's rim, not a point. No
+   *  load has ever been applied at a single point on this path. */
+  cause:         "geometry" | "constraint-edge" | "load-edge";
   /** True when the peak is a large enough fraction of yield to matter for the
    *  verdict. Drives WORDING ONLY — never suppresses the warning. A singularity
    *  makes the peak stress mesh-dependent whether or not it is near yield, and
@@ -3796,10 +3807,10 @@ export function detectSingularity(
   };
   const dBc2   = nearestRim2(ctx?.bcRimPoints);
   const dLoad2 = nearestRim2(ctx?.loadRimPoints);
-  const cause: "geometry" | "constraint-edge" | "load-point" =
+  const cause: "geometry" | "constraint-edge" | "load-edge" =
     Math.min(dBc2, dLoad2) > radius2 ? "geometry"
     : dBc2 <= dLoad2                 ? "constraint-edge"
-    : "load-point";
+    : "load-edge";
   const nearYield = ctx?.yieldMPa !== undefined && ctx.yieldMPa > 0
     ? peakVal > 0.5 * ctx.yieldMPa
     : false;
@@ -3808,8 +3819,8 @@ export function detectSingularity(
   const advice =
     cause === "constraint-edge"
       ? `This is the CONSTRAINT, not your part: a bolt is modelled as a rigid clamp over the whole bore wall, which is singular at the edge where the clamp stops. A real bolt bears on part of the wall with some joint compliance and has no such edge. Treat the peak here as an artifact of that idealization — judge the part on the stress a short distance away, not at the constrained rim.`
-    : cause === "load-point"
-      ? `This is where the LOAD is applied, not a feature of your part. A force applied to a point or a small patch is singular there, exactly as pressing with an infinitely sharp tip would be; a real load is spread over a contact area. Judge the part on the stress away from the loaded region, and if the peak matters to your decision, re-run with the load spread over the area it really acts on.`
+    : cause === "load-edge"
+      ? `This is the EDGE OF THE LOADED REGION, not a feature of your part. Where an applied traction stops abruptly the stress is singular, exactly as pressing with an infinitely sharp tool would be — and the smaller the loaded patch, the sharper it is. A real load is carried by a contact area with pressure that falls off at its edge rather than stopping dead. Judge the part on the stress a short distance away from the loaded region. If this peak matters to your decision, set the contact size to the area the load really acts over (loadPatchRadiusMm) rather than leaving it to the default.`
       : `This looks like a geometric singularity at a sharp re-entrant corner. The true stress is lower. Add a fillet radius of >=0.5mm at this location in your CAD model.`;
 
   /** Why the number moves between meshes — the point of the warning (#256). */
@@ -6998,7 +7009,7 @@ export async function runAdaptiveAnalysis(
 
   // ── Singularity exclusion (issue #147): keep a small radius around a flagged
   //    singular corner coarse — refining a true singularity never converges. ──
-  //    Only for a GEOMETRIC singularity. A constraint-edge or load-point one is
+  //    Only for a GEOMETRIC singularity. A constraint-edge or load-edge one is
   //    already handled, and handled better, by the BC-discontinuity mask below:
   //    that band is topological, so it scales with the local element size, where
   //    this ball is a fixed 2 mm regardless of part size. Stacking both on the

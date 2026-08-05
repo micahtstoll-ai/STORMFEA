@@ -108,8 +108,8 @@ it needs no TetGen and never skips.
 
 - **The default radius has no calibration behind it.** Parts with known contact
   geometry would fix that. Until then it is a conservative placeholder.
-- **`cause: "load-point"` is still misnamed** for the legacy modes, where the
-  "point" is a patch rim (#271).
+- ~~`cause: "load-point"` is still misnamed~~ — renamed to `load-edge`, since
+  what is singular there is the rim of the loaded patch and never a point.
 - **One fixture.** The tube is the only part in the suite whose forces route
   through this path with a meaningful stress concentration; the cross plate uses
   a pressure load and is unaffected. A second force-loaded fixture would be
