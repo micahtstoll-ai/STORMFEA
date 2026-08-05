@@ -43,10 +43,15 @@ function facetAreas(): { outerWall: number; boreWall: number; annuli: number; to
   return { outerWall, boreWall, annuli, total: outerWall + boreWall + annuli };
 }
 
-type Variant = "point" | "tapered" | "tapered-thin" | "spread" | "edge-free" | "body-force";
+type Variant =
+  | "point" | "tapered" | "tapered-thin"
+  | "contact" | "contact-mid" | "contact-wide"
+  | "spread" | "edge-free" | "body-force";
 
 const ALL_VARIANTS: readonly Variant[] = [
-  "point", "tapered", "tapered-thin", "spread", "edge-free", "body-force",
+  "point", "tapered", "tapered-thin",
+  "contact", "contact-mid", "contact-wide",
+  "spread", "edge-free", "body-force",
 ];
 /** MEASURE260_VARIANTS=point,tapered re-runs a subset without re-solving all six. */
 const VARIANTS: readonly Variant[] = (() => {
@@ -117,6 +122,32 @@ function makeRequest(variant: Variant): AnalysisRequest {
       return { ...base, forces: [{
         magnitude: TARGET_N, direction: [1, 0, 0], position: [R, 0, H],
         loadDistribution: "tapered_patch", loadPatchDepthMm: 0.6,
+      }] };
+    case "contact":
+      // The #271 fix at the fixture's OWN stated application point, (R,0,H) —
+      // which sits exactly on the free top rim. Half the disc therefore falls
+      // off the part, so this is the honest worst case for a contact patch and
+      // the direct comparison against the other rows.
+      return { ...base, forces: [{
+        magnitude: TARGET_N, direction: [1, 0, 0], position: [R, 0, H],
+        loadDistribution: "contact_patch",
+      }] };
+    case "contact-mid":
+      // The same load placed mid-height, where a transverse load on a tube
+      // actually acts and where the taper has part on every side of it. Under
+      // every other mode this request is IDENTICAL to `contact` — that the two
+      // rows differ at all is the #271 fix working.
+      return { ...base, forces: [{
+        magnitude: TARGET_N, direction: [1, 0, 0], position: [R, 0, H / 2],
+        loadDistribution: "contact_patch",
+      }] };
+    case "contact-wide":
+      // Mid-height with the radius area-matched to the `tapered` slab (~47 mm²
+      // -> r = 3.9 mm). Isolates patch SHAPE from patch SIZE, the confound the
+      // `tapered-thin` control exposed.
+      return { ...base, forces: [{
+        magnitude: TARGET_N, direction: [1, 0, 0], position: [R, 0, H / 2],
+        loadDistribution: "contact_patch", loadPatchRadiusMm: 3.9,
       }] };
     case "spread":
       // The same resultant spread over the entire windward surface — as far as

@@ -22,7 +22,7 @@ import { runLinearBuckling }              from "./solver/buckling.js";
 import { assembleK, assembleKsigma, buildSparsityPattern } from "./solver/assembly.js";
 import { buildNodeElementAdjacency }       from "./solver/adjacency.js";
 import { applyDirichletBC }    from "./solver/boundary.js";
-import { assembleForceVector, assembleBodyForce, assembleSurfaceTraction, assembleSurfaceTractionNormal, selectPressureRegion, assembleTaperedFaceLoad } from "./solver/load.js";
+import { assembleForceVector, assembleBodyForce, assembleSurfaceTraction, assembleSurfaceTractionNormal, selectPressureRegion, assembleTaperedFaceLoad, assembleContactPatchLoad } from "./solver/load.js";
 import type { ModalAnalysisResult }        from "./solver/types.js";
 import {
   buildLaminateCMatrix,
@@ -1511,32 +1511,44 @@ export interface ForceSpec {
   /**
    * Point of application in STL file space (mm).
    *
-   * NOT READ BY THE SOLVER (issue #271). Every distribution mode below selects
-   * its nodes from `direction` alone, so moving this field changes nothing —
-   * verified bit-identical to nine decimals across four application points,
-   * including one on the opposite side of the part. The client still sends it
-   * and draws an arrow with it; until #271 is decided, treat it as display
-   * metadata rather than as part of the model.
+   * Read ONLY by `loadDistribution: 'contact_patch'` (issue #271). Every other
+   * mode selects its nodes from `direction` alone, so under those modes moving
+   * this field changes nothing — verified bit-identical to nine decimals across
+   * four application points, including one on the opposite side of the part.
+   * That is why 'contact_patch' exists; the legacy modes keep their behaviour
+   * because changing them would move every force-loaded validated anchor.
    */
   position:  [number, number, number];
   /**
    * Load distribution mode.
    *   'uniform'        — equal split across the extreme-face band (legacy)
    *   'cosine_bearing' — concentrated at a bolt bearing point
-   *   'tapered_patch'  — spread over a raised-cosine patch on the extreme face,
+   *   'tapered_patch'  — spread over a raised-cosine SLAB on the extreme face,
    *                      integrated as a consistent (tributary-area) traction.
-   *                      Removes the hard patch rim the other two modes carry;
-   *                      see `assembleTaperedFaceLoad` and issue #260.
+   *                      Removes the hard patch rim the first two modes carry,
+   *                      but a slab still runs off a free edge at full
+   *                      strength; see `assembleTaperedFaceLoad` and #260.
+   *   'contact_patch'  — a raised-cosine DISC centred on `position`, tapering
+   *                      in every surface direction. The only mode that reads
+   *                      `position` (issue #271), and the only one with no
+   *                      untapered patch edge anywhere.
    * Default (undefined) keeps the legacy selection exactly.
    */
-  loadDistribution?: 'uniform' | 'cosine_bearing' | 'tapered_patch';
+  loadDistribution?: 'uniform' | 'cosine_bearing' | 'tapered_patch' | 'contact_patch';
   /**
-   * Depth of the 'tapered_patch' taper along the load direction, in mm — the
+   * Depth of the 'tapered_patch' slab along the load direction, in mm — the
    * REAL contact size when the caller knows it. Ignored by every other mode.
    * Omitted → `LOAD_PATCH_DEPTH_FRACTION` of the part's extent along
    * `direction`, which is a judgement rather than a measurement.
    */
   loadPatchDepthMm?: number;
+  /**
+   * Radius of the 'contact_patch' disc, in mm — the real contact size (bolt
+   * head, pin, pad) when the caller knows it. Ignored by every other mode.
+   * Omitted → `CONTACT_PATCH_RADIUS_FRACTION` of the part's bounding-box
+   * diagonal, which is the weakest number in that mode.
+   */
+  loadPatchRadiusMm?: number;
 }
 
 /**
@@ -4861,6 +4873,44 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     // without it (a mesh path that carries none) fall through to the legacy
     // selection with a loud note rather than silently applying a different
     // load model than the caller asked for.
+    if (f.loadDistribution === 'contact_patch') {
+      if (surfaceFaces) {
+        const patch = assembleContactPatchLoad(
+          mesh, surfaceFaces, [dx/len, dy/len, dz/len], [fx, fy, fz],
+          f.position, f.loadPatchRadiusMm,
+        );
+        let applied = 0, resX = 0, resY = 0, resZ = 0;
+        for (let n = 0; n < mesh.nodeCount; n++) {
+          const nx = patch.forces[n*3] ?? 0;
+          const ny = patch.forces[n*3+1] ?? 0;
+          const nz = patch.forces[n*3+2] ?? 0;
+          if (nx !== 0 || ny !== 0 || nz !== 0) {
+            solverForces.push({ nodeIndex: n, forceN: [nx, ny, nz] });
+            applied++; resX += nx; resY += ny; resZ += nz;
+          }
+        }
+        // The snap distance is the one number that says whether the load landed
+        // where the user put it. A large snap means the application point was
+        // not on a surface facing the load — worth seeing, not worth failing.
+        const snapNote = patch.centreSnapMm > (patch.radiusMm || 1)
+          ? ` — WARNING: the application point is ${patch.centreSnapMm.toFixed(2)}mm from the nearest ` +
+            `surface facing this load, further than the patch radius. The load was applied at the ` +
+            `nearest windward surface instead. Check the force direction against where it was placed.`
+          : ` (application point ${patch.centreSnapMm.toFixed(3)}mm from the nearest windward face)`;
+        console.log(`[analysis] force ${f.magnitude}N in (${dx},${dy},${dz}): contact patch at ` +
+          `(${f.position.join(",")}) radius=${patch.radiusMm.toFixed(3)}mm over ` +
+          `${patch.loadedTriangles} triangles, ${applied} loaded nodes, ` +
+          `|resultant|=${Math.hypot(resX, resY, resZ).toFixed(4)}N${snapNote}`);
+        continue;
+      }
+      console.warn(
+        `[analysis] force ${f.magnitude}N requested loadDistribution='contact_patch', but this ` +
+        `mesh carries no surface connectivity to integrate a traction over. Falling back to the ` +
+        `legacy extreme-face selection — the result is the LEGACY load model, and the application ` +
+        `point is NOT honoured.`,
+      );
+    }
+
     if (f.loadDistribution === 'tapered_patch') {
       if (surfaceFaces) {
         const tapered = assembleTaperedFaceLoad(

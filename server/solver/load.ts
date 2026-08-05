@@ -577,3 +577,177 @@ export function assembleTaperedFaceLoad(
 
   return { forces: f, patchDepthMm: depth, loadedTriangles };
 }
+
+/**
+ * Default radius of the contact patch, as a fraction of the part's bounding-box
+ * diagonal.
+ *
+ * Confidence: LOW, and this is the weakest number in the mode. It is a
+ * judgement in the same sense as `SINGULARITY_PART_FRACTION`: chosen so the
+ * default disc is comparable in scale to `LOAD_PATCH_DEPTH_FRACTION`'s slab on
+ * a typical part (on the Ø5-bore tube, 1.77 mm against 1.80 mm) rather than
+ * fitted to anything. A caller who knows the real contact size — the bolt head,
+ * the pin, the pad — should pass `radiusMm` and stop inheriting a guess.
+ *
+ * Do not tune it to make one fixture's safety factor behave. That is the
+ * calibration mistake this repo has made repeatedly; it wants parts with known
+ * contact geometry, not a fixture whose answer looks nicer.
+ */
+export const CONTACT_PATCH_RADIUS_FRACTION = 0.10;
+
+/**
+ * Assemble consistent nodal forces for a point load spread over a contact patch
+ * CENTRED AT THE APPLICATION POINT — the mode that makes `ForceSpec.position`
+ * load-bearing (issue #271).
+ *
+ * Every other distribution mode selects its nodes from `direction` alone, so
+ * moving the application point changes nothing: measured bit-identical to nine
+ * decimals across four positions, including one on the opposite side of the
+ * part. The client meanwhile raycasts the surface, snaps to the feature under
+ * the cursor and draws an arrow there. This closes that gap.
+ *
+ * It also fixes what `assembleTaperedFaceLoad` structurally could not. That
+ * patch is a SLAB — a band in the projection coordinate — so it tapers
+ * circumferentially but runs off the end of the part at a free edge with the
+ * traction still at full strength. Measured on the Ø5-bore tube (#260), the
+ * governing peak moved onto exactly that run-off edge and kept growing at
+ * h^-0.23. A patch that tapers in EVERY surface direction has no such edge.
+ *
+ * Two guards worth knowing about:
+ *
+ *   • Only WINDWARD triangles (n·d > 0) are eligible, the same test
+ *     `selectPressureRegion('facing')` uses. Without it a 3-D ball centred on
+ *     a thin part's top face also catches the bottom face a few mm below, and
+ *     the load would push on a surface it cannot bear against.
+ *   • The centre is SNAPPED to the nearest windward triangle when it does not
+ *     land on one — a raycast hit carries float error, and a caller may send a
+ *     point that is off the surface entirely. The snap distance is returned so
+ *     the caller can say so out loud. A silent zero-load solve is the failure
+ *     mode issue #157 was about; this never returns one for a non-degenerate
+ *     input.
+ *
+ * Distance is Euclidean, not geodesic. On a patch small enough to be a contact
+ * area the difference is second-order, and a geodesic would need surface
+ * adjacency this does not otherwise require.
+ *
+ * @param mesh      tet mesh
+ * @param faces     surface triangles as corner-node triples
+ * @param direction load direction (need not be unit length)
+ * @param force     total force [fx, fy, fz] in N — reproduced exactly
+ * @param centre    application point in the same frame as `mesh.nodes` (mm)
+ * @param radiusMm  contact radius; non-finite or non-positive → part-relative default
+ */
+export function assembleContactPatchLoad(
+  mesh:      TetMesh,
+  faces:     Int32Array,
+  direction: readonly [number, number, number],
+  force:     readonly [number, number, number],
+  centre:    readonly [number, number, number],
+  radiusMm?: number,
+): { forces: Float64Array; radiusMm: number; loadedTriangles: number; centreSnapMm: number } {
+  const nodes = mesh.nodes;
+  const [dx, dy, dz] = direction;
+  const dl = Math.hypot(dx, dy, dz);
+  const empty = { forces: new Float64Array(nodes.length), radiusMm: 0, loadedTriangles: 0, centreSnapMm: 0 };
+  if (!(dl > 0)) return empty;
+  const ux = dx/dl, uy = dy/dl, uz = dz/dl;
+
+  const triCount = Math.floor(faces.length / 3);
+  if (triCount === 0) return empty;
+  if (!centre.every(v => Number.isFinite(v))) return empty;
+
+  // Windward triangles, with centroid and area cached — every step below needs
+  // all three and the surface is walked three times otherwise.
+  const cx = new Float64Array(triCount), cy = new Float64Array(triCount), cz = new Float64Array(triCount);
+  const area = new Float64Array(triCount);
+  const windward = new Uint8Array(triCount);
+  let mnX = Infinity, mnY = Infinity, mnZ = Infinity;
+  let mxX = -Infinity, mxY = -Infinity, mxZ = -Infinity;
+  for (let n = 0; n < mesh.nodeCount; n++) {
+    const x = nodes[n*3] ?? 0, y = nodes[n*3+1] ?? 0, z = nodes[n*3+2] ?? 0;
+    if (x < mnX) mnX = x; if (x > mxX) mxX = x;
+    if (y < mnY) mnY = y; if (y > mxY) mxY = y;
+    if (z < mnZ) mnZ = z; if (z > mxZ) mxZ = z;
+  }
+  for (let t = 0; t < triCount; t++) {
+    const a = faces[t*3] ?? 0, b = faces[t*3+1] ?? 0, c = faces[t*3+2] ?? 0;
+    const ax = nodes[a*3] ?? 0, ay = nodes[a*3+1] ?? 0, az = nodes[a*3+2] ?? 0;
+    const bx = nodes[b*3] ?? 0, by = nodes[b*3+1] ?? 0, bz = nodes[b*3+2] ?? 0;
+    const ccx = nodes[c*3] ?? 0, ccy = nodes[c*3+1] ?? 0, ccz = nodes[c*3+2] ?? 0;
+    cx[t] = (ax + bx + ccx) / 3; cy[t] = (ay + by + ccy) / 3; cz[t] = (az + bz + ccz) / 3;
+    const vx1 = bx-ax, vy1 = by-ay, vz1 = bz-az;
+    const vx2 = ccx-ax, vy2 = ccy-ay, vz2 = ccz-az;
+    const nx = vy1*vz2 - vz1*vy2, ny = vz1*vx2 - vx1*vz2, nz = vx1*vy2 - vy1*vx2;
+    const mag = Math.hypot(nx, ny, nz);
+    area[t] = 0.5 * mag;
+    windward[t] = (mag > 0 && (nx*ux + ny*uy + nz*uz) / mag > 1e-9) ? 1 : 0;
+  }
+
+  const diag = Math.sqrt((mxX-mnX)**2 + (mxY-mnY)**2 + (mxZ-mnZ)**2);
+  let radius = (radiusMm !== undefined && Number.isFinite(radiusMm) && radiusMm > 0)
+    ? radiusMm
+    : diag * CONTACT_PATCH_RADIUS_FRACTION;
+  if (!(radius > 0)) radius = medianTriEdgeLength(nodes, faces);
+  if (!(radius > 0)) return empty;
+
+  // Snap the centre onto the windward surface. A raycast hit is already there
+  // to within float error, so this is normally a no-op; it matters when the
+  // caller sends a point that is off the surface or on the lee side.
+  let bestTri = -1, bestD2 = Infinity;
+  for (let t = 0; t < triCount; t++) {
+    if (!windward[t]) continue;
+    const d2 = (cx[t]!-centre[0])**2 + (cy[t]!-centre[1])**2 + (cz[t]!-centre[2])**2;
+    if (d2 < bestD2) { bestD2 = d2; bestTri = t; }
+  }
+  if (bestTri < 0) return empty;   // no windward surface at all for this direction
+
+  // Taper about the requested point, not the snapped one — snapping exists to
+  // guarantee a non-empty patch, not to move the load the user placed.
+  const weights = new Float64Array(triCount);
+  let loadedTriangles = 0, areaWeighted = 0;
+  for (let t = 0; t < triCount; t++) {
+    if (!windward[t]) continue;
+    const d = Math.hypot(cx[t]!-centre[0], cy[t]!-centre[1], cz[t]!-centre[2]);
+    const w = raisedCosineTaper(d / radius);
+    if (w > 0 && area[t]! > 0) { weights[t] = w; loadedTriangles++; areaWeighted += w * area[t]!; }
+  }
+  // The patch fell between the triangles (radius smaller than the local mesh,
+  // or the centre off the surface). Load the nearest windward triangle rather
+  // than returning an unloaded model presented as a normal result.
+  if (!(areaWeighted > 0)) {
+    weights[bestTri] = 1;
+    loadedTriangles = 1;
+    areaWeighted = area[bestTri] ?? 0;
+    if (!(areaWeighted > 0)) return empty;
+  }
+
+  const f = new Float64Array(nodes.length);
+  const edgeMid = buildEdgeMidsideMap(mesh);   // null for C3D4
+  const N = mesh.nodeCount;
+  const edgeKey = (p: number, q: number): number => (p < q ? p * N + q : q * N + p);
+  for (let t = 0; t < triCount; t++) {
+    const w = weights[t] ?? 0;
+    if (!(w > 0)) continue;
+    const a = faces[t*3] ?? 0, b = faces[t*3+1] ?? 0, c = faces[t*3+2] ?? 0;
+    const share = (w * (area[t] ?? 0)) / 3;
+    const mab = edgeMid?.get(edgeKey(a, b));
+    const mbc = edgeMid?.get(edgeKey(b, c));
+    const mca = edgeMid?.get(edgeKey(c, a));
+    const targets = (edgeMid && mab !== undefined && mbc !== undefined && mca !== undefined)
+      ? [mab, mbc, mca]
+      : [a, b, c];
+    for (const n of targets) f[n*3] = (f[n*3] ?? 0) + share;
+  }
+
+  const [fx, fy, fz] = force;
+  const inv = 1 / areaWeighted;
+  for (let n = 0; n < mesh.nodeCount; n++) {
+    const share = (f[n*3] ?? 0) * inv;
+    if (share === 0) continue;
+    f[n*3]   = fx * share;
+    f[n*3+1] = fy * share;
+    f[n*3+2] = fz * share;
+  }
+
+  return { forces: f, radiusMm: radius, loadedTriangles, centreSnapMm: Math.sqrt(bestD2) };
+}
