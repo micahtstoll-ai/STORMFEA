@@ -344,6 +344,26 @@ factor derived from it is not a converged number:
 }
 ```
 
+**`detected` is an ALARM flag, not "the object exists"** (issue #263). The
+payload being present means the field is concentrated enough to describe
+(`concentrationRatio` > 3); `detected` means it is conclusive enough on a
+SINGLE mesh to act on (ratio > 6, or an isolated peak with no neighbours).
+Anything showing a banner must key on `detected`; diagnostics may use the
+payload either way.
+
+The band between the two is deliberate. A binary gate on this ratio flickers:
+measured on one part at four densities, the ratio came out 3.3 / 3.1 / <3.0 /
+<3.0 while the peak wandered non-monotonically, so which side of a 3.0 gate a
+given mesh landed on was decided by noise — a user refining their mesh watched
+the warning appear and vanish for no physical reason. What covers the band
+instead is `bcSingularityErrorFraction`, which read 41–49% across those same
+four meshes: an integrated energy norm, which is why it does not flicker.
+
+Note also that `neighborhoodRadiusMm` is floored at 5% of the part's bounding
+diagonal. A purely element-relative radius cannot detect a singularity at all —
+the field is self-similar near the tip, so a ball that shrinks with the mesh
+gives a constant, small ratio however severe the singularity is.
+
 `cause` (issue #257) is `geometry`, `constraint-edge`, or `load-point`, and it
 selects the remedy `message` gives. The three need opposite advice: a fillet for
 a re-entrant corner, a better bolt idealization for a clamp edge (#260), a load
@@ -365,11 +385,17 @@ it is near yield, and that mesh-dependence is the thing being reported.
 `peakVertexIdx` indexes the DISPLAY mesh (3 vertices per surface triangle), not
 the FEA node array. Use `peakLocation` for anything spatial.
 
-Known limitation: `neighborhoodRadiusMm` is derived from the STL display
-tessellation, not the FEA mesh, so it does not shrink as the solve is refined —
-measured 8.95 mm on a part 12 mm across, identical at 13k and 71k elements. The
-ratio is therefore a peak-vs-surroundings contrast on a coarse STL rather than a
-local gradient, and it should be read as such.
+The field assessed is the FEA solution, not the display mesh (issue #263). It
+used to be the display mesh, whose tessellation does not refine when the solve
+does: the radius measured 13.25 mm on a part 12 mm across — larger than the part
+— so the "ratio" was a peak-vs-whole-part contrast. Peak-finding, neighbour
+sampling and the length scale now all come from the same mesh.
+
+Remaining limitation, and it is a real one: a single mesh cannot settle whether
+a moderate concentration is singular. Detecting divergence needs the multi-mesh
+refinement study the client performs, which is what upgrades `evidence` to
+`refinement`. Read a `single-mesh-heuristic` result below the alarm threshold as
+"worth knowing", not as a verdict.
 
 ---
 

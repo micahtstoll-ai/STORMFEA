@@ -187,6 +187,56 @@ describe("singularity detection is independent of load magnitude (issue #257)", 
   });
 });
 
+// ── Issue #263: reporting a measurement vs raising an alarm ───────────────────
+describe("the ratio is a measurement; only a conclusive one alarms (issue #263)", () => {
+  /** Concentration ratio `r` at the grid centre. */
+  const atRatio = (r: number) => (gx: number, gy: number): number =>
+    gx === CENTER && gy === CENTER ? 10 * r : 10;
+
+  it("does not report at all below the reporting threshold", () => {
+    const p = buildPatch(N, 1.0, atRatio(2.0));
+    expect(detectSingularity(p.stress, p.positions)).toBeNull();
+  });
+
+  it("REPORTS but does not alarm in the borderline band", () => {
+    // The measured cross-plate case: ratio ~3.2 against a 3.0 gate, where which
+    // side a given mesh lands on is decided by noise. The payload is available
+    // for diagnostics; `detected` stays false so no banner flickers.
+    for (const r of [3.2, 4.0, 5.5]) {
+      const p = buildPatch(N, 1.0, atRatio(r));
+      const w = detectSingularity(p.stress, p.positions);
+      expect(w, `ratio ${r}`).not.toBeNull();
+      expect(w!.detected, `ratio ${r} must not alarm`).toBe(false);
+      expect(w!.concentrationRatio).toBeGreaterThan(3);
+    }
+  });
+
+  it("alarms once the ratio is conclusive on a single mesh", () => {
+    for (const r of [7, 12, 40]) {
+      const p = buildPatch(N, 1.0, atRatio(r));
+      const w = detectSingularity(p.stress, p.positions);
+      expect(w, `ratio ${r}`).not.toBeNull();
+      expect(w!.detected, `ratio ${r} should alarm`).toBe(true);
+    }
+  });
+
+  it("does not flicker across the range that used to straddle the gate", () => {
+    // The defect in one assertion: nothing in 3.0–6.0 may alarm, so a part
+    // whose ratio wanders inside that band cannot gain and lose its banner.
+    const alarms = [3.1, 3.3, 3.6, 4.2, 4.9, 5.4, 5.9]
+      .map(r => { const p = buildPatch(N, 1.0, atRatio(r)); return detectSingularity(p.stress, p.positions)!.detected; });
+    expect(alarms.every(a => a === false)).toBe(true);
+  });
+
+  it("an isolated peak alarms regardless of the band", () => {
+    // No neighbours at all is conclusive on one mesh; it is not a ratio the
+    // noise can move.
+    const { positions, stress } = buildPatch(N, 1.0, spike);
+    const w = detectSingularity(stress, positions);
+    expect(w!.detected).toBe(true);
+  });
+});
+
 // ── Issue #257: the remedy must match the CAUSE ───────────────────────────────
 describe("singularity cause classification (issue #257)", () => {
   const spikeField = buildPatch(N, 1.0, spike);
