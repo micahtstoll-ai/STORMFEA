@@ -1930,6 +1930,19 @@ export interface RigidBodyModeWarning {
 }
 
 export interface SingularityWarning {
+  /**
+   * Whether this rises to a user-facing ALARM (issue #263).
+   *
+   * The object being present means the field is concentrated enough to describe
+   * (`concentrationRatio` > `SINGULARITY_RATIO_REPORT`). `detected` means it is
+   * conclusive enough on a SINGLE mesh to act on
+   * (> `SINGULARITY_RATIO_ALARM`, or an isolated peak with no neighbours).
+   *
+   * The gap between the two is deliberate: a binary gate on this ratio flickers
+   * on and off across meshes of the same part, because the ratio can sit within
+   * noise of the threshold. Consumers that show a banner must key on `detected`;
+   * consumers that report diagnostics can use the payload regardless.
+   */
   detected:      boolean;
   /**
    * Index of the peak point in whichever field was assessed — the FEA MESH on
@@ -3386,6 +3399,65 @@ export function detectUnconstrainedRigidBodyMode(
   };
 }
 
+// ─── Paired scalar field + coordinates ───────────────────────────────────────
+/**
+ * A per-point scalar field TOGETHER WITH the coordinates it is indexed by.
+ *
+ * This exists to make one specific mistake unrepresentable. Two point sets are
+ * in play throughout this file and they are not interchangeable:
+ *
+ *   • the DISPLAY mesh — `req.positions`, 3 vertices per surface triangle,
+ *     the uploaded STL's tessellation, indexed by `vertexStress`;
+ *   • the FEA mesh — `mesh.nodes`, indexed by `nodeStress`.
+ *
+ * Passing a field from one alongside coordinates from the other is silent: the
+ * index stays in range and simply points at an unrelated location. It has
+ * happened FOUR times — the adaptive loop's refinement-exclusion ball (#257),
+ * `peakVertexIdx` (#263), the singularity detector's own internals, and
+ * `generateTopologySuggestions`, which was reading `mesh.nodes` at display-
+ * vertex indices and therefore placing design markers at unrelated coordinates.
+ * Three of the four were found by accident while chasing something else.
+ *
+ * Carrying the two together, and checking the length invariant once at
+ * construction, converts every one of those from a silent wrong answer into a
+ * loud failure at the call site. `space` is carried for diagnostics only —
+ * the length check is what actually does the work.
+ */
+export interface SampledField {
+  readonly space:  "display" | "fea";
+  readonly values: Float32Array | Float64Array;
+  /** 3 per point, world mm, EXACTLY `values.length * 3` long. */
+  readonly coords: Float32Array | Float64Array;
+  readonly count:  number;
+}
+
+/**
+ * Pair a scalar field with its coordinates, refusing a mismatched pairing.
+ *
+ * Throws rather than degrading: a field indexed against the wrong point set
+ * produces confident nonsense, and there is no partially-correct answer to fall
+ * back to. The exact-length rule is what catches the real bug — a display field
+ * (one value per display vertex) paired with FEA coordinates has far more
+ * coordinates than `values.length * 3`, so it fails here instead of silently
+ * reading the wrong node.
+ */
+export function sampledField(
+  space:  "display" | "fea",
+  values: Float32Array | Float64Array,
+  coords: Float32Array | Float64Array,
+): SampledField {
+  const count = values.length;
+  if (coords.length !== count * 3) {
+    throw new Error(
+      `[sampledField] ${space}: ${count} values against ${coords.length} coordinate ` +
+      `components (expected ${count * 3}). A scalar field has been paired with the ` +
+      `wrong point set — display-mesh values indexed against FEA node coordinates, ` +
+      `or vice versa. Both must come from the same mesh.`,
+    );
+  }
+  return { space, values, coords, count };
+}
+
 /** Neighborhood radius as a multiple of the local element size (issue #148). */
 export const SINGULARITY_NEIGHBORHOOD_FACTOR = 2.5;
 
@@ -3409,6 +3481,44 @@ export const SINGULARITY_NEIGHBORHOOD_FACTOR = 2.5;
  * to make any single fixture behave.
  */
 export const SINGULARITY_PART_FRACTION = 0.05;
+
+/**
+ * Ratio above which the payload is REPORTED at all. Below it, the field is not
+ * concentrated enough to be worth describing and the detector returns null.
+ */
+export const SINGULARITY_RATIO_REPORT = 3.0;
+
+/**
+ * Ratio above which `detected` is set — i.e. the user is ALARMED, not merely
+ * informed (issue #263).
+ *
+ * The band between REPORT and ALARM exists because a binary gate on this ratio
+ * flickers. Measured on the cross plate at four densities with everything else
+ * fixed, the ratio came out 3.3 / 3.1 / <3.0 / <3.0 while the peak itself
+ * wandered non-monotonically (2.221 / 2.497 / 2.141 / 2.288 MPa). Sitting at
+ * ~3.2 against a 3.0 gate, which side a given mesh landed on was decided by
+ * noise — so a user refining their mesh watched the warning appear and vanish
+ * for no physical reason. That is worse than not warning: it teaches people the
+ * warning is meaningless.
+ *
+ * 6.0 is NOT a new number — it is the existing "high confidence" boundary, now
+ * load-bearing. A ratio that high is conclusive on a single mesh; #148's own
+ * point-spike fixture sits at 12, so genuine sharp re-entrant corners still
+ * alarm on one solve.
+ *
+ * What covers the band in between: this ratio is a point-wise proxy for "your
+ * peak is not converged", and there is now a far more stable instrument for the
+ * same statement. On the cross plate `bcSingularityErrorFraction` (#259) read
+ * 41.1 / 48.9 / 48.2 / ~48 % across the same four meshes — an integrated energy
+ * norm, which is WHY it does not flicker — and the discretization readout warns
+ * on it. So a borderline part is still told its number is constraint-limited;
+ * it is just told by the instrument that can say so reliably.
+ *
+ * The band is reported, not hidden: the payload is present with `detected`
+ * false, carrying the ratio, confidence and cause. Deliberately NOT surfaced as
+ * a banner — the whole point is that this range is not actionable on one mesh.
+ */
+export const SINGULARITY_RATIO_ALARM = 6.0;
 
 /**
  * Local characteristic element size at a display-mesh vertex: the median edge
@@ -3513,13 +3623,10 @@ export function detectSingularity(
      * the fallback still has.
      */
     feaField?: {
-      /** Per-node von Mises (MPa). */
-      nodeStress: Float64Array;
-      /** Per-node world-mm coordinates, 3 per node. */
-      nodes:      Float64Array;
-      nodeCount:  number;
+      /** Nodal von Mises paired with `mesh.nodes` — build with `sampledField`. */
+      field:    SampledField;
       /** Per-node characteristic element size (`nodeCharacteristicSizes`). */
-      nodeSize:   Float64Array;
+      nodeSize: Float64Array;
     } | null;
   },
 ): SingularityWarning | null {
@@ -3527,9 +3634,9 @@ export function detectSingularity(
   // SAME index everywhere below, so they cannot drift into different spaces the
   // way a display stress array paired with FEA coordinates would.
   const fea    = ctx?.feaField ?? null;
-  const stress: Float32Array | Float64Array = fea ? fea.nodeStress : vertexStress;
-  const coords: Float32Array | Float64Array = fea ? fea.nodes      : positions;
-  const count  = fea ? fea.nodeCount : vertexStress.length;
+  const stress: Float32Array | Float64Array = fea ? fea.field.values : vertexStress;
+  const coords: Float32Array | Float64Array = fea ? fea.field.coords : positions;
+  const count  = fea ? fea.field.count : vertexStress.length;
 
   if (count === 0) return null;
 
@@ -3689,15 +3796,15 @@ export function detectSingularity(
   const ratio       = avgNeighbor > 0.1 ? peakVal / avgNeighbor : 0;
 
   // Shape only. See the header note on why the old `&& peakVal > 50` is gone.
-  const likelySingularity = ratio > 3.0;
-
-  if (!likelySingularity) return null;
+  if (ratio <= SINGULARITY_RATIO_REPORT) return null;
 
   const confidence: "high" | "medium" | "low" =
-    ratio > 6 ? "high" : ratio > 4 ? "medium" : "low";
+    ratio > SINGULARITY_RATIO_ALARM ? "high" : ratio > 4 ? "medium" : "low";
 
   return {
-    detected:           true,
+    // A MEASUREMENT above SINGULARITY_RATIO_REPORT; an ALARM only above
+    // SINGULARITY_RATIO_ALARM. See those constants for why the band exists.
+    detected:           ratio > SINGULARITY_RATIO_ALARM,
     peakVertexIdx:      peakIdx,
     peakLocation,
     peakStressMPa:      peakVal,
@@ -3728,14 +3835,21 @@ export function detectSingularity(
  *   4. Return top 3 suggestions (exclude singularity region if detected)
  */
 function generateTopologySuggestions(
-  vertexStress:  Float32Array,
-  positions:     Float64Array,
-  meshNodes:     Float64Array,
+  /**
+   * Stress and the coordinates it is indexed by, carried together (#263).
+   * This used to be two loose parameters, and the caller passed the DISPLAY
+   * stress array with the FEA node coordinates — so every suggestion was placed
+   * at the position of an unrelated node. `sampledField` now rejects that
+   * pairing at construction.
+   */
+  field:         SampledField,
   meshScale:     number,
   meshOffset:    [number, number, number],
   singularityIdx: number | null,
   bounds:        { minX:number; maxX:number; minY:number; maxY:number; minZ:number; maxZ:number },
 ): TopologySuggestion[] {
+  const vertexStress = field.values;
+  const positions    = field.coords;
   if (vertexStress.length === 0) return [];
 
   // Threshold: top 5% of stress values
@@ -6012,10 +6126,8 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       loadRimPoints: rimPointsOf(loadedRimMask),
       yieldMPa:      baseMat2.yieldMPa,
       feaField: {
-        nodeStress,
-        nodes:     mesh.nodes,
-        nodeCount: mesh.nodeCount,
-        nodeSize:  nodeCharacteristicSizes(mesh),
+        field:    sampledField("fea", nodeStress, mesh.nodes),
+        nodeSize: nodeCharacteristicSizes(mesh),
       },
     },
   );
@@ -6079,10 +6191,13 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // X/Y (and by minZ in Z), which is what made the diamond markers miss the
   // high-stress clusters and mis-report their near-edge/near-top context.
   const meshOffset: [number, number, number] = [0, 0, 0];
+  // `req.positions`, NOT `mesh.nodes` — the stress array here is the DISPLAY
+  // field, so its coordinates must be the display mesh's. Passing mesh.nodes
+  // (as this call did) placed every suggestion at an unrelated node's position;
+  // `sampledField` now refuses that pairing outright rather than computing a
+  // confident wrong answer from it.
   const topologySuggestions = generateTopologySuggestions(
-    vertexStress,
-    mesh.nodes,
-    mesh.nodes,
+    sampledField("display", vertexStress, req.positions),
     1.0,
     meshOffset,
     singularDisplayIdx,
