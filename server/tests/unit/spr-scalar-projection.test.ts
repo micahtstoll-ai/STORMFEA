@@ -27,6 +27,7 @@ import { describe, it, expect } from "vitest";
 import { generateBoxMeshC3D10 } from "../../solver/meshgen.js";
 import {
   buildGaussSamples, sprSmoothedStress, sprSmoothedStress6, vonMisesFromTensor6,
+  buildSolverResult,
 } from "../../solver/stress.js";
 import type { TetMesh } from "../../solver/types.js";
 
@@ -158,6 +159,52 @@ describe("nodal von Mises is a projection of the recovered tensor (issue #258)",
       maxDiff = Math.max(maxDiff, Math.abs(vm - (legacy[n] ?? 0)));
     }
     expect(maxDiff).toBeGreaterThan(1e-6);
+  });
+
+  it("the solver hands back the recovered field it judged, bit-identically", () => {
+    // The display path reads sigma* off the SolverResult instead of recovering
+    // it a second time, because the ZZ estimator has already recovered exactly
+    // this field from the same mesh, displacement and material. Bit-identity is
+    // the whole justification for the reuse, so it is asserted rather than
+    // assumed: any divergence means the two callers are no longer asking the
+    // same question, and the heatmap would silently stop being the field the
+    // reported error was measured against.
+    //
+    // Mutation-checked: dropping the Gauss samples from the comparison
+    // recovery (so it fits centroids instead) fails this test.
+    //
+    // Not a micro-optimisation either — the duplicated recovery measured 755 ms
+    // on a 24.6k-element C3D10 mesh (425 ms of Gauss sampling plus 330 ms of
+    // patch solves), as much again as the entire ZZ stage it repeats.
+    const u = new Float64Array(mesh.nodeCount * 3);
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      const x = mesh.nodes[n*3] ?? 0, y = mesh.nodes[n*3+1] ?? 0, z = mesh.nodes[n*3+2] ?? 0;
+      u[n*3]   = 1e-3 * (0.01*x*x + 0.005*y*z);
+      u[n*3+1] = 1e-3 * (0.01*y*y - 0.004*x*z);
+      u[n*3+2] = 1e-3 * (0.008*z*z + 0.003*x*y);
+    }
+
+    const solved = buildSolverResult(mesh, u, ISO, 0, true, 0);
+    expect(solved.nodeStress6).toBeDefined();
+    expect(solved.elemStress6).toBeDefined();
+
+    const again = sprSmoothedStress6(
+      mesh, solved.elemStress6!, buildGaussSamples(mesh, u, ISO));
+
+    expect(solved.nodeStress6!.length).toBe(mesh.nodeCount * 6);
+    for (let i = 0; i < again.length; i++) {
+      expect(solved.nodeStress6![i]).toBe(again[i]);   // toBe: exact, not closeTo
+    }
+  });
+
+  it("no error estimate means no recovered field — the fallback stays live", () => {
+    // buildSolverResult only recovers sigma* as part of the ZZ estimate, so
+    // switching the estimate off must leave the field absent rather than
+    // silently stale. The display path's `??` branch exists for exactly this
+    // case; if this ever returns a field, that branch has become dead code.
+    const u = new Float64Array(mesh.nodeCount * 3);
+    const solved = buildSolverResult(mesh, u, ISO, 0, true, 0, undefined, false);
+    expect(solved.nodeStress6).toBeUndefined();
   });
 
   it("von Mises of a pure uniaxial tensor is its magnitude (the premise above)", () => {

@@ -1519,6 +1519,13 @@ export function computeZZErrorEstimate(
   errorEstimate:      Float32Array;
   globalRelativeError: number;
   topErrorElements:   Array<{ x: number; y: number; z: number; errorEstimate: number }>;
+  /**
+   * The recovered nodal tensor σ* this estimate was computed against, returned
+   * so callers that also display it do not pay for a second identical recovery.
+   * It is the ONE recovered field (issue #258): the heatmap and the utilization
+   * ratios are projections of it, and this estimate judged it.
+   */
+  nodeStress6:        Float64Array;
 } {
   const npe = mesh.nodesPerElem ?? 4;
   const errorEstimate = new Float32Array(mesh.elementCount);
@@ -1648,7 +1655,7 @@ export function computeZZErrorEstimate(
     errorEstimate: errorEstimate[index]!,
   }));
 
-  return { errorEstimate, globalRelativeError, topErrorElements };
+  return { errorEstimate, globalRelativeError, topErrorElements, nodeStress6 };
 }
 
 // ─── Package stress results ───────────────────────────────────────────────────
@@ -1684,16 +1691,23 @@ export function buildSolverResult(
   let errorEstimate: Float32Array | undefined;
   let globalRelativeError: number | undefined;
   let topErrorElements: Array<{ x: number; y: number; z: number; errorEstimate: number }> | undefined;
+  let nodeStress6: Float64Array | undefined;
 
   if (computeErrorEstimate) {
     // True energy-norm ZZ estimator: full tensor σ*, volume-weighted Gauss
     // integral, per-bin C⁻¹ (issues #143/#144/#145). σ* is recovered internally
     // via SPR6 from elemStress6; σ_h is recomputed from `displacement`.
-    const { errorEstimate: ee, globalRelativeError: gre, topErrorElements: tee } =
+    //
+    // σ* comes back out on the result: since #258 the display heatmap and the
+    // nodal utilization ratios are projections of this same recovered tensor,
+    // and re-running SPR for them costs as much again as the whole estimator
+    // stage (measured 755 ms on a 24.6k-element C3D10 mesh, 96% of the stage).
+    const { errorEstimate: ee, globalRelativeError: gre, topErrorElements: tee, nodeStress6: ns6 } =
       computeZZErrorEstimate(mesh, displacement, elemStress6, mat, field);
     errorEstimate = ee;
     globalRelativeError = gre;
     topErrorElements = tee;
+    nodeStress6 = ns6;
   }
 
   return {
@@ -1717,6 +1731,7 @@ export function buildSolverResult(
     globalRelativeError,
     topErrorElements,
     elemStress6,
+    nodeStress6,
   };
 }
 
