@@ -725,6 +725,24 @@ export interface SprSamples {
  * Returns null for C3D4 meshes, whose stress is constant per element — there is
  * nothing to un-average, and the centroid IS the correct single sample point.
  */
+/**
+ * Von Mises from a Voigt stress 6-vector [sxx, syy, szz, txy, tyz, txz].
+ *
+ * Same expression the per-element path uses; exported so the nodal scalar field
+ * can be a PROJECTION of the recovered tensor rather than a separately-recovered
+ * field of its own (issue #258). Von Mises is a nonlinear functional of sigma,
+ * so "recover the tensor then take von Mises" and "take von Mises then recover"
+ * are different operations — this is the first one, and it is the one with the
+ * superconvergence argument behind it.
+ */
+export function vonMisesFromTensor6(
+  sxx: number, syy: number, szz: number,
+  txy: number, tyz: number, txz: number,
+): number {
+  return Math.sqrt(0.5 * ((sxx-syy)**2 + (syy-szz)**2 + (szz-sxx)**2
+    + 6 * (txy**2 + tyz**2 + txz**2)));
+}
+
 export function buildGaussSamples(
   mesh:         TetMesh,
   displacement: Float64Array,

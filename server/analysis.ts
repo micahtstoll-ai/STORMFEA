@@ -82,7 +82,8 @@ import { isOrthotropic, isOrthotropicLike } from "./solver/types.js";
 import { recoverElementStressComponents }   from "./solver/stress_detail.js";
 import { rotationAligningZTo, rotateStress6ToLocal, computeGeometry } from "./solver/element.js";
 import {
-  sprSmoothedStress, sprSmoothedStress6, recoverElementStress, nodeAveragedPrincipalStress,
+  sprSmoothedStress, sprSmoothedStress6, buildGaussSamples, vonMisesFromTensor6,
+  recoverElementStress, nodeAveragedPrincipalStress,
   fdmInterfaceUtilization, interlaminarShearOf, INTERFACE_FRICTION_MU,
   type CriterionKind, type InPlaneAniso,
 } from "./solver/stress.js";
@@ -5261,8 +5262,49 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // Falls back to direct averaging for under-determined patches (<4 elements).
   // Reference: Zienkiewicz & Zhu (1992) Int J Numer Methods Eng 33(7).
   emit({ phase: "recovery", message: "Recovering nodal stress (SPR)…" });
+  // ── Nodal stress: recover the TENSOR, then project (issue #258) ─────────────
+  // The displayed heatmap and the nodal utilization field used to be recovered
+  // from ONE centroid sample per element. At a convex model corner such a patch
+  // can hold fewer points than a 3-D fit has unknowns, so it degraded to plain
+  // averaging — and averaging over a one-sided patch is biased by O(h·|grad s|)
+  // even when the FE solution is exact. Measured in docs/spr-gauss-point-handoff.md:
+  // 6 of 343 corner patches rank-deficient on a structured box, 28 of 792 on a
+  // TetGen cylinder; zero under Gauss sampling. Those same patches feed the
+  // heatmap.
+  //
+  // The scalar is now a PROJECTION of the recovered tensor, not a second
+  // independently-recovered field. Von Mises is a nonlinear functional of sigma,
+  // so recovering it directly is a different operation with no superconvergence
+  // behind it — and, being convex, it sits at or ABOVE the von Mises of the
+  // recovered tensor by Jensen, biasing the peak in exactly the direction this
+  // work exists to remove. Decision recorded in the handoff doc.
+  //
+  // Consequence worth naming: heatmap and ZZ estimator are now the SAME
+  // recovered field. They used to be two independent recoveries of one physical
+  // field, free to disagree — the estimator could improve while the picture the
+  // user reads did not.
   _snapAnalysis("before sprSmoothedStress");
-  const nodeStress = sprSmoothedStress(mesh, result.vonMises);
+  const gaussSamples = buildGaussSamples(
+    mesh, result.displacement, material, materialField ?? undefined,
+  );
+  const nodeStress6 = result.elemStress6
+    ? sprSmoothedStress6(mesh, result.elemStress6, gaussSamples)
+    : null;
+  // C3D4, or no tensor available: buildGaussSamples returns null for linear
+  // elements (their stress is constant per element, so the centroid IS the
+  // correct single sample) and the scalar path stays exactly as it was.
+  const nodeStress = nodeStress6
+    ? (() => {
+        const vm = new Float64Array(mesh.nodeCount);
+        for (let n = 0; n < mesh.nodeCount; n++) {
+          vm[n] = vonMisesFromTensor6(
+            nodeStress6[n*6]   ?? 0, nodeStress6[n*6+1] ?? 0, nodeStress6[n*6+2] ?? 0,
+            nodeStress6[n*6+3] ?? 0, nodeStress6[n*6+4] ?? 0, nodeStress6[n*6+5] ?? 0,
+          );
+        }
+        return vm;
+      })()
+    : sprSmoothedStress(mesh, result.vonMises);
   _snapAnalysis("after sprSmoothedStress");
 
   // ── SPR-smoothed nodal stress tensor + anisotropic utilization ratios ────────
@@ -5285,10 +5327,6 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     && Math.hypot(...orthoMatU.weakAxis) > 0
     && (orthoMatU.weakAxis[2] / (Math.hypot(...orthoMatU.weakAxis) || 1)) < 1 - 1e-12)
     ? rotationAligningZTo(orthoMatU.weakAxis) : null;
-
-  const nodeStress6 = result.elemStress6
-    ? sprSmoothedStress6(mesh, result.elemStress6)
-    : null;
 
   // Two-region field: per-node yields — the volume-weighted average of the
   // adjacent elements' bin yields, mirroring how the nodal stress itself is a
