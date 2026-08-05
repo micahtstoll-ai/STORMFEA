@@ -110,29 +110,64 @@ function makeRequest(variant: Variant): AnalysisRequest {
 }
 
 /**
- * Where the surface stress peak sits, from the display-mesh projection.
+ * Where the peak sits in the FEA FIELD — the mesh the stress was actually
+ * computed on, read out of the `includeVolumeField` payload.
  *
- * `result.singularity` would carry `peakLocation` directly, but after #263 the
- * payload is absent below `SINGULARITY_RATIO_REPORT` and it IS absent on most
- * of these runs — so the location has to come from the field itself. This is
- * the display projection, not the FEA peak, so it locates the peak's FEATURE
- * (load patch / bore rim / outer wall), which is all it is read for here.
- * `maxVonMisesMPa` remains the headline magnitude.
+ * This has to come from the field rather than from `result.singularity`:
+ * after #263 that payload is absent below `SINGULARITY_RATIO_REPORT`, and it
+ * IS absent on most of these runs. The display projection is not a substitute
+ * either — measured on the first sweep, the two disagreed on the finest two
+ * edge-free meshes (display argmax on the outer rim, detector reporting
+ * `constraint-edge`), because the projection smooths the field before
+ * anything takes an argmax of it. `maxVonMisesMPa` remains the headline.
  */
-function surfacePeakLocation(res: AnalysisResult, positions: Float32Array): [number, number, number] {
+function feaPeakLocation(res: AnalysisResult): [number, number, number] {
+  const vf = res.volumeField;
+  if (!vf) return [NaN, NaN, NaN];
+  const nodes = new Float32Array(Buffer.from(vf.nodesB64, "base64").buffer.slice(0));
+  const vm = new Float32Array(Buffer.from(vf.nodeVonMisesB64, "base64").buffer.slice(0));
   let best = -Infinity, bi = -1;
-  for (let i = 0; i < res.vertexStress.length; i++) {
-    const v = res.vertexStress[i]!;
+  for (let i = 0; i < vm.length; i++) {
+    const v = vm[i]!;
     if (v > best) { best = v; bi = i; }
   }
   if (bi < 0) return [NaN, NaN, NaN];
-  return [positions[bi * 3] ?? NaN, positions[bi * 3 + 1] ?? NaN, positions[bi * 3 + 2] ?? NaN];
+  return [nodes[bi * 3] ?? NaN, nodes[bi * 3 + 1] ?? NaN, nodes[bi * 3 + 2] ?? NaN];
+}
+
+/**
+ * Distance from a point to the CLAMP RIM — the two circles rad = r, z ∈ {0, H}
+ * where the full-bore clamp meets the free end faces. This is the singularity
+ * #260 is about, so "how far is the governing peak from it" is the number the
+ * whole reading turns on, and it beats a band-membership label: measured, the
+ * edge-free peak lands 0.56 mm radially outboard of the rim, which a
+ * "is it on the bore wall" test calls the annulus and misses entirely.
+ */
+function distToClampRim([x, y, z]: [number, number, number]): number {
+  if (!Number.isFinite(x)) return NaN;
+  const dRad = Math.hypot(x, y) - r;
+  return Math.min(Math.hypot(dRad, z - 0), Math.hypot(dRad, z - H));
+}
+
+/** Which feature of the tube a point sits on — a label for the coordinates. */
+function featureAt([x, y, z]: [number, number, number]): string {
+  if (!Number.isFinite(x)) return "?";
+  const rad = Math.hypot(x, y);
+  const onEndFace = Math.abs(z) < 0.05 || Math.abs(z - H) < 0.05;
+  if (rad < r + 0.05) return onEndFace ? "clamp rim" : "clamped bore wall";
+  if (rad > R - 0.05) {
+    // The point load's patch is the |x - R| < 0.5 band; the 'facing' pressure
+    // region instead stops at the n·d = 0 equator.
+    const near = x > R - 0.5 ? "load-patch arc" : Math.abs(x) < 1.0 ? "outer wall equator" : "outer wall";
+    return onEndFace ? `${near} @ rim` : near;
+  }
+  return onEndFace ? "end face" : "interior";
 }
 
 type Row = {
   variant: Variant; maxVol: number; elements: number;
   sf: number | null; peak: number; err: number | null;
-  cause: string; peakLoc: [number, number, number]; ratio: number | null;
+  cause: string; peakLoc: [number, number, number]; feature: string; dClamp: number;
   bcFrac: number | undefined;
 };
 
@@ -172,24 +207,25 @@ async function main(): Promise<void> {
       const t0 = Date.now();
       const res: AnalysisResult = await runAnalysis({
         ...req,
+        analysis: { ...req.analysis, includeVolumeField: true },
         _prebuiltMesh: {
           mesh: built.mesh, surfaceToNode: built.surfaceToNode, surfaceFaces: built.surfaceFaces,
         },
       });
-      const s = res.singularity;
+      const peakLoc = feaPeakLocation(res);
       rows.push({
         variant, maxVol, elements: built.mesh.elementCount,
         sf: res.safetyFactor, peak: res.maxVonMisesMPa,
         err: res.globalRelativeError == null ? null : res.globalRelativeError * 100,
-        cause: s?.cause ?? "none",
-        peakLoc: surfacePeakLocation(res, req.positions),
-        ratio: s?.concentrationRatio ?? null,
+        cause: res.singularity?.cause ?? "none",
+        peakLoc, feature: featureAt(peakLoc), dClamp: distToClampRim(peakLoc),
         bcFrac: res.bcSingularityErrorFraction,
       });
       const last = rows[rows.length - 1]!;
-      console.log(`[run] ${variant.padEnd(9)} ${built.mesh.elementCount.toString().padStart(6)} el  ` +
+      console.log(`[run] ${variant.padEnd(10)} ${built.mesh.elementCount.toString().padStart(6)} el  ` +
         `SF ${fmt(last.sf, 2)}  peak ${fmt(last.peak)} MPa  err ${fmt(last.err, 2)}%  ` +
-        `cause=${last.cause} @(${last.peakLoc.map(v => v.toFixed(2)).join(",")})  ` +
+        `cause=${last.cause} @(${last.peakLoc.map(v => v.toFixed(2)).join(",")}) = ${last.feature}, ` +
+        `d(clamp rim)=${fmt(last.dClamp, 2)}mm  ` +
         `(${((Date.now() - t0) / 1000).toFixed(1)}s)`);
     }
   }
@@ -199,11 +235,11 @@ async function main(): Promise<void> {
   for (const variant of VARIANTS) {
     const rs = rows.filter(r => r.variant === variant);
     console.log(`--- ${variant} ---`);
-    console.log("elements | safety factor | peak vM MPa | global err % | BC err frac | singularity | surface peak location");
+    console.log("elements | safety factor | peak vM MPa | global err % | BC err frac | singularity | d(clamp rim) | FEA peak sits on");
     for (const r of rs) {
       console.log(`${r.elements.toString().padStart(8)} | ${fmt(r.sf, 2).padStart(13)} | ${fmt(r.peak).padStart(11)} | ` +
         `${fmt(r.err, 2).padStart(12)} | ${fmt(r.bcFrac, 3).padStart(11)} | ${r.cause.padStart(11)} | ` +
-        `(${r.peakLoc.map(v => v.toFixed(2)).join(", ")})`);
+        `${fmt(r.dClamp, 2).padStart(12)} | ${r.feature} (${r.peakLoc.map(v => v.toFixed(2)).join(", ")})`);
     }
     const sfs = rs.map(r => r.sf).filter((v): v is number => v != null);
     const peaks = rs.map(r => r.peak).filter(v => Number.isFinite(v));
