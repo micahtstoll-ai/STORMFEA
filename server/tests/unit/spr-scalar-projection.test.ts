@@ -108,22 +108,38 @@ describe("nodal von Mises is a projection of the recovered tensor (issue #258)",
     expect(maxErr).toBeGreaterThan(1e-6);
   });
 
-  it("the error the legacy path carries is concentrated at the box CORNERS", () => {
-    // The mechanism, not just the symptom: corner patches are the rank-deficient
-    // ones, so if the diagnosis is right the worst legacy error must live there.
+  it("the legacy error is WORST at corners but present everywhere", () => {
+    // Measured by boundary class on this mesh, worst relative error:
+    //
+    //   interior 8.33 %   face 9.09 %   edge 9.68 %   CORNER 20.00 %
+    //
+    // Worth stating precisely, because "rank-deficient corner patches" invites
+    // the reading that corners are the ONLY affected place. They are not. The
+    // corner patches are the extreme case of a bias that the centroid recovery
+    // carries wherever the incident element centroids sit off-centre from the
+    // node — which is everywhere in a tet mesh, just least badly in the middle.
+    //
+    // Note there was no exactness test for the SCALAR path before this file:
+    // solver_validation group 20 ("SPR linear-field exactness") exercises
+    // sprSmoothedStress6, the tensor path. That is how an 8% interior bias in
+    // the displayed field went unnoticed while the tensor path was proven exact.
     const { elemVonMises } = plant();
     const legacy = sprSmoothedStress(mesh, elemVonMises);
     const corners = new Set(boxCornerNodes(mesh, L));
     expect(corners.size).toBe(8);
 
-    let worstCorner = 0, worstInterior = 0;
+    let worstCorner = 0, worstOther = 0;
     for (let n = 0; n < mesh.nodeCount; n++) {
       const exact = Math.abs(lin(mesh.nodes[n*3] ?? 0, mesh.nodes[n*3+1] ?? 0, mesh.nodes[n*3+2] ?? 0));
-      const err = Math.abs((legacy[n] ?? 0) - exact);
-      if (corners.has(n)) worstCorner = Math.max(worstCorner, err);
-      else                worstInterior = Math.max(worstInterior, err);
+      const rel = Math.abs((legacy[n] ?? 0) - exact) / exact;
+      if (corners.has(n)) worstCorner = Math.max(worstCorner, rel);
+      else                worstOther  = Math.max(worstOther, rel);
     }
-    expect(worstCorner).toBeGreaterThan(worstInterior);
+    // Corners are the extreme...
+    expect(worstCorner).toBeGreaterThan(worstOther);
+    // ...but the rest of the mesh is not clean either, which is the part that
+    // matters for the heatmap as a whole rather than at eight points.
+    expect(worstOther).toBeGreaterThan(0.02);
   });
 
   it("projection and direct recovery genuinely differ (they are not the same operation)", () => {
