@@ -100,6 +100,7 @@ import {
 import {
   buildSizeField, relaxSizeFieldToBudget, shouldStopRefinement,
   bcDiscontinuityMask, BC_SINGULARITY_DILATE_HOPS, maskedErrorFraction,
+  nodeCharacteristicSizes,
   smoothSizeFieldGradation, predictRefinedElementCount,
   judgeRemeshAgainstBudget, effectiveElementBudget,
   targetPerElementError, DEFAULT_LOOP_OPTIONS, DEFAULT_SIZE_FIELD_FACTORS,
@@ -1930,10 +1931,23 @@ export interface RigidBodyModeWarning {
 
 export interface SingularityWarning {
   detected:      boolean;
+  /**
+   * Index of the peak point in whichever field was assessed — the FEA MESH on
+   * the production path (issue #263), the display mesh only when the detector
+   * is called without `feaField`.
+   *
+   * Prefer `peakLocation` for anything spatial. This index is not portable
+   * between the two meshes, and using it against the wrong one is silent: it
+   * stays in range and points at an unrelated node. That mistake put the
+   * adaptive loop's refinement-exclusion ball at an arbitrary location until
+   * #257, and it is why the topology-suggestion caller translates through
+   * `peakLocation` instead of passing this straight through.
+   */
   peakVertexIdx: number;
-  /** World-frame (raw mm) coordinate of the peak-stress vertex. Lets the client
+  /** World-frame (raw mm) coordinate of the peak-stress point. Lets the client
    *  confirm the flagged singular vertex coincides with the peak-stress
-   *  location and drives the convergence metric choice (issue #147). */
+   *  location and drives the convergence metric choice (issue #147). The
+   *  mesh-independent way to refer to the peak — prefer it over peakVertexIdx. */
   peakLocation:  [number, number, number];
   peakStressMPa: number;
   /** Average stress in the local neighborhood (radius = neighborhoodRadiusMm).
@@ -3376,6 +3390,27 @@ export function detectUnconstrainedRigidBodyMode(
 export const SINGULARITY_NEIGHBORHOOD_FACTOR = 2.5;
 
 /**
+ * Floor on the neighborhood radius, as a fraction of the part's bounding
+ * diagonal (issue #263).
+ *
+ * Why a part-relative floor exists at all: a purely element-relative radius
+ * cannot see a singularity. The field is self-similar near the tip, so a ball
+ * that shrinks with the mesh gives a peak/neighbourhood ratio that stays
+ * constant and small however severe the singularity is. Measured — with FEA
+ * sampling and no floor, the ratio fell below the 3.0 threshold at all four
+ * densities on a part with a KNOWN constraint-edge singularity, and the
+ * detector reported nothing at all.
+ *
+ * 5% is a judgement, not a measurement, and is the weakest number in this
+ * heuristic. It wants to be small enough to stay local (5% of the diagonal is
+ * well inside one feature on the parts this tool sees) and large enough that
+ * the neighbourhood does not follow the peak down as the mesh refines. Tune it
+ * against parts with known-singular and known-smooth concentrations rather than
+ * to make any single fixture behave.
+ */
+export const SINGULARITY_PART_FRACTION = 0.05;
+
+/**
  * Local characteristic element size at a display-mesh vertex: the median edge
  * length of the surface triangles that touch it. `positions` is the display
  * mesh (9 floats per triangle, 3 consecutive vertices per triangle), so
@@ -3457,32 +3492,114 @@ export function detectSingularity(
     loadRimPoints?: Float64Array | null;
     /** Material yield (MPa) for the `nearYield` wording flag. */
     yieldMPa?:    number;
+    /**
+     * The FEA field to assess, INSTEAD of the display mesh (issue #263).
+     *
+     * The display mesh is the uploaded STL's tessellation. It does not refine
+     * when the solve does, and its vertex spacing bears no relation to the
+     * resolution of the stress field sampled onto it, so a local gradient
+     * cannot be measured on it at all. Measured on the cross plate: display
+     * spacing 5.3 mm against an FEA element size of 0.10 mm, so the smallest
+     * radius that finds ANY display neighbour is 13.25 mm — on a part 12 mm
+     * across. That is the whole part, not a neighbourhood, and it is why the
+     * ratio was a peak-vs-part contrast rather than a gradient.
+     *
+     * Supplying this makes the field and its length scale come from the SAME
+     * mesh, which is what `concentrationRatio` has always claimed to be.
+     *
+     * Omitting it falls back to the display mesh, which keeps this function
+     * usable standalone and keeps #148's scale-invariance tests meaningful —
+     * they pass positions only and assert the geometry-scaling property, which
+     * the fallback still has.
+     */
+    feaField?: {
+      /** Per-node von Mises (MPa). */
+      nodeStress: Float64Array;
+      /** Per-node world-mm coordinates, 3 per node. */
+      nodes:      Float64Array;
+      nodeCount:  number;
+      /** Per-node characteristic element size (`nodeCharacteristicSizes`). */
+      nodeSize:   Float64Array;
+    } | null;
   },
 ): SingularityWarning | null {
-  if (vertexStress.length === 0) return null;
+  // Which field is being assessed. `stress` and `coords` are indexed with the
+  // SAME index everywhere below, so they cannot drift into different spaces the
+  // way a display stress array paired with FEA coordinates would.
+  const fea    = ctx?.feaField ?? null;
+  const stress: Float32Array | Float64Array = fea ? fea.nodeStress : vertexStress;
+  const coords: Float32Array | Float64Array = fea ? fea.nodes      : positions;
+  const count  = fea ? fea.nodeCount : vertexStress.length;
 
-  // Find peak stress vertex index
+  if (count === 0) return null;
+
+  // Find peak stress point
   let peakIdx = 0, peakVal = 0;
-  for (let i = 0; i < vertexStress.length; i++) {
-    if ((vertexStress[i] ?? 0) > peakVal) {
-      peakVal = vertexStress[i]!;
+  for (let i = 0; i < count; i++) {
+    if ((stress[i] ?? 0) > peakVal) {
+      peakVal = stress[i]!;
       peakIdx = i;
     }
   }
   if (peakVal < 0.1) return null;  // trivial stress, no singularity concern
 
-  // Get peak vertex position
-  const px = positions[peakIdx * 3]     ?? 0;
-  const py = positions[peakIdx * 3 + 1] ?? 0;
-  const pz = positions[peakIdx * 3 + 2] ?? 0;
+  // Get peak position
+  const px = coords[peakIdx * 3]     ?? 0;
+  const py = coords[peakIdx * 3 + 1] ?? 0;
+  const pz = coords[peakIdx * 3 + 2] ?? 0;
   const peakLocation: [number, number, number] = [px, py, pz];
 
   // Scale the neighborhood radius to the LOCAL element size at the peak (issue
   // #148) rather than a fixed 1mm. Without a local length scale we can't assess
   // a singularity, so bail out.
-  const localH = localEdgeLengthAtPeak(positions, peakIdx);
+  const localH = fea
+    ? (fea.nodeSize[peakIdx] ?? NaN)
+    : localEdgeLengthAtPeak(positions, peakIdx);
   if (!(localH > 0) || !isFinite(localH)) return null;
-  const radius  = SINGULARITY_NEIGHBORHOOD_FACTOR * localH;
+
+  // The radius has a FLOOR proportional to the part, and this is the crux of
+  // issue #263 rather than an implementation detail.
+  //
+  // An element-relative radius alone cannot detect a singularity. A singular
+  // field is self-similar — sigma ~ r^-a near the tip — so peak/neighbourhood
+  // measured over a ball that SHRINKS with the mesh is roughly constant, and
+  // small, no matter how singular the field is. Measured on the cross plate
+  // after moving sampling to the FEA field: the ratio fell under 3.0 at every
+  // density and the detector reported NOTHING on a part with a known
+  // constraint-edge singularity.
+  //
+  // A radius fixed in PHYSICAL space is what makes the comparison mean
+  // something: the peak climbs as the mesh resolves the tip while the
+  // neighbourhood average over a fixed ball stays put, so the ratio rises with
+  // the severity of the singularity instead of cancelling against it.
+  //
+  // Expressed as a fraction of the part's bounding diagonal, so it stays
+  // scale-invariant across a 5mm bracket and a 500mm frame rail — which is
+  // #148's requirement, met without borrowing the mesh's length scale.
+  //
+  // `max` of the two: the element-relative radius still applies when it is the
+  // LARGER, so a coarse mesh cannot end up with a radius finer than its own
+  // elements and zero neighbours to average. On the display-mesh fallback the
+  // element term dominates, which is why #148's scale-invariance tests are
+  // unaffected.
+  let diag = 0;
+  {
+    let mnX = Infinity, mnY = Infinity, mnZ = Infinity;
+    let mxX = -Infinity, mxY = -Infinity, mxZ = -Infinity;
+    for (let i = 0; i < count; i++) {
+      const x = coords[i * 3] ?? 0, y = coords[i * 3 + 1] ?? 0, z = coords[i * 3 + 2] ?? 0;
+      if (x < mnX) mnX = x; if (x > mxX) mxX = x;
+      if (y < mnY) mnY = y; if (y > mxY) mxY = y;
+      if (z < mnZ) mnZ = z; if (z > mxZ) mxZ = z;
+    }
+    if (isFinite(mnX) && isFinite(mxX)) {
+      diag = Math.sqrt((mxX-mnX)**2 + (mxY-mnY)**2 + (mxZ-mnZ)**2);
+    }
+  }
+  const radius  = Math.max(
+    SINGULARITY_NEIGHBORHOOD_FACTOR * localH,
+    SINGULARITY_PART_FRACTION * diag,
+  );
   const radius2 = radius * radius;
   // The display mesh duplicates each shared corner once per incident triangle,
   // so the peak location appears as several coincident vertices all carrying the
@@ -3534,17 +3651,17 @@ export function detectSingularity(
   const meshNote = `Peak stress at a singularity is set by the local element size, so it does NOT converge: refining the mesh changes it rather than settling it, and the safety factor moves with it.`;
 
   let neighborSum = 0, neighborCount = 0;
-  const nVerts = vertexStress.length;
+  const nVerts = count;
 
   for (let i = 0; i < nVerts; i++) {
     if (i === peakIdx) continue;
-    const dx = (positions[i * 3]     ?? 0) - px;
-    const dy = (positions[i * 3 + 1] ?? 0) - py;
-    const dz = (positions[i * 3 + 2] ?? 0) - pz;
+    const dx = (coords[i * 3]     ?? 0) - px;
+    const dy = (coords[i * 3 + 1] ?? 0) - py;
+    const dz = (coords[i * 3 + 2] ?? 0) - pz;
     const dist2 = dx*dx + dy*dy + dz*dz;
     if (dist2 <= coincident2) continue;   // coincident duplicate of the peak
     if (dist2 < radius2) {
-      neighborSum   += vertexStress[i] ?? 0;
+      neighborSum   += stress[i] ?? 0;
       neighborCount++;
     }
   }
@@ -5882,6 +5999,11 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   const constrainedRimMask = rimMaskFor(constraints.flatMap(c => c.nodeIndices));
   const loadedRimMask      = rimMaskFor(solverForces.map(f => f.nodeIndex));
 
+  // Assess the FEA field, not the display mesh (issue #263). vertexStress and
+  // req.positions are still passed so the fallback path stays available, but
+  // with feaField present they are unused — the detector reads nodeStress
+  // against mesh.nodes, which is the only pairing where the neighbourhood
+  // radius and the field it samples come from the same mesh.
   const singularity = detectSingularity(
     vertexStress,
     req.positions,
@@ -5889,8 +6011,33 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       bcRimPoints:   rimPointsOf(constrainedRimMask),
       loadRimPoints: rimPointsOf(loadedRimMask),
       yieldMPa:      baseMat2.yieldMPa,
+      feaField: {
+        nodeStress,
+        nodes:     mesh.nodes,
+        nodeCount: mesh.nodeCount,
+        nodeSize:  nodeCharacteristicSizes(mesh),
+      },
     },
   );
+
+  // `peakVertexIdx` now indexes the FEA mesh, but generateTopologySuggestions
+  // iterates the DISPLAY field, so the exclusion index has to be translated
+  // rather than passed through — the exact index-space confusion that put the
+  // adaptive loop's exclusion ball at an unrelated node before #257. Nearest
+  // display vertex to the singular location; null when nothing was flagged.
+  const singularDisplayIdx = ((): number | null => {
+    if (!singularity?.detected) return null;
+    const [sx, sy, sz] = singularity.peakLocation;
+    let best = Infinity, bestIdx = -1;
+    for (let v = 0; v < vertCount; v++) {
+      const dx = (req.positions[v * 3] ?? 0) - sx;
+      const dy = (req.positions[v * 3 + 1] ?? 0) - sy;
+      const dz = (req.positions[v * 3 + 2] ?? 0) - sz;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < best) { best = d2; bestIdx = v; }
+    }
+    return bestIdx >= 0 ? bestIdx : null;
+  })();
 
   // ── BC share of the estimated error (issue #259) ───────────────────────────
   // The same quantity the adaptive loop reports as `bcSingularityErrorFraction`,
@@ -5938,7 +6085,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     mesh.nodes,
     1.0,
     meshOffset,
-    singularity?.peakVertexIdx ?? null,
+    singularDisplayIdx,
     req.bounds,
   );
 

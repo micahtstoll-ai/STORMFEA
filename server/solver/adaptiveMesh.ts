@@ -155,17 +155,19 @@ export interface SizeField {
 
 // ─── Node-level error + size aggregation ────────────────────────────────────
 /**
- * Aggregate per-element η and characteristic size onto nodes. A node takes the
- * MAX error of its incident elements (conservative: if any touching element is
- * high-error, refine the node) and the MIN characteristic size (so the target
- * scales off the smallest local element, never coarsening a locally-fine spot).
+ * Per-node characteristic ELEMENT SIZE: the MIN characteristic size over the
+ * elements touching each node, so the metric reflects the smallest local
+ * element and never coarsens a locally-fine spot.
+ *
+ * Split out of `aggregateElementFieldsToNodes` so consumers that want a length
+ * scale but have no error field can share the definition rather than grow a
+ * second one that drifts from it (the singularity detector, issue #263).
+ *
+ * Midside and untouched nodes are given the mean of the touched ones, so
+ * downstream math never sees Infinity.
  */
-export function aggregateElementFieldsToNodes(
-  mesh: TetMesh,
-  errorEstimate: Float32Array | Float64Array,
-): { nodeError: Float64Array; nodeSize: Float64Array } {
+export function nodeCharacteristicSizes(mesh: TetMesh): Float64Array {
   const npe = mesh.nodesPerElem ?? 4;
-  const nodeError = new Float64Array(mesh.nodeCount);
   const nodeSize = new Float64Array(mesh.nodeCount).fill(Infinity);
   const touched = new Uint8Array(mesh.nodeCount);
 
@@ -180,20 +182,16 @@ export function aggregateElementFieldsToNodes(
     const cx = mesh.nodes[n2 * 3] ?? 0, cy = mesh.nodes[n2 * 3 + 1] ?? 0, cz = mesh.nodes[n2 * 3 + 2] ?? 0;
     const dx = mesh.nodes[n3 * 3] ?? 0, dy = mesh.nodes[n3 * 3 + 1] ?? 0, dz = mesh.nodes[n3 * 3 + 2] ?? 0;
     const h = tetCharacteristicSize(ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz);
-    const err = errorEstimate[e] ?? 0;
     // Only the four corner nodes carry geometry for a C3D10; midside nodes
     // inherit from their edge, so aggregating corners is sufficient and the
     // per-node metric is interpolated by the mesher anyway.
     for (let k = 0; k < 4; k++) {
       const n = mesh.elements[base + k] ?? 0;
       touched[n] = 1;
-      if (err > nodeError[n]!) nodeError[n] = err;
       if (h > 0 && h < nodeSize[n]!) nodeSize[n] = h;
     }
   }
 
-  // Midside / untouched nodes: give them a finite size (mean of touched) so
-  // downstream math never sees Infinity.
   let sizeSum = 0, sizeN = 0;
   for (let n = 0; n < mesh.nodeCount; n++) {
     if (touched[n] && Number.isFinite(nodeSize[n]!)) { sizeSum += nodeSize[n]!; sizeN++; }
@@ -202,7 +200,32 @@ export function aggregateElementFieldsToNodes(
   for (let n = 0; n < mesh.nodeCount; n++) {
     if (!touched[n] || !Number.isFinite(nodeSize[n]!)) nodeSize[n] = meanSize;
   }
-  return { nodeError, nodeSize };
+  return nodeSize;
+}
+
+/**
+ * Aggregate per-element η and characteristic size onto nodes. A node takes the
+ * MAX error of its incident elements (conservative: if any touching element is
+ * high-error, refine the node) and the MIN characteristic size (see
+ * `nodeCharacteristicSizes`, which owns that half).
+ */
+export function aggregateElementFieldsToNodes(
+  mesh: TetMesh,
+  errorEstimate: Float32Array | Float64Array,
+): { nodeError: Float64Array; nodeSize: Float64Array } {
+  const npe = mesh.nodesPerElem ?? 4;
+  const nodeError = new Float64Array(mesh.nodeCount);
+
+  for (let e = 0; e < mesh.elementCount; e++) {
+    const base = e * npe;
+    const err = errorEstimate[e] ?? 0;
+    for (let k = 0; k < 4; k++) {
+      const n = mesh.elements[base + k] ?? 0;
+      if (err > nodeError[n]!) nodeError[n] = err;
+    }
+  }
+
+  return { nodeError, nodeSize: nodeCharacteristicSizes(mesh) };
 }
 
 // ─── Target per-element error from a desired global error ───────────────────
