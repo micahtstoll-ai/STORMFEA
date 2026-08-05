@@ -320,8 +320,41 @@ group 20 ("SPR linear-field exactness") exercises `sprSmoothedStress6`, the
 tensor path. There was no exactness test for the scalar path at all. The
 recovery that was proven exact was not the one users read a safety factor off.
 
-C3D4 is untouched by construction — `buildGaussSamples` returns null for linear
-elements, so `sprSmoothedStress` stays exactly as it was on that path.
+### C3D4 is NOT untouched, and the change there is lateral
+
+`buildGaussSamples` returns null for linear elements, so the C3D4 *recovery* is
+unchanged — it is still the centroid fit, because an element's stress is
+constant and the centroid IS the correct single sample. But the display path
+takes the projection whenever a nodal tensor exists, and it exists on C3D4 too.
+So C3D4 heatmap values moved, and `sprSmoothedStress` is no longer reached on
+any path the pipeline produces. An earlier claim that "C3D4 is untouched by
+construction" was reading the recovery function rather than the call site.
+
+How far they moved, on a solved 384-element C3D4 box: peak von Mises 0.4348 →
+0.4347, but a worst-node absolute shift of 0.10 — about 23 % of the peak, at a
+low-stress node where the relative difference is large and the physical stake is
+not.
+
+Is the new number better? **No — measured, it is neither better nor worse.**
+Same manufactured linear field, worst relative error at any node:
+
+| C3D4 mesh | 162 el | 384 el | 1 296 el |
+|---|---|---|---|
+| legacy scalar recovery | 20.00 % | 15.00 % | 10.00 % |
+| projection of the tensor | 20.00 % | 15.00 % | 10.00 % |
+
+Identical, and shrinking as O(h) in both cases. That is the expected answer
+rather than a disappointing one: the accuracy win came from Gauss sampling, and
+there is nothing to Gauss-sample on a constant-stress element. What is left on
+C3D4 is the one-sided-patch averaging bias, which both formulations inherit
+equally.
+
+The argument for taking the projection on C3D4 anyway is **consistency, not
+accuracy** — one recovered field, the same operation on both element types, and
+a heatmap that is the field the estimator judged. Worth stating plainly because
+it is a change to shipped numbers justified by uniformity, which is a weaker
+warrant than the C3D10 case has and should not be quoted as if it were the same
+evidence.
 
 **The heatmap-artifact question from #258, answered: NO.** The artifacts in
 `CLAUDE.md` were straight lines across the model, root-caused to client-side

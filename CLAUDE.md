@@ -133,11 +133,13 @@ Before submitting a PR that modifies mesh visualization or stress heatmap:
 - Stress Recovery: `server/solver/stress.ts` — `sprSmoothedStress6` (tensor) is
   the ONE recovered nodal field: it feeds the ZZ estimator, and on C3D10 the
   displayed heatmap and the per-node utilization field are projections of it via
-  `vonMisesFromTensor6` (issue #258). `sprSmoothedStress` (scalar) survives only
-  as the C3D4 path, where an element's stress is constant so the centroid IS the
-  correct single sample. Do not reintroduce an independent scalar recovery on
-  C3D10: von Mises is convex, so recovering it directly sits at or ABOVE the von
-  Mises of the recovered tensor (Jensen) and biases the displayed peak upward.
+  `vonMisesFromTensor6` (issue #258) — on C3D4 as well as C3D10, so
+  `sprSmoothedStress` (scalar) is no longer reached on any path the pipeline
+  produces; its one remaining call site is a fallback for a result carrying
+  neither a nodal nor an element tensor. Do not reintroduce an independent
+  scalar recovery: von Mises is convex, so recovering it directly sits at or
+  ABOVE the von Mises of the recovered tensor (Jensen) and biases the displayed
+  peak upward.
   Both are built on the shared patch helpers `buildSprPatchFit`,
   `solveSprValueAtNode` and `interpolateMidsideFromCorners`, and both fit an
   `SprSamples` point cloud: `buildCentroidSamples` (one sample per element —
