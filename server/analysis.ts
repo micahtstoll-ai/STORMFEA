@@ -1503,6 +1503,25 @@ export function effectiveVolumeFraction(infillPct: number, wallCount: number): n
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+/**
+ * Distribution used when a force does not name one (issue #271).
+ *
+ * This is 'contact_patch': the load is applied WHERE IT WAS PLACED, over a
+ * tapered disc, rather than smeared across the whole extreme face toward its
+ * direction. It changes the answer for every force that does not name a mode —
+ * deliberately, because the previous default discarded the application point
+ * entirely and put a hard-edged patch rim into the model.
+ *
+ * Measured on the Ø5-bore tube across a 5.3x element range, the safety-factor
+ * spread across meshes falls from 26.6% to 1.6%, and the peak stops sitting on
+ * a patch rim that never converges. `docs/load-distribution-default.md` records
+ * the anchors this moved and why each moved.
+ *
+ * Set `loadDistribution: 'uniform'` to get the previous behaviour back exactly,
+ * including the near-hole linear taper the absent field used to reach.
+ */
+export const DEFAULT_LOAD_DISTRIBUTION = 'contact_patch' as const;
+
 export interface ForceSpec {
   /** Force magnitude in Newtons */
   magnitude: number;
@@ -1520,7 +1539,7 @@ export interface ForceSpec {
    */
   position:  [number, number, number];
   /**
-   * Load distribution mode.
+   * Load distribution mode. Absent → `DEFAULT_LOAD_DISTRIBUTION`.
    *   'uniform'        — equal split across the extreme-face band (legacy)
    *   'cosine_bearing' — concentrated at a bolt bearing point
    *   'tapered_patch'  — spread over a raised-cosine SLAB on the extreme face,
@@ -1532,7 +1551,8 @@ export interface ForceSpec {
    *                      in every surface direction. The only mode that reads
    *                      `position` (issue #271), and the only one with no
    *                      untapered patch edge anywhere.
-   * Default (undefined) keeps the legacy selection exactly.
+   * Absent → `DEFAULT_LOAD_DISTRIBUTION` ('contact_patch'). Ask for 'uniform'
+   * explicitly to get the legacy cascade back, bit-identical.
    */
   loadDistribution?: 'uniform' | 'cosine_bearing' | 'tapered_patch' | 'contact_patch';
   /**
@@ -4873,7 +4893,13 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     // without it (a mesh path that carries none) fall through to the legacy
     // selection with a loud note rather than silently applying a different
     // load model than the caller asked for.
-    if (f.loadDistribution === 'contact_patch') {
+    // The DEFAULT distribution (issue #271). An absent `loadDistribution` now
+    // means 'contact_patch': the load is applied where it was placed. Legacy
+    // stays reachable by asking for it explicitly — 'uniform' reproduces the
+    // old absent-field cascade exactly, including the near-hole linear taper.
+    const mode = f.loadDistribution ?? DEFAULT_LOAD_DISTRIBUTION;
+
+    if (mode === 'contact_patch') {
       if (surfaceFaces) {
         const patch = assembleContactPatchLoad(
           mesh, surfaceFaces, [dx/len, dy/len, dz/len], [fx, fy, fz],
@@ -4904,14 +4930,14 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         continue;
       }
       console.warn(
-        `[analysis] force ${f.magnitude}N requested loadDistribution='contact_patch', but this ` +
-        `mesh carries no surface connectivity to integrate a traction over. Falling back to the ` +
-        `legacy extreme-face selection — the result is the LEGACY load model, and the application ` +
-        `point is NOT honoured.`,
+        `[analysis] force ${f.magnitude}N would use loadDistribution='${mode}'` +
+        `${f.loadDistribution ? "" : " (the default)"}, but this mesh carries no surface ` +
+        `connectivity to integrate a traction over. Falling back to the legacy extreme-face ` +
+        `selection — the result is the LEGACY load model, and the application point is NOT honoured.`,
       );
     }
 
-    if (f.loadDistribution === 'tapered_patch') {
+    if (mode === 'tapered_patch') {
       if (surfaceFaces) {
         const tapered = assembleTaperedFaceLoad(
           mesh, surfaceFaces, [dx/len, dy/len, dz/len], [fx, fy, fz], f.loadPatchDepthMm,

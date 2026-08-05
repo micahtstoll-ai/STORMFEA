@@ -100,10 +100,16 @@ function makeRequest(variant: Variant): AnalysisRequest {
 
   switch (variant) {
     case "point":
-      // The #256 fixture exactly: a 50 N nodal load, which analysis.ts lands on
-      // the extreme face in the load direction (|x - xmax| < 0.5 mm) — NOT at
-      // `position`, which the force path never reads.
-      return { ...base, forces: [{ magnitude: TARGET_N, direction: [1, 0, 0], position: [R, 0, H] }] };
+      // The LEGACY model: the load lands on the extreme face in its direction
+      // (|x - xmax| < 0.5 mm), and `position` is not read. 'uniform' has to be
+      // stated explicitly now — an absent `loadDistribution` means
+      // DEFAULT_LOAD_DISTRIBUTION ('contact_patch') since #271, so leaving it
+      // off would silently make this row measure the new default instead of the
+      // baseline it exists to be.
+      return { ...base, forces: [{
+        magnitude: TARGET_N, direction: [1, 0, 0], position: [R, 0, H],
+        loadDistribution: "uniform",
+      }] };
     case "tapered":
       // The fix under test (#260): same 50 N on the same extreme face, but
       // spread over a raised-cosine patch integrated as a consistent traction

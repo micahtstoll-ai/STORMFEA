@@ -23,9 +23,10 @@
  *   4. It is SCALE-INVARIANT, the property issue #168 established for mesh
  *      density and issue #271 notes the legacy 0.5 mm band lacks.
  *
- * The legacy path is not re-tested here: the new mode returns before any of the
- * extreme-face selection runs, so an absent `loadDistribution` reaches exactly
- * the code it always did, and the rest of the suite exercises that.
+ * The legacy path is reached by asking for `loadDistribution: 'uniform'`. It is
+ * no longer what an ABSENT field means — since #271 that resolves to
+ * `DEFAULT_LOAD_DISTRIBUTION` ('contact_patch'); see
+ * `load-distribution-default.test.ts` for the lock on that.
  */
 import { describe, it, expect } from "vitest";
 import { generateBoxMeshC3D4, extractSurfaceFaces } from "../../solver/meshgen.js";

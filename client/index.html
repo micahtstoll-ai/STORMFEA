@@ -1574,12 +1574,12 @@ body:not(.has-results) #btn-stress { display: none !important; }
           <div style="margin-bottom:10px">
             <label for="fp-bearing-dist" style="font-size:11px">Load distribution</label>
             <select id="fp-bearing-dist" style="width:100%;font-size:11px;margin-top:4px">
-              <option value="uniform">Uniform across face</option>
-              <option value="cosine_bearing">Cosine (bearing point)</option>
+              <option value="contact_patch">Contact patch at this point (default)</option>
               <option value="tapered_patch">Tapered band (whole face)</option>
-              <option value="contact_patch">Contact patch at this point</option>
+              <option value="cosine_bearing">Cosine (bearing point)</option>
+              <option value="uniform">Uniform across face (legacy)</option>
             </select>
-            <div style="font-size:9px;color:var(--text-lo);margin-top:4px">Cosine: concentrated at bolt bearing point, realistic for bolt pull-through. Tapered band: spreads the load across the whole face, fading to zero instead of stopping dead at the edge of a one-element band — that hard edge is a stress singularity, so peak stress there does not settle down as you refine the mesh. Contact patch: the only option that applies the load <em>where you placed the arrow</em> rather than across the whole face toward the load direction — use it when the load really acts at a spot.</div>
+            <div style="font-size:9px;color:var(--text-lo);margin-top:4px">Contact patch (default): applies the load <em>where you placed the arrow</em>, over a patch that fades to zero at its edge. Tapered band: spreads it across the whole face toward the load direction, fading at the edges — use when the load really is carried by the whole face. Cosine: concentrated at a bolt bearing point, realistic for bolt pull-through. Uniform (legacy): the pre-2026 behaviour — the whole face, with a hard edge that makes peak stress mesh-dependent. The legacy options ignore where you placed the arrow and use only its direction.</div>
           </div>
           <div style="display:flex;gap:6px">
             <button class="btn primary" style="flex:1" onclick="confirmForce()">Add Force</button>
@@ -5331,7 +5331,7 @@ function confirmForce() {
       direction: S.pendingDir.slice(),
       magnitude: mag,
       label:     S.forces[S.pendingForce.editIndex].label,
-      loadDistribution: dist !== 'uniform' ? dist : undefined,
+      loadDistribution: dist,
     };
   } else {
     const force = {
@@ -5339,7 +5339,7 @@ function confirmForce() {
       direction: S.pendingDir.slice(),
       magnitude: mag,
       label:     `F${S.forces.length + 1}`,
-      loadDistribution: dist !== 'uniform' ? dist : undefined,
+      loadDistribution: dist,
     };
     pushUndoSnapshot();
     S.forces.push(force);
@@ -5602,7 +5602,7 @@ function editForce(i) {
   const bedRounded = [bedVec.x, bedVec.y, bedVec.z].map(v => Math.abs(v) > 0.966 ? Math.sign(v) : 0);
   S.pendingDirBed = bedRounded;
   document.getElementById('fp-mag').value = f.magnitude;
-  document.getElementById('fp-bearing-dist').value = f.loadDistribution || 'uniform';
+  document.getElementById('fp-bearing-dist').value = f.loadDistribution || 'contact_patch';
   document.getElementById('fp-dir-display').textContent =
     'Direction: ' + bedDirLabel(f.direction) + ' · bed frame (Z↑)';
   // Highlight the active direction button (buttons are labelled in bed frame)
