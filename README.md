@@ -290,7 +290,7 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the ful
 
 1. Fork → create a branch (`git checkout -b fix/my-fix`)
 2. Make changes; if touching physics, verify the 65% stiffness / 58% bond constants are unchanged
-3. Run `npm run test` — everything must pass: 841 vitest unit tests across 79 files, 187 solver validation tests in `solver_validation.ts`, the parallel-assembly equivalence suite, and 141 client logic checks (a few vitest tests self-skip where the TetGen/Gmsh binaries are absent, so the raw totals show a handful of skips)
+3. Run `npm run test` — everything must pass: 845 vitest unit tests across 79 files, 187 solver validation tests in `solver_validation.ts`, the parallel-assembly equivalence suite, and 141 client logic checks (a few vitest tests self-skip where the TetGen/Gmsh binaries are absent, so the raw totals show a handful of skips)
 4. Open a pull request using the provided template
 
 ---

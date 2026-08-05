@@ -356,6 +356,42 @@ it is a change to shipped numbers justified by uniformity, which is a weaker
 warrant than the C3D10 case has and should not be quoted as if it were the same
 evidence.
 
+**Narrower than "C3D4 values moved", and the narrowing is the interesting part.**
+The two paths are bit-identical on a UNIAXIAL field: with only σxx > 0, von
+Mises *is* σxx, SPR is linear per component, and projecting the recovered tensor
+reproduces the recovered scalar exactly. Nonlinearity needs a multiaxial tensor
+to bite on — which is what a real part has, and why the solved bracket above
+moves while the manufactured uniaxial fixture does not. Both facts are asserted
+in `spr-scalar-projection.test.ts`, the second precisely so the clean equality of
+the first is not mistaken for "nothing changed".
+
+### The one consumer where this is not cosmetic: `detectSingularity`
+
+`nodeStress` is not display-only. It feeds the singularity detector (#263),
+which produces a user-facing verdict. Measured on a C3D4 bracket with a small
+clamped patch — a genuine BC singularity — at three densities:
+
+| | 1 440 el | 3 200 el | 6 000 el |
+|---|---|---|---|
+| peak, old → new | 13.001 → 12.601 | 11.852 → 11.852 | 13.388 → 13.004 |
+| neighbourhood mean, old → new | 4.821 → **3.982** | 6.523 → **5.609** | 7.046 → **6.374** |
+| concentration ratio, old → new | 2.697 → **3.164** | 1.817 → 2.113 | 1.900 → 2.040 |
+| verdict | silent → **report-only** | silent → silent | silent → silent |
+
+The peak barely moves; the NEIGHBOURHOOD mean falls consistently, so the ratio
+rises 8–17 %. That direction is Jensen again, read from the other end: the old
+scalar recovery sat above the projection away from the peak, so removing it
+lowers the denominator. `detected` keys on `SINGULARITY_RATIO_ALARM` (6.0) and
+is false on every mesh here, so **no banner changes**. What changed on the
+coarsest mesh is that the ratio crossed `SINGULARITY_RATIO_REPORT` (3.0), so a
+diagnostic payload now appears where there was none.
+
+That is a real if minor increase in the detector's sensitivity, in a defensible
+direction, on a part whose singularity is real. It is recorded rather than
+tuned: `SINGULARITY_RATIO_REPORT` was calibrated against the old field, and if
+the report threshold ever needs revisiting this is the measurement that says
+which way it drifted.
+
 **The heatmap-artifact question from #258, answered: NO.** The artifacts in
 `CLAUDE.md` were straight lines across the model, root-caused to client-side
 vertex welding and fixed in 49bc5d6. This mechanism has a different spatial
