@@ -375,7 +375,7 @@ export function generateHtmlReport(
        and the report-drops-caveats complaint in #196) — it does not get cut. -->
   ${singularity?.detected ? `
   <div style="margin-top:10px;padding:8px 10px;background:#fff8e0;border:1px solid #e8cf8a;border-radius:3px;font-size:10px;color:#5c3a00;line-height:1.7">
-    <strong>⚠ ${singularity.cause === "constraint-edge" ? "Constraint-edge singularity" : singularity.cause === "load-point" ? "Load-point singularity" : "Stress singularity"} detected (${singularity.confidence} confidence)</strong><br>
+    <strong>⚠ ${singularity.cause === "constraint-edge" ? "Constraint-edge singularity" : singularity.cause === "load-edge" ? "Loaded-edge singularity" : "Stress singularity"} detected (${singularity.confidence} confidence)</strong><br>
     ${singularity.message}
   </div>` : ''}
 

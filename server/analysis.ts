@@ -22,7 +22,7 @@ import { runLinearBuckling }              from "./solver/buckling.js";
 import { assembleK, assembleKsigma, buildSparsityPattern } from "./solver/assembly.js";
 import { buildNodeElementAdjacency }       from "./solver/adjacency.js";
 import { applyDirichletBC }    from "./solver/boundary.js";
-import { assembleForceVector, assembleBodyForce, assembleSurfaceTraction, assembleSurfaceTractionNormal, selectPressureRegion } from "./solver/load.js";
+import { assembleForceVector, assembleBodyForce, assembleSurfaceTraction, assembleSurfaceTractionNormal, selectPressureRegion, assembleTaperedFaceLoad, assembleContactPatchLoad } from "./solver/load.js";
 import type { ModalAnalysisResult }        from "./solver/types.js";
 import {
   buildLaminateCMatrix,
@@ -1503,15 +1503,72 @@ export function effectiveVolumeFraction(infillPct: number, wallCount: number): n
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+/**
+ * Distribution used when a force does not name one (issue #271).
+ *
+ * This is 'contact_patch': the load is applied WHERE IT WAS PLACED, over a
+ * tapered disc, rather than smeared across the whole extreme face toward its
+ * direction. It changes the answer for every force that does not name a mode —
+ * deliberately, because the previous default discarded the application point
+ * entirely and put a hard-edged patch rim into the model.
+ *
+ * Measured on the Ø5-bore tube across a 5.3x element range, the safety-factor
+ * spread across meshes falls from 26.6% to 1.6%, and the peak stops sitting on
+ * a patch rim that never converges. `docs/load-distribution-default.md` records
+ * the anchors this moved and why each moved.
+ *
+ * Set `loadDistribution: 'uniform'` to get the previous behaviour back exactly,
+ * including the near-hole linear taper the absent field used to reach.
+ */
+export const DEFAULT_LOAD_DISTRIBUTION = 'contact_patch' as const;
+
 export interface ForceSpec {
   /** Force magnitude in Newtons */
   magnitude: number;
   /** Unit direction vector [x, y, z] in STL file space */
   direction: [number, number, number];
-  /** Point of application in STL file space (mm) */
+  /**
+   * Point of application in STL file space (mm).
+   *
+   * Read ONLY by `loadDistribution: 'contact_patch'` (issue #271). Every other
+   * mode selects its nodes from `direction` alone, so under those modes moving
+   * this field changes nothing — verified bit-identical to nine decimals across
+   * four application points, including one on the opposite side of the part.
+   * That is why 'contact_patch' exists; the legacy modes keep their behaviour
+   * because changing them would move every force-loaded validated anchor.
+   */
   position:  [number, number, number];
-  /** Load distribution mode: 'uniform' = equal across face, 'cosine_bearing' = concentrated at bearing point (default: 'uniform') */
-  loadDistribution?: 'uniform' | 'cosine_bearing';
+  /**
+   * Load distribution mode. Absent → `DEFAULT_LOAD_DISTRIBUTION`.
+   *   'uniform'        — equal split across the extreme-face band (legacy)
+   *   'cosine_bearing' — concentrated at a bolt bearing point
+   *   'tapered_patch'  — spread over a raised-cosine SLAB on the extreme face,
+   *                      integrated as a consistent (tributary-area) traction.
+   *                      Removes the hard patch rim the first two modes carry,
+   *                      but a slab still runs off a free edge at full
+   *                      strength; see `assembleTaperedFaceLoad` and #260.
+   *   'contact_patch'  — a raised-cosine DISC centred on `position`, tapering
+   *                      in every surface direction. The only mode that reads
+   *                      `position` (issue #271), and the only one with no
+   *                      untapered patch edge anywhere.
+   * Absent → `DEFAULT_LOAD_DISTRIBUTION` ('contact_patch'). Ask for 'uniform'
+   * explicitly to get the legacy cascade back, bit-identical.
+   */
+  loadDistribution?: 'uniform' | 'cosine_bearing' | 'tapered_patch' | 'contact_patch';
+  /**
+   * Depth of the 'tapered_patch' slab along the load direction, in mm — the
+   * REAL contact size when the caller knows it. Ignored by every other mode.
+   * Omitted → `LOAD_PATCH_DEPTH_FRACTION` of the part's extent along
+   * `direction`, which is a judgement rather than a measurement.
+   */
+  loadPatchDepthMm?: number;
+  /**
+   * Radius of the 'contact_patch' disc, in mm — the real contact size (bolt
+   * head, pin, pad) when the caller knows it. Ignored by every other mode.
+   * Omitted → `CONTACT_PATCH_RADIUS_FRACTION` of the part's bounding-box
+   * diagonal, which is the weakest number in that mode.
+   */
+  loadPatchRadiusMm?: number;
 }
 
 /**
@@ -1982,13 +2039,24 @@ export interface SingularityWarning {
    *  divergence across a multi-mesh study. The client upgrades this field when
    *  it corroborates the flag with refinement evidence (issue #147). */
   evidence:      "single-mesh-heuristic" | "refinement";
-  /** WHAT is singular (issue #257). A rigid displacement constraint applied over
-   *  part of a surface is singular at the curve where the patch stops, exactly
-   *  as a re-entrant geometric corner is — but the remedies are opposite. A
-   *  fillet does nothing for a constraint edge; the answer there concerns the
-   *  bolt idealization (#260). "constraint-edge" when the peak sits on the rim
-   *  of a constrained/loaded patch, "geometry" otherwise. */
-  cause:         "geometry" | "constraint-edge" | "load-point";
+  /** WHAT is singular (issue #257). A boundary condition applied over PART of a
+   *  surface is singular at the curve where that patch stops, exactly as a
+   *  re-entrant geometric corner is — but the remedies are opposite, so the
+   *  three cases are named separately:
+   *
+   *    "constraint-edge" — the peak is nearest the rim of a CONSTRAINED patch.
+   *                        The answer concerns the bolt idealization (#260).
+   *    "load-edge"       — the peak is nearest the rim of a LOADED patch.
+   *                        The answer concerns the contact area the load is
+   *                        spread over.
+   *    "geometry"        — neither rim is within the sampling radius. A fillet.
+   *
+   *  Both BC cases are decided by which rim the peak is NEAREST, and both are
+   *  patch EDGES — this was called "load-point" until #271, which is why the
+   *  name changed: the legacy load model spreads a force over a band of the
+   *  extreme face, so what is singular is that band's rim, not a point. No
+   *  load has ever been applied at a single point on this path. */
+  cause:         "geometry" | "constraint-edge" | "load-edge";
   /** True when the peak is a large enough fraction of yield to matter for the
    *  verdict. Drives WORDING ONLY — never suppresses the warning. A singularity
    *  makes the peak stress mesh-dependent whether or not it is near yield, and
@@ -3739,10 +3807,10 @@ export function detectSingularity(
   };
   const dBc2   = nearestRim2(ctx?.bcRimPoints);
   const dLoad2 = nearestRim2(ctx?.loadRimPoints);
-  const cause: "geometry" | "constraint-edge" | "load-point" =
+  const cause: "geometry" | "constraint-edge" | "load-edge" =
     Math.min(dBc2, dLoad2) > radius2 ? "geometry"
     : dBc2 <= dLoad2                 ? "constraint-edge"
-    : "load-point";
+    : "load-edge";
   const nearYield = ctx?.yieldMPa !== undefined && ctx.yieldMPa > 0
     ? peakVal > 0.5 * ctx.yieldMPa
     : false;
@@ -3751,8 +3819,8 @@ export function detectSingularity(
   const advice =
     cause === "constraint-edge"
       ? `This is the CONSTRAINT, not your part: a bolt is modelled as a rigid clamp over the whole bore wall, which is singular at the edge where the clamp stops. A real bolt bears on part of the wall with some joint compliance and has no such edge. Treat the peak here as an artifact of that idealization — judge the part on the stress a short distance away, not at the constrained rim.`
-    : cause === "load-point"
-      ? `This is where the LOAD is applied, not a feature of your part. A force applied to a point or a small patch is singular there, exactly as pressing with an infinitely sharp tip would be; a real load is spread over a contact area. Judge the part on the stress away from the loaded region, and if the peak matters to your decision, re-run with the load spread over the area it really acts on.`
+    : cause === "load-edge"
+      ? `This is the EDGE OF THE LOADED REGION, not a feature of your part. Where an applied traction stops abruptly the stress is singular, exactly as pressing with an infinitely sharp tool would be — and the smaller the loaded patch, the sharper it is. A real load is carried by a contact area with pressure that falls off at its edge rather than stopping dead. Judge the part on the stress a short distance away from the loaded region. If this peak matters to your decision, set the contact size to the area the load really acts over (loadPatchRadiusMm) rather than leaving it to the default.`
       : `This looks like a geometric singularity at a sharp re-entrant corner. The true stress is lower. Add a fillet radius of >=0.5mm at this location in your CAD model.`;
 
   /** Why the number moves between meshes — the point of the warning (#256). */
@@ -4828,6 +4896,84 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     const fx = dx/len * f.magnitude;
     const fy = dy/len * f.magnitude;
     const fz = dz/len * f.magnitude;
+
+    // ── Tapered patch (issue #260) ──────────────────────────────────────────
+    // Opt-in, and it returns before any of the extreme-face node selection
+    // below runs — so an absent or legacy `loadDistribution` reaches exactly
+    // the code it always did. Needs surface connectivity to integrate over;
+    // without it (a mesh path that carries none) fall through to the legacy
+    // selection with a loud note rather than silently applying a different
+    // load model than the caller asked for.
+    // The DEFAULT distribution (issue #271). An absent `loadDistribution` now
+    // means 'contact_patch': the load is applied where it was placed. Legacy
+    // stays reachable by asking for it explicitly — 'uniform' reproduces the
+    // old absent-field cascade exactly, including the near-hole linear taper.
+    const mode = f.loadDistribution ?? DEFAULT_LOAD_DISTRIBUTION;
+
+    if (mode === 'contact_patch') {
+      if (surfaceFaces) {
+        const patch = assembleContactPatchLoad(
+          mesh, surfaceFaces, [dx/len, dy/len, dz/len], [fx, fy, fz],
+          f.position, f.loadPatchRadiusMm,
+        );
+        let applied = 0, resX = 0, resY = 0, resZ = 0;
+        for (let n = 0; n < mesh.nodeCount; n++) {
+          const nx = patch.forces[n*3] ?? 0;
+          const ny = patch.forces[n*3+1] ?? 0;
+          const nz = patch.forces[n*3+2] ?? 0;
+          if (nx !== 0 || ny !== 0 || nz !== 0) {
+            solverForces.push({ nodeIndex: n, forceN: [nx, ny, nz] });
+            applied++; resX += nx; resY += ny; resZ += nz;
+          }
+        }
+        // The snap distance is the one number that says whether the load landed
+        // where the user put it. A large snap means the application point was
+        // not on a surface facing the load — worth seeing, not worth failing.
+        const snapNote = patch.centreSnapMm > (patch.radiusMm || 1)
+          ? ` — WARNING: the application point is ${patch.centreSnapMm.toFixed(2)}mm from the nearest ` +
+            `surface facing this load, further than the patch radius. The load was applied at the ` +
+            `nearest windward surface instead. Check the force direction against where it was placed.`
+          : ` (application point ${patch.centreSnapMm.toFixed(3)}mm from the nearest windward face)`;
+        console.log(`[analysis] force ${f.magnitude}N in (${dx},${dy},${dz}): contact patch at ` +
+          `(${f.position.join(",")}) radius=${patch.radiusMm.toFixed(3)}mm over ` +
+          `${patch.loadedTriangles} triangles, ${applied} loaded nodes, ` +
+          `|resultant|=${Math.hypot(resX, resY, resZ).toFixed(4)}N${snapNote}`);
+        continue;
+      }
+      console.warn(
+        `[analysis] force ${f.magnitude}N would use loadDistribution='${mode}'` +
+        `${f.loadDistribution ? "" : " (the default)"}, but this mesh carries no surface ` +
+        `connectivity to integrate a traction over. Falling back to the legacy extreme-face ` +
+        `selection — the result is the LEGACY load model, and the application point is NOT honoured.`,
+      );
+    }
+
+    if (mode === 'tapered_patch') {
+      if (surfaceFaces) {
+        const tapered = assembleTaperedFaceLoad(
+          mesh, surfaceFaces, [dx/len, dy/len, dz/len], [fx, fy, fz], f.loadPatchDepthMm,
+        );
+        let applied = 0, resX = 0, resY = 0, resZ = 0;
+        for (let n = 0; n < mesh.nodeCount; n++) {
+          const nx = tapered.forces[n*3] ?? 0;
+          const ny = tapered.forces[n*3+1] ?? 0;
+          const nz = tapered.forces[n*3+2] ?? 0;
+          if (nx !== 0 || ny !== 0 || nz !== 0) {
+            solverForces.push({ nodeIndex: n, forceN: [nx, ny, nz] });
+            applied++; resX += nx; resY += ny; resZ += nz;
+          }
+        }
+        console.log(`[analysis] force ${f.magnitude}N in (${dx},${dy},${dz}): tapered patch ` +
+          `depth=${tapered.patchDepthMm.toFixed(3)}mm over ${tapered.loadedTriangles} triangles, ` +
+          `${applied} loaded nodes, |resultant|=${Math.hypot(resX, resY, resZ).toFixed(4)}N`);
+        continue;
+      }
+      console.warn(
+        `[analysis] force ${f.magnitude}N requested loadDistribution='tapered_patch', but this ` +
+        `mesh carries no surface connectivity to integrate a traction over. Falling back to the ` +
+        `legacy extreme-face selection — the result is the LEGACY load model, not the tapered one.`,
+      );
+    }
 
     let faceNodes: number[];
 
@@ -6863,7 +7009,7 @@ export async function runAdaptiveAnalysis(
 
   // ── Singularity exclusion (issue #147): keep a small radius around a flagged
   //    singular corner coarse — refining a true singularity never converges. ──
-  //    Only for a GEOMETRIC singularity. A constraint-edge or load-point one is
+  //    Only for a GEOMETRIC singularity. A constraint-edge or load-edge one is
   //    already handled, and handled better, by the BC-discontinuity mask below:
   //    that band is topological, so it scales with the local element size, where
   //    this ball is a fixed 2 mm regardless of part size. Stacking both on the

@@ -1574,10 +1574,12 @@ body:not(.has-results) #btn-stress { display: none !important; }
           <div style="margin-bottom:10px">
             <label for="fp-bearing-dist" style="font-size:11px">Load distribution</label>
             <select id="fp-bearing-dist" style="width:100%;font-size:11px;margin-top:4px">
-              <option value="uniform">Uniform across face</option>
+              <option value="contact_patch">Contact patch at this point (default)</option>
+              <option value="tapered_patch">Tapered band (whole face)</option>
               <option value="cosine_bearing">Cosine (bearing point)</option>
+              <option value="uniform">Uniform across face (legacy)</option>
             </select>
-            <div style="font-size:9px;color:var(--text-lo);margin-top:4px">Cosine: concentrated at bolt bearing point, realistic for bolt pull-through.</div>
+            <div style="font-size:9px;color:var(--text-lo);margin-top:4px">Contact patch (default): applies the load <em>where you placed the arrow</em>, over a patch that fades to zero at its edge. Tapered band: spreads it across the whole face toward the load direction, fading at the edges — use when the load really is carried by the whole face. Cosine: concentrated at a bolt bearing point, realistic for bolt pull-through. Uniform (legacy): the pre-2026 behaviour — the whole face, with a hard edge that makes peak stress mesh-dependent. The legacy options ignore where you placed the arrow and use only its direction.</div>
           </div>
           <div style="display:flex;gap:6px">
             <button class="btn primary" style="flex:1" onclick="confirmForce()">Add Force</button>
@@ -5329,7 +5331,7 @@ function confirmForce() {
       direction: S.pendingDir.slice(),
       magnitude: mag,
       label:     S.forces[S.pendingForce.editIndex].label,
-      loadDistribution: dist !== 'uniform' ? dist : undefined,
+      loadDistribution: dist,
     };
   } else {
     const force = {
@@ -5337,7 +5339,7 @@ function confirmForce() {
       direction: S.pendingDir.slice(),
       magnitude: mag,
       label:     `F${S.forces.length + 1}`,
-      loadDistribution: dist !== 'uniform' ? dist : undefined,
+      loadDistribution: dist,
     };
     pushUndoSnapshot();
     S.forces.push(force);
@@ -5600,7 +5602,7 @@ function editForce(i) {
   const bedRounded = [bedVec.x, bedVec.y, bedVec.z].map(v => Math.abs(v) > 0.966 ? Math.sign(v) : 0);
   S.pendingDirBed = bedRounded;
   document.getElementById('fp-mag').value = f.magnitude;
-  document.getElementById('fp-bearing-dist').value = f.loadDistribution || 'uniform';
+  document.getElementById('fp-bearing-dist').value = f.loadDistribution || 'contact_patch';
   document.getElementById('fp-dir-display').textContent =
     'Direction: ' + bedDirLabel(f.direction) + ' · bed frame (Z↑)';
   // Highlight the active direction button (buttons are labelled in bed frame)
@@ -7025,7 +7027,7 @@ function showResults(s) {
     ${s.singularity?.detected ? `
     <div style="padding:10px 12px;background:var(--bg-card);border:2px solid var(--gold-glow);border-radius:4px;margin-bottom:12px">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-        <span style="font-size:10px;color:var(--warn)"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> ${s.singularity.cause === 'constraint-edge' ? 'CONSTRAINT-EDGE SINGULARITY DETECTED' : s.singularity.cause === 'load-point' ? 'LOAD-POINT SINGULARITY DETECTED' : 'STRESS SINGULARITY DETECTED'}</span>
+        <span style="font-size:10px;color:var(--warn)"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> ${s.singularity.cause === 'constraint-edge' ? 'CONSTRAINT-EDGE SINGULARITY DETECTED' : s.singularity.cause === 'load-edge' ? 'LOADED-EDGE SINGULARITY DETECTED' : 'STRESS SINGULARITY DETECTED'}</span>
         <span style="font-size:9px;color:var(--warn);border:1px solid var(--gold-glow);padding:1px 5px;border-radius:2px">${s.singularity.confidence.toUpperCase()} CONFIDENCE</span>
         <span style="font-size:9px;color:var(--text-lo);border:1px solid var(--border);padding:1px 5px;border-radius:2px">${s.singularity.evidence === 'refinement' ? 'REFINEMENT EVIDENCE' : 'SINGLE-MESH HEURISTIC'}</span>
       </div>
@@ -9261,7 +9263,7 @@ async function runConvergenceStudy() {
   const metricChangePct = useRobust ? robustChangePct : changePct;
   const converged = metricChangePct < 5.0;
   const singularNote = sel.singularAtPeak
-    ? `<div style="padding:6px 8px;margin-top:6px;background:var(--gold-faint);border:1px solid var(--gold-glow);border-radius:3px;font-size:10px;color:var(--gold-dim);line-height:1.6"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Peak stress is at a likely ${finest.singularity?.cause === 'constraint-edge' ? 'constraint-edge' : finest.singularity?.cause === 'load-point' ? 'load-point' : 'geometric'} singularity (evidence: ${sel.evidence === 'refinement' ? 'refinement divergence' : 'single-mesh gradient heuristic'}) — ${sel.reason}. It will not converge under refinement; showing convergence of the 99th-percentile stress instead${finest.singularity?.peakLocation ? ` (peak at ${finest.singularity.peakLocation.map(v=>v.toFixed(1)).join(', ')} mm)` : ''}.</div>`
+    ? `<div style="padding:6px 8px;margin-top:6px;background:var(--gold-faint);border:1px solid var(--gold-glow);border-radius:3px;font-size:10px;color:var(--gold-dim);line-height:1.6"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Peak stress is at a likely ${finest.singularity?.cause === 'constraint-edge' ? 'constraint-edge' : finest.singularity?.cause === 'load-edge' ? 'loaded-edge' : 'geometric'} singularity (evidence: ${sel.evidence === 'refinement' ? 'refinement divergence' : 'single-mesh gradient heuristic'}) — ${sel.reason}. It will not converge under refinement; showing convergence of the 99th-percentile stress instead${finest.singularity?.peakLocation ? ` (peak at ${finest.singularity.peakLocation.map(v=>v.toFixed(1)).join(', ')} mm)` : ''}.</div>`
     : '';
 
   // Find or create report

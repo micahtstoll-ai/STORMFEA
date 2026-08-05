@@ -409,3 +409,345 @@ export function assembleSurfaceTractionNormal(
 
   return f;
 }
+
+/**
+ * Default depth of the tapered load patch, as a fraction of the part's extent
+ * ALONG the load direction.
+ *
+ * Confidence: LOW. This is a judgement, not a measurement — no contact study
+ * backs the number, and a caller who knows the real contact size should pass
+ * `patchDepthMm` instead of inheriting it. It is deliberately part-relative
+ * rather than mesh-relative: a mesh-relative patch would shrink under
+ * refinement, which changes the load idealization from one mesh to the next
+ * and is precisely the non-convergence this mode exists to remove. Being
+ * part-relative also makes it scale-invariant, the property issue #168
+ * established for mesh density and issue #157 for the pressure band.
+ */
+export const LOAD_PATCH_DEPTH_FRACTION = 0.15;
+
+/**
+ * Raised-cosine taper on s ∈ [0, 1]: 1 at the patch centre-plane, 0 at its
+ * edge, with ZERO SLOPE at both ends.
+ *
+ * The zero slope at s = 1 is the whole point. A linear ramp still leaves a
+ * kink in the traction where the patch stops, and it is the traction
+ * DISCONTINUITY at a patch rim that is singular — not the patch's existence.
+ */
+function raisedCosineTaper(s: number): number {
+  if (!(s > 0)) return 1;
+  if (s >= 1) return 0;
+  return 0.5 * (1 + Math.cos(Math.PI * s));
+}
+
+/**
+ * Assemble consistent nodal forces for a point load SPREAD over a tapered
+ * patch on the extreme face toward `direction`.
+ *
+ * The legacy force path selects every node within a hard 0.5 mm of the extreme
+ * projection and splits the load equally between them. That has three defects
+ * this replaces:
+ *
+ *   1. The patch has a HARD RIM — traction jumps from full to zero across one
+ *      element — so the model contains a load singularity whose peak stress
+ *      does not converge. Measured on the Ø5-bore tube (issue #260's
+ *      de-risking sweep), the governing peak sat on that rim on every mesh and
+ *      the safety factor swung 26.6% non-monotonically across a 5x element
+ *      range.
+ *   2. The 0.5 mm band is ABSOLUTE, so the same part at two scales gets a
+ *      different load idealization (issue #271).
+ *   3. Equal-split-per-node is not a consistent load: it depends on how the
+ *      mesher happened to distribute nodes over the patch, not on area.
+ *
+ * Here the traction is w(t)·t̂ with w a raised cosine in projection depth, and
+ * it is integrated with the same tributary-area rule as a surface pressure
+ * (`assembleSurfaceTraction`'s T3/T6 split), then rescaled so the resultant is
+ * EXACTLY the requested force. The rescale is what keeps this comparable to
+ * the legacy path: same total load, different distribution.
+ *
+ * The patch is a SLAB — a band in the projection coordinate — not a disc,
+ * because a disc needs a centre and the only candidate is `ForceSpec.position`,
+ * which the force path does not read (issue #271). A slab is fully determined
+ * by the direction alone, so this mode does not quietly decide #271's open
+ * question. It therefore tapers the traction circumferentially but NOT where
+ * the patch runs off the end of the part at a free edge; see #271.
+ *
+ * @param mesh        tet mesh
+ * @param faces       surface triangles as corner-node triples
+ * @param direction   load direction (need not be unit length)
+ * @param force       total force [fx, fy, fz] in N — reproduced exactly
+ * @param patchDepthMm  depth of the taper along `direction`; non-finite or
+ *                      non-positive falls back to the part-relative default
+ * @returns Float64Array of length nodeCount × 3, and the patch depth used
+ */
+export function assembleTaperedFaceLoad(
+  mesh:         TetMesh,
+  faces:        Int32Array,
+  direction:    readonly [number, number, number],
+  force:        readonly [number, number, number],
+  patchDepthMm?: number,
+): { forces: Float64Array; patchDepthMm: number; loadedTriangles: number } {
+  const nodes = mesh.nodes;
+  const [dx, dy, dz] = direction;
+  const dl = Math.hypot(dx, dy, dz);
+  const empty = { forces: new Float64Array(nodes.length), patchDepthMm: 0, loadedTriangles: 0 };
+  if (!(dl > 0)) return empty;
+  const ux = dx/dl, uy = dy/dl, uz = dz/dl;
+
+  const triCount = Math.floor(faces.length / 3);
+  if (triCount === 0) return empty;
+
+  // Extent of the part along the load direction sets the default depth.
+  let maxProj = -Infinity, minProj = Infinity;
+  for (let n = 0; n < mesh.nodeCount; n++) {
+    const p = (nodes[n*3]??0)*ux + (nodes[n*3+1]??0)*uy + (nodes[n*3+2]??0)*uz;
+    if (p > maxProj) maxProj = p;
+    if (p < minProj) minProj = p;
+  }
+  const extent = maxProj - minProj;
+  let depth = (patchDepthMm !== undefined && Number.isFinite(patchDepthMm) && patchDepthMm > 0)
+    ? patchDepthMm
+    : extent * LOAD_PATCH_DEPTH_FRACTION;
+  // A degenerate part (zero extent along d) would divide by zero below. Fall
+  // back to the mesh's own size rather than returning an unloaded model.
+  if (!(depth > 0)) depth = medianTriEdgeLength(nodes, faces);
+  if (!(depth > 0)) return empty;
+
+  // Per-triangle taper weight from the centroid's projection depth.
+  const weights = new Float64Array(triCount);
+  let loadedTriangles = 0;
+  for (let t = 0; t < triCount; t++) {
+    const a = faces[t*3]??0, b = faces[t*3+1]??0, c = faces[t*3+2]??0;
+    const cxp = ((nodes[a*3]??0) + (nodes[b*3]??0) + (nodes[c*3]??0)) / 3;
+    const cyp = ((nodes[a*3+1]??0) + (nodes[b*3+1]??0) + (nodes[c*3+1]??0)) / 3;
+    const czp = ((nodes[a*3+2]??0) + (nodes[b*3+2]??0) + (nodes[c*3+2]??0)) / 3;
+    const proj = cxp*ux + cyp*uy + czp*uz;
+    const w = raisedCosineTaper((maxProj - proj) / depth);
+    weights[t] = w;
+    if (w > 0) loadedTriangles++;
+  }
+
+  // Integrate w·t̂ with the tributary-area rule, using a unit traction; the
+  // scale factor comes afterwards from the resultant, so the requested force is
+  // reproduced exactly whatever the patch area turned out to be.
+  const f = new Float64Array(nodes.length);
+  const edgeMid = buildEdgeMidsideMap(mesh);   // null for C3D4
+  const N = mesh.nodeCount;
+  const edgeKey = (p: number, q: number): number => (p < q ? p * N + q : q * N + p);
+  let areaWeighted = 0;
+
+  for (let t = 0; t < triCount; t++) {
+    const w = weights[t] ?? 0;
+    if (!(w > 0)) continue;
+    const a = faces[t*3] ?? 0, b = faces[t*3+1] ?? 0, c = faces[t*3+2] ?? 0;
+    const ax = nodes[a*3] ?? 0, ay = nodes[a*3+1] ?? 0, az = nodes[a*3+2] ?? 0;
+    const bx = nodes[b*3] ?? 0, by = nodes[b*3+1] ?? 0, bz = nodes[b*3+2] ?? 0;
+    const cx = nodes[c*3] ?? 0, cy = nodes[c*3+1] ?? 0, cz = nodes[c*3+2] ?? 0;
+    const vx1 = bx-ax, vy1 = by-ay, vz1 = bz-az;
+    const vx2 = cx-ax, vy2 = cy-ay, vz2 = cz-az;
+    const nx = vy1*vz2 - vz1*vy2, ny = vz1*vx2 - vx1*vz2, nz = vx1*vy2 - vy1*vx2;
+    const area = 0.5 * Math.hypot(nx, ny, nz);
+    if (!(area > 0)) continue;
+    const share = (w * area) / 3;
+    areaWeighted += w * area;
+
+    const mab = edgeMid?.get(edgeKey(a, b));
+    const mbc = edgeMid?.get(edgeKey(b, c));
+    const mca = edgeMid?.get(edgeKey(c, a));
+    const targets = (edgeMid && mab !== undefined && mbc !== undefined && mca !== undefined)
+      ? [mab, mbc, mca]
+      : [a, b, c];
+    for (const n of targets) {
+      f[n*3]   = (f[n*3]   ?? 0) + share;   // unit traction, scaled below
+    }
+  }
+
+  if (!(areaWeighted > 0)) return empty;
+
+  // Every node currently holds its ∫N_i w dA share in slot 0. Turn that into
+  // the requested force vector, normalised so Σ f = `force` exactly.
+  const [fx, fy, fz] = force;
+  const inv = 1 / areaWeighted;
+  for (let n = 0; n < mesh.nodeCount; n++) {
+    const share = (f[n*3] ?? 0) * inv;
+    if (share === 0) continue;
+    f[n*3]   = fx * share;
+    f[n*3+1] = fy * share;
+    f[n*3+2] = fz * share;
+  }
+
+  return { forces: f, patchDepthMm: depth, loadedTriangles };
+}
+
+/**
+ * Default radius of the contact patch, as a fraction of the part's bounding-box
+ * diagonal.
+ *
+ * Confidence: LOW, and this is the weakest number in the mode. It is a
+ * judgement in the same sense as `SINGULARITY_PART_FRACTION`: chosen so the
+ * default disc is comparable in scale to `LOAD_PATCH_DEPTH_FRACTION`'s slab on
+ * a typical part (on the Ø5-bore tube, 1.77 mm against 1.80 mm) rather than
+ * fitted to anything. A caller who knows the real contact size — the bolt head,
+ * the pin, the pad — should pass `radiusMm` and stop inheriting a guess.
+ *
+ * Do not tune it to make one fixture's safety factor behave. That is the
+ * calibration mistake this repo has made repeatedly; it wants parts with known
+ * contact geometry, not a fixture whose answer looks nicer.
+ */
+export const CONTACT_PATCH_RADIUS_FRACTION = 0.10;
+
+/**
+ * Assemble consistent nodal forces for a point load spread over a contact patch
+ * CENTRED AT THE APPLICATION POINT — the mode that makes `ForceSpec.position`
+ * load-bearing (issue #271).
+ *
+ * Every other distribution mode selects its nodes from `direction` alone, so
+ * moving the application point changes nothing: measured bit-identical to nine
+ * decimals across four positions, including one on the opposite side of the
+ * part. The client meanwhile raycasts the surface, snaps to the feature under
+ * the cursor and draws an arrow there. This closes that gap.
+ *
+ * It also fixes what `assembleTaperedFaceLoad` structurally could not. That
+ * patch is a SLAB — a band in the projection coordinate — so it tapers
+ * circumferentially but runs off the end of the part at a free edge with the
+ * traction still at full strength. Measured on the Ø5-bore tube (#260), the
+ * governing peak moved onto exactly that run-off edge and kept growing at
+ * h^-0.23. A patch that tapers in EVERY surface direction has no such edge.
+ *
+ * Two guards worth knowing about:
+ *
+ *   • Only WINDWARD triangles (n·d > 0) are eligible, the same test
+ *     `selectPressureRegion('facing')` uses. Without it a 3-D ball centred on
+ *     a thin part's top face also catches the bottom face a few mm below, and
+ *     the load would push on a surface it cannot bear against.
+ *   • The centre is SNAPPED to the nearest windward triangle when it does not
+ *     land on one — a raycast hit carries float error, and a caller may send a
+ *     point that is off the surface entirely. The snap distance is returned so
+ *     the caller can say so out loud. A silent zero-load solve is the failure
+ *     mode issue #157 was about; this never returns one for a non-degenerate
+ *     input.
+ *
+ * Distance is Euclidean, not geodesic. On a patch small enough to be a contact
+ * area the difference is second-order, and a geodesic would need surface
+ * adjacency this does not otherwise require.
+ *
+ * @param mesh      tet mesh
+ * @param faces     surface triangles as corner-node triples
+ * @param direction load direction (need not be unit length)
+ * @param force     total force [fx, fy, fz] in N — reproduced exactly
+ * @param centre    application point in the same frame as `mesh.nodes` (mm)
+ * @param radiusMm  contact radius; non-finite or non-positive → part-relative default
+ */
+export function assembleContactPatchLoad(
+  mesh:      TetMesh,
+  faces:     Int32Array,
+  direction: readonly [number, number, number],
+  force:     readonly [number, number, number],
+  centre:    readonly [number, number, number],
+  radiusMm?: number,
+): { forces: Float64Array; radiusMm: number; loadedTriangles: number; centreSnapMm: number } {
+  const nodes = mesh.nodes;
+  const [dx, dy, dz] = direction;
+  const dl = Math.hypot(dx, dy, dz);
+  const empty = { forces: new Float64Array(nodes.length), radiusMm: 0, loadedTriangles: 0, centreSnapMm: 0 };
+  if (!(dl > 0)) return empty;
+  const ux = dx/dl, uy = dy/dl, uz = dz/dl;
+
+  const triCount = Math.floor(faces.length / 3);
+  if (triCount === 0) return empty;
+  if (!centre.every(v => Number.isFinite(v))) return empty;
+
+  // Windward triangles, with centroid and area cached — every step below needs
+  // all three and the surface is walked three times otherwise.
+  const cx = new Float64Array(triCount), cy = new Float64Array(triCount), cz = new Float64Array(triCount);
+  const area = new Float64Array(triCount);
+  const windward = new Uint8Array(triCount);
+  let mnX = Infinity, mnY = Infinity, mnZ = Infinity;
+  let mxX = -Infinity, mxY = -Infinity, mxZ = -Infinity;
+  for (let n = 0; n < mesh.nodeCount; n++) {
+    const x = nodes[n*3] ?? 0, y = nodes[n*3+1] ?? 0, z = nodes[n*3+2] ?? 0;
+    if (x < mnX) mnX = x; if (x > mxX) mxX = x;
+    if (y < mnY) mnY = y; if (y > mxY) mxY = y;
+    if (z < mnZ) mnZ = z; if (z > mxZ) mxZ = z;
+  }
+  for (let t = 0; t < triCount; t++) {
+    const a = faces[t*3] ?? 0, b = faces[t*3+1] ?? 0, c = faces[t*3+2] ?? 0;
+    const ax = nodes[a*3] ?? 0, ay = nodes[a*3+1] ?? 0, az = nodes[a*3+2] ?? 0;
+    const bx = nodes[b*3] ?? 0, by = nodes[b*3+1] ?? 0, bz = nodes[b*3+2] ?? 0;
+    const ccx = nodes[c*3] ?? 0, ccy = nodes[c*3+1] ?? 0, ccz = nodes[c*3+2] ?? 0;
+    cx[t] = (ax + bx + ccx) / 3; cy[t] = (ay + by + ccy) / 3; cz[t] = (az + bz + ccz) / 3;
+    const vx1 = bx-ax, vy1 = by-ay, vz1 = bz-az;
+    const vx2 = ccx-ax, vy2 = ccy-ay, vz2 = ccz-az;
+    const nx = vy1*vz2 - vz1*vy2, ny = vz1*vx2 - vx1*vz2, nz = vx1*vy2 - vy1*vx2;
+    const mag = Math.hypot(nx, ny, nz);
+    area[t] = 0.5 * mag;
+    windward[t] = (mag > 0 && (nx*ux + ny*uy + nz*uz) / mag > 1e-9) ? 1 : 0;
+  }
+
+  const diag = Math.sqrt((mxX-mnX)**2 + (mxY-mnY)**2 + (mxZ-mnZ)**2);
+  let radius = (radiusMm !== undefined && Number.isFinite(radiusMm) && radiusMm > 0)
+    ? radiusMm
+    : diag * CONTACT_PATCH_RADIUS_FRACTION;
+  if (!(radius > 0)) radius = medianTriEdgeLength(nodes, faces);
+  if (!(radius > 0)) return empty;
+
+  // Snap the centre onto the windward surface. A raycast hit is already there
+  // to within float error, so this is normally a no-op; it matters when the
+  // caller sends a point that is off the surface or on the lee side.
+  let bestTri = -1, bestD2 = Infinity;
+  for (let t = 0; t < triCount; t++) {
+    if (!windward[t]) continue;
+    const d2 = (cx[t]!-centre[0])**2 + (cy[t]!-centre[1])**2 + (cz[t]!-centre[2])**2;
+    if (d2 < bestD2) { bestD2 = d2; bestTri = t; }
+  }
+  if (bestTri < 0) return empty;   // no windward surface at all for this direction
+
+  // Taper about the requested point, not the snapped one — snapping exists to
+  // guarantee a non-empty patch, not to move the load the user placed.
+  const weights = new Float64Array(triCount);
+  let loadedTriangles = 0, areaWeighted = 0;
+  for (let t = 0; t < triCount; t++) {
+    if (!windward[t]) continue;
+    const d = Math.hypot(cx[t]!-centre[0], cy[t]!-centre[1], cz[t]!-centre[2]);
+    const w = raisedCosineTaper(d / radius);
+    if (w > 0 && area[t]! > 0) { weights[t] = w; loadedTriangles++; areaWeighted += w * area[t]!; }
+  }
+  // The patch fell between the triangles (radius smaller than the local mesh,
+  // or the centre off the surface). Load the nearest windward triangle rather
+  // than returning an unloaded model presented as a normal result.
+  if (!(areaWeighted > 0)) {
+    weights[bestTri] = 1;
+    loadedTriangles = 1;
+    areaWeighted = area[bestTri] ?? 0;
+    if (!(areaWeighted > 0)) return empty;
+  }
+
+  const f = new Float64Array(nodes.length);
+  const edgeMid = buildEdgeMidsideMap(mesh);   // null for C3D4
+  const N = mesh.nodeCount;
+  const edgeKey = (p: number, q: number): number => (p < q ? p * N + q : q * N + p);
+  for (let t = 0; t < triCount; t++) {
+    const w = weights[t] ?? 0;
+    if (!(w > 0)) continue;
+    const a = faces[t*3] ?? 0, b = faces[t*3+1] ?? 0, c = faces[t*3+2] ?? 0;
+    const share = (w * (area[t] ?? 0)) / 3;
+    const mab = edgeMid?.get(edgeKey(a, b));
+    const mbc = edgeMid?.get(edgeKey(b, c));
+    const mca = edgeMid?.get(edgeKey(c, a));
+    const targets = (edgeMid && mab !== undefined && mbc !== undefined && mca !== undefined)
+      ? [mab, mbc, mca]
+      : [a, b, c];
+    for (const n of targets) f[n*3] = (f[n*3] ?? 0) + share;
+  }
+
+  const [fx, fy, fz] = force;
+  const inv = 1 / areaWeighted;
+  for (let n = 0; n < mesh.nodeCount; n++) {
+    const share = (f[n*3] ?? 0) * inv;
+    if (share === 0) continue;
+    f[n*3]   = fx * share;
+    f[n*3+1] = fy * share;
+    f[n*3+2] = fz * share;
+  }
+
+  return { forces: f, radiusMm: radius, loadedTriangles, centreSnapMm: Math.sqrt(bestD2) };
+}
