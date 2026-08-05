@@ -427,6 +427,18 @@ export interface SolverResult {
    * Not serialised to the client — internal to the solver pipeline.
    */
   readonly elemStress6?: Float64Array;
+
+  /**
+   * SPR-recovered NODAL Cauchy stress tensors [σxx,σyy,σzz,τxy,τyz,τxz] per node.
+   * Flat array, length = nodeCount × 6. Present whenever the ZZ error estimate
+   * ran, because that estimate is computed against exactly this field.
+   *
+   * Since issue #258 this is the ONE recovered nodal field: the displayed von
+   * Mises heatmap and the per-node utilization ratios are projections of it, so
+   * they read it here rather than recovering it a second time. Not serialised to
+   * the client — internal to the solver pipeline.
+   */
+  readonly nodeStress6?: Float64Array;
 }
 
 // ─── Modal analysis types ─────────────────────────────────────────────────────

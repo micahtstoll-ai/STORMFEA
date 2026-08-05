@@ -5283,16 +5283,32 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // recovered field. They used to be two independent recoveries of one physical
   // field, free to disagree — the estimator could improve while the picture the
   // user reads did not.
+  //
+  // The solver already recovered this exact field — the ZZ error estimate is
+  // computed against it, from the same mesh, displacement, material and
+  // material field — so it comes back on the result rather than being recovered
+  // again here. That second recovery cost as much as the entire ZZ stage
+  // (measured 755 ms on a 24.6k-element C3D10 mesh: 425 ms rebuilding the Gauss
+  // samples, 330 ms re-solving the patches). The `??` branch is the fallback for
+  // a result built with the error estimate switched off.
   _snapAnalysis("before sprSmoothedStress");
-  const gaussSamples = buildGaussSamples(
-    mesh, result.displacement, material, materialField ?? undefined,
-  );
-  const nodeStress6 = result.elemStress6
-    ? sprSmoothedStress6(mesh, result.elemStress6, gaussSamples)
-    : null;
-  // C3D4, or no tensor available: buildGaussSamples returns null for linear
-  // elements (their stress is constant per element, so the centroid IS the
-  // correct single sample) and the scalar path stays exactly as it was.
+  const nodeStress6 = result.nodeStress6
+    ?? (result.elemStress6
+      ? sprSmoothedStress6(mesh, result.elemStress6, buildGaussSamples(
+          mesh, result.displacement, material, materialField ?? undefined,
+        ))
+      : null);
+  // C3D4 takes this same projection: buildGaussSamples returns null for linear
+  // elements, so their RECOVERY is unchanged (constant element stress, centroid
+  // is the correct single sample) — but the projection is what gets displayed,
+  // so C3D4 heatmap values did move. Measured against a manufactured field they
+  // moved neither toward nor away from truth (worst nodal error identical to the
+  // legacy path at 20%/15%/10% over three densities); the reason to take it here
+  // is one recovered field everywhere, not accuracy. See the handoff doc.
+  //
+  // sprSmoothedStress below is therefore unreachable on any result the pipeline
+  // builds. It stays as the honest fallback for a result carrying neither a
+  // nodal nor an element tensor.
   const nodeStress = nodeStress6
     ? (() => {
         const vm = new Float64Array(mesh.nodeCount);

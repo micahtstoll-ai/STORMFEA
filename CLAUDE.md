@@ -130,14 +130,22 @@ Before submitting a PR that modifies mesh visualization or stress heatmap:
 ### References
 - Vertex Welding: `client/index.html` lines ~2210–2280 (computeSmoothedStressColors function)
 - Server Spatial Grid: `server/analysis.ts` lines 1712–1776 (nearestNodeStress function)
-- Stress Recovery: `server/solver/stress.ts` — `sprSmoothedStress` (scalar, feeds
-  the heatmap) and `sprSmoothedStress6` (tensor, feeds the ZZ estimator), built on
-  the shared patch helpers `buildSprPatchFit`, `solveSprValueAtNode` and
-  `interpolateMidsideFromCorners`. Both fit an `SprSamples` point cloud:
-  `buildCentroidSamples` (one sample per element — C3D4, and the legacy shape) or
-  `buildGaussSamples` (four C3D10 Gauss points per element, quadratic recovery
-  basis — see `docs/spr-gauss-point-handoff.md`). Search the symbols;
-  line numbers drift.
+- Stress Recovery: `server/solver/stress.ts` — `sprSmoothedStress6` (tensor) is
+  the ONE recovered nodal field: it feeds the ZZ estimator, and on C3D10 the
+  displayed heatmap and the per-node utilization field are projections of it via
+  `vonMisesFromTensor6` (issue #258) — on C3D4 as well as C3D10, so
+  `sprSmoothedStress` (scalar) is no longer reached on any path the pipeline
+  produces; its one remaining call site is a fallback for a result carrying
+  neither a nodal nor an element tensor. Do not reintroduce an independent
+  scalar recovery: von Mises is convex, so recovering it directly sits at or
+  ABOVE the von Mises of the recovered tensor (Jensen) and biases the displayed
+  peak upward.
+  Both are built on the shared patch helpers `buildSprPatchFit`,
+  `solveSprValueAtNode` and `interpolateMidsideFromCorners`, and both fit an
+  `SprSamples` point cloud: `buildCentroidSamples` (one sample per element —
+  C3D4, and the legacy shape) or `buildGaussSamples` (four C3D10 Gauss points per
+  element, quadratic recovery basis — see `docs/spr-gauss-point-handoff.md`).
+  Search the symbols; line numbers drift.
 
 ## Two-Region Material Model — Invariants
 

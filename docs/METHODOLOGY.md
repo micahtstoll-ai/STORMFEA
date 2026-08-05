@@ -308,6 +308,25 @@ over direct nodal averaging, especially at stress concentrations. Every display
 vertex receives a stress value; coincident vertices at mesh seams are welded so
 the heatmap has no artificial discontinuities.
 
+**What the fit is sampled from.** On C3D4 each element contributes one sample,
+its centroid — the element's stress is constant, so that is the whole of it. On
+C3D10 each element contributes its **four Gauss points**, where the stress
+components are superconvergent, and the fit uses a quadratic basis matching the
+element order. One sample per element left patches at convex model corners with
+fewer points than a 3-D fit has unknowns, so they degraded to plain averaging,
+which over a one-sided patch is biased by O(h·|∇σ|) *even when the finite-element
+solution is exact*.
+
+**One recovered field, not two.** The nodal quantity that is recovered is the
+stress **tensor**. The displayed von Mises heatmap and the per-node utilization
+ratios are projections of it, evaluated after the recovery rather than recovered
+in their own right. Von Mises is a nonlinear, convex functional of σ, so
+recovering it directly is a different operation — one with no superconvergence
+result behind it, and one that by Jensen's inequality sits at or *above* the von
+Mises of the recovered tensor, biasing the displayed peak upward. It also means
+the picture the user reads and the field the error estimator (§7) judges are the
+same field, rather than two independent recoveries free to disagree.
+
 ---
 
 ## 6. Failure assessment
@@ -438,26 +457,40 @@ section documents `main`'s current behavior.)*
 
 ### The ZZ (Zienkiewicz–Zhu) error estimate, η
 
-`computeZZErrorEstimate` (`server/solver/stress.ts:1002–1117`) recovers a
-smoothed stress field with **SPR** (§5) and compares it against the raw
-per-element stress — the gap between "what the mesh computed" and "what a
-locally-fitted polynomial says it should be" is the error indicator, per
-Zienkiewicz & Zhu 1992.
+`computeZZErrorEstimate` (`server/solver/stress.ts`) recovers a smoothed stress
+field with **SPR** (§5) and compares it against the element field — the gap
+between "what the mesh computed" and "what a locally-fitted polynomial says it
+should be" is the error indicator, per Zienkiewicz & Zhu 1992.
 
-For each element `e`:
+It is a **true energy-norm integral**, evaluated at each element's Gauss points:
 
-- The SPR nodal von Mises values at its 4 corner nodes are interpolated to the
-  element centroid with an inverse-distance weight (`1/(1+dist²)`,
-  `stress.ts:1058–1074`) to get `σ_SPR`.
-- The **error energy** is `‖error‖²_e = (σ_SPR − σ_centroid)² · (1+ν)/E`
-  (`stress.ts:1077–1079`) — an approximation: the true SPR energy norm needs
-  the full stress **tensor** and `C⁻¹`, but this uses the scalar von Mises
-  *magnitude* difference instead (flagged in the code comment at
-  `stress.ts:1078`). It also does **not** weight by element volume, so a
-  cluster of small elements and one large element contribute equally per
-  element, not per unit of part volume.
-- Per-element η is that error energy normalized by the **global** stress
-  energy norm, `‖σ‖_global = √(Σ_e σ_e² · (1+ν)/E)` (`stress.ts:1094`, `:1099`):
+```
+η_e² = Σ_g w_g · |detJ_g| · (σ*(x_g) − σ_h(x_g))ᵀ C⁻¹ (σ*(x_g) − σ_h(x_g))
+```
+
+- `σ*` is the recovered field: the **6-component** SPR nodal stress
+  (`sprSmoothedStress6`) interpolated to the Gauss points with the element's own
+  shape functions — quadratic with midside nodes on C3D10, linear barycentric on
+  C3D4. No distance weights and no dimensional constants, so the interpolation is
+  exact and scale-invariant.
+- `σ_h` is the element field, `σ = C·B·u`, evaluated at each Gauss point on
+  C3D10 (constant per element on C3D4).
+- `C⁻¹` is the compliance, one 6×6 inverse per material **bin** — the single
+  rotated material normally, or the per-bin blended `C` when a two-region
+  `ElementMaterialField` is active (§2). Using the full tensor norm rather than a
+  scalar magnitude is what makes soft directions dominate: with `E_z ≪ E_xy`, a
+  through-thickness error outranks an in-plane one of equal magnitude, which is
+  the ordering an FDM part needs.
+
+Element volume enters through the Gauss factor `w_g·|detJ_g|`, so error is
+weighted per unit of part volume rather than per element — a cluster of small
+elements does not outvote one large one by count. *(Three earlier
+approximations — a scalar von Mises magnitude difference, inverse-distance
+interpolation to the centroid, and no volume weighting — were replaced by the
+above in issues #143 / #144 / #145.)*
+
+**Normalization.** Per-element η is that error energy normalized by the
+  **global** stress energy norm, `‖σ‖_global = √(Σ_e ∫ σ_hᵀ C⁻¹ σ_h)`:
 
   ```
   η_e = ‖error‖_e / ‖σ‖_global
@@ -473,18 +506,26 @@ For each element `e`:
     absolute terms — a low-stress element in a poorly-resolved region can rank
     above a high-stress element in a well-resolved one.
 
-  `globalRelativeError` (`stress.ts:1095`, returned alongside `errorEstimate`)
-  is the one number that IS an absolute, whole-part accuracy read: the
-  root-sum-square of every element's η, `√(Σ_e η_e²)`. It answers "how far is
-  this solve, overall, from the SPR-smoothed reference" — the η heatmap then
-  shows *where* that total is concentrated. STORMFEA's client shows both
-  together for exactly this reason (η heatmap legend, issue #151): the map for
-  "where to refine," the global figure for "how much to trust the numbers."
-  Neither `η` nor `globalRelativeError` is validated against a known-exact
-  solution in the automated suite (`solver_validation.ts` [14.2]/[14.4] only
-  check that both are defined and non-negative, and that a finer mesh's
-  global error is ≤ the coarse mesh's) — they are *indicators*, not calibrated
-  error bounds.
+  `globalRelativeError` (returned alongside `errorEstimate`) is the one number
+  that IS an absolute, whole-part accuracy read: the root-sum-square of every
+  element's η, `√(Σ_e η_e²)`. It answers "how far is this solve, overall, from
+  the SPR-smoothed reference" — the η heatmap then shows *where* that total is
+  concentrated. STORMFEA's client shows both together for exactly this reason
+  (η heatmap legend, issue #151): the map for "where to refine," the global
+  figure for "how much to trust the numbers."
+
+  **What the suite actually proves about them.** Beyond the sanity checks
+  (`solver_validation.ts` [14.2]/[14.4]: both defined and non-negative, finer
+  mesh ≤ coarser), the estimator is measured against **manufactured solutions
+  with a known exact stress field**. The effectivity index θ = η / ‖σ_exact −
+  σ_h‖ is held to the classic [0.7, 1.3] window on C3D4 and to a monotone
+  approach toward 1 from the conservative side ([30.1]–[30.3]); on C3D10 it is
+  held to θ > 1 with a ceiling of 2.0 and a monotone trend ([33.4], [33.5]),
+  and on a field C3D10 reproduces exactly, η is required to be round-off rather
+  than O(h) ([33.2]). So the direction and trend are locked, and on C3D4 the
+  magnitude is too. C3D10's θ ≈ 1.5 on a structured box is outside the classic
+  band: the estimate is **conservative** there, not calibrated. Read both
+  numbers as indicators with a known bias direction, not as error bounds.
 
 ### The 5% "converged" threshold
 
