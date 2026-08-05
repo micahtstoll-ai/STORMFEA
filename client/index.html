@@ -6894,7 +6894,27 @@ function showResults(s) {
       // pass/fail line — this is an ESTIMATE, not an exact bound.
       const pct = s.globalRelativeError * 100;
       const errColor = pct < 5 ? 'var(--success)' : pct < 10 ? 'var(--warn)' : 'var(--danger)';
-      const errLabel = pct < 5 ? 'low — mesh is well resolved' : pct < 10 ? 'moderate — consider a finer mesh for final numbers' : 'high — refine the mesh before trusting margins';
+      // Issue #259: "refine the mesh" is the WRONG instruction when the error is
+      // dominated by boundary-condition discontinuities. The rim of a rigid
+      // clamp (every bolted part) is singular, and that band converges at a
+      // measured ~0.15 against the ~2.0 a smooth region gives — halving it needs
+      // on the order of 10^6x the elements. Telling a user to refine there sends
+      // them after a number no mesh they can afford will move. The advice is
+      // therefore conditional on the BC share, not on the total alone.
+      //
+      // Null means NOT MEASURED (no BC mask could be built), which is not the
+      // same as measured-at-zero: in that case say nothing about the cause
+      // rather than implying the error is all resolvable.
+      const bcFrac = s.bcSingularityErrorFraction;
+      const bcPct = bcFrac != null ? bcFrac * 100 : null;
+      // Half the error sitting in the band is enough for refinement to be the
+      // wrong first move; a third is enough to be worth mentioning.
+      const bcDominant = bcPct != null && bcPct >= 50;
+      const bcNotable  = bcPct != null && bcPct >= 33 && bcPct < 50;
+      const errLabel = pct < 5 ? 'low — mesh is well resolved'
+        : bcDominant ? 'dominated by the constraint idealization — a finer mesh will NOT fix this'
+        : pct < 10 ? 'moderate — consider a finer mesh for final numbers'
+        : 'high — refine the mesh before trusting margins';
       const worstList = (s.topErrorElements && s.topErrorElements.length)
         ? s.topErrorElements.slice(0, 5).map(e =>
             `<li>(${e.x.toFixed(1)}, ${e.y.toFixed(1)}, ${e.z.toFixed(1)}) mm — η≈${(e.errorEstimate*100).toFixed(1)}%</li>`
@@ -6907,6 +6927,7 @@ function showResults(s) {
         </summary>
         <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px;font-size:10px;color:var(--text-lo);line-height:1.8">
           Zienkiewicz-Zhu global relative error estimate η — an ESTIMATE of how much of the stress field is mesh artifact rather than physics. Lower is better; below ~5% is generally trustworthy, above ~10% suggests refining the mesh before trusting margins. <span style="color:${errColor}">${errLabel}.</span>
+          ${bcPct != null && (bcDominant || bcNotable) ? `<br><br><span style="color:var(--warn)">${bcPct.toFixed(0)}% of this error sits at boundary-condition discontinuities</span> — the rim of a constrained or loaded patch, where a rigid clamp or a concentrated load is singular by construction. That share does not fall meaningfully under refinement${bcDominant ? ', so the number above is a floor set by the constraint model rather than by your mesh' : ''}. ${bcDominant ? 'Reach for a better bolt or load idealization, not a finer mesh.' : 'Refinement will reduce the rest of it.'} This is a property of THIS solve — the band is defined by mesh adjacency, so the percentage is not comparable across mesh densities.` : ''}
           ${worstList ? `<br><br>Worst-resolved regions (highest local error):<ul style="margin:4px 0 0 16px;padding:0">${worstList}</ul>` : ''}
         </div>
       </details>`;

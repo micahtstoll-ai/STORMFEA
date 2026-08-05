@@ -36,7 +36,8 @@ export function generateHtmlReport(
     converged, meshFallback, rigidBodyMode,
     sfCriterion, safetyfactorLow, safetyFactorHigh,
     isotropicComparison, materialModel, nodesPerElem,
-    nodeCount, elementCount, globalRelativeError, bucklingResult,
+    nodeCount, elementCount, globalRelativeError, bcSingularityErrorFraction,
+    bucklingResult,
   } = result;
 
   // C3D4 (linear tet, nodesPerElem===4) carries a documented ~55%
@@ -329,9 +330,22 @@ export function generateHtmlReport(
       <b>${nodeCount.toLocaleString()}</b> nodes &nbsp;·&nbsp; <b>${elementCount.toLocaleString()}</b> elements
       ${globalRelativeError != null ? (() => {
         const pct = globalRelativeError * 100;
+        // Issue #259: the printed report gave the same size-only advice the app
+        // did, so a bolt-constrained part came off the printer telling its
+        // reader to refine a mesh that cannot fix the number. Same conditional
+        // wording as client/index.html, kept in sync deliberately.
+        const bcPct = bcSingularityErrorFraction != null ? bcSingularityErrorFraction * 100 : null;
+        const bcDominant = bcPct != null && bcPct >= 50;
+        const bcNotable  = bcPct != null && bcPct >= 33 && bcPct < 50;
         const errColor = pct < 5 ? '#1a7a40' : pct < 10 ? '#7a5a00' : '#7a1a1a';
-        const errLabel = pct < 5 ? 'low — mesh is well resolved' : pct < 10 ? 'moderate — consider a finer mesh for final numbers' : 'high — refine the mesh before trusting margins';
-        return ` &nbsp;·&nbsp; <b>Discretization error (η):</b> <span style="color:${errColor}">${pct.toFixed(1)}% — ${errLabel}</span>. Zienkiewicz-Zhu ESTIMATE of mesh-artifact share of the stress field, not an exact bound — lower is better.`;
+        const errLabel = pct < 5 ? 'low — mesh is well resolved'
+          : bcDominant ? 'dominated by the constraint idealization — a finer mesh will NOT fix this'
+          : pct < 10 ? 'moderate — consider a finer mesh for final numbers'
+          : 'high — refine the mesh before trusting margins';
+        const bcNote = (bcDominant || bcNotable)
+          ? ` <b>${bcPct!.toFixed(0)}% of it sits at boundary-condition discontinuities</b> — the rim of a constrained or loaded patch, singular by construction — and does not fall meaningfully under refinement.${bcDominant ? ' Reach for a better bolt or load idealization, not a finer mesh.' : ''} Band is defined by mesh adjacency, so this share is specific to this solve and not comparable across densities.`
+          : ``;
+        return ` &nbsp;·&nbsp; <b>Discretization error (η):</b> <span style="color:${errColor}">${pct.toFixed(1)}% — ${errLabel}</span>. Zienkiewicz-Zhu ESTIMATE of mesh-artifact share of the stress field, not an exact bound — lower is better.${bcNote}`;
       })() : ``}
     </div>
   </div>` : ``}

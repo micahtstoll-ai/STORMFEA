@@ -125,3 +125,66 @@ describe("generateHtmlReport — reliability caveats (#196)", () => {
     expect(html).toMatch(/no bead-to-bead coupon data/i);
   });
 });
+
+// ── Issue #259: the error advice must depend on the CAUSE, not just the size ──
+describe("generateHtmlReport — BC share of the discretization error (#259)", () => {
+  const MESH = { nodeCount: 12000, elementCount: 8000 };
+
+  it("high error with no BC data keeps the plain refine-the-mesh advice", () => {
+    // Undefined means NOT MEASURED. It must not be read as "none of it is BC",
+    // but with nothing to say we fall back to the size-only wording.
+    const html = render({ ...MESH, globalRelativeError: 0.12 });
+    expect(html).toMatch(/refine the mesh before trusting margins/i);
+    expect(html).not.toMatch(/boundary-condition discontinuities/i);
+  });
+
+  it("high error that is mostly BC does NOT tell the reader to refine", () => {
+    // The defect this issue is about: a bolt-constrained part printing
+    // "refine the mesh" for an error no affordable mesh can move.
+    const html = render({
+      ...MESH, globalRelativeError: 0.12, bcSingularityErrorFraction: 0.62,
+    });
+    expect(html).toMatch(/a finer mesh will NOT fix this/i);
+    expect(html).toMatch(/62% of it sits at boundary-condition discontinuities/i);
+    expect(html).toMatch(/better bolt or load idealization/i);
+    expect(html).not.toMatch(/refine the mesh before trusting margins/i);
+  });
+
+  it("a notable but not dominant share is reported without overriding the advice", () => {
+    const html = render({
+      ...MESH, globalRelativeError: 0.12, bcSingularityErrorFraction: 0.38,
+    });
+    // Still worth refining — most of the error is resolvable — but the reader
+    // is told part of it is not.
+    expect(html).toMatch(/refine the mesh before trusting margins/i);
+    expect(html).toMatch(/38% of it sits at boundary-condition discontinuities/i);
+    expect(html).not.toMatch(/a finer mesh will NOT fix this/i);
+  });
+
+  it("a small BC share is not mentioned at all", () => {
+    const html = render({
+      ...MESH, globalRelativeError: 0.12, bcSingularityErrorFraction: 0.05,
+    });
+    expect(html).toMatch(/refine the mesh before trusting margins/i);
+    expect(html).not.toMatch(/boundary-condition discontinuities/i);
+  });
+
+  it("states the band is not comparable across mesh densities", () => {
+    // The number falls with refinement mostly because the topological band
+    // thins (40.6% -> 27.7% on one part), so it must never be read as a trend.
+    const html = render({
+      ...MESH, globalRelativeError: 0.12, bcSingularityErrorFraction: 0.62,
+    });
+    expect(html).toMatch(/not comparable across densities/i);
+  });
+
+  it("a LOW total error stays 'well resolved' regardless of the BC share", () => {
+    // At 2% nothing needs doing, whatever the split — the advice must not turn
+    // alarming just because most of a tiny error happens to sit at the rim.
+    const html = render({
+      ...MESH, globalRelativeError: 0.02, bcSingularityErrorFraction: 0.9,
+    });
+    expect(html).toMatch(/mesh is well resolved/i);
+    expect(html).not.toMatch(/a finer mesh will NOT fix this/i);
+  });
+});

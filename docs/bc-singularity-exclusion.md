@@ -195,6 +195,30 @@ metric and must not be read as one across refinement levels; a fixed-radius band
 would be needed for that, which would in turn need a length scale the topological
 definition deliberately avoids.
 
+### Correction: the DIRECTION is fixture-specific (issue #261)
+
+The table above is the Ø5-bore tube, and the "falls with density" reading was
+generalised from it alone. It does not survive a second part. On the cross plate
+(`server/tests/unit/adaptive-fixture-cross.test.ts` — partial bore clamp,
+re-entrant corners, distributed load), uniform tiers give:
+
+| elements | 32 377 | 44 693 | 74 298 |
+|---|---|---|---|
+| `bcSingularityErrorFraction` | 41.1 % | 48.9 % | 48.2 % |
+
+It RISES from coarse to standard and then flattens. So band thinning is one
+effect among several — how much error the band holds also depends on how fast
+the interior error is falling, and on this part the two roughly cancel.
+
+What this does NOT change, and in fact strengthens: **do not read the fraction
+as a trend across densities.** The original caveat assumed the number at least
+moved predictably (downward, from thinning). It does not even do that. Compare
+it across meshes for nothing; read it as a property of the solve in front of you.
+
+`adaptive-fixture-cross.test.ts` asserts the fraction does not fall
+monotonically on that part, so if this ever changes the doc gets revisited
+rather than silently drifting.
+
 ---
 
 ## Split vs diagnose, decided (issue #259)
@@ -218,17 +242,43 @@ must never announce `target-error-reached` against a filtered figure while the
 honest total is materially higher. `maskedErrorFraction` is documented as a
 reported number and not a target for exactly this reason.
 
-**What (a) still owes the user.** The fraction is computed and returned, but
-nothing consumes it — not the client, not the printed report. The gap is not the
-number, it is that the number never arrives. Concretely:
+**Shipped for (a).** `bcSingularityErrorFraction` is now computed on the
+ORDINARY single solve too (`AnalysisResult.bcSingularityErrorFraction`), not
+only on the opt-in adaptive path, and both the app and the printed report make
+their advice conditional on it. Measured on the Ø5-bore tube, plain
+non-adaptive runs:
 
-- The client's discretization readout keys purely on the total and says
+| tier | elements | global η | BC share |
+|---|---|---|---|
+| coarse | 13 340 | 19.37 % | **75.7 %** |
+| fine | 71 404 | 15.68 % | **48.0 %** |
+
+(The coarse η reproduces the #149 benchmark's `initialGlobalError` of 0.1937,
+which is the cross-check that the normal-path computation agrees with the
+adaptive one.) Three quarters of the default tier's error is BC band — so the
+old size-only advice was telling users to refine against a number their mesh
+does not control. Above 50 % the wording now says a finer mesh will NOT fix it
+and points at the constraint idealization; between 33 % and 50 % the share is
+reported without overriding the refine advice, since the majority remainder is
+still resolvable; below 33 % it is not mentioned.
+
+Note the 75.7 % → 48.0 % drop is mostly the band thinning, exactly as the
+caveat above says. Both surfaces state the number is specific to that solve and
+not comparable across densities, precisely so this fall is not read as progress.
+
+**What (a) still owed, for the record.** The fraction was computed and returned,
+but nothing consumed it — not the client, not the printed report. The gap was
+not the number, it was that the number never arrived:
+
+- The client's discretization readout keyed purely on the total and said
   "high — refine the mesh before trusting margins" above 10%. On a bolt-
   constrained part that is precisely the wrong instruction: the error is
-  BC-dominated and refinement cannot remove it. The advice has to become
-  conditional on the BC share.
-- `bcSingularityErrorFraction` currently lives only on `adaptiveRefinement`, so
-  it is absent on ordinary single solves — which is most runs. The mask
-  machinery now runs on the normal path too (wired there for #257's cause
-  attribution), so computing the share on every solve is a small extension
-  rather than a new mechanism.
+  BC-dominated and refinement cannot remove it.
+- `bcSingularityErrorFraction` lived only on `adaptiveRefinement`, so it was
+  absent on ordinary single solves — which is most runs.
+
+Both are addressed above. Still open, and deliberately: the number is a
+DIAGNOSIS and the loop must never target it. `maskedErrorFraction` documents
+that, and the choice of (a) means no filtered figure is ever compared against
+`targetGlobalError` — the trap this issue names first stays structurally
+impossible rather than merely avoided.

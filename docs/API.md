@@ -293,6 +293,38 @@ adaptive reached a 0.262 global error on 40,534 elements where a uniform mesh of
 optimising. Adaptivity buys error per element; it does not by itself settle the
 peak stress.
 
+**BC share of the discretization error** (`summary.bcSingularityErrorFraction`,
+issue #259). How much of `globalRelativeError`'s energy sits at boundary-
+condition discontinuities — the rim of a constrained or loaded patch. In
+`[0, 1]`, and present on ORDINARY solves, not only adaptive ones (the
+`adaptiveRefinement.bcSingularityErrorFraction` field is the same statistic for
+the loop's chosen iterate).
+
+It exists because the total alone cannot distinguish the two situations that
+call for opposite responses. Measured on the Ø5-bore tube, plain non-adaptive:
+
+| tier | elements | `globalRelativeError` | `bcSingularityErrorFraction` |
+|---|---|---|---|
+| coarse | 13 340 | 0.1937 | 0.757 |
+| fine | 71 404 | 0.1568 | 0.480 |
+
+At 75.7% the reported error is a floor set by the constraint idealization, and
+refining the mesh will not move it — the BC band converges at a measured ~0.15
+against the ~2.0 a smooth C3D10 region gives. The app and the printed report
+both make their advice conditional on this: above 0.5 they say a finer mesh will
+NOT fix it and point at the bolt/load idealization; between 0.33 and 0.5 they
+report the share without overriding the refine advice; below that they omit it.
+
+`null` means NOT MEASURED (no BC mask could be built — no surface, or no
+constrained/loaded nodes), which is not the same as measured-at-zero; consumers
+must not render it as "none".
+
+Read it for THIS solve only. The band is topological (patch rim plus
+`BC_SINGULARITY_DILATE_HOPS` adjacency rings), so it thins as the mesh refines —
+the 0.757 → 0.480 fall above is mostly the band shrinking, not the singularity
+weakening. It is not a convergence metric, and the loop deliberately does not
+target it.
+
 **Singularity warning** (`summary.singularity`, `null` when nothing is flagged).
 Says the peak stress is set by the mesh rather than by the part, so the safety
 factor derived from it is not a converged number:

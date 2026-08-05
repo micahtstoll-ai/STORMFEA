@@ -447,6 +447,9 @@ app.post("/api/analyse", async (req, res) => {
       vertexDisplacementB64:    Buffer.from(result.vertexDisplacement.buffer).toString("base64"),
       vertexErrorEstimateB64:   result.vertexErrorEstimateB64 ?? null,
       globalRelativeError:      result.globalRelativeError ?? null,
+      // How much of that error sits at BC discontinuities (#259). Null when no
+      // mask could be built — the client must not read that as "none".
+      bcSingularityErrorFraction: result.bcSingularityErrorFraction ?? null,
       topErrorElements:         result.topErrorElements ?? null,
       vertexModeShapesB64:      result.vertexModeShapesB64 ?? null,
       // Volumetric interior-stress payload for the section-view cut-face

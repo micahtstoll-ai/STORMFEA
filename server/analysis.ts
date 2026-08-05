@@ -3069,6 +3069,23 @@ export interface AnalysisResult {
   vertexErrorEstimateB64?: string;
   /** Global relative error η for mesh quality assessment */
   globalRelativeError?:    number;
+  /**
+   * Share of `globalRelativeError`'s energy sitting at boundary-condition
+   * discontinuities — the rim of a constrained or loaded patch (issue #259).
+   * In [0, 1]. Present on ordinary solves as well as adaptive ones.
+   *
+   * A DIAGNOSIS for reading `globalRelativeError`, not a second error target:
+   * the total is still the total. It answers the question the single number
+   * cannot — whether a high error means "refine the mesh" or "reconsider the
+   * constraint idealization", which call for opposite responses.
+   *
+   * Read it for THIS solve only. The band is topological (the patch rim plus
+   * `BC_SINGULARITY_DILATE_HOPS` adjacency rings), so it thins as the mesh
+   * refines and the fraction falls with density for that reason alone. It is
+   * not a convergence metric. Undefined — never 0 — when no mask could be
+   * built, so "not measured" stays distinguishable from "measured as none".
+   */
+  bcSingularityErrorFraction?: number;
   /** Top-20 elements with highest error estimates, for refinement guidance */
   topErrorElements?:       Array<{ x: number; y: number; z: number; errorEstimate: number }>;
   /**
@@ -3185,7 +3202,62 @@ export function detectUnconstrainedRigidBodyMode(
   // Gather all constrained node coordinates across all bolt holes
   const constrainedIdx: number[] = [];
   for (const c of constraints) constrainedIdx.push(...c.nodeIndices);
-  if (constrainedIdx.length < 2) return null; // need at least 2 points for a meaningful axis
+
+  // A SINGLE constrained node fixes three translational DOF and nothing else:
+  // the body is free to rotate about every axis through that point. That is
+  // strictly worse than the near-collinear case this function was written to
+  // catch, and it used to return null here — "cannot compute an axis" was being
+  // reported as "no problem", leaving the detector NON-MONOTONE in severity
+  // (it warned at 2 nodes and stayed silent at 1 and 0).
+  //
+  // Not hypothetical: `findStlBoltConstraintNodes` deliberately falls back to
+  // `[closestNode(...)]` — exactly one node — when it cannot find a hole wall,
+  // which happens when the mesh is too coarse to put nodes on a small bore.
+  // Measured on a Ø2.4 mm bore in a 4 797-element mesh: 1 wall node, a peak of
+  // 75 423 MPa, and a reported safety factor of 0.00, with no warning of any
+  // kind. Silent, catastrophic, and indistinguishable from a real result.
+  //
+  // There is no single unresisted axis to name, so the reported one is the axis
+  // the LOAD actually drives — the direction of the net torque about the
+  // constrained point, whose magnitude is a genuine driving torque in the same
+  // sense the collinear branch uses below.
+  if (constrainedIdx.length === 1) {
+    const p = constrainedIdx[0]!;
+    const ax = mesh.nodes[p * 3] ?? 0, ay = mesh.nodes[p * 3 + 1] ?? 0, az = mesh.nodes[p * 3 + 2] ?? 0;
+    let tx = 0, ty = 0, tz = 0;
+    for (const f of forces) {
+      const rx = (mesh.nodes[f.nodeIndex * 3] ?? 0) - ax;
+      const ry = (mesh.nodes[f.nodeIndex * 3 + 1] ?? 0) - ay;
+      const rz = (mesh.nodes[f.nodeIndex * 3 + 2] ?? 0) - az;
+      const [fx, fy, fz] = f.forceN;
+      tx += ry * fz - rz * fy;
+      ty += rz * fx - rx * fz;
+      tz += rx * fy - ry * fx;
+    }
+    const tMag = Math.sqrt(tx * tx + ty * ty + tz * tz);
+    const dir: [number, number, number] = tMag > 1e-12
+      ? [tx / tMag, ty / tMag, tz / tMag]
+      : [0, 0, 1];
+    return {
+      detected: true,
+      axisDirection: dir,
+      axisPoint: [ax, ay, az],
+      drivingTorqueNmm: tMag,
+      // Unlike the collinear branch, this is reported REGARDLESS of how large
+      // the torque is. A one-point constraint is not a borderline modelling
+      // choice that a small load makes acceptable — it is an invalid restraint,
+      // and the number it produces is meaningless at any load.
+      message: `Only ONE node is constrained, so the part is free to rotate about every axis through that point — this model is not restrained and no result from it is meaningful. This almost always means the mesh was too coarse to place nodes on a bolt hole's wall, so the constraint collapsed to a single fallback point rather than gripping the bore. Check that each bolted hole is large enough relative to your mesh: re-run at a finer mesh quality, or confirm the hole radius is correct. The applied load drives a torque of ${tMag.toFixed(0)} N·mm about this point with nothing resisting it.`,
+    };
+  }
+
+  // Zero constraints is deliberately left alone here. It is a different claim —
+  // translation is unresisted too, so there is no axis to report in the sense
+  // this warning's payload means — and it is already caught downstream, where a
+  // fully singular system fails to converge and the verdict says so. Whether a
+  // constraint-free request should be rejected outright is a product question,
+  // not one to settle inside a rotation detector.
+  if (constrainedIdx.length < 2) return null;
 
   const nC = constrainedIdx.length;
   let cx = 0, cy = 0, cz = 0;
@@ -5784,11 +5856,21 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // adaptive loop does. The loop only needs to know a node is on some BC rim so
   // it can stop refining it; the warning has to tell the user WHICH, because the
   // two call for opposite responses (rethink the bolt vs spread the load).
-  const rimPointsFor = (nodeSet: readonly number[]): Float64Array | null => {
-    if (!surfaceFaces || surfaceFaces.length === 0 || nodeSet.length === 0) return null;
-    const surf = new Uint8Array(mesh.nodeCount);
-    for (const n of surfaceFaces) if (n >= 0 && n < surf.length) surf[n] = 1;
-    const mask = bcDiscontinuityMask(mesh, [nodeSet], BC_SINGULARITY_DILATE_HOPS, surf);
+  const surfaceNodeMaskForBc = (surfaceFaces && surfaceFaces.length > 0)
+    ? (() => {
+        const s = new Uint8Array(mesh.nodeCount);
+        for (const n of surfaceFaces) if (n >= 0 && n < s.length) s[n] = 1;
+        return s;
+      })()
+    : null;
+
+  const rimMaskFor = (nodeSet: readonly number[]): Uint8Array | null => {
+    if (!surfaceNodeMaskForBc || nodeSet.length === 0) return null;
+    return bcDiscontinuityMask(mesh, [nodeSet], BC_SINGULARITY_DILATE_HOPS, surfaceNodeMaskForBc);
+  };
+
+  const rimPointsOf = (mask: Uint8Array | null): Float64Array | null => {
+    if (!mask) return null;
     const pts: number[] = [];
     for (let n = 0; n < mask.length; n++) {
       if (mask[n] !== 1) continue;
@@ -5797,15 +5879,49 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     return pts.length ? Float64Array.from(pts) : null;
   };
 
+  const constrainedRimMask = rimMaskFor(constraints.flatMap(c => c.nodeIndices));
+  const loadedRimMask      = rimMaskFor(solverForces.map(f => f.nodeIndex));
+
   const singularity = detectSingularity(
     vertexStress,
     req.positions,
     {
-      bcRimPoints:   rimPointsFor(constraints.flatMap(c => c.nodeIndices)),
-      loadRimPoints: rimPointsFor(solverForces.map(f => f.nodeIndex)),
+      bcRimPoints:   rimPointsOf(constrainedRimMask),
+      loadRimPoints: rimPointsOf(loadedRimMask),
       yieldMPa:      baseMat2.yieldMPa,
     },
   );
+
+  // ── BC share of the estimated error (issue #259) ───────────────────────────
+  // The same quantity the adaptive loop reports as `bcSingularityErrorFraction`,
+  // computed on the ORDINARY single solve as well. It only ever existed on the
+  // adaptive path, which is opt-in, so on the great majority of runs the number
+  // that says "this error is the constraint idealization, not your mesh" was not
+  // merely unshown — it was never calculated.
+  //
+  // That matters because the error percentage IS shown, next to advice keyed
+  // purely on its size ("refine the mesh before trusting margins" above 10%).
+  // On a bolt-constrained part that instruction is exactly wrong: the BC band
+  // converges at a measured ~0.15 against the ~2.0 a smooth region gives, so
+  // halving that component needs on the order of 10^6x the elements. Without
+  // this fraction the client cannot tell the two situations apart.
+  //
+  // UNION of the constrained and loaded rims, matching the adaptive definition
+  // exactly so the two paths report the same statistic. (Dilation is per-edge
+  // and monotone, so OR-ing two separately dilated masks equals dilating the
+  // union — the split above costs nothing here.) Undefined, never 0, when no
+  // mask could be built: "not measured" and "measured as none" are different
+  // claims and the client renders them differently.
+  const bcSingularityErrorFraction = ((): number | undefined => {
+    if (!result.errorEstimate) return undefined;
+    if (!constrainedRimMask && !loadedRimMask) return undefined;
+    const union = new Uint8Array(mesh.nodeCount);
+    for (const m of [constrainedRimMask, loadedRimMask]) {
+      if (!m) continue;
+      for (let i = 0; i < union.length; i++) if (m[i] === 1) union[i] = 1;
+    }
+    return maskedErrorFraction(mesh, result.errorEstimate, union);
+  })();
 
   // ── Topology suggestions ──────────────────────────────────────────────────
   // mesh.nodes are already in the raw STL/world mm frame (TetGen meshes
@@ -6338,6 +6454,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     residualCheckpoints: result.residualCheckpoints,
     vertexErrorEstimateB64: vertexErrorEstimate ? Buffer.from(vertexErrorEstimate.buffer).toString("base64") : undefined,
     globalRelativeError: result.globalRelativeError,
+    bcSingularityErrorFraction,
     topErrorElements: result.topErrorElements ? [...result.topErrorElements] : undefined,
     volumeField,
   };
