@@ -15,6 +15,32 @@
 import type { AnalysisResult } from "./analysis.js";
 import { FAIL_SF_THRESHOLD, SAFE_SF_THRESHOLD } from "./analysis.js";
 
+// ── HTML escaping (issue #281) ────────────────────────────────────────────────
+// /api/report accepts an attacker-controlled `result` object (it's just the
+// client's own analysis JSON posted back) and this file used to interpolate
+// every string field from it straight into the page with zero escaping —
+// verdict, failure-mode notes, hole warnings, the uploaded file's own name,
+// print settings, etc. Route EVERY non-numeric interpolation through `esc`.
+// Values that are already numbers run through `.toFixed()`/arithmetic are
+// left alone (coercion, not concatenation, so there is nothing to inject);
+// anything that reaches the page as a bare string — including numeric-ish
+// fields like `infillPct`/`skinTopLayers` that are interpolated WITHOUT a
+// `.toFixed()`/`Number()` conversion, and anything routed through
+// `.toLocaleString()` (which on a non-number value, e.g. a string, just
+// returns that value unchanged — NOT a safe numeric formatter) — is escaped.
+// This only prevents HTML injection into element/attribute text; it must
+// never be used to sanitize a value destined for a <script> or <style>
+// context (none exist in this file today — see the audit note below).
+function esc(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  return String(v)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 export function generateHtmlReport(
   result: AnalysisResult,
   fileName: string,
@@ -91,27 +117,27 @@ export function generateHtmlReport(
     const colors: Record<string, string> = {
       high:'#1a5c2a', medium:'#5c3a00', low:'#5c1a00', unchecked:'#333'
     };
-    return `<span style="font-size:9px;color:${colors[c]??'#333'};border:1px solid ${colors[c]??'#333'}44;padding:1px 5px;border-radius:2px">${c.toUpperCase()}</span>`;
+    return `<span style="font-size:9px;color:${colors[c]??'#333'};border:1px solid ${colors[c]??'#333'}44;padding:1px 5px;border-radius:2px">${esc(String(c).toUpperCase())}</span>`;
   };
 
   const failureRows = failureModes.map(m => `
     <tr style="border-bottom:1px solid #eee">
-      <td style="padding:4px 8px;font-weight:${m === govMode ? '600' : '400'};color:${m===govMode?'#8B6914':'#333'}">${m === govMode ? '▲ ' : ''}${m.mode}</td>
+      <td style="padding:4px 8px;font-weight:${m === govMode ? '600' : '400'};color:${m===govMode?'#8B6914':'#333'}">${m === govMode ? '▲ ' : ''}${esc(m.mode)}</td>
       <td style="padding:4px 8px;text-align:center;color:${m.checked?(m.sf>=SAFE_SF_THRESHOLD?'#1a7a40':m.sf>=FAIL_SF_THRESHOLD?'#5c3a00':'#7a1a1a'):'#999'}">${m.checked ? `${m.sf.toFixed(2)}×` : '—'}</td>
       <td style="padding:4px 8px;text-align:center">${confBadge(m.confidence)}</td>
-      <td style="padding:4px 8px;font-size:10px;color:#666">${m.note.split('.')[0]}.</td>
+      <td style="padding:4px 8px;font-size:10px;color:#666">${esc(m.note.split('.')[0])}.</td>
     </tr>`).join('');
 
   const holeRows = holeClassifications.map((h, i) => `
     <tr style="border-bottom:1px solid #eee">
       <td style="padding:4px 8px">Hole ${i}</td>
-      <td style="padding:4px 8px">${h.bolt?.label ?? 'unknown'}</td>
-      <td style="padding:4px 8px">${h.type.replace('_', ' ')}</td>
-      <td style="padding:4px 8px;color:${h.warning?'#7a1a1a':'#1a7a40'}">${h.warning ? h.warning.slice(0,120) : '✓ OK'}</td>
+      <td style="padding:4px 8px">${esc(h.bolt?.label ?? 'unknown')}</td>
+      <td style="padding:4px 8px">${esc(h.type.replace('_', ' '))}</td>
+      <td style="padding:4px 8px;color:${h.warning?'#7a1a1a':'#1a7a40'}">${h.warning ? esc(h.warning.slice(0,120)) : '✓ OK'}</td>
     </tr>`).join('');
 
   const topoList = topologySuggestions.slice(0, 2).map((t, i) => `
-    <li style="margin-bottom:4px"><b>${t.stressMPa} MPa</b> at (${t.position.join(', ')}) mm — ${t.suggestion.slice(0, 120)}</li>
+    <li style="margin-bottom:4px"><b>${esc(t.stressMPa)} MPa</b> at (${esc(t.position.join(', '))}) mm — ${esc(t.suggestion.slice(0, 120))}</li>
   `).join('');
 
   // ── Reliability caveats (issue #196) ──────────────────────────────────────
@@ -134,7 +160,7 @@ export function generateHtmlReport(
   }
   if (converged === false) {
     const convergenceDetail = (rigidBodyMode && rigidBodyMode.detected)
-      ? rigidBodyMode.message
+      ? esc(rigidBodyMode.message)
       : 'The linear solve did not reach its tolerance, so the stress field — and every number derived from it — is unreliable in either direction. Try a finer mesh or verify that the constraints fully restrain the part.';
     reliabilityCaveats += caveatBox(
       `Solver did not converge${rigidBodyMode && rigidBodyMode.detected ? ' — under-constrained rotation' : ''}`,
@@ -142,12 +168,12 @@ export function generateHtmlReport(
     );
   }
   if (converged !== false && rigidBodyMode?.detected) {
-    reliabilityCaveats += caveatBox('Under-constrained rotation detected', rigidBodyMode.message);
+    reliabilityCaveats += caveatBox('Under-constrained rotation detected', esc(rigidBodyMode.message));
   }
   if (materialModel.twoRegion && materialModel.degraded) {
-    reliabilityCaveats += caveatBox('Two-region material model degraded', materialModel.degraded);
+    reliabilityCaveats += caveatBox('Two-region material model degraded', esc(materialModel.degraded));
   } else if (!materialModel.twoRegion && materialModel.degraded) {
-    reliabilityCaveats += caveatBox('Two-region material model requested but ran uniform', materialModel.degraded);
+    reliabilityCaveats += caveatBox('Two-region material model requested but ran uniform', esc(materialModel.degraded));
   }
   if (materialModel.wallBond) {
     reliabilityCaveats += caveatBox(
@@ -160,7 +186,7 @@ export function generateHtmlReport(
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>STORMFEA Report — ${fileName}</title>
+<title>STORMFEA Report — ${esc(fileName)}</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@600;700&family=Source+Sans+Pro:wght@400;600&display=swap');
   * { box-sizing:border-box; margin:0; padding:0; }
@@ -203,8 +229,8 @@ export function generateHtmlReport(
       <div class="subtitle">FDM-Aware Finite Element Analysis · Nordic Storm FTC 5962</div>
     </div>
     <div class="meta">
-      <div><b>${fileName}</b></div>
-      <div>${timestamp}</div>
+      <div><b>${esc(fileName)}</b></div>
+      <div>${esc(timestamp)}</div>
       <div>Team 5962 · BIOBUZZ 2026–2027</div>
       <div>
         ${calibrationId
@@ -220,9 +246,9 @@ export function generateHtmlReport(
   <!-- Verdict -->
   ${c3d4Caveat}
   <div class="verdict-box">
-    <div class="verdict-text">${verdict}</div>
+    <div class="verdict-text">${esc(verdict)}</div>
     <div class="verdict-sub">
-      Governing failure mode: ${govMode?.mode ?? 'Bulk yield'} &nbsp;·&nbsp;
+      Governing failure mode: ${esc(govMode?.mode ?? 'Bulk yield')} &nbsp;·&nbsp;
       ${singularity?.detected ? 'Stress singularity detected — see notes below' : '✓ No singularity detected'}
     </div>
   </div>
@@ -272,11 +298,11 @@ export function generateHtmlReport(
     <div>
       <div class="section-title">Print Settings</div>
       <div class="settings-grid">
-        <div class="setting-item"><div class="setting-label">Material</div><div class="setting-value">${printSettings.materialId.toUpperCase()}</div></div>
-        <div class="setting-item"><div class="setting-label">Infill</div><div class="setting-value">${printSettings.infillPct}% ${printSettings.pattern}</div></div>
-        <div class="setting-item"><div class="setting-label">Walls</div><div class="setting-value">${printSettings.wallCount} perimeters</div></div>
-        <div class="setting-item"><div class="setting-label">Orientation</div><div class="setting-value">${printSettings.orientation}</div></div>
-        <div class="setting-item"><div class="setting-label">Layer height</div><div class="setting-value">${printSettings.layerHeightMm} mm</div></div>
+        <div class="setting-item"><div class="setting-label">Material</div><div class="setting-value">${esc(printSettings.materialId.toUpperCase())}</div></div>
+        <div class="setting-item"><div class="setting-label">Infill</div><div class="setting-value">${esc(printSettings.infillPct)}% ${esc(printSettings.pattern)}</div></div>
+        <div class="setting-item"><div class="setting-label">Walls</div><div class="setting-value">${esc(printSettings.wallCount)} perimeters</div></div>
+        <div class="setting-item"><div class="setting-label">Orientation</div><div class="setting-value">${esc(printSettings.orientation)}</div></div>
+        <div class="setting-item"><div class="setting-label">Layer height</div><div class="setting-value">${esc(printSettings.layerHeightMm)} mm</div></div>
         <div class="setting-item"><div class="setting-label">Eff. yield</div><div class="setting-value">${effectiveYieldMPa.toFixed(1)} MPa</div></div>
       </div>
 
@@ -284,10 +310,10 @@ export function generateHtmlReport(
       <div style="padding:8px 10px;background:${fatigue.fatigueConcern?'#fff8e0':'#e8f5ee'};border:1px solid ${fatigue.fatigueConcern?'#8B6914':'#1a7a40'}44;border-radius:3px;font-size:10px">
         <div style="font-weight:600;color:${fatigue.fatigueConcern?'#5c3a00':'#1a7a40'};margin-bottom:3px">
           ${fatigue.estimatedCycles === null ? '∞ Infinite life — below endurance limit' :
-            fatigue.estimatedCycles < 100000 ? `~${fatigue.estimatedCycles.toLocaleString()} cycles — fatigue concern` :
-            `✓ ~${fatigue.estimatedCycles.toLocaleString()} cycles`}
+            fatigue.estimatedCycles < 100000 ? `~${esc(fatigue.estimatedCycles.toLocaleString())} cycles — fatigue concern` :
+            `✓ ~${esc(fatigue.estimatedCycles.toLocaleString())} cycles`}
         </div>
-        <div style="color:#666">Fatigue SF: ${fatigue.fatigueSF}× &nbsp;·&nbsp; Se: ${fatigue.enduranceLimitMPa} MPa &nbsp;·&nbsp; ${confBadge(fatigue.confidence)}</div>
+        <div style="color:#666">Fatigue SF: ${esc(fatigue.fatigueSF)}× &nbsp;·&nbsp; Se: ${esc(fatigue.enduranceLimitMPa)} MPa &nbsp;·&nbsp; ${confBadge(fatigue.confidence)}</div>
       </div>
     </div>
   </div>
@@ -303,17 +329,17 @@ export function generateHtmlReport(
       ${materialModel.twoRegion
         ? `<br><b>Two-region model:</b> ${((materialModel.shellVolumeFraction ?? 0) * 100).toFixed(0)}% dense wall band (perimeter ${materialModel.wallThicknessMm?.toFixed(2)} mm${
             materialModel.skinTopThicknessMm != null
-              ? `, top skin ${materialModel.skinTopThicknessMm.toFixed(2)} mm (${materialModel.skinTopLayers} layers), bottom skin ${materialModel.skinBotThicknessMm?.toFixed(2)} mm (${materialModel.skinBotLayers} layers)${materialModel.skinLayersAssumed ? " — assumed slicer-default layer counts; set actual top/bottom layers for accuracy" : ""}${materialModel.skinBuildAxis === "assumed-z-up" ? " — skins assumed Z-up (no bed picked)" : ""}`
+              ? `, top skin ${materialModel.skinTopThicknessMm.toFixed(2)} mm (${esc(materialModel.skinTopLayers)} layers), bottom skin ${materialModel.skinBotThicknessMm?.toFixed(2)} mm (${esc(materialModel.skinBotLayers)} layers)${materialModel.skinLayersAssumed ? " — assumed slicer-default layer counts; set actual top/bottom layers for accuracy" : ""}${materialModel.skinBuildAxis === "assumed-z-up" ? " — skins assumed Z-up (no bed picked)" : ""}`
               : ``
-          }) over a homogenized ${materialModel.core ? materialModel.core.patternFamily + " Gibson-Ashby" : ""} infill core; shell yield ${materialModel.shellYieldXYMPa?.toFixed(1)} MPa vs core ${materialModel.coreYieldXYMPa?.toFixed(1)} MPa.`
+          }) over a homogenized ${materialModel.core ? esc(materialModel.core.patternFamily) + " Gibson-Ashby" : ""} infill core; shell yield ${materialModel.shellYieldXYMPa?.toFixed(1)} MPa vs core ${materialModel.coreYieldXYMPa?.toFixed(1)} MPa.`
         : ``}
       ${materialModel.bond
         ? materialModel.bond.applied === false
-          ? `<br><b>Bead-penetration bond model:</b> not applied — ${materialModel.bond.note}`
-          : `<br><b>Bead-penetration bond model (${materialModel.bond.confidence.toUpperCase()} confidence):</b> interlayer strength ×${materialModel.bond.relStrength.toFixed(2)}, stiffness ×${materialModel.bond.relStiffness.toFixed(2)} vs typical settings — interface ${(materialModel.bond.interfaceTempC ?? 0).toFixed(0)}°C on a ${(materialModel.bond.substrateTempC ?? 0).toFixed(0)}°C substrate, τ_cool ${(materialModel.bond.coolTimeConstS ?? 0).toFixed(1)} s${materialModel.bond.clamped ? " (clamped)" : ""}.`
+          ? `<br><b>Bead-penetration bond model:</b> not applied — ${esc(materialModel.bond.note)}`
+          : `<br><b>Bead-penetration bond model (${esc(String(materialModel.bond.confidence).toUpperCase())} confidence):</b> interlayer strength ×${materialModel.bond.relStrength.toFixed(2)}, stiffness ×${materialModel.bond.relStiffness.toFixed(2)} vs typical settings — interface ${(materialModel.bond.interfaceTempC ?? 0).toFixed(0)}°C on a ${(materialModel.bond.substrateTempC ?? 0).toFixed(0)}°C substrate, τ_cool ${(materialModel.bond.coolTimeConstS ?? 0).toFixed(1)} s${materialModel.bond.clamped ? " (clamped)" : ""}.`
         : ``}
       ${isotropicComparison
-        ? `<br><b>vs conventional isotropic FEA:</b> ${isotropicComparison.explanation}`
+        ? `<br><b>vs conventional isotropic FEA:</b> ${esc(isotropicComparison.explanation)}`
         : ``}
     </div>
   </div>
@@ -327,7 +353,7 @@ export function generateHtmlReport(
   <div style="margin-bottom:14px">
     <div class="section-title">Mesh</div>
     <div style="font-size:10px;color:#444;line-height:1.7">
-      <b>${nodeCount.toLocaleString()}</b> nodes &nbsp;·&nbsp; <b>${elementCount.toLocaleString()}</b> elements
+      <b>${esc(nodeCount.toLocaleString())}</b> nodes &nbsp;·&nbsp; <b>${esc(elementCount.toLocaleString())}</b> elements
       ${globalRelativeError != null ? (() => {
         const pct = globalRelativeError * 100;
         // Issue #259: the printed report gave the same size-only advice the app
@@ -368,10 +394,10 @@ export function generateHtmlReport(
     return `
   <div style="margin-bottom:14px;padding:8px 10px;background:${bg};border:1px solid ${bd};border-radius:3px;font-size:10px;color:${fg};line-height:1.7">
     <strong>&#9888; Mesh sensitivity of the safety factor</strong><br>
-    ${s.note}
+    ${esc(s.note)}
     <div style="margin-top:4px;color:#555">
       Measured over ${s.samples} solves of this part: ${adaptiveRefinement.history
-        .map(h => `${h.elementCount.toLocaleString()} el &rarr; ${h.safetyFactor != null ? `SF ${h.safetyFactor.toFixed(2)}` : 'SF &mdash;'} / ${h.maxVonMisesMPa.toFixed(2)} MPa`)
+        .map(h => `${esc(h.elementCount.toLocaleString())} el &rarr; ${h.safetyFactor != null ? `SF ${h.safetyFactor.toFixed(2)}` : 'SF &mdash;'} / ${h.maxVonMisesMPa.toFixed(2)} MPa`)
         .join(' &nbsp;·&nbsp; ')}.
       This is the range the meshes produced, not a confidence interval &mdash; it says whether refining changes the answer, not how close any of them is to the truth.
     </div>
@@ -385,7 +411,7 @@ export function generateHtmlReport(
   ${meshOrderDowngrade ? `
   <div style="margin-bottom:14px;padding:8px 10px;background:#fff8e0;border:1px solid #e8cf8a;border-radius:3px;font-size:10px;color:#5c3a00;line-height:1.7">
     <strong>&#9888; Element order was downgraded to linear</strong><br>
-    ${meshOrderDowngrade.note}
+    ${esc(meshOrderDowngrade.note)}
   </div>` : ``}
 
   <!-- Holes + Topology -->
@@ -413,8 +439,8 @@ export function generateHtmlReport(
        and the report-drops-caveats complaint in #196) — it does not get cut. -->
   ${singularity?.detected ? `
   <div style="margin-top:10px;padding:8px 10px;background:#fff8e0;border:1px solid #e8cf8a;border-radius:3px;font-size:10px;color:#5c3a00;line-height:1.7">
-    <strong>${singularity.cause === "constraint-edge" ? "Constraint-edge singularity" : singularity.cause === "load-edge" ? "Loaded-edge singularity" : "Stress singularity"} detected (${singularity.confidence} confidence)</strong><br>
-    ${singularity.message}
+    <strong>${singularity.cause === "constraint-edge" ? "Constraint-edge singularity" : singularity.cause === "load-edge" ? "Loaded-edge singularity" : "Stress singularity"} detected (${esc(singularity.confidence)} confidence)</strong><br>
+    ${esc(singularity.message)}
   </div>` : ''}
 
   <!-- Footer -->

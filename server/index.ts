@@ -1722,9 +1722,53 @@ import { generateHtmlReport } from "./report.js";
 
 app.post("/api/report", async (req, res) => {
   try {
+    // Issue #281: `result` used to be validated only as "some non-null,
+    // non-array object" — every string field inside it (verdict, failure-mode
+    // notes, hole warnings, ...) then flowed unescaped into generateHtmlReport's
+    // HTML. Escaping in report.ts is the actual fix; this tightens the shape so
+    // the route rejects an arbitrary payload before it ever reaches the
+    // template, rather than relying on escaping alone.
     if (!validateBody(req, res, {
-      result: "object", "fileName?": "string",
-      "printSettings?": "object", "timestamp?": "string",
+      result: {
+        verdict:              "string",
+        maxVonMisesMPa:       "number",
+        maxDisplacementMm:    "number",
+        effectiveYieldMPa:    "number",
+        estimatedFailForce:   "number",
+        nodesPerElem:         "number",
+        converged:            "boolean",
+        meshFallback:         "boolean",
+        sfCriterion:          "fdm-interface|hill|von-mises",
+        materialModel:        "object",
+        fatigue:              "object",
+        isotropicComparison:  "object",
+        failureModes: [{
+          mode: "string", note: "string",
+          "checked?": "boolean", "sf?": "number", "confidence?": "string",
+        }],
+        holeClassifications: [{
+          type: "string", "warning?": "string", "bolt?": "object",
+        }],
+        topologySuggestions: [{
+          suggestion: "string", "stressMPa?": "number", "position?": "vec3",
+        }],
+        "safetyFactor?":      "number",
+        "safetyfactorLow?":   "number",
+        "safetyFactorHigh?":  "number",
+        "singularity?":       "object",
+        "rigidBodyMode?":     "object",
+        "calibrationId?":     "string",
+      },
+      "fileName?": "string",
+      "printSettings?": {
+        "materialId?":    "string",
+        "infillPct?":     "number",
+        "wallCount?":     "number",
+        "pattern?":       "string",
+        "orientation?":   "string",
+        "layerHeightMm?": "number",
+      },
+      "timestamp?": "string",
     })) return;
     const { result, fileName, printSettings, timestamp } = req.body;
     const html = generateHtmlReport(result, fileName || "part", printSettings || {}, timestamp || new Date().toLocaleString());
