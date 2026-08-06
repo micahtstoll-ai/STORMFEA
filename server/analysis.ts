@@ -94,6 +94,7 @@ import {
   tetMaxVolumeForTier,
 } from "./tetgen.js";
 import { meshStepWithGmsh }                 from "./gmsh_mesh.js";
+import { C3D10OrderingError }               from "./c3d10_ordering.js";
 import {
   computeFingerprint, computeValidationCoverage,
   type ValidationCoverageReport, type CriterionValue as CoverageCriterionValue,
@@ -1727,6 +1728,217 @@ export interface AnalysisSettings {
 }
 
 /**
+ * Reported when a C3D10 mesh was rejected by the midside-ordering guard and the
+ * analysis continued on LINEAR elements instead (issue #265).
+ *
+ * Present in the summary rather than logged, because the result is quantitatively
+ * affected: C3D4 shear-locks in bending and can underpredict by tens of percent.
+ * That is a caveat the reader needs, and it is a completely different caveat from
+ * `meshFallback` — the geometry here is intact, only the element order is worse.
+ */
+export interface MeshOrderDowngrade {
+  /** Order asked for (always 2 — nothing downgrades from linear). */
+  requestedOrder: 2;
+  /** Order actually solved. */
+  actualOrder:    1;
+  /** How many C3D10 attempts the guard rejected before giving up (always 2). */
+  rejectedAttempts: number;
+  /** The guard's measurement on the final rejected attempt, for the log/report. */
+  bestElemMaxDev: number;
+  /** Reader-facing explanation, including what it costs. */
+  note:           string;
+}
+
+/**
+ * Mesh an STL as C3D10, retrying ONCE if the midside-ordering guard rejects the
+ * result, and falling back to LINEAR elements if it rejects the retry too
+ * (issue #265).
+ *
+ * The ladder exists because the old code treated "TetGen could not mesh this
+ * geometry" and "TetGen meshed it and the ordering guard refused the result" as
+ * the same event, and answered both with a bounding box. They are not the same
+ * event and they do not deserve the same answer:
+ *
+ *  1. **Retry once.** The rejection was observed to be TRANSIENT — once in three
+ *     otherwise identical suite runs, same binary, same geometry, no input
+ *     change. A second mesh costs one TetGen invocation and recovers the full
+ *     analysis. It is also the discriminating experiment: a rejection that
+ *     survives a fresh mesh (with a fresh scratch path) is reproducible.
+ *
+ *  2. **Reproducible ⇒ drop to C3D4, keeping the geometry.** A linear tet has no
+ *     midside nodes, so the ordering that is in doubt does not exist — the guard
+ *     is structurally inapplicable rather than merely silenced. This is a big
+ *     improvement on what it replaces: the bounding box discards the bore, the
+ *     fillets and every stress concentration the analysis is FOR, whereas this
+ *     keeps all of them and pays in element order. A featureless part solved
+ *     accurately is worth less than the real part solved less accurately.
+ *
+ *  3. **Genuine meshing failure ⇒ the box**, unchanged, handled by the caller.
+ *
+ * The downgrade is reported, not swallowed: C3D4 shear-locks in bending, which
+ * is the reason the box fallback already honours the element-order selector.
+ *
+ * `attempt(order)` is the mesher call, injected so the ladder's POLICY is
+ * testable without a TetGen binary — the decisions here are the part worth
+ * pinning, and they are unreachable in a test if they are welded to a spawn.
+ */
+export async function meshWithGuardRetry<T>(
+  requestedOrder: 1 | 2,
+  attempt:        (order: 1 | 2) => Promise<T>,
+  onDowngrade:    (d: MeshOrderDowngrade) => void,
+): Promise<T> {
+  // Linear was requested: there is no midside ordering to reject, so this is the
+  // legacy call with no ladder around it.
+  if (requestedOrder !== 2) return attempt(requestedOrder);
+
+  try {
+    return await attempt(2);
+  } catch (err) {
+    if (!(err instanceof C3D10OrderingError)) throw err;   // not ours to handle
+    console.warn(
+      `[analysis] C3D10 ordering guard rejected the mesh (${err.affineWitnesses} affine witnesses, ` +
+      `closest element ${(err.bestElemMaxDev * 100).toFixed(0)}% off) — re-meshing once. ` +
+      `This has been seen to be transient; a second rejection means it is not (issue #265).`,
+    );
+
+    try {
+      const retry = await attempt(2);
+      console.warn("[analysis] the re-mesh passed the ordering guard — continuing on C3D10.");
+      return retry;
+    } catch (err2) {
+      if (!(err2 instanceof C3D10OrderingError)) throw err2;
+      // Reproducible. The remap genuinely does not match this mesher build, so
+      // no number of retries will help — but the geometry is fine, and linear
+      // elements do not have the disputed nodes at all.
+      const note =
+        `The C3D10 (10-node tetrahedron) meshes from this TetGen build were rejected twice by ` +
+        `STORMFEA's midside node-ordering check, so the analysis was re-run with LINEAR (4-node) ` +
+        `elements, which have no midside nodes and cannot be affected. The geometry is intact — ` +
+        `every hole and fillet is meshed as normal — but linear tetrahedra are overly stiff in ` +
+        `bending, so displacements and bending stresses may be UNDERPREDICTED, in some cases by ` +
+        `tens of percent. Treat this result as conservative in stiffness and approximate in ` +
+        `stress. The underlying cause is a mesher version mismatch: see server/c3d10_ordering.ts.`;
+      console.warn(`[analysis] ordering guard rejected the re-mesh too — downgrading to C3D4. ${note}`);
+      onDowngrade({
+        requestedOrder:   2,
+        actualOrder:      1,
+        rejectedAttempts: 2,
+        bestElemMaxDev:   err2.bestElemMaxDev,
+        note,
+      });
+      return attempt(1);
+    }
+  }
+}
+
+/**
+ * How much the headline numbers moved across the meshes a run actually solved
+ * (issue #256).
+ *
+ * The tool reports `safetyFactor` and `maxVonMisesMPa` as point values, and
+ * `estimatedFailForce` ("will fail at X N") is derived from them. On a part with
+ * an unresolvable singularity — which is every bolted part, at the clamp rim —
+ * they are not converged quantities: measured 46% on the Ø5-bore tube and 18.9%
+ * on the cross plate, NON-MONOTONE in element count, while the global energy
+ * error converged normally over the same runs. Nothing said so.
+ *
+ * A part WITHOUT a singularity does not do this — the plate-with-hole fixture
+ * (`smooth-concentration.test.ts`) gives 2.2%, monotone, settling to 0.1%. So
+ * the spread is informative rather than noise: it separates "your number is
+ * converged" from "your number is a sample".
+ *
+ * This is a MEASUREMENT over the meshes at hand, not a confidence interval. It
+ * is bounded below by how far apart those meshes were and says nothing about
+ * where the true value lies — a part whose meshes happen to agree can still be
+ * wrong. It answers only "does refining this part change the answer".
+ */
+export interface HeadlineSpread {
+  /** Number of distinct solves the spread is measured over (≥ 2). */
+  samples:            number;
+  /** Lowest / highest safety factor seen. Null when no solve produced one. */
+  safetyFactorMin:    number | null;
+  safetyFactorMax:    number | null;
+  /** (max − min) / min for the safety factor, as a fraction. Null if unavailable. */
+  safetyFactorSpread: number | null;
+  /** Lowest / highest peak von Mises seen (MPa). */
+  peakMin:            number;
+  peakMax:            number;
+  /** (max − min) / min for the peak, as a fraction. */
+  peakSpread:         number;
+  /**
+   * Whether the peak moved monotonically with element count. FALSE is the
+   * stronger warning: it means more elements did not even mean a consistently
+   * different answer, so element count is not a proxy for trustworthiness.
+   */
+  monotoneInDensity:  boolean;
+  /** Reader-facing sentence. Empty when the spread is small enough to ignore. */
+  note:               string;
+}
+
+/**
+ * Spread of the headline numbers across a multi-mesh history (issue #256).
+ *
+ * Pure and exported so the wording and the thresholds are testable without a
+ * solve. Returns undefined for fewer than two samples rather than a zero
+ * spread — "measured as none" and "not measured" must stay distinguishable, the
+ * same rule `bcSingularityErrorFraction` follows.
+ */
+export function headlineSpreadOf(
+  history: ReadonlyArray<{ elementCount: number; maxVonMisesMPa: number; safetyFactor: number | null }>,
+): HeadlineSpread | undefined {
+  if (history.length < 2) return undefined;
+
+  const peaks = history.map(h => h.maxVonMisesMPa).filter(v => Number.isFinite(v) && v > 0);
+  if (peaks.length < 2) return undefined;
+  const peakMin = Math.min(...peaks), peakMax = Math.max(...peaks);
+  const peakSpread = (peakMax - peakMin) / peakMin;
+
+  const sfs = history.map(h => h.safetyFactor).filter((v): v is number => v != null && Number.isFinite(v) && v > 0);
+  const haveSf = sfs.length >= 2;
+  const sfMin = haveSf ? Math.min(...sfs) : null;
+  const sfMax = haveSf ? Math.max(...sfs) : null;
+  const sfSpread = haveSf ? (sfMax! - sfMin!) / sfMin! : null;
+
+  // Monotonicity is judged on the peak against element count, in the order the
+  // meshes were solved — sorted by density, so a loop that did not refine
+  // monotonically is still read correctly.
+  const byDensity = [...history]
+    .filter(h => Number.isFinite(h.maxVonMisesMPa) && h.maxVonMisesMPa > 0)
+    .sort((a, b) => a.elementCount - b.elementCount)
+    .map(h => h.maxVonMisesMPa);
+  let up = true, down = true;
+  for (let i = 1; i < byDensity.length; i++) {
+    if (byDensity[i]! < byDensity[i - 1]!) up = false;
+    if (byDensity[i]! > byDensity[i - 1]!) down = false;
+  }
+  const monotoneInDensity = up || down;
+
+  // 5% matches the convergence study's existing criterion for calling a metric
+  // mesh-independent, so the two surfaces cannot tell the user opposite things.
+  const shown = sfSpread ?? peakSpread;
+  const pct = (v: number): string => `${(v * 100).toFixed(1)}%`;
+  const note = shown < 0.05
+    ? ""
+    : `Across the ${history.length} meshes solved, the safety factor moved ` +
+      (haveSf ? `${sfMin!.toFixed(2)}–${sfMax!.toFixed(2)} (${pct(sfSpread!)}) ` : "") +
+      `and the peak stress ${peakMin.toFixed(2)}–${peakMax.toFixed(2)} MPa (${pct(peakSpread)}). ` +
+      (monotoneInDensity
+        ? `The number is still settling, so treat the reported value as approximate to about this much.`
+        : `It did NOT move consistently with element count, so a finer mesh is not a more trustworthy ` +
+          `number here — this is the signature of a peak sitting at a singularity (a clamp rim, a loaded ` +
+          `patch rim, or a sharp corner), where the peak is set by the element size and no mesh converges it. ` +
+          `Judge the margin against the whole range, not the single value.`);
+
+  return {
+    samples: history.length,
+    safetyFactorMin: sfMin, safetyFactorMax: sfMax, safetyFactorSpread: sfSpread,
+    peakMin, peakMax, peakSpread,
+    monotoneInDensity,
+    note,
+  };
+}
+
+/**
  * Result of the adaptive-refinement loop, surfaced on AnalysisResult when the
  * opt-in path ran. Purely informational; absent on the default single-solve.
  */
@@ -1764,8 +1976,25 @@ export interface AdaptiveRefinementInfo {
    * Absent when no mask could be built (no surface, or a degraded run).
    */
   bcSingularityErrorFraction?: number;
-  /** Per-iteration (globalRelativeError, elementCount) history. */
-  history:               Array<{ globalRelativeError: number; elementCount: number }>;
+  /**
+   * Per-iteration history. Carries the HEADLINE numbers as well as the error,
+   * because the loop solves the same part at several densities and those solves
+   * are the only place the tool ever sees how much its answer depends on the
+   * mesh (issue #256). `safetyFactor` is null on a solve that could not produce
+   * one (a degraded mesh).
+   */
+  history:               Array<{
+    globalRelativeError: number;
+    elementCount:        number;
+    maxVonMisesMPa:      number;
+    safetyFactor:        number | null;
+  }>;
+  /**
+   * How far the headline numbers moved across the meshes the loop actually
+   * solved (issue #256). Undefined when fewer than two solves happened, which
+   * is the honest answer: one mesh cannot measure its own mesh-dependence.
+   */
+  headlineSpread?:       HeadlineSpread;
   /** True if the loop degraded to a single tier solve (no binary / STEP / box). */
   degradedToTier:        boolean;
   /** Human-readable note (e.g. why it degraded). */
@@ -3108,6 +3337,13 @@ export interface AnalysisResult {
    * geometry really is in millimetres (issue #168).
    */
   unitsWarning:           string | null;
+  /**
+   * Non-null when the C3D10 midside-ordering guard rejected this mesher's output
+   * twice and the analysis continued on LINEAR elements with the geometry intact
+   * (issue #265). Distinct from `meshFallback`, which means the geometry itself
+   * was replaced by a bounding box. Null on every normal run.
+   */
+  meshOrderDowngrade:     MeshOrderDowngrade | null;
   solverMs:               number;
   nodeCount:              number;
   elementCount:           number;
@@ -3545,15 +3781,32 @@ export const SINGULARITY_NEIGHBORHOOD_FACTOR = 2.5;
  * 5% is a judgement, not a measurement, and is the weakest number in this
  * heuristic. It wants to be small enough to stay local (5% of the diagonal is
  * well inside one feature on the parts this tool sees) and large enough that
- * the neighbourhood does not follow the peak down as the mesh refines. Tune it
- * against parts with known-singular and known-smooth concentrations rather than
- * to make any single fixture behave.
+ * the neighbourhood does not follow the peak down as the mesh refines.
+ *
+ * It now has a known-smooth control to be judged against —
+ * `smooth-concentration.test.ts`, a plate-with-hole whose Kt≈3 concentration
+ * provably converges. At this 5% the radius comes out 5.386 mm on that part and
+ * stays there across a 6× element-count change, which is the behaviour the floor
+ * exists for. Any change to this constant should be re-measured on BOTH
+ * populations (that fixture and the cross plate), never on one.
  */
 export const SINGULARITY_PART_FRACTION = 0.05;
 
 /**
  * Ratio above which the payload is REPORTED at all. Below it, the field is not
  * concentrated enough to be worth describing and the detector returns null.
+ *
+ * Now has a measured floor under it (issue #263's calibration gap, closed by
+ * `smooth-concentration.test.ts`): a plate-with-hole whose Kt≈3 concentration
+ * provably CONVERGES reads 2.3–2.4 and stays there across four densities. So
+ * 3.0 is the boundary between two measured populations rather than a number
+ * with data on only one side — the known-smooth case sits below it and the
+ * known-singular cases (3.1–3.3 constraint edge, 12 point spike) above.
+ *
+ * The margin is THIN — 2.4 against 3.0 — and that is the honest reading: a
+ * sharper-but-still-smooth feature could cross this line. That is survivable
+ * precisely because crossing it only produces a MEASUREMENT, not an alarm; see
+ * SINGULARITY_RATIO_ALARM for why the two were split.
  */
 export const SINGULARITY_RATIO_REPORT = 3.0;
 
@@ -3586,6 +3839,15 @@ export const SINGULARITY_RATIO_REPORT = 3.0;
  * The band is reported, not hidden: the payload is present with `detected`
  * false, carrying the ratio, confidence and cause. Deliberately NOT surfaced as
  * a banner — the whole point is that this range is not actionable on one mesh.
+ *
+ * NOT LOWERED TO 2.5, now for a measured reason rather than caution (issue
+ * #263). Dropping it there would make the cross plate alarm on every mesh, which
+ * was tempting while the only data came from parts that SHOULD trip it. The
+ * known-smooth control (`smooth-concentration.test.ts`) reads 2.3–2.4, so an
+ * alarm at 2.5 would sit inside the smooth population's own range — it would
+ * shout at a Kt≈3 hole whose peak demonstrably converges. The gap between the
+ * populations (2.4 vs 3.1) is simply too narrow to carry an ALARM; it is wide
+ * enough to carry a measurement, which is what the REPORT band is for.
  */
 export const SINGULARITY_RATIO_ALARM = 6.0;
 
@@ -4483,6 +4745,8 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   let surfaceFaces: Int32Array | null = null;
   let gmshResult: import("./gmsh_mesh.js").GmshMeshResult | null = null;
   let meshFallback = false;
+  /** Set by the guard-retry ladder when C3D10 had to be abandoned (issue #265). */
+  let meshOrderDowngrade: MeshOrderDowngrade | null = null;
 
   // ── Units sanity check (issue #168) ────────────────────────────────────────
   // A physically-plausible FDM part has a bounding-box diagonal between ~1 mm
@@ -4553,7 +4817,11 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
                     * (req.bounds.maxZ - req.bounds.minZ);
       const tetMaxVol = tetMaxVolumeForTier(bboxVol, tetTier);
       console.log(`[analysis] meshing with TetGen (order=${tetOrder}, maxVol=${tetMaxVol.toPrecision(4)} units³, quality=${req.analysis.meshQuality})...`);
-      const tetResult = await meshWithTetGen(req.positions, req.triangleCount, tetOrder, tetMaxVol);
+      const tetResult = await meshWithGuardRetry(
+        tetOrder,
+        order => meshWithTetGen(req.positions, req.triangleCount, order, tetMaxVol),
+        d => { meshOrderDowngrade = d; },
+      );
       mesh          = tetResult.mesh;
       surfaceToNode = tetResult.surfaceToNode;
       surfaceFaces  = tetResult.surfaceFaces;
@@ -6874,6 +7142,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     converged:          result.converged,
     meshFallback,
     unitsWarning,
+    meshOrderDowngrade,
     safetyFactorAvailable: !meshFallback,
     solverMs,
     nodeCount:          mesh.nodeCount,
@@ -6967,14 +7236,26 @@ export async function runAdaptiveAnalysis(
   loopOverrides?: Partial<LoopControlOptions>,
 ): Promise<AnalysisResult> {
   const opts: LoopControlOptions = { ...DEFAULT_LOOP_OPTIONS, ...loopOverrides };
-  const order = (req.analysis.meshOrder ?? 2) as 1 | 2;
 
   // ── First (tier) solve, capturing the raw mesh + error field ───────────────
   const cap0: NonNullable<AnalysisRequest["_captureInternals"]> = {};
   const first = await runAnalysis({ ...req, _captureInternals: cap0 });
 
-  const history: Array<{ globalRelativeError: number; elementCount: number }> = [
-    { globalRelativeError: first.globalRelativeError ?? 0, elementCount: first.elementCount },
+  // Follow the order the first solve ACTUALLY produced, not the one requested.
+  // They differ when the C3D10 ordering guard forced a downgrade to linear
+  // (issue #265): re-meshing at order 2 from a C3D4 base would ask the same
+  // rejected mesher for the same rejected elements, and — before it failed —
+  // would size the field with the quadratic convergence exponent against a
+  // linear solution. `nodesPerElem` is what was solved, so it is the truth here.
+  const order: 1 | 2 = first.nodesPerElem === 4 ? 1 : (req.analysis.meshOrder ?? 2) as 1 | 2;
+
+  const history: AdaptiveRefinementInfo["history"] = [
+    {
+      globalRelativeError: first.globalRelativeError ?? 0,
+      elementCount:        first.elementCount,
+      maxVonMisesMPa:      first.maxVonMisesMPa,
+      safetyFactor:        first.safetyFactor,
+    },
   ];
 
   const degrade = (note: string): AnalysisResult => ({
@@ -7230,7 +7511,12 @@ export async function runAdaptiveAnalysis(
     }
     iterations++;
     const nextGRE = next.globalRelativeError ?? 0;
-    history.push({ globalRelativeError: nextGRE, elementCount: next.elementCount });
+    history.push({
+      globalRelativeError: nextGRE,
+      elementCount:        next.elementCount,
+      maxVonMisesMPa:      next.maxVonMisesMPa,
+      safetyFactor:        next.safetyFactor,
+    });
 
     const nextMask = bcMaskFor(capN);
     if (nextGRE < bestGRE) {
@@ -7269,6 +7555,7 @@ export async function runAdaptiveAnalysis(
       elementBudget:       budget,
       bcSingularityErrorFraction: bestBcFraction,
       history,
+      headlineSpread:      headlineSpreadOf(history),
       degradedToTier:      false,
       // The BC sentence is appended whenever the fraction is known — no
       // threshold, because a threshold would be one more tunable constant

@@ -1153,6 +1153,98 @@ console.log('\n[R] renderValidationCoverage — validation coverage panel (#191)
   }
 }
 
+// ── Test group S: headlineSpread — the mesh-sensitivity readout (#256) ───────
+console.log('\n[S] Headline spread — separates a converged number from a sampled one');
+{
+  const m = html.match(/function headlineSpread\(meshes\) \{[\s\S]*?\n\}/);
+  if (!m) throw new Error('Could not extract headlineSpread');
+  const mod = { exports: {} };
+  new Function('module', 'exports', m[0] + '\nmodule.exports = { headlineSpread };')(mod, mod.exports);
+  const { headlineSpread } = mod.exports;
+
+  const mesh = (nodes, maxVM, sf) => ({ nodes, maxVM, sf });
+
+  // "Not measured" must stay distinguishable from "measured as none": a single
+  // mesh cannot measure its own mesh-dependence, and returning a 0% spread there
+  // would assert convergence that was never tested.
+  test('null for a single mesh (cannot measure its own sensitivity)',
+    headlineSpread([mesh(1000, 5, 9)]) === null);
+  test('null for an empty study', headlineSpread([]) === null);
+  test('null for a non-array', headlineSpread(null) === null);
+
+  // The Ø5-bore tube, as reported in #256: SF 7.28 / 6.24 / 8.99 / 9.09 with
+  // peak 6.864 / 8.017 / 5.564 / 5.500 MPa. Non-monotone in element count — the
+  // 65k mesh reports a HIGHER peak than the 81k one.
+  {
+    const tube = [
+      mesh(44875, 6.864, 7.28), mesh(65358, 8.017, 6.24),
+      mesh(80866, 5.564, 8.99), mesh(90000, 5.500, 9.09),
+    ];
+    const s = headlineSpread(tube);
+    test('tube: reports all four samples', s.samples === 4, `samples=${s && s.samples}`);
+    test('tube: SF range is the measured 6.24–9.09',
+      Math.abs(s.safetyFactorMin - 6.24) < 1e-9 && Math.abs(s.safetyFactorMax - 9.09) < 1e-9,
+      `${s.safetyFactorMin}–${s.safetyFactorMax}`);
+    // (9.09 − 6.24) / 6.24 = 45.7% — the ~46% the issue reports.
+    test('tube: SF spread ≈ 46%', Math.abs(s.safetyFactorSpread - 0.4567) < 0.005,
+      `${(s.safetyFactorSpread * 100).toFixed(1)}%`);
+    test('tube: flagged as material (over the 5% cutoff)', s.material === true);
+    // The load-bearing one. Non-monotone means "refine more" is not a remedy,
+    // and the UI wording branches on it.
+    test('tube: detected as NON-monotone in density', s.monotoneInDensity === false);
+  }
+
+  // The plate-with-hole control (smooth-concentration.test.ts): peak climbs
+  // 35.980 -> 36.543 -> 36.678 -> 36.714 and settles; SF spread 2.2%.
+  {
+    const smooth = [
+      mesh(3000, 35.980, 1.390), mesh(7000, 36.543, 1.368),
+      mesh(12000, 36.678, 1.363), mesh(19000, 36.714, 1.362),
+    ];
+    const s = headlineSpread(smooth);
+    test('smooth: monotone in density', s.monotoneInDensity === true);
+    test('smooth: SF spread ≈ 2%', s.safetyFactorSpread < 0.03,
+      `${(s.safetyFactorSpread * 100).toFixed(1)}%`);
+    // Below the 5% cutoff ⇒ no banner. A converged part must not be told its
+    // number is untrustworthy, or the warning stops meaning anything.
+    test('smooth: NOT flagged as material', s.material === false);
+  }
+
+  // Sorting is by density, not by study order — a study whose results arrive
+  // out of order must still read monotonicity correctly.
+  {
+    const shuffled = [mesh(19000, 36.714, 1.362), mesh(3000, 35.980, 1.390), mesh(7000, 36.543, 1.368)];
+    test('monotonicity is judged in density order, not array order',
+      headlineSpread(shuffled).monotoneInDensity === true);
+  }
+
+  // A study where the safety factor is unavailable (mesh fallback) must still
+  // report the peak spread rather than returning nothing.
+  {
+    const noSf = [mesh(3000, 10, null), mesh(9000, 14, null)];
+    const s = headlineSpread(noSf);
+    test('no safety factor: still reports the peak spread',
+      s !== null && s.safetyFactorSpread === null && Math.abs(s.peakSpread - 0.4) < 1e-9,
+      s && `peakSpread=${s.peakSpread}`);
+    test('no safety factor: materiality falls back to the peak', s.material === true);
+  }
+
+  // Degenerate values must not produce a spread out of nothing.
+  {
+    test('ignores non-finite peaks', headlineSpread([mesh(1000, NaN, 5), mesh(2000, 10, 4)]) === null);
+    test('ignores non-positive peaks', headlineSpread([mesh(1000, 0, 5), mesh(2000, 10, 4)]) === null);
+  }
+
+  // Identical meshes: a genuinely flat study reports 0%, which is a measurement
+  // (two meshes agreed), unlike the single-mesh null.
+  {
+    const flat = headlineSpread([mesh(1000, 10, 5), mesh(2000, 10, 5)]);
+    test('identical results report a zero spread, not null',
+      flat !== null && flat.peakSpread === 0 && flat.safetyFactorSpread === 0);
+    test('a zero spread is not material', flat.material === false);
+  }
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 

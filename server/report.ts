@@ -37,7 +37,7 @@ export function generateHtmlReport(
     sfCriterion, safetyfactorLow, safetyFactorHigh,
     isotropicComparison, materialModel, nodesPerElem,
     nodeCount, elementCount, globalRelativeError, bcSingularityErrorFraction,
-    bucklingResult,
+    bucklingResult, adaptiveRefinement, meshOrderDowngrade,
   } = result;
 
   // C3D4 (linear tet, nodesPerElem===4) carries a documented ~55%
@@ -348,6 +348,44 @@ export function generateHtmlReport(
         return ` &nbsp;·&nbsp; <b>Discretization error (η):</b> <span style="color:${errColor}">${pct.toFixed(1)}% — ${errLabel}</span>. Zienkiewicz-Zhu ESTIMATE of mesh-artifact share of the stress field, not an exact bound — lower is better.${bcNote}`;
       })() : ``}
     </div>
+  </div>` : ``}
+
+  <!-- Mesh sensitivity of the HEADLINE numbers (issue #256). The energy-norm
+       readout above converges properly even on parts whose safety factor does
+       not — measured 19.4% -> 11.1% while the safety factor swung 46% non-
+       monotonically on the same runs. A reader shown only that percentage is
+       being shown a well-behaved number next to a badly-behaved one, with
+       nothing distinguishing them. Keep this comment free of the phrase the
+       block above prints: comments ship to the reader and the tests match
+       case-insensitively on it. -->
+  ${adaptiveRefinement?.headlineSpread?.note ? (() => {
+    const s = adaptiveRefinement.headlineSpread!;
+    // Non-monotone is the stronger signal: a number that does not even move
+    // consistently with density cannot be improved by refining.
+    const bg = s.monotoneInDensity ? '#fff8e0' : '#fdeaea';
+    const bd = s.monotoneInDensity ? '#e8cf8a' : '#e0a0a0';
+    const fg = s.monotoneInDensity ? '#5c3a00' : '#7a1a1a';
+    return `
+  <div style="margin-bottom:14px;padding:8px 10px;background:${bg};border:1px solid ${bd};border-radius:3px;font-size:10px;color:${fg};line-height:1.7">
+    <strong>&#9888; Mesh sensitivity of the safety factor</strong><br>
+    ${s.note}
+    <div style="margin-top:4px;color:#555">
+      Measured over ${s.samples} solves of this part: ${adaptiveRefinement.history
+        .map(h => `${h.elementCount.toLocaleString()} el &rarr; ${h.safetyFactor != null ? `SF ${h.safetyFactor.toFixed(2)}` : 'SF &mdash;'} / ${h.maxVonMisesMPa.toFixed(2)} MPa`)
+        .join(' &nbsp;·&nbsp; ')}.
+      This is the range the meshes produced, not a confidence interval &mdash; it says whether refining changes the answer, not how close any of them is to the truth.
+    </div>
+  </div>`;
+  })() : ``}
+
+  <!-- Element-order downgrade (issue #265). The geometry is intact but the
+       elements are linear, and C3D4 shear-locks in bending — the same reason
+       the c3d4Caveat banner exists. This says WHY it happened, which the
+       nodesPerElem banner cannot know. -->
+  ${meshOrderDowngrade ? `
+  <div style="margin-bottom:14px;padding:8px 10px;background:#fff8e0;border:1px solid #e8cf8a;border-radius:3px;font-size:10px;color:#5c3a00;line-height:1.7">
+    <strong>&#9888; Element order was downgraded to linear</strong><br>
+    ${meshOrderDowngrade.note}
   </div>` : ``}
 
   <!-- Holes + Topology -->

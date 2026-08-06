@@ -103,6 +103,36 @@ export function analyzeC3D10MidsideOrdering(
 }
 
 /**
+ * A mesh REJECTED by the ordering guard, as distinct from a mesh that failed to
+ * generate (issue #265).
+ *
+ * The distinction is what callers act on. A geometry TetGen cannot mesh is a
+ * property of the input, and re-running produces the same refusal — the only
+ * response is to degrade. A mesh that generated fine and then failed this check
+ * is a statement about the TOOLCHAIN, and it has been observed to be transient:
+ * once in three otherwise identical suite runs, with the same binary, the same
+ * geometry and no input change. So it is worth attempting again before throwing
+ * away every feature the analysis is about, and the retry doubles as the
+ * experiment — a rejection that survives a fresh mesh is reproducible, and
+ * reproducible means the remap really does not match this mesher build.
+ *
+ * Carries the measurements so a caller can log what it saw on each attempt.
+ */
+export class C3D10OrderingError extends Error {
+  readonly affineWitnesses: number;
+  readonly bestElemMaxDev:  number;
+  readonly source:          string;
+
+  constructor(message: string, detail: { affineWitnesses: number; bestElemMaxDev: number; source: string }) {
+    super(message);
+    this.name            = "C3D10OrderingError";
+    this.affineWitnesses = detail.affineWitnesses;
+    this.bestElemMaxDev  = detail.bestElemMaxDev;
+    this.source          = detail.source;
+  }
+}
+
+/**
  * Verify a C3D10 mesh's midside ordering, throwing an actionable error on a
  * mismatch. `source` names the mesher/path for the error message.
  * No-op for meshes that are not 10-node.
@@ -119,7 +149,7 @@ export function verifyC3D10MidsideOrdering(
   const { ok, bestElemMaxDev, affineWitnesses } = analyzeC3D10MidsideOrdering(nodes, elements, elementCount);
   if (ok) return;
 
-  throw new Error(
+  throw new C3D10OrderingError(
     `[C3D10 node order] The second-order midside node ordering from ${source} does not match ` +
     `STORMFEA's convention (slot 4=mid(0,1), 5=mid(1,2), 6=mid(0,2), 7=mid(0,3), 8=mid(1,3), ` +
     `9=mid(2,3)). No element's midside nodes sit at their corner-pair midpoints ` +
@@ -127,6 +157,7 @@ export function verifyC3D10MidsideOrdering(
     `${(bestElemMaxDev * 100).toFixed(0)}% of the edge length — straight elements should be ~0%). ` +
     `This is a mesher version/build mismatch: proceeding would evaluate the wrong shape functions ` +
     `on every element and silently produce garbage stiffness. Update the ${source} node-order ` +
-    `remap (see server/c3d10_ordering.ts) for this mesher build, or install the supported version.`
+    `remap (see server/c3d10_ordering.ts) for this mesher build, or install the supported version.`,
+    { affineWitnesses, bestElemMaxDev, source },
   );
 }

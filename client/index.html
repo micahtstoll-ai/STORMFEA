@@ -9138,6 +9138,58 @@ function selectConvergenceMetric(singularity, peakOrder) {
   return { singularAtPeak: true, metric: 'p99', evidence, reason };
 }
 
+// Spread of the HEADLINE numbers across the study's meshes (issue #256).
+//
+// The convergence study already solves the same part at three densities and
+// already knows each mesh's safety factor — it prints them in a column. What it
+// never did was say how far apart they are, so a user could read SF 6.24 next to
+// SF 9.09 in the same table and be told only whether the PEAK STRESS changed
+// less than 5% between the last two. Those are different questions, and on a
+// part with an unresolvable singularity they have different answers.
+//
+// Measured: 46% (Ø5-bore tube) and 18.9% (cross plate), both NON-MONOTONE in
+// element count, while a part whose peak converges (plate with a hole) gives
+// 2.2%, monotone. So the spread separates "converged" from "sampled", which is
+// exactly what the headline number needs and does not have.
+//
+// Mirrors headlineSpreadOf() in server/analysis.ts — same 5% cutoff as the
+// study's own convergence criterion, so the two cannot say opposite things.
+// Returns null for fewer than two usable meshes: one mesh cannot measure its own
+// mesh-dependence, and reporting 0% there would be a lie rather than a default.
+function headlineSpread(meshes) {
+  if (!Array.isArray(meshes) || meshes.length < 2) return null;
+  const usable = meshes.filter(m => m && isFinite(m.maxVM) && m.maxVM > 0);
+  if (usable.length < 2) return null;
+
+  const peaks  = usable.map(m => m.maxVM);
+  const peakMin = Math.min(...peaks), peakMax = Math.max(...peaks);
+  const peakSpread = (peakMax - peakMin) / peakMin;
+
+  const sfs = usable.map(m => m.sf).filter(v => v != null && isFinite(v) && v > 0);
+  const haveSf = sfs.length >= 2;
+  const sfMin = haveSf ? Math.min(...sfs) : null;
+  const sfMax = haveSf ? Math.max(...sfs) : null;
+  const sfSpread = haveSf ? (sfMax - sfMin) / sfMin : null;
+
+  // Monotone in DENSITY, not in study order, so an out-of-order study reads right.
+  const byDensity = usable.slice().sort((a, b) => (a.nodes || 0) - (b.nodes || 0)).map(m => m.maxVM);
+  let up = true, down = true;
+  for (let i = 1; i < byDensity.length; i++) {
+    if (byDensity[i] < byDensity[i-1]) up = false;
+    if (byDensity[i] > byDensity[i-1]) down = false;
+  }
+  const monotoneInDensity = up || down;
+
+  const shown = sfSpread != null ? sfSpread : peakSpread;
+  return {
+    samples: usable.length,
+    safetyFactorMin: sfMin, safetyFactorMax: sfMax, safetyFactorSpread: sfSpread,
+    peakMin, peakMax, peakSpread,
+    monotoneInDensity,
+    material: shown >= 0.05,
+  };
+}
+
 // 99th-percentile (nearest-rank) of a stress array — the singularity-robust
 // convergence metric. Pure; returns null on empty input.
 function stressPercentile(stressArr, pct) {
@@ -9275,6 +9327,32 @@ async function runConvergenceStudy() {
     document.getElementById('results-content')?.appendChild(reportEl);
   }
 
+  // Issue #256: the study knows every mesh's safety factor and never said how
+  // far apart they were. The converged/not-converged badge below answers a
+  // different question — it compares only the last two meshes, and only on the
+  // chosen metric — so on a part whose SF ranges 6.24–9.09 it can still read
+  // "converged" once p99 settles. Say the range outright.
+  const spread = headlineSpread(results);
+  const spreadNote = (spread && spread.material) ? (() => {
+    const pct = v => (v * 100).toFixed(1) + '%';
+    const sfTxt = spread.safetyFactorSpread != null
+      ? `<b>SF ${spread.safetyFactorMin.toFixed(2)}–${spread.safetyFactorMax.toFixed(2)}</b> (${pct(spread.safetyFactorSpread)})`
+      : '';
+    const peakTxt = `<b>${U.stressStr(spread.peakMin,2)}–${U.stressStr(spread.peakMax,2)}</b> (${pct(spread.peakSpread)})`;
+    // Non-monotone is the stronger warning and gets the stronger colour: it
+    // means element count does not predict the answer, so "just use the fine
+    // mesh" is not a remedy.
+    const col = spread.monotoneInDensity ? 'var(--gold-dim)' : 'var(--warn)';
+    const bg  = spread.monotoneInDensity ? 'var(--gold-faint)' : 'var(--bg-card)';
+    const tail = spread.monotoneInDensity
+      ? 'The number is still settling — treat the reported safety factor as approximate to about this much.'
+      : 'It did NOT move consistently with element count, so a finer mesh is not a more trustworthy number here. That is the signature of a peak at a singularity (a clamp rim, a loaded-patch rim, a sharp corner), where the peak is set by the element size and no mesh converges it. Judge your margin against the whole range, not the single value.';
+    return `<div style="padding:6px 8px;margin-top:6px;background:${bg};border:1px solid ${col}55;border-radius:3px;font-size:10px;color:${col};line-height:1.6">
+      <b>Headline spread across these ${spread.samples} meshes:</b> ${sfTxt}${sfTxt ? ', peak ' : 'peak '}${peakTxt}. ${tail}
+      <div style="color:var(--text-lo);margin-top:3px">This is the range the meshes produced, not a confidence interval — it says whether refining changes the answer, not how close any of them is to the truth.</div>
+    </div>`;
+  })() : '';
+
   const metricName = useRobust ? '99th-percentile stress' : 'peak stress';
   const statusColor = converged ? 'var(--success)' : 'var(--warn)';
   const statusText  = converged
@@ -9302,6 +9380,7 @@ async function runConvergenceStudy() {
       <span style="font-size:10px;color:var(--text-lo)">SF</span>
     </div>
     ${rows}
+    ${spreadNote}
     ${singularNote}
     <div style="padding:5px 0;font-size:10px;color:var(--text-lo);border-bottom:1px solid var(--border);line-height:1.6">${orderDiag}</div>
     ${richardsonNote ? `<div style="padding:5px 0;font-size:10px;color:var(--text-label);border-bottom:1px solid var(--border)">${richardsonNote}</div>` : ''}
