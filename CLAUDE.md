@@ -3,7 +3,29 @@
 ## Project Overview
 STORMFEA is an FDM-aware finite element analysis tool built with TypeScript/Node.js (server) and a single-file vanilla-JS client. The project uses npm for dependency management and runs automated tests via GitHub Actions.
 
-## Critical Files & Safety Rules
+## Table of Contents
+1. [Project Structure](#project-structure)
+2. [Repo Hygiene & Git Safety](#repo-hygiene--git-safety)
+3. [Common Tasks](#common-tasks)
+4. [GitHub Actions Workflows](#github-actions-workflows)
+5. [Heatmap Rendering — Common Pitfalls & Lessons Learned](#heatmap-rendering--common-pitfalls--lessons-learned)
+6. [Two-Region Material Model — Invariants](#two-region-material-model--invariants)
+7. [Interlayer Failure & Bond Model — Invariants](#interlayer-failure--bond-model--invariants)
+
+## Project Structure
+- `server/` - Node.js backend (TypeScript)
+- `server/solver/` - FE assembly, recovery, and the two-region/bond material models
+- `server/tests/` - Test files (`server/tests/unit/` for vitest; `solver_validation.ts` and `test-parallel-assembly.ts` for the solver shard)
+- `client/` - Single-file frontend (vanilla JS + Three.js)
+- `docs/` - `INVARIANTS.md` (normative-invariant traceability index), `layer-model-audit.md` (A1–A7 defect history), `spr-gauss-point-handoff.md`, and other design/methodology notes
+- `.github/workflows/` - CI/CD pipeline definitions
+- `.github/actions/setup/` - shared CI setup (Node, `npm ci`, TetGen/Gmsh)
+- `scripts/` - build and CI-support scripts, including `heavy-tests.json` (the CI heavy-shard file list) and the doc/API/invariant drift guards
+- `package.json` - Project dependencies
+- `package-lock.json` - Locked dependency versions (DO NOT DELETE)
+- `tsconfig.json` - TypeScript configuration
+
+## Repo Hygiene & Git Safety
 
 ### Package Lock File (package-lock.json)
 **CRITICAL**: This file MUST remain in the repository and be included in every commit.
@@ -23,11 +45,12 @@ STORMFEA is an FDM-aware finite element analysis tool built with TypeScript/Node
 3. Different developers get different packages installed
 4. Pull request CI fails, blocking merges
 
-### Git Safety Checklist
-Before creating a commit or PR, verify:
-- [ ] `package-lock.json` is present: `ls package-lock.json`
+### Before every commit or PR
+- [ ] `package-lock.json` is present: `ls -la package-lock.json`
 - [ ] Lock file changes are intentional: `git diff package-lock.json`
-- [ ] No critical build files were accidentally removed
+- [ ] No critical build files were accidentally removed (`dist/`, lock files, config files)
+- [ ] Stage files explicitly — never `git add -A` or `git add .`
+- [ ] `npm ci && npm run test` passes locally
 
 ### Workflow Files (.github/workflows/)
 These files define CI/CD behavior. Before modifying:
@@ -52,19 +75,10 @@ git push origin your-branch
 ```
 
 ### Debugging CI Failures
-1. Check the GitHub Actions logs first
-2. Run `npm ci` locally to reproduce dependency issues
-3. Run `npm run test` to reproduce test failures
-4. Look for errors in TypeScript compilation or test execution
-
-## Project Structure
-- `server/` - Node.js backend (TypeScript)
-- `client/` - Single-file frontend (vanilla JS + Three.js)
-- `server/tests/` - Test files
-- `.github/workflows/` - CI/CD pipeline definitions
-- `package.json` - Project dependencies
-- `package-lock.json` - Locked dependency versions (DO NOT DELETE)
-- `tsconfig.json` - TypeScript configuration
+1. Check the GitHub Actions logs first — identify which of the five shard jobs (below) went red; that tells you what kind of failure it is before you read a single line of log.
+2. Run `npm ci` locally to reproduce dependency issues.
+3. Run `npm run test` to reproduce test failures — it runs the full suite serially in one process, the same tests CI splits across shards.
+4. Look for errors in TypeScript compilation or test execution.
 
 ## GitHub Actions Workflows
 1. **test.yml** - Runs on every push/PR to main (the only workflow). The same
@@ -89,14 +103,6 @@ git push origin your-branch
    than ~30 s, and keep `scripts/heavy-tests.json` honest — the shards must
    PARTITION the suite or `check-doc-test-counts.mjs` fails the build.
 
-## Prevention Guidelines for Automated Commits
-When making automated PRs or commits:
-1. Always run: `ls -la package-lock.json` to verify existence
-2. Always verify: `git diff package-lock.json` shows expected changes only
-3. Always test: Run `npm ci && npm run test` before pushing
-4. Never use: `git add -A` or `git add .` - add files explicitly
-5. Never delete: Build artifacts (dist/), lock files, or config files
-
 ## Heatmap Rendering — Common Pitfalls & Lessons Learned
 
 ### Known Issue: Vertex Welding Algorithm (FIXED)
@@ -109,11 +115,11 @@ When making automated PRs or commits:
 - Under certain mesh geometries, this led to vertices that should be welded together remaining separate
 
 **Solution Applied (commit: 49bc5d6):**
-- Switched from `Math.round()` to `Math.floor()` with bounding-box normalization (consistent with server-side spatial indexing in `server/analysis.ts:1728-1730`)
+- Switched from `Math.round()` to `Math.floor()` with bounding-box normalization (consistent with server-side spatial indexing in `nearestNodeStress`, `server/analysis.ts`)
 - This ensures all vertices are consistently hashed within a normalized [0, extent) range
 - Added diagnostic debug modes (`?debugWeld=true`) for future troubleshooting
 
-**Key Insight:** The server's spatial grid (`analysis.ts`) uses `Math.floor((x - xMin) / cellSize)`, so the client's vertex welding should match this approach for consistency and to avoid edge-case artifacts.
+**Key Insight:** The server's spatial grid (`nearestNodeStress` in `analysis.ts`) uses `Math.floor((x - xMin) / cellSize)`, so the client's vertex welding should match this approach for consistency and to avoid edge-case artifacts.
 
 ### Vertex Welding Requirements (Invariants)
 When modifying heatmap or mesh coloring code:
@@ -144,8 +150,9 @@ Before submitting a PR that modifies mesh visualization or stress heatmap:
 - [ ] Known limitation documented (if any) in user-facing messages?
 
 ### References
-- Vertex Welding: `client/index.html` lines ~2210–2280 (computeSmoothedStressColors function)
-- Server Spatial Grid: `server/analysis.ts` lines 1712–1776 (nearestNodeStress function)
+Search by symbol, not line number — these move:
+- Vertex Welding: `client/index.html`, function `computeSmoothedStressColors`
+- Server Spatial Grid: `server/analysis.ts`, function `nearestNodeStress`
 - Stress Recovery: `server/solver/stress.ts` — `sprSmoothedStress6` (tensor) is
   the ONE recovered nodal field: it feeds the ZZ estimator, and on C3D10 the
   displayed heatmap and the per-node utilization field are projections of it via
@@ -161,7 +168,6 @@ Before submitting a PR that modifies mesh visualization or stress heatmap:
   `SprSamples` point cloud: `buildCentroidSamples` (one sample per element —
   C3D4, and the legacy shape) or `buildGaussSamples` (four C3D10 Gauss points per
   element, quadratic recovery basis — see `docs/spr-gauss-point-handoff.md`).
-  Search the symbols; line numbers drift.
 
 ## Two-Region Material Model — Invariants
 
