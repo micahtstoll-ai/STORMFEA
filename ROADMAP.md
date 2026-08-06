@@ -92,7 +92,7 @@
 - [x] Auto-convergence: standard mesh shown first, fine mesh in background
 - [x] Auto-upgrade to fine mesh if >5% change in peak stress
 - [x] Smart skip: SF > 3.0 skips fine mesh (clearly safe)
-- [x] Convergence badge (✓ converged / ⬆ upgraded / ✓ skipped / ◇ unavailable)
+- [x] Convergence badge (✓ converged / upgraded / ✓ skipped / unavailable)
 - [x] Manual convergence study with Richardson extrapolation
 - [x] Convergence cache — manual study reuses auto-check data
 
@@ -163,8 +163,8 @@
 - [x] Live workflow rail — single source of truth for guidance and gating; shows each step's state (done / current / warn), explains what blocks analysis in place, flags an unset or flat orientation, and is click-to-navigate
 - [x] Judge demo — one-click scenario loads a real part (the sample bracket if none is open) through the actual pipeline, auto-bolts the holes, and applies a varied-but-safe load, then the narrated tour runs the analysis over the populated part
 - [x] SOURCES tab — full citation for every model constant
-- [x] CALIBRATE tab with SVG coupon diagrams and ⬇ STL downloads
-- [x] ⊗ CALIBRATE tab with Taguchi-ready save workflow
+- [x] CALIBRATE tab with SVG coupon diagrams and STL downloads
+- [x] CALIBRATE tab with Taguchi-ready save workflow
 
 ### Packaging & Documentation
 - [x] Electron wrapper (Windows desktop app)

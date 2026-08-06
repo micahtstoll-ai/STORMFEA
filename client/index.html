@@ -1130,7 +1130,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <div id="deform-wrap" style="display:none;border-left:1px solid var(--border);margin-left:2px;padding-left:6px;gap:5px;align-items:center">
         <button class="btn" id="btn-deform" onclick="toggleDeform()" style="font-size:10px;padding:4px 8px;display:flex;flex-direction:column;align-items:center;gap:1px" title="Warp the mesh by the computed nodal displacement to show the deflected shape (exaggerated). Stress colors follow the deformed surface."><span style="font-weight:700">DEFORM</span><span style="font-size:8px;color:var(--text-lo);font-weight:400;line-height:1">Deflected</span></button>
         <label id="deform-exag-label" for="deform-exag" style="display:none;font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);letter-spacing:.04em;align-items:center;gap:4px">×<span id="deform-exag-val" style="color:var(--text-mid);min-width:20px;display:inline-block">auto</span><input type="range" id="deform-exag" min="0" max="100" value="0" step="1" oninput="onDeformExagInput(this.value)" style="width:70px;vertical-align:middle" title="Exaggeration factor. 0 = auto (peak deflection scaled to ~12% of part size)."></label>
-        <button class="btn" id="btn-deform-anim" onclick="toggleDeformAnim()" style="display:none;font-size:10px;padding:4px 8px;align-items:center" title="Animate the deflection (0 → peak → 0)">▶</button>
+        <button class="btn" id="btn-deform-anim" onclick="toggleDeformAnim()" style="display:none;font-size:10px;padding:4px 8px;align-items:center" title="Animate the deflection (0 → peak → 0)">Play</button>
       </div>
       <!-- Section / cutting-plane controls (shown after solve) -->
       <div id="clip-wrap" style="display:none;border-left:1px solid var(--border);margin-left:2px;padding-left:6px;gap:5px;align-items:center">
@@ -1888,7 +1888,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <label for="s-mesh-order">Element order</label>
         <select id="s-mesh-order" onchange="updateMeshOrderSelector(); markSessionDirty()">
           <option value="1">C3D4 — Linear (fast, shear-locking in bending)</option>
-          <option value="2" id="s-mesh-order-c3d10" selected>C3D10 — Quadratic ★ Recommended</option>
+          <option value="2" id="s-mesh-order-c3d10" selected>C3D10 — Quadratic (Recommended)</option>
         </select>
         <div id="s-mesh-order-hint" style="font-size:10px;color:var(--text-lo);margin-top:4px;line-height:1.6">
           C3D10 uses 10-node quadratic tetrahedra — eliminates shear locking for more accurate bending and stress concentrations near holes.
@@ -3733,7 +3733,7 @@ function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverrid
     console.log(`[DEBUG WELD] Vertices at same location but different groups: ${weldingIssues.length}`);
 
     if (weldingIssues.length > 0) {
-      console.log(`[DEBUG WELD] ⚠ Welding issues found (vertices at same location, different stress):`);
+      console.log(`[DEBUG WELD] WARNING: Welding issues found (vertices at same location, different stress):`);
       weldingIssues.slice(0, 5).forEach((issue, i) => {
         console.log(`  Issue ${i}: coord=${issue.coord}, ${issue.verts.length} vertices, stress variation=${issue.stressDelta.toFixed(1)} MPa`);
       });
@@ -5490,7 +5490,7 @@ function updateForceList() {
   el.innerHTML = resultantHtml + S.forces.map((f,i) => `
     <div class="card" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--gold-faint);border:1px solid var(--gold)18;border-radius:3px;margin-bottom:6px">
       <div style="width:8px;height:8px;border-radius:50%;background:var(--gold);flex-shrink:0"></div>
-      <div style="flex:1;font-size:10px;color:var(--gold)aa">${f.label} · ${U.forceStr(f.magnitude)} · ${dirLabel(f.direction)}${f._replaceRecommended ? ' <span style="color:var(--warn,#e0a030)">⚠ re-place recommended</span>' : ''}</div>
+      <div style="flex:1;font-size:10px;color:var(--gold)aa">${f.label} · ${U.forceStr(f.magnitude)} · ${dirLabel(f.direction)}${f._replaceRecommended ? ' <span style="color:var(--warn,#e0a030)">re-place recommended</span>' : ''}</div>
       <button class="btn" style="padding:2px 8px;font-size:11px" onclick="editForce(${i})" aria-label="Edit force"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 2 L8 3.5 L3.5 8 L1.5 8.5 L2 6.5 Z"/><line x1="5.5" y1="3" x2="7" y2="4.5"/></svg></button>
       <button class="btn" style="padding:2px 8px;font-size:11px" onclick="removeForce(${i})" aria-label="Remove force"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg></button>
     </div>
@@ -6605,7 +6605,7 @@ function renderValidationCoverage(vc) {
   return `
     <details style="margin-bottom:12px">
       <summary style="cursor:pointer;font-size:11px;font-weight:600;color:var(--text-mid);padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;user-select:none">
-        <span style="color:${headColor}">⚙ Validation Coverage — ${headText}</span>
+        <span style="color:${headColor}">Validation Coverage — ${headText}</span>
       </summary>
       <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px">
         <div style="font-size:9px;color:var(--text-lo);line-height:1.5;margin-bottom:8px">
@@ -6873,7 +6873,7 @@ function showResults(s) {
       return `
       <details style="margin-bottom:12px">
         <summary style="cursor:pointer;font-size:11px;font-weight:600;color:var(--text-mid);padding:10px 12px;background:${qualityBg};border:1px solid ${qualityBorder};border-radius:4px;user-select:none">
-          <span style="color:${qualityColor}${mqr.degenerateCount > 0 ? ';font-weight:700' : ''}">⚙ Mesh Quality — ${(mqr.qualityScore*100).toFixed(0)}%</span>
+          <span style="color:${qualityColor}${mqr.degenerateCount > 0 ? ';font-weight:700' : ''}">Mesh Quality — ${(mqr.qualityScore*100).toFixed(0)}%</span>
           ${mqr.degenerateCount > 0 ? ` <span style="color:var(--danger);font-weight:700">${mqr.degenerateCount} degenerate</span>` : ''}
           ${mqr.poorQualityCount > 0 ? ` <span style="color:var(--warn)">${mqr.poorQualityCount} poor</span>` : ''}
         </summary>
@@ -6925,7 +6925,7 @@ function showResults(s) {
       return `
       <details style="margin-bottom:12px">
         <summary style="cursor:pointer;font-size:11px;font-weight:600;color:var(--text-mid);padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;user-select:none">
-          <span style="color:${errColor}">◈ Mesh discretization error — ${pct.toFixed(1)}%</span>
+          <span style="color:${errColor}">Mesh discretization error — ${pct.toFixed(1)}%</span>
         </summary>
         <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px;font-size:10px;color:var(--text-lo);line-height:1.8">
           Zienkiewicz-Zhu global relative error estimate η — an ESTIMATE of how much of the stress field is mesh artifact rather than physics. Lower is better; below ~5% is generally trustworthy, above ~10% suggests refining the mesh before trusting margins. <span style="color:${errColor}">${errLabel}.</span>
@@ -6975,7 +6975,7 @@ function showResults(s) {
           cumulative (${S.modal.modes.length} modes): X ${pct(last.cumulativeMassFracX || 0)}% · Y ${pct(last.cumulativeMassFracY || 0)}% · Z ${pct(last.cumulativeMassFracZ || 0)}%</div>`;
       }
       const warnLine = (S.modal.warnings && S.modal.warnings.length)
-        ? `<div style="font-size:9px;color:var(--warn);margin-top:6px;line-height:1.5">${S.modal.warnings.map(w => '⚠ ' + w).join('<br>')}</div>`
+        ? `<div style="font-size:9px;color:var(--warn);margin-top:6px;line-height:1.5">${S.modal.warnings.join('<br>')}</div>`
         : '';
       const certLine = (S.modal.certified && S.modal.certified !== 'guard-block')
         ? `<div style="font-size:8.5px;color:var(--text-lo);margin-top:4px">Mode completeness: ${S.modal.certified}.</div>`
@@ -11190,7 +11190,7 @@ function drawDetailCanvas() {
     if (fat.fatigueConcern) {
       RY += 22;
       ctx.fillStyle = WARN;
-      ctx.fillText('⚠ Cycle count below 100,000 — flagged as a fatigue concern for repeated competition use.', MX, RY);
+      ctx.fillText('Warning: Cycle count below 100,000 — flagged as a fatigue concern for repeated competition use.', MX, RY);
     }
   } else {
     ctx.fillStyle = TEXT_LO;
@@ -11245,7 +11245,7 @@ function drawDetailCanvas() {
     ctx.fillStyle = iso.falseSafe ? DANGER : SUCCESS;
     ctx.fillText(
       iso.falseSafe
-        ? `⚠ FALSE SAFE — an isotropic tool would call this SAFE; STORMFEA does not.`
+        ? `FALSE SAFE — an isotropic tool would call this SAFE; STORMFEA does not.`
         : `✓ Isotropic and orthotropic models agree this part is safe.`,
       MX + 16, iy
     );
@@ -12864,7 +12864,7 @@ function _syncDeformUI() {
   if (lbl)    lbl.style.display  = active ? 'inline-flex' : 'none';
   if (anim) {
     anim.style.display = active ? 'inline-flex' : 'none';
-    anim.textContent   = S.deformAnimating ? '❚❚' : '▶';
+    anim.textContent   = S.deformAnimating ? 'Pause' : 'Play';
     anim.className      = 'btn' + (S.deformAnimating ? ' active' : '');
   }
   if (slider) slider.value = Math.min(100, S.deformExag || 0);

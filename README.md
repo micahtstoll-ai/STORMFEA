@@ -171,7 +171,7 @@ All constants are cited to peer-reviewed literature and documented in the app's 
 
 The defaults are literature averages — good for a first pass, but your printer and filament will differ. For printer-specific accuracy:
 
-1. Go to the **⊗ CALIBRATE** tab → download coupon STLs
+1. Go to the **CALIBRATE** tab → download coupon STLs
 2. Print with your target settings (walls, layer height, infill)
 3. Pull to failure with a force gauge
 4. Enter the measured loads → save profile
@@ -306,6 +306,6 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the ful
 
 Built by **Micah Stoll** · Nordic Storm FTC 5962 · Saint Peter MN · BIOBUZZ 2026–2027
 
-*If this tool helps your team build better robots, a ⭐ on GitHub goes a long way.*
+*If this tool helps your team build better robots, a star on GitHub goes a long way.*
 
 </div>

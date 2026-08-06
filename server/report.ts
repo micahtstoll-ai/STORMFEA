@@ -107,7 +107,7 @@ export function generateHtmlReport(
       <td style="padding:4px 8px">Hole ${i}</td>
       <td style="padding:4px 8px">${h.bolt?.label ?? 'unknown'}</td>
       <td style="padding:4px 8px">${h.type.replace('_', ' ')}</td>
-      <td style="padding:4px 8px;color:${h.warning?'#7a1a1a':'#1a7a40'}">${h.warning ? '⚠ ' + h.warning.slice(0,120) : '✓ OK'}</td>
+      <td style="padding:4px 8px;color:${h.warning?'#7a1a1a':'#1a7a40'}">${h.warning ? h.warning.slice(0,120) : '✓ OK'}</td>
     </tr>`).join('');
 
   const topoList = topologySuggestions.slice(0, 2).map((t, i) => `
@@ -208,8 +208,8 @@ export function generateHtmlReport(
       <div>Team 5962 · BIOBUZZ 2026–2027</div>
       <div>
         ${calibrationId
-          ? `<span class="badge badge-calib">⊗ CALIBRATED</span>`
-          : `<span class="badge badge-lit">◇ Literature defaults</span>`}
+          ? `<span class="badge badge-calib">CALIBRATED</span>`
+          : `<span class="badge badge-lit">Literature defaults</span>`}
       </div>
     </div>
   </div>
@@ -223,7 +223,7 @@ export function generateHtmlReport(
     <div class="verdict-text">${verdict}</div>
     <div class="verdict-sub">
       Governing failure mode: ${govMode?.mode ?? 'Bulk yield'} &nbsp;·&nbsp;
-      ${singularity?.detected ? '⚠ Stress singularity detected — see notes below' : '✓ No singularity detected'}
+      ${singularity?.detected ? 'Stress singularity detected — see notes below' : '✓ No singularity detected'}
     </div>
   </div>
 
@@ -254,7 +254,7 @@ export function generateHtmlReport(
        (SF band, fatigue) is disclosed with the same kind of humility. -->
   <div style="font-size:9px;color:#888;margin:-8px 0 14px;line-height:1.5">
     ${bucklingGoverns
-      ? `⚠ Buckling-limited estimate: BLF ${bucklingResult!.blf!.toFixed(2)}× applied load, lower than the linear first-yield estimate of ${estimatedFailForce.toFixed(0)} N. Linear buckling can overestimate real capacity by 10–40% for imperfect FDM geometry.`
+      ? `Buckling-limited estimate: BLF ${bucklingResult!.blf!.toFixed(2)}× applied load, lower than the linear first-yield estimate of ${estimatedFailForce.toFixed(0)} N. Linear buckling can overestimate real capacity by 10–40% for imperfect FDM geometry.`
       : `Linear first-yield estimate: assumes stress ∝ load and failure at first yield (no plasticity/buckling redistribution). Actual capacity is typically higher for ductile bending, lower if buckling governs.`}
   </div>
 
@@ -284,7 +284,7 @@ export function generateHtmlReport(
       <div style="padding:8px 10px;background:${fatigue.fatigueConcern?'#fff8e0':'#e8f5ee'};border:1px solid ${fatigue.fatigueConcern?'#8B6914':'#1a7a40'}44;border-radius:3px;font-size:10px">
         <div style="font-weight:600;color:${fatigue.fatigueConcern?'#5c3a00':'#1a7a40'};margin-bottom:3px">
           ${fatigue.estimatedCycles === null ? '∞ Infinite life — below endurance limit' :
-            fatigue.estimatedCycles < 100000 ? `⚠ ~${fatigue.estimatedCycles.toLocaleString()} cycles — fatigue concern` :
+            fatigue.estimatedCycles < 100000 ? `~${fatigue.estimatedCycles.toLocaleString()} cycles — fatigue concern` :
             `✓ ~${fatigue.estimatedCycles.toLocaleString()} cycles`}
         </div>
         <div style="color:#666">Fatigue SF: ${fatigue.fatigueSF}× &nbsp;·&nbsp; Se: ${fatigue.enduranceLimitMPa} MPa &nbsp;·&nbsp; ${confBadge(fatigue.confidence)}</div>
@@ -413,7 +413,7 @@ export function generateHtmlReport(
        and the report-drops-caveats complaint in #196) — it does not get cut. -->
   ${singularity?.detected ? `
   <div style="margin-top:10px;padding:8px 10px;background:#fff8e0;border:1px solid #e8cf8a;border-radius:3px;font-size:10px;color:#5c3a00;line-height:1.7">
-    <strong>⚠ ${singularity.cause === "constraint-edge" ? "Constraint-edge singularity" : singularity.cause === "load-edge" ? "Loaded-edge singularity" : "Stress singularity"} detected (${singularity.confidence} confidence)</strong><br>
+    <strong>${singularity.cause === "constraint-edge" ? "Constraint-edge singularity" : singularity.cause === "load-edge" ? "Loaded-edge singularity" : "Stress singularity"} detected (${singularity.confidence} confidence)</strong><br>
     ${singularity.message}
   </div>` : ''}
 
