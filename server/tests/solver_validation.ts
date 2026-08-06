@@ -458,7 +458,7 @@ console.log("\n[9] Under-constrained rotation detection (collinear bolts + drivi
 
   const positiveResult = detectUnconstrainedRigidBodyMode(constraints, drivingForces, mesh);
   if (positiveResult === null) {
-    console.warn("  ⚠ [known gap] positive rigid-body-mode case did not trigger — see comment above this test. Not counted as pass/fail pending real-world calibration.");
+    console.warn("  [known gap] positive rigid-body-mode case did not trigger — see comment above this test. Not counted as pass/fail pending real-world calibration.");
   } else {
     test("Detects under-constrained rotation when collinear bolts + off-axis force",
       positiveResult.detected === true,
