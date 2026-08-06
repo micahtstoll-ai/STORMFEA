@@ -3406,7 +3406,7 @@ function refreshUnitsDisplay() {
   // Force list
   updateForceList();
   // Results panel — re-render if results exist
-  if (S.results) renderResults(S.results);
+  if (S.results) showResults(S.results);
   // File info dimensions
   if (S.fileData && S.fileData.dimensions) updateFileInfo();
 }
@@ -12647,7 +12647,7 @@ async function importFromOnshape() {
 
     st.innerHTML = `<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> Imported: ${data.fileName} (${data.holes?.length ?? 0} holes detected)`;
     st.style.color = 'var(--success)';
-    playStartupTone();
+    AudioManager.playMeshStart();
 
   } catch(e) {
     hideOverlay();

@@ -503,7 +503,12 @@ export function checkFailureModes(params: {
     results.push({
       mode:       "Bearing (hole wall)",
       sf:          +sf_bearing.toFixed(3),
-      failForceN:  +(F * sf_bearing / bearingStressMult).toFixed(0),
+      // sf_bearing is already measured against the PEAK stress (F·mult / area),
+      // so F·sf_bearing is the load at which that peak reaches the allowable.
+      // Dividing by bearingStressMult a second time applied the cosine-bearing
+      // concentration twice and made this row's failForceN disagree with its
+      // own sf — and with every other mode, which all report F·sf.
+      failForceN:  +(F * sf_bearing).toFixed(0),
       checked:     true,
       confidence:  isCalibrated ? "medium" : "low",
       note: isCalibrated
@@ -4427,7 +4432,13 @@ function closestNode(
 ): number {
   let best = 0, bestD = Infinity;
   for (let n = 0; n < nodeCount; n++) {
-    const d = (nodes[n*3]??0-px)**2 + (nodes[n*3+1]??0-py)**2 + (nodes[n*3+2]??0-pz)**2;
+    // Parenthesise each `?? 0` BEFORE subtracting: `??` binds looser than `-`,
+    // so `nodes[i] ?? 0 - px` parses as `nodes[i] ?? (0 - px)` and silently
+    // measures the distance from the ORIGIN instead of from (px, py, pz).
+    const dx = (nodes[n*3]     ?? 0) - px;
+    const dy = (nodes[n*3 + 1] ?? 0) - py;
+    const dz = (nodes[n*3 + 2] ?? 0) - pz;
+    const d = dx*dx + dy*dy + dz*dz;
     if (d < bestD) { bestD = d; best = n; }
   }
   return best;
