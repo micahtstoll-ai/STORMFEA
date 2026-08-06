@@ -269,6 +269,63 @@ describe.skipIf(!probe.found)("adaptive vs uniform at matched element count (iss
     expect(adaptive.maxVonMisesMPa).toBeGreaterThan(0);
   });
 
+  // ── #256: the headline numbers carry their own mesh-sensitivity ────────────
+  it("records the HEADLINE numbers per iteration, not just the error", () => {
+    // Issue #256's finding is that the global error converges while the safety
+    // factor does not — measured on this very fixture, 19.37% -> 11.14% error
+    // against a 46% safety-factor swing over the same runs. The history used to
+    // carry only the error, so the one place the tool solves the same part at
+    // several densities was throwing away the numbers the user actually reads.
+    const info = adaptive.adaptiveRefinement!;
+    expect(info.history.length).toBeGreaterThanOrEqual(2);
+    for (const step of info.history) {
+      expect(Number.isFinite(step.maxVonMisesMPa), `peak missing on a ${step.elementCount}-element step`).toBe(true);
+      expect(step.maxVonMisesMPa).toBeGreaterThan(0);
+      // safetyFactor may legitimately be null on a degraded solve; it must be
+      // null or a real number, never undefined (which would read as "0% spread").
+      expect(step.safetyFactor === null || Number.isFinite(step.safetyFactor)).toBe(true);
+    }
+  });
+
+  it("reports a headline spread that brackets the numbers it was built from", () => {
+    // The consistency property, which is what a plumbing bug would break: a
+    // spread whose range does not contain the reported result would be actively
+    // misleading — worse than not reporting one.
+    const info = adaptive.adaptiveRefinement!;
+    const spread = info.headlineSpread;
+    expect(spread, "no headline spread despite multiple solves").toBeDefined();
+    expect(spread!.samples).toBe(info.history.length);
+
+    const peaks = info.history.map(h => h.maxVonMisesMPa);
+    expect(spread!.peakMin).toBeCloseTo(Math.min(...peaks), 9);
+    expect(spread!.peakMax).toBeCloseTo(Math.max(...peaks), 9);
+    // The REPORTED peak is one of the solves, so it must lie inside the range.
+    expect(adaptive.maxVonMisesMPa).toBeGreaterThanOrEqual(spread!.peakMin * (1 - 1e-9));
+    expect(adaptive.maxVonMisesMPa).toBeLessThanOrEqual(spread!.peakMax * (1 + 1e-9));
+
+    const sfs = info.history.map(h => h.safetyFactor).filter((v): v is number => v != null);
+    if (sfs.length >= 2) {
+      expect(spread!.safetyFactorMin).toBeCloseTo(Math.min(...sfs), 9);
+      expect(spread!.safetyFactorMax).toBeCloseTo(Math.max(...sfs), 9);
+      expect(adaptive.safetyFactor!).toBeGreaterThanOrEqual(spread!.safetyFactorMin! * (1 - 1e-9));
+      expect(adaptive.safetyFactor!).toBeLessThanOrEqual(spread!.safetyFactorMax! * (1 + 1e-9));
+    }
+  });
+
+  it("only warns when the spread is material", () => {
+    // The note is what reaches the user, in the app and the printed report. It
+    // must be present exactly when the spread is worth acting on — a banner on
+    // every run teaches people to ignore banners, and silence on a swinging part
+    // is the defect #256 opened on.
+    const spread = adaptive.adaptiveRefinement!.headlineSpread!;
+    const shown = spread.safetyFactorSpread ?? spread.peakSpread;
+    if (shown >= 0.05) {
+      expect(spread.note, `spread ${(shown * 100).toFixed(1)}% but no note`).not.toBe("");
+    } else {
+      expect(spread.note, `spread only ${(shown * 100).toFixed(1)}% but warned anyway`).toBe("");
+    }
+  });
+
   it("reduces the global error against its own starting mesh", () => {
     const info = adaptive.adaptiveRefinement!;
     expect(info.finalGlobalError).toBeLessThan(info.initialGlobalError);

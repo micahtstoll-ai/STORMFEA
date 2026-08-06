@@ -282,14 +282,22 @@ describe.skipIf(!probe.found)("second adaptive fixture: cross plate, partial bor
     //   65 318 el  fires     102 152 el  fires     178 727 el  null
     //
     // Not a threshold, not monotone: it fires, stops, and starts again. The
-    // cause is #263 — the sampling neighbourhood is sized from the STL display
-    // tessellation and does not shrink as the FEA field sharpens, so the
-    // concentration ratio wanders across its 3.0 cut for reasons unrelated to
+    // cause is #263 — the sampling neighbourhood was sized from the STL display
+    // tessellation and did not shrink as the FEA field sharpened, so the
+    // concentration ratio wandered across its 3.0 cut for reasons unrelated to
     // the physics. Asserting it on a particular mesh would be encoding that
     // bug; asserting the CAPABILITY is what this fixture is actually for.
     //
-    // When #263 is fixed this should tighten to every mesh, and that tightening
-    // is a good way to tell the fix worked.
+    // #263 IS FIXED, and this assertion deliberately did NOT tighten to "every
+    // mesh". That was the original plan and it was wrong: the fix moved sampling
+    // to the FEA field (radius 13.250 -> 0.938 mm, stable under refinement), but
+    // this part's ratio then sat at 3.1–3.3, inside the REPORT band, so it no
+    // longer ALARMS on any mesh. Making it alarm needs the threshold at ~2.5 —
+    // and the known-smooth control added since (`smooth-concentration.test.ts`,
+    // a Kt≈3 hole whose peak provably converges) measures 2.3–2.4, so a 2.5
+    // alarm would fire on a part with no singularity at all. The populations are
+    // too close to separate with an alarm; the weaker assertion here is the
+    // correct one, by measurement rather than by concession.
     const flagged = TIER_NAMES
       .map(q => ({ q, s: tiers[q]!.singularity }))
       .filter((e): e is { q: typeof TIER_NAMES[number]; s: NonNullable<typeof e.s> } => e.s !== null);

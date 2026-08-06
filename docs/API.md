@@ -228,14 +228,47 @@ otherwise an object (a degraded run still reports, with `degradedToTier: true`):
   "elementBudget": 9920,
   "bcSingularityErrorFraction": 0.12,
   "history": [
-    { "globalRelativeError": 0.081, "elementCount": 1240 },
-    { "globalRelativeError": 0.042, "elementCount": 3100 },
-    { "globalRelativeError": 0.026, "elementCount": 6800 }
+    { "globalRelativeError": 0.081, "elementCount": 1240, "maxVonMisesMPa": 6.86, "safetyFactor": 7.28 },
+    { "globalRelativeError": 0.042, "elementCount": 3100, "maxVonMisesMPa": 8.02, "safetyFactor": 6.24 },
+    { "globalRelativeError": 0.026, "elementCount": 6800, "maxVonMisesMPa": 5.56, "safetyFactor": 8.99 }
   ],
+  "headlineSpread": {
+    "samples": 3,
+    "safetyFactorMin": 6.24, "safetyFactorMax": 8.99, "safetyFactorSpread": 0.4407,
+    "peakMin": 5.56, "peakMax": 8.02, "peakSpread": 0.4424,
+    "monotoneInDensity": false,
+    "note": "Across the 3 meshes solved, the safety factor moved 6.24–8.99 (44.1%) …"
+  },
   "degradedToTier": false,
   "note": "Adaptive refinement: 3 solve(s), stopped on 'target-error-reached'. 12% of the remaining estimated error sits at boundary-condition discontinuities (the rim of a constrained or loaded patch), which refinement cannot reduce — that share reflects the constraint idealization, not the mesh."
 }
 ```
+
+**`headlineSpread`** (issue #256) reports how far `safetyFactor` and
+`maxVonMisesMPa` moved across the meshes the loop actually solved. It exists
+because the discretization error and the headline number do NOT behave alike: on
+the Ø5-bore tube the global error converged 19.4% → 11.1% while the safety factor
+swung 46% and the peak 46%, NON-MONOTONICALLY, over the same runs. A reader shown
+only the error is being shown a well-behaved number next to a badly-behaved one
+with nothing distinguishing them.
+
+`monotoneInDensity: false` is the stronger warning: element count did not predict
+the answer, so a finer mesh is not a more trustworthy one. That is the signature
+of a peak at a singularity — a clamp rim, a loaded-patch rim, or a sharp corner —
+where the peak is set by the local element size and no mesh converges it.
+
+This is a MEASUREMENT over the meshes at hand, not a confidence interval: it is
+bounded by how far apart those meshes were and says nothing about where the true
+value lies. It answers only "does refining this part change the answer". A part
+whose peak genuinely converges gives a small, monotone spread and no `note` — the
+plate-with-hole control measures 2.2%, monotone, settling to 0.1% between the two
+finest meshes. Absent (`undefined`) when fewer than two solves happened, which is
+deliberate: one mesh cannot measure its own mesh-dependence, and reporting 0%
+there would assert a convergence that was never tested.
+
+`note` is empty below a 5% spread — the same cutoff the client's convergence
+study uses to call a metric mesh-independent, so the two surfaces cannot tell a
+user opposite things.
 
 `bcSingularityErrorFraction` is a DIAGNOSIS, not a second accuracy target, and
 `finalGlobalError` remains the TOTAL estimated error regardless of it. A rigid
@@ -292,6 +325,30 @@ adaptive reached a 0.262 global error on 40,534 elements where a uniform mesh of
 24% (4.91 vs 3.97 MPa), far more than they disagreed on the error they were
 optimising. Adaptivity buys error per element; it does not by itself settle the
 peak stress.
+
+**Element-order downgrade** (`summary.meshOrderDowngrade`, issue #265). Normally
+`null`. Non-null when the runtime C3D10 midside node-ordering guard rejected the
+mesher's output twice and the analysis continued on LINEAR (C3D4) elements:
+
+```json
+"meshOrderDowngrade": {
+  "requestedOrder": 2, "actualOrder": 1, "rejectedAttempts": 2,
+  "bestElemMaxDev": 0.40,
+  "note": "The C3D10 … meshes from this TetGen build were rejected twice …"
+}
+```
+
+Distinct from the mesh fallback: `meshFallback: true` means the GEOMETRY was
+replaced by a bounding box and nothing about the part's features survives, while
+this means the geometry is intact and only the element order is worse. The guard
+rejection was observed to be transient, so a rejected mesh is re-meshed once
+before anything is given up; only a rejection that survives a fresh mesh — i.e. a
+reproducible mesher/build mismatch — takes this path, and linear tetrahedra have
+no midside nodes for the disputed ordering to apply to.
+
+Read it as a caveat on the numbers: C3D4 shear-locks in bending and can
+UNDERPREDICT displacements and bending stresses by tens of percent, which is the
+optimistic direction. `nodesPerElem` will read `4` on such a run.
 
 **BC share of the discretization error** (`summary.bcSingularityErrorFraction`,
 issue #259). How much of `globalRelativeError`'s energy sits at boundary-
