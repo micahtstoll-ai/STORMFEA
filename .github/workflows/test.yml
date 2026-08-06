@@ -27,6 +27,14 @@ on:
   pull_request:
     branches: [ main ]
 
+# Five jobs per run means a superseded PR push occupies five runners, not one.
+# Cancel the previous run for the same ref when a new commit arrives -- but
+# only for pull requests: a push to main is a result worth keeping even when
+# the next push is already on its way.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # ── The cheap files, first ──────────────────────────────────────────────────
   # 78 of the 82 vitest files, ~84 s of file time between them. This is the job
@@ -37,6 +45,7 @@ jobs:
   unit-light:
     name: Unit tests (light shard)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
@@ -64,6 +73,7 @@ jobs:
   unit-heavy:
     name: Unit tests (heavy shard)
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
@@ -92,6 +102,7 @@ jobs:
   solver:
     name: Solver validation + parallel assembly
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
@@ -124,6 +135,7 @@ jobs:
   client:
     name: Client logic + invariant/API guards
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
@@ -151,6 +163,7 @@ jobs:
   doc-counts:
     name: Documented test counts
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [unit-light, unit-heavy, solver, client]
     steps:
       - uses: actions/checkout@v4

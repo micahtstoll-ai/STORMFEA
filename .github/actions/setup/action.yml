@@ -32,9 +32,16 @@ runs:
       shell: bash
       # The Ubuntu runner ships both in its default repos; update the index
       # first so the install is robust against a stale cache.
+      #
+      # DPkg::Lock::Timeout is not a nicety. By default apt waits FOREVER for
+      # the dpkg lock, and the runner image's own unattended-upgrades can hold
+      # it: observed on run 31104534659, where this step hung past 25 minutes
+      # on one runner while two sibling jobs executing this same file finished
+      # it in 19-21 s. Bounded waiting turns that indefinite hang into a
+      # failure the job timeout and a re-run can deal with.
       run: |
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends tetgen gmsh
+        sudo apt-get -o DPkg::Lock::Timeout=300 update
+        sudo apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends tetgen gmsh
         echo "tetgen: $(command -v tetgen)"
         echo "gmsh:   $(gmsh --version 2>&1)"
 
