@@ -67,11 +67,27 @@ git push origin your-branch
 - `tsconfig.json` - TypeScript configuration
 
 ## GitHub Actions Workflows
-1. **test.yml** - Runs on every push/PR to main (the only workflow)
-   - Installs dependencies via `npm ci`
-   - Compiles TypeScript
-   - Runs the full test suite (vitest units, solver validation, parallel
-     assembly equivalence, client logic checks)
+1. **test.yml** - Runs on every push/PR to main (the only workflow). The same
+   tests `npm run test` runs locally, but split across five concurrent jobs
+   sized to their measured cost, because the suite is CPU-bound on real FE
+   solves and running it as one `&&` chain made the wall time their SUM:
+   - `unit-light` - 78 vitest files, ~2 min. The fast "is this obviously
+     broken" signal; look here first when CI goes red.
+   - `unit-heavy` - the 4 files in `scripts/heavy-tests.json`, ~10.5 min. The
+     critical path. These are acceptance gates (#149, #261, #160) doing real
+     30k-75k element solves.
+   - `solver` - `tsc` + `solver_validation.js` + parallel-assembly
+     equivalence + the #66 TetGen midnode gate, ~5 min.
+   - `client` - client logic + `docs/INVARIANTS.md` and API-route drift
+     guards, ~1 min.
+   - `doc-counts` - needs all four; merges the two vitest shard summaries and
+     enforces the #198 README/methodology count guard.
+   - Shared setup (Node, `npm ci`, TetGen/Gmsh) lives in
+     `.github/actions/setup`.
+
+   When adding a test file, put it in the light shard unless it costs more
+   than ~30 s, and keep `scripts/heavy-tests.json` honest — the shards must
+   PARTITION the suite or `check-doc-test-counts.mjs` fails the build.
 
 ## Prevention Guidelines for Automated Commits
 When making automated PRs or commits:

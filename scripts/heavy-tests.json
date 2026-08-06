@@ -1,0 +1,25 @@
+{
+  "_comment": [
+    "The vitest files that dominate suite wall time, split out so CI can run them",
+    "on their own runner in parallel with everything else instead of queueing them",
+    "behind (and in front of) the fast files.",
+    "",
+    "Measured on the ubuntu-latest 4-vCPU runner (workflow run 31054750716):",
+    "these four files account for 1811 s of the 1895 s of total vitest file time.",
+    "The other 78 files together are ~84 s.",
+    "",
+    "Every entry is a REAL finite-element cost, not a sleep or a retry: full",
+    "TetGen meshes at 30k-75k elements plus CG solves. Do not add a file here to",
+    "make CI look faster -- the list exists so the scheduler can overlap the",
+    "expensive work, and a file in the wrong shard just moves the cost around.",
+    "",
+    "Keep this list in sync with reality: if a file here drops below ~30 s, move",
+    "it back to the light shard so the heavy job stays a true critical path."
+  ],
+  "files": [
+    "server/tests/unit/adaptive-fixture-cross.test.ts",
+    "server/tests/unit/adaptive-benchmark.test.ts",
+    "server/tests/unit/adaptive-resolve-failure.test.ts",
+    "server/tests/unit/modal-solver.test.ts"
+  ]
+}

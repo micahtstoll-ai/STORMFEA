@@ -16,6 +16,22 @@
 // and asserts the numbers hard-coded in README.md and the methodology
 // template match. Run as the last step of `npm run test`; exits 1 on any
 // mismatch so drift fails the build instead of silently accumulating.
+//
+// CI runs the vitest suite as two shards on two runners (see
+// scripts/vitest-shard.mjs), which would hand this guard a partial count and
+// let it "pass" against a README claiming the full one. So the vitest summary
+// may be given as SEVERAL files, whose test and file counts are summed:
+//
+//   node scripts/check-doc-test-counts.mjs \
+//     --vitest a/vitest-summary-light.json --vitest b/vitest-summary-heavy.json \
+//     --solver dist/tests/solver-validation-summary.json \
+//     --client scripts/client-logic-summary.json
+//
+// With no flags the defaults above apply, so a plain `npm run test` is
+// unchanged. Summing is only sound because the shards PARTITION the suite —
+// vitest-shard.mjs derives one shard as the exact complement of the other, so
+// no file can be counted twice or dropped. The duplicate check below enforces
+// that rather than trusting it.
 
 import fs from 'fs';
 import path from 'path';
@@ -32,13 +48,62 @@ function readJson(p, label) {
   return JSON.parse(fs.readFileSync(p, 'utf-8'));
 }
 
-const vitestSummary = readJson(path.join(root, 'scripts', 'vitest-summary.json'), 'vitest');
-const solverSummary  = readJson(path.join(root, 'dist', 'tests', 'solver-validation-summary.json'), 'solver validation');
-const clientSummary  = readJson(path.join(root, 'scripts', 'client-logic-summary.json'), 'client logic');
+/** Collect repeatable `--flag <value>` arguments, or [] if the flag is absent. */
+function argValues(flag) {
+  const out = [];
+  const argv = process.argv.slice(2);
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== flag) continue;
+    const v = argv[i + 1];
+    if (v == null || v.startsWith('--')) {
+      console.error(`✗ ${flag} needs a path argument`);
+      process.exit(1);
+    }
+    out.push(v);
+    i++;
+  }
+  return out;
+}
+
+const vitestPaths = argValues('--vitest');
+const solverPath = argValues('--solver')[0] ?? path.join(root, 'dist', 'tests', 'solver-validation-summary.json');
+const clientPath = argValues('--client')[0] ?? path.join(root, 'scripts', 'client-logic-summary.json');
+
+const vitestSummaries = (vitestPaths.length > 0
+  ? vitestPaths
+  : [path.join(root, 'scripts', 'vitest-summary.json')]
+).map((p) => ({ path: p, json: readJson(p, `vitest (${p})`) }));
+
+// Two shards that overlap would double-count a file and make a stale README
+// look correct, which is the exact failure this guard exists to catch. Compare
+// the union of test-file paths against the running total.
+const seenFiles = new Set();
+for (const { path: p, json } of vitestSummaries) {
+  for (const r of json.testResults ?? []) {
+    if (seenFiles.has(r.name)) {
+      console.error(
+        `✗ vitest summaries overlap: ${r.name} appears in more than one shard ` +
+        `(last seen in ${p}). Shards must partition the suite, or the totals below are wrong.`,
+      );
+      process.exit(1);
+    }
+    seenFiles.add(r.name);
+  }
+}
+
+if (vitestSummaries.length > 1) {
+  console.log(
+    `· merged ${vitestSummaries.length} vitest shard summaries: ` +
+    vitestSummaries.map((s) => `${path.basename(s.path)}=${(s.json.testResults ?? []).length} files`).join(', '),
+  );
+}
+
+const solverSummary  = readJson(solverPath, 'solver validation');
+const clientSummary  = readJson(clientPath, 'client logic');
 
 const actual = {
-  vitestTests: vitestSummary.numTotalTests,
-  vitestFiles: (vitestSummary.testResults ?? []).length,
+  vitestTests: vitestSummaries.reduce((n, s) => n + (s.json.numTotalTests ?? NaN), 0),
+  vitestFiles: seenFiles.size,
   solverTests: solverSummary.passed,
   solverGroups: solverSummary.groups,
   clientTests: clientSummary.passed,
