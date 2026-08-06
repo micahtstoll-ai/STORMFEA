@@ -3,7 +3,49 @@
 ## Project Overview
 STORMFEA is an FDM-aware finite element analysis tool built with TypeScript/Node.js (server) and a single-file vanilla-JS client. The project uses npm for dependency management and runs automated tests via GitHub Actions.
 
-## Critical Files & Safety Rules
+## Keeping This File Accurate
+This file is instructions an agent acts on, not a description to skim past — a
+wrong claim here (a stale line number, a guessed commit hash, a "this always
+happens" that doesn't) actively misleads instead of merely failing to help.
+Before writing a fact into this file:
+- Verify it against source (read/grep the actual code) — don't extrapolate
+  from memory of an earlier version of the file or the code.
+- Cite symbols, not line numbers. Line numbers drift with every unrelated
+  edit; symbol names are the stable handle (`docs/INVARIANTS.md` states this
+  same rule for its own rows — it applies here too).
+- If a claim can't be verified, say so or leave it out — don't round several
+  plausible answers up to one confident-sounding one.
+- When a change to this repo touches an invariant, constant, or behavior
+  described here, update this file in the same PR. A stale CLAUDE.md is a bug
+  in the same sense a stale test is.
+
+## Table of Contents
+1. [Project Structure](#project-structure)
+2. [Repo Hygiene & Git Safety](#repo-hygiene--git-safety)
+3. [Related Documentation](#related-documentation)
+4. [Common Tasks](#common-tasks)
+5. [GitHub Actions Workflows](#github-actions-workflows)
+6. [GitHub Issue Workflow](#github-issue-workflow)
+7. [Physics-First: Citations & Confidence](#physics-first-citations--confidence)
+8. [Frontend Design System](#frontend-design-system)
+9. [Heatmap Rendering — Common Pitfalls & Lessons Learned](#heatmap-rendering--common-pitfalls--lessons-learned)
+10. [Two-Region Material Model — Invariants](#two-region-material-model--invariants)
+11. [Interlayer Failure & Bond Model — Invariants](#interlayer-failure--bond-model--invariants)
+
+## Project Structure
+- `server/` - Node.js backend (TypeScript)
+- `server/solver/` - FE assembly, recovery, and the two-region/bond material models
+- `server/tests/` - Test files (`server/tests/unit/` for vitest; `solver_validation.ts` and `test-parallel-assembly.ts` for the solver shard)
+- `client/` - Single-file frontend (vanilla JS + Three.js)
+- `docs/` - `INVARIANTS.md` (normative-invariant traceability index), `layer-model-audit.md` (A1–A7 defect history), `spr-gauss-point-handoff.md`, and other design/methodology notes
+- `.github/workflows/` - CI/CD pipeline definitions
+- `.github/actions/setup/` - shared CI setup (Node, `npm ci`, TetGen/Gmsh)
+- `scripts/` - build and CI-support scripts, including `heavy-tests.json` (the CI heavy-shard file list) and the doc/API/invariant drift guards
+- `package.json` - Project dependencies
+- `package-lock.json` - Locked dependency versions (DO NOT DELETE)
+- `tsconfig.json` - TypeScript configuration
+
+## Repo Hygiene & Git Safety
 
 ### Package Lock File (package-lock.json)
 **CRITICAL**: This file MUST remain in the repository and be included in every commit.
@@ -23,17 +65,40 @@ STORMFEA is an FDM-aware finite element analysis tool built with TypeScript/Node
 3. Different developers get different packages installed
 4. Pull request CI fails, blocking merges
 
-### Git Safety Checklist
-Before creating a commit or PR, verify:
-- [ ] `package-lock.json` is present: `ls package-lock.json`
+### Before every commit or PR
+- [ ] `package-lock.json` is present: `ls -la package-lock.json`
 - [ ] Lock file changes are intentional: `git diff package-lock.json`
-- [ ] No critical build files were accidentally removed
+- [ ] No critical build files were accidentally removed (`dist/`, lock files, config files)
+- [ ] Stage files explicitly — never `git add -A` or `git add .`
+- [ ] `npm ci && npm run test` passes locally
 
 ### Workflow Files (.github/workflows/)
 These files define CI/CD behavior. Before modifying:
 - Test changes locally first
 - Ensure `npm ci` and `npm run test` pass locally
 - Document any new environment variables needed
+
+## Related Documentation
+CLAUDE.md is operational guidance for working in this repo, not a full
+description of it — check these before assuming a gap or a bug:
+- `docs/ARCHITECTURE.md` — the request lifecycle (upload → mesh → assemble →
+  solve → recover → report), a module-by-module map of `server/` and
+  `server/solver/`, and build/run/test commands.
+- `docs/API.md` — the HTTP route surface (drift-guarded in CI — see
+  [GitHub Actions Workflows](#github-actions-workflows)).
+- `docs/METHODOLOGY.md` — the physics and math behind the solver.
+- `docs/layer-model-audit.md`, `docs/bc-singularity-exclusion.md`,
+  `docs/load-distribution-default.md` — "landed decision" writeups: deliberate,
+  non-obvious behavior changes with the measurements that justified them
+  (e.g. the default load distribution is `contact_patch`, not `uniform`). If
+  something looks wrong, check whether one of these already explains it
+  before treating it as a bug.
+- `DESIGN.md` — the frontend design system in full (see
+  [Frontend Design System](#frontend-design-system) below for the summary).
+- `CONTRIBUTING.md` — contributor norms, including the physics-citation
+  requirement (see [Physics-First](#physics-first-citations--confidence)
+  below).
+- `ROADMAP.md` — planned work and priorities.
 
 ## Common Tasks
 
@@ -52,19 +117,10 @@ git push origin your-branch
 ```
 
 ### Debugging CI Failures
-1. Check the GitHub Actions logs first
-2. Run `npm ci` locally to reproduce dependency issues
-3. Run `npm run test` to reproduce test failures
-4. Look for errors in TypeScript compilation or test execution
-
-## Project Structure
-- `server/` - Node.js backend (TypeScript)
-- `client/` - Single-file frontend (vanilla JS + Three.js)
-- `server/tests/` - Test files
-- `.github/workflows/` - CI/CD pipeline definitions
-- `package.json` - Project dependencies
-- `package-lock.json` - Locked dependency versions (DO NOT DELETE)
-- `tsconfig.json` - TypeScript configuration
+1. Check the GitHub Actions logs first — identify which of the five shard jobs (below) went red; that tells you what kind of failure it is before you read a single line of log.
+2. Run `npm ci` locally to reproduce dependency issues.
+3. Run `npm run test` to reproduce test failures — it runs the full suite serially in one process, the same tests CI splits across shards.
+4. Look for errors in TypeScript compilation or test execution.
 
 ## GitHub Actions Workflows
 1. **test.yml** - Runs on every push/PR to main (the only workflow). The same
@@ -89,13 +145,59 @@ git push origin your-branch
    than ~30 s, and keep `scripts/heavy-tests.json` honest — the shards must
    PARTITION the suite or `check-doc-test-counts.mjs` fails the build.
 
-## Prevention Guidelines for Automated Commits
-When making automated PRs or commits:
-1. Always run: `ls -la package-lock.json` to verify existence
-2. Always verify: `git diff package-lock.json` shows expected changes only
-3. Always test: Run `npm ci && npm run test` before pushing
-4. Never use: `git add -A` or `git add .` - add files explicitly
-5. Never delete: Build artifacts (dist/), lock files, or config files
+## GitHub Issue Workflow
+Track real work in GitHub issues, not just in conversation or code comments —
+this repo already does this (see `docs/INVARIANTS.md`'s "Gaps found" notes,
+several of which were filed as their own issues, and the commit/issue numbers
+cited throughout the invariant sections below).
+- **Open an issue** for anything that needs doing but isn't part of the
+  current change: a follow-up, a known limitation, a documentation gap, a
+  test-coverage hole. Use the **Bug Report** template for defects
+  (`CONTRIBUTING.md`). Don't let a code TODO or a chat message be the only
+  record of it.
+- **Link issues to the PR that fixes them** with a `Fixes #N` / `Closes #N`
+  keyword (see the "Linked Issue" field in
+  `.github/pull_request_template.md`) so merging closes the issue
+  automatically — that's the default path, not a manual close-it-yourself
+  step.
+- **Close an issue directly**, with a short comment on what changed and
+  where, when it's resolved some other way — already fixed, superseded by
+  another change, or landed without a `Fixes #` keyword in the commit.
+- **Don't close speculatively.** An issue closes when the fix has actually
+  landed (merged, or in an active session, pushed and verified) — not when
+  you expect it will.
+
+## Physics-First: Citations & Confidence
+Any change touching the solver, material model, or failure-mode logic needs a
+physical justification, not just a passing test suite. From `CONTRIBUTING.md`,
+enforced throughout the invariant sections below:
+- **Cite a source.** The 65% stiffness ratio (E_z) and 58% yield ratio
+  (σ_yield,Z) anchors are not arbitrary — they come from peer-reviewed
+  literature. If you have better data, bring the paper; don't nudge a
+  constant because a result "looks more reasonable."
+- **Tag confidence explicitly.** New failure modes and calibration constants
+  get a HIGH / MEDIUM / LOW confidence label based on how much FDM-specific
+  data backs them — see e.g. "Exponents are LOW confidence, locked by
+  `core-lattice.test.ts`" in the Two-Region invariants below.
+- **A LOW-confidence constant is a documented gap, not a bug.** Don't "fix"
+  it by guessing a better number; either bring calibration data that
+  justifies a change, or leave the tag alone.
+- **Every new failure mode needs a unit test asserting the correct SF at a
+  known load** — not just that the code runs without throwing.
+
+## Frontend Design System
+`client/index.html` is a single ~14,600-line file with no CSS framework
+enforcing consistency — it relies on people (and agents) following
+`DESIGN.md` by hand. Before any visual change:
+- **Three fonts, fixed roles** — Rajdhani (headings), Outfit (UI copy), DM
+  Mono (data/numbers/code). Never mix roles; never introduce a fourth font.
+- **Four type sizes only** — 9 / 11 / 13 / 16px. No 10, 12, or 14px.
+- **Three colors, two dimensions** — the gold accent, the four-step
+  base/text scales, and three semantic colors (`--warn` amber, `--danger`
+  rust red, `--success` = gold, never green). Never purple, cyan, blue,
+  green, or a gradient.
+- **Four spacing values** — 6 / 12 / 20 / 32px, used consistently.
+- This is a summary; read `DESIGN.md` in full before a UI-touching PR.
 
 ## Heatmap Rendering — Common Pitfalls & Lessons Learned
 
@@ -109,11 +211,11 @@ When making automated PRs or commits:
 - Under certain mesh geometries, this led to vertices that should be welded together remaining separate
 
 **Solution Applied (commit: 49bc5d6):**
-- Switched from `Math.round()` to `Math.floor()` with bounding-box normalization (consistent with server-side spatial indexing in `server/analysis.ts:1728-1730`)
+- Switched from `Math.round()` to `Math.floor()` with bounding-box normalization (consistent with server-side spatial indexing in `nearestNodeStress`, `server/analysis.ts`)
 - This ensures all vertices are consistently hashed within a normalized [0, extent) range
 - Added diagnostic debug modes (`?debugWeld=true`) for future troubleshooting
 
-**Key Insight:** The server's spatial grid (`analysis.ts`) uses `Math.floor((x - xMin) / cellSize)`, so the client's vertex welding should match this approach for consistency and to avoid edge-case artifacts.
+**Key Insight:** The server's spatial grid (`nearestNodeStress` in `analysis.ts`) uses `Math.floor((x - xMin) / cellSize)`, so the client's vertex welding should match this approach for consistency and to avoid edge-case artifacts.
 
 ### Vertex Welding Requirements (Invariants)
 When modifying heatmap or mesh coloring code:
@@ -144,8 +246,9 @@ Before submitting a PR that modifies mesh visualization or stress heatmap:
 - [ ] Known limitation documented (if any) in user-facing messages?
 
 ### References
-- Vertex Welding: `client/index.html` lines ~2210–2280 (computeSmoothedStressColors function)
-- Server Spatial Grid: `server/analysis.ts` lines 1712–1776 (nearestNodeStress function)
+Search by symbol, not line number — these move:
+- Vertex Welding: `client/index.html`, function `computeSmoothedStressColors`
+- Server Spatial Grid: `server/analysis.ts`, function `nearestNodeStress`
 - Stress Recovery: `server/solver/stress.ts` — `sprSmoothedStress6` (tensor) is
   the ONE recovered nodal field: it feeds the ZZ estimator, and on C3D10 the
   displayed heatmap and the per-node utilization field are projections of it via
@@ -161,7 +264,6 @@ Before submitting a PR that modifies mesh visualization or stress heatmap:
   `SprSamples` point cloud: `buildCentroidSamples` (one sample per element —
   C3D4, and the legacy shape) or `buildGaussSamples` (four C3D10 Gauss points per
   element, quadratic recovery basis — see `docs/spr-gauss-point-handoff.md`).
-  Search the symbols; line numbers drift.
 
 ## Two-Region Material Model — Invariants
 
