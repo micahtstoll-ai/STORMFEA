@@ -66,6 +66,25 @@ export function generateHtmlReport(
     bucklingResult, adaptiveRefinement, meshOrderDowngrade,
   } = result;
 
+  // ── Issue #278 disclosure trio ────────────────────────────────────────────
+  // `safetyFactor` / `estimatedFailForce` are the GOVERNING numbers (min over
+  // bulk yield and every checked analytic mode) — the same quantity `verdict`
+  // reports. The bulk-yield-only pair is printed beside them so the reader can
+  // see all three at a glance: the governing number, which mode governs it, and
+  // what bulk yield alone said.
+  //
+  // Every read is `?? <legacy fallback>`: this route renders a `result` POSTed
+  // by the client, which may be a session saved before #278 and carry only the
+  // old fields. Such a payload renders exactly as it did before.
+  const bulkSafetyFactor = result.bulkSafetyFactor ?? safetyFactor;
+  const bulkFailForceN   = result.bulkFailForceN   ?? estimatedFailForce;
+  const governingMode    = result.governingMode
+    ?? failureModes.find(m => m.checked)?.mode
+    ?? 'Bulk yield';
+  /** True when an analytic mode — not bulk yield — set the headline. */
+  const analyticGoverns  = bulkSafetyFactor != null && safetyFactor != null
+    && bulkSafetyFactor > safetyFactor + 1e-9;
+
   // C3D4 (linear tet, nodesPerElem===4) carries a documented ~55%
   // bending-stress underprediction from shear locking — never let the
   // printed report show a C3D4 result without this caveat (issue #189).
@@ -99,7 +118,6 @@ export function generateHtmlReport(
     : sfCriterion === "hill"        ? "Hill (1948) anisotropic criterion (legacy path)"
     : "Von Mises";
 
-  const govMode = failureModes.find(m => m.checked);
   // When the solve didn't converge or fell back to a box mesh, the SF is not
   // trustworthy — colour the verdict box neutral grey rather than a reassuring
   // green/amber so the printed report can't imply confidence it doesn't have.
@@ -120,13 +138,19 @@ export function generateHtmlReport(
     return `<span style="font-size:9px;color:${colors[c]??'#333'};border:1px solid ${colors[c]??'#333'}44;padding:1px 5px;border-radius:2px">${esc(String(c).toUpperCase())}</span>`;
   };
 
-  const failureRows = failureModes.map(m => `
+  // Highlight the row that actually set the headline (by name, from
+  // `governingMode`) rather than "the first checked row" — those coincide only
+  // when the checked rows include the governing one (issue #278).
+  const failureRows = failureModes.map(m => {
+    const isGov = m.checked && m.mode === governingMode;
+    return `
     <tr style="border-bottom:1px solid #eee">
-      <td style="padding:4px 8px;font-weight:${m === govMode ? '600' : '400'};color:${m===govMode?'#8B6914':'#333'}">${m === govMode ? '▲ ' : ''}${esc(m.mode)}</td>
+      <td style="padding:4px 8px;font-weight:${isGov ? '600' : '400'};color:${isGov?'#8B6914':'#333'}">${isGov ? '▲ ' : ''}${esc(m.mode)}</td>
       <td style="padding:4px 8px;text-align:center;color:${m.checked?(m.sf>=SAFE_SF_THRESHOLD?'#1a7a40':m.sf>=FAIL_SF_THRESHOLD?'#5c3a00':'#7a1a1a'):'#999'}">${m.checked ? `${m.sf.toFixed(2)}×` : '—'}</td>
       <td style="padding:4px 8px;text-align:center">${confBadge(m.confidence)}</td>
       <td style="padding:4px 8px;font-size:10px;color:#666">${esc(m.note.split('.')[0])}.</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
   const holeRows = holeClassifications.map((h, i) => `
     <tr style="border-bottom:1px solid #eee">
@@ -248,7 +272,7 @@ export function generateHtmlReport(
   <div class="verdict-box">
     <div class="verdict-text">${esc(verdict)}</div>
     <div class="verdict-sub">
-      Governing failure mode: ${esc(govMode?.mode ?? 'Bulk yield')} &nbsp;·&nbsp;
+      Governing failure mode: ${esc(governingMode)} &nbsp;·&nbsp;
       ${singularity?.detected ? 'Stress singularity detected — see notes below' : '✓ No singularity detected'}
     </div>
   </div>
@@ -256,17 +280,21 @@ export function generateHtmlReport(
   <!-- Key Numbers -->
   <div class="grid4">
     <div class="card">
-      <div class="card-label">Safety Factor</div>
+      <div class="card-label">Safety Factor (governing)</div>
       <div class="card-value" style="color:${sfColor}">${safetyFactor !== null ? safetyFactor.toFixed(2) : '—'}<span class="card-unit">×</span></div>
+      <div class="card-unit" style="line-height:1.4">${safetyFactor !== null ? `Governed by ${esc(governingMode)}` : 'Not available'}${
+        analyticGoverns ? `<br>Bulk yield alone: ${bulkSafetyFactor!.toFixed(2)}×` : ''}</div>
     </div>
     <div class="card">
       <div class="card-label">Peak Stress</div>
       <div class="card-value">${maxVonMisesMPa.toFixed(1)}<span class="card-unit"> MPa</span></div>
     </div>
     <div class="card">
-      <div class="card-label">Est. Failure Load${bucklingGoverns ? ' (buckling-limited)' : ''}</div>
+      <div class="card-label">Est. Failure Load (governing)${bucklingGoverns ? ' (buckling-limited)' : ''}</div>
       <div class="card-value">${displayFailForce.toFixed(0)}<span class="card-unit"> N</span></div>
       <div class="card-unit">(${(displayFailForce/4.448).toFixed(0)} lbf)</div>
+      <div class="card-unit" style="line-height:1.4">${safetyFactor !== null ? esc(governingMode) : '&nbsp;'}${
+        analyticGoverns ? `<br>Bulk yield alone: ${bulkFailForceN.toFixed(0)} N` : ''}</div>
     </div>
     <div class="card">
       <div class="card-label">Max Displacement</div>
@@ -280,8 +308,11 @@ export function generateHtmlReport(
        (SF band, fatigue) is disclosed with the same kind of humility. -->
   <div style="font-size:9px;color:#888;margin:-8px 0 14px;line-height:1.5">
     ${bucklingGoverns
-      ? `Buckling-limited estimate: BLF ${bucklingResult!.blf!.toFixed(2)}× applied load, lower than the linear first-yield estimate of ${estimatedFailForce.toFixed(0)} N. Linear buckling can overestimate real capacity by 10–40% for imperfect FDM geometry.`
+      ? `Buckling-limited estimate: BLF ${bucklingResult!.blf!.toFixed(2)}× applied load, lower than the governing first-yield estimate of ${estimatedFailForce.toFixed(0)} N. Linear buckling can overestimate real capacity by 10–40% for imperfect FDM geometry.`
       : `Linear first-yield estimate: assumes stress ∝ load and failure at first yield (no plasticity/buckling redistribution). Actual capacity is typically higher for ductile bending, lower if buckling governs.`}
+    ${analyticGoverns
+      ? ` The governing mode here is <b>${esc(governingMode)}</b>, not bulk yield: the FEM bulk-yield check alone gives SF ${bulkSafetyFactor!.toFixed(2)}× (${bulkFailForceN.toFixed(0)} N). Bulk yield is the highest-confidence single number in this report — but the part is predicted to fail by the governing mode first, so the headline follows that (issue #278).`
+      : ``}
   </div>
 
   <div class="grid2">
@@ -323,8 +354,11 @@ export function generateHtmlReport(
     <div class="section-title">Material Model</div>
     <div style="font-size:10px;color:#444;line-height:1.7">
       <b>Failure criterion:</b> ${criterionLabel}.
-      ${safetyfactorLow !== null && safetyFactorHigh !== null && safetyFactor !== null
-        ? `&nbsp;·&nbsp; <b>SF uncertainty band:</b> ${safetyfactorLow.toFixed(2)}× (conservative) — ${safetyFactor.toFixed(2)}× — ${safetyFactorHigh.toFixed(2)}× (optimistic), from the interlayer-property literature ranges.`
+      ${safetyfactorLow !== null && safetyFactorHigh !== null && bulkSafetyFactor !== null
+        // Banded around the BULK SF, which is what the interlayer-property
+        // literature ranges actually propagate through — NOT around the
+        // governing headline (issue #278).
+        ? `&nbsp;·&nbsp; <b>Bulk-yield SF uncertainty band:</b> ${safetyfactorLow.toFixed(2)}× (conservative) — ${bulkSafetyFactor.toFixed(2)}× — ${safetyFactorHigh.toFixed(2)}× (optimistic), from the interlayer-property literature ranges.`
         : ``}
       ${materialModel.twoRegion
         ? `<br><b>Two-region model:</b> ${((materialModel.shellVolumeFraction ?? 0) * 100).toFixed(0)}% dense wall band (perimeter ${materialModel.wallThicknessMm?.toFixed(2)} mm${

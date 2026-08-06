@@ -150,10 +150,13 @@ endpoint.
     "maxDisplacementMm": 0.83,
     "effectiveYieldMPa": 29.0,
     "safetyFactor": 0.70,
+    "governingMode": "Bulk yield",
+    "bulkSafetyFactor": 0.70,
     "sfCriterion": "fdm-interface",
     "vonMisesSafetyFactor": 1.21,
     "safetyfactorLow": 0.58, "safetyFactorHigh": 0.86,
     "estimatedFailForce": 140.0,
+    "bulkFailForceN": 140.0,
     "yielding": true,
     "verdict": "FAIL",
     "materialModel": {
@@ -192,6 +195,25 @@ Large numeric arrays (per-vertex stress, displacement, principal stresses,
 utilisation, mode shapes) are base64-encoded Float32 buffers. Errors: `400`
 invalid body / undecodable `positionsB64`, `503` TetGen not installed (with
 install hint), `500` solver failure, timeout after 120 s.
+
+**Governing vs bulk safety factor** (issue #278). `summary.safetyFactor` is the
+GOVERNING safety factor: the minimum over the FEM bulk-yield SF and every
+CHECKED entry in `failureModes` (net-section tension, shear-out, thread
+strip-out, bearing, the interlayer rows, buckling BLF). `estimatedFailForce` is
+`totalAppliedForce × safetyFactor`, and `summary.verdict` reports the same
+quantity — so the headline number and the verdict can never disagree. Before
+#278 the headline pair was bulk-yield-only while the verdict was already the
+governing minimum, which let a response say `safetyFactor: 3.0` next to
+`verdict: "Fails — predicted to yield at 283 N (Thread strip-out)"`.
+
+The bulk-yield-only pair is still reported, under `bulkSafetyFactor` /
+`bulkFailForceN`, and `governingMode` names the mode behind the headline
+("Bulk yield" when the FEM criterion governs). `sfCriterion`,
+`vonMisesSafetyFactor`, `safetyfactorLow`/`safetyFactorHigh` and
+`sfBandComposition` all describe `bulkSafetyFactor`, NOT the governing number:
+they are material-property uncertainties of the FEM criterion and do not
+propagate through the closed-form analytic modes. On a part where no analytic
+mode is checked, `safetyFactor === bulkSafetyFactor` exactly.
 
 **Adaptive refinement** (`analysis.adaptiveRefinement: true`, issue #149). Runs
 solve, ZZ error estimate, regional size field, TetGen re-mesh, re-solve — and

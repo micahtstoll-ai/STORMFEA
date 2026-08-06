@@ -23,7 +23,12 @@ export interface ValidationCase {
   id:             string;
   label:          string;
   partName:       string;
-  /** STORMFEA's predicted failure load (estimatedFailForce), N. */
+  /**
+   * STORMFEA's predicted failure load (`summary.estimatedFailForce`), N.
+   * Since issue #278 that is the GOVERNING mode's number, which is the right
+   * one to score against a physical break: the coupon fails by whichever mode
+   * governs, not necessarily by bulk yield.
+   */
   predictedFailN: number;
   /** Physical test failure load, N. */
   measuredFailN:  number;
