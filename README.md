@@ -227,7 +227,8 @@ stormfea/
 │   └── test_client_logic.mjs  Client-side logic validation
 ├── .github/
 │   ├── workflows/
-│   │   └── test.yml      CI: TypeScript compile + solver validation suite
+│   │   └── test.yml      CI: five concurrent jobs (light/heavy vitest shards,
+│   │                     solver validation, client logic, doc-count guard)
 │   └── ISSUE_TEMPLATE/   Bug report and feature request templates
 ├── docs/
 │   ├── API.md            HTTP API reference (all endpoints)

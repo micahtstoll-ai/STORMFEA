@@ -1,83 +1,183 @@
 name: Test Suite
 
+# The suite is CPU-bound on real finite-element work, not on anything that can
+# be cached away: measured on run 31054750716, 95% of a 15m23s `npm run test`
+# was nine test bodies solving 25k-75k element meshes. What WAS wasted was
+# scheduling -- everything ran as one `&&` chain on one runner, so the 4m14s
+# solver-validation suite sat behind vitest despite being independent of it,
+# and one vitest worker carried the four expensive files plus all 78 cheap ones.
+#
+# So the work is split across runners that execute concurrently. The jobs are
+# sized to their measured cost, and the critical path is now the single most
+# expensive test file rather than the sum of everything:
+#
+#   unit-heavy   ~10.5 min  4 files, 1811 s of the 1895 s of vitest file time
+#   solver       ~5 min     tsc + solver_validation.js + parallel assembly
+#   unit-light   ~2 min     the other 78 vitest files -- the fast failure signal
+#   client       ~1 min     client logic + invariant/API drift guards
+#   doc-counts   ~20 s      merges the shard summaries, gates README drift
+#
+# Nothing was deleted or shortened to get here: the same tests run, with the
+# same assertions, on the same fixtures. `npm run test` still runs all of it
+# serially in one process locally.
+
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
 
+# Five jobs per run means a superseded PR push occupies five runners, not one.
+# Cancel the previous run for the same ref when a new commit arrives -- but
+# only for pull requests: a push to main is a result worth keeping even when
+# the next push is already on its way.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  run-tests:
+  # ── The cheap files, first ──────────────────────────────────────────────────
+  # 78 of the 82 vitest files, ~84 s of file time between them. This is the job
+  # that tells you within a couple of minutes whether a change is obviously
+  # broken, instead of that signal being buried behind ten minutes of adaptive
+  # meshing. It carries the mesher-gated tests (issue #108) because they are
+  # seconds each, not minutes.
+  unit-light:
+    name: Unit tests (light shard)
     runs-on: ubuntu-latest
-
+    timeout-minutes: 25
     steps:
-    - name: Checkout repository code
-      uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          meshers: 'true'
 
-    - name: Validate package-lock.json exists
-      run: |
-        if [ ! -f package-lock.json ]; then
-          echo "ERROR: package-lock.json is missing!"
-          echo "This file is required for npm ci to work correctly."
-          exit 1
-        fi
-        echo "✓ package-lock.json found"
+      - name: Run the light vitest shard
+        run: npm run test:shard:light
 
-    - name: Install meshing binaries (TetGen + Gmsh)
-      # Issue #108: without the real meshers on PATH, no test exercises the
-      # primary STL→TetGen (C3D10) or STEP→Gmsh paths — which is exactly how the
-      # #66 midnode-permutation bug shipped undetected. The Ubuntu runner ships
-      # both in its default repos; update the index first so the install is
-      # robust against a stale cache. With these present the mesher integration
-      # tests (server/tests/unit/mesher-integration.test.ts) and the #66
-      # verification gate below EXECUTE instead of self-skipping.
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends tetgen gmsh
-        echo "tetgen: $(command -v tetgen)"
-        echo "gmsh:   $(gmsh --version 2>&1)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: summary-vitest-light
+          path: scripts/vitest-summary-light.json
+          if-no-files-found: error
 
-    - name: Set up Node.js environment
-      uses: actions/setup-node@v4
-      with:
-        node-version: 20
-        cache: 'npm'
-        cache-dependency-files: 'package-lock.json'
+  # ── The four expensive files, on their own runner ───────────────────────────
+  # adaptive-fixture-cross (613 s), adaptive-benchmark (612 s),
+  # adaptive-resolve-failure (312 s) and modal-solver (274 s) -- see
+  # scripts/heavy-tests.json. Each is a real acceptance gate (#149, #261, #160)
+  # and each is single-threaded, so they are run CONCURRENTLY on the runner's
+  # four vCPUs. Measured locally: two of them together finish in 469 s against
+  # 452 s for one alone, so overlapping them is close to free and the job costs
+  # about what its longest file costs.
+  unit-heavy:
+    name: Unit tests (heavy shard)
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          meshers: 'true'
 
-    - name: Verify lock file integrity
-      run: npm ci --dry-run --verbose
+      - name: Run the heavy vitest shard
+        # This is the suite's critical path. It is long because the physics is
+        # expensive, not because it waits on anything -- if it needs to get
+        # shorter, the fixtures themselves have to change, and both adaptive
+        # files document why they cannot simply be scaled down.
+        run: npm run test:shard:heavy
 
-    - name: Install project dependencies
-      run: npm ci --verbose
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: summary-vitest-heavy
+          path: scripts/vitest-summary-heavy.json
+          if-no-files-found: error
 
-    - name: Compile TypeScript and run solver validation suite
-      # This step is also the issue-#108 wall-time regression gate: with the
-      # meshers installed above, server/tests/unit/mesher-integration.test.ts
-      # runs real STL→TetGen and STEP→Gmsh analyses end-to-end and FAILS the
-      # build if any exceeds WALLTIME_BUDGET_MS (60 s — deliberately generous;
-      # it catches gross regressions like a reintroduced O(n²) mapping loop,
-      # not runner noise). Actual-vs-budget numbers appear in this step's log
-      # under the grep-able prefix "[#108 walltime]". The budget can be
-      # overridden locally via STORMFEA_WALLTIME_BUDGET_MS; CI never sets it.
-      run: npm run test -- --verbose
+  # ── Solver validation ───────────────────────────────────────────────────────
+  # Was 4m14s chained behind vitest with `&&` despite sharing nothing with it.
+  # On its own runner it costs zero wall time, because it finishes long before
+  # the heavy shard does. Groups [32], [24b], [16], [26] and [24] are ~95% of
+  # it, all of them full solves.
+  solver:
+    name: Solver validation + parallel assembly
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          meshers: 'true'
 
-    - name: Verify TetGen -o2 → C3D10 midnode permutation (issue #66 regression gate)
-      # Empirically re-derives the TetGen -o2 midside-node ordering from whatever
-      # tetgen binary is on PATH and confirms C3D10_REORDER maps it to STORMFEA's
-      # element.ts convention, then runs a cantilever bending check (δ within
-      # ~15% of Euler-Bernoulli). This is the regression gate for #66 — it fails
-      # the build if a future TetGen version reorders its midnodes or if
-      # C3D10_REORDER is edited incorrectly. Requires the tetgen installed above;
-      # npm test already compiled dist/, but build again so this step is
-      # self-contained if the pipeline is reordered.
-      run: |
-        npm run build
-        node scripts/verify_tetgen_c3d10.mjs
+      - name: Compile TypeScript and run the solver validation suite
+        run: npm run test:solver
 
-    - name: Upload dist directory on failure
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: dist-directory
-        path: dist/
-        if-no-files-found: ignore
+      - name: Verify TetGen -o2 → C3D10 midnode permutation (issue #66 regression gate)
+        # Empirically re-derives the TetGen -o2 midside-node ordering from
+        # whatever tetgen binary is on PATH and confirms C3D10_REORDER maps it to
+        # STORMFEA's element.ts convention, then runs a cantilever bending check
+        # (δ within ~15% of Euler-Bernoulli). Fails the build if a future TetGen
+        # reorders its midnodes or if C3D10_REORDER is edited incorrectly.
+        # Lives here because `npm run test:solver` already ran tsc, so unlike the
+        # old single-job layout this no longer needs a third compile of its own.
+        run: |
+          node scripts/copy-client.mjs
+          node scripts/verify_tetgen_c3d10.mjs
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: summary-solver
+          path: dist/tests/solver-validation-summary.json
+          if-no-files-found: error
+
+  # ── Client logic + drift guards ─────────────────────────────────────────────
+  client:
+    name: Client logic + invariant/API guards
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          meshers: 'false'   # pure-JS checks, no meshing
+
+      - name: Run client logic tests and drift guards
+        run: npm run test:client
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: summary-client
+          path: scripts/client-logic-summary.json
+          if-no-files-found: error
+
+  # ── Documented test counts (issue #198) ─────────────────────────────────────
+  # Has to run last: it compares the counts hard-coded in README.md and the
+  # methodology template against what actually ran, which now means adding the
+  # two vitest shards back together. check-doc-test-counts.mjs rejects
+  # overlapping shards rather than trusting the split, so a partition bug
+  # surfaces here instead of quietly lowering the bar.
+  #
+  # No npm ci: the script reads JSON with fs and needs no dependencies.
+  doc-counts:
+    name: Documented test counts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [unit-light, unit-heavy, solver, client]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: summaries
+          pattern: summary-*
+          merge-multiple: true
+
+      - name: Check README and methodology counts against the suite as it ran
+        run: |
+          node scripts/check-doc-test-counts.mjs \
+            --vitest summaries/vitest-summary-light.json \
+            --vitest summaries/vitest-summary-heavy.json \
+            --solver summaries/solver-validation-summary.json \
+            --client summaries/client-logic-summary.json
