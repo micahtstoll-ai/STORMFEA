@@ -13,9 +13,16 @@
 //   dist/tests/solver-validation-summary.json ← solver_validation.ts
 //   scripts/client-logic-summary.json      ← test_client_logic.mjs
 //
-// and asserts the numbers hard-coded in README.md and the methodology
-// template match. Run as the last step of `npm run test`; exits 1 on any
-// mismatch so drift fails the build instead of silently accumulating.
+// and asserts the numbers hard-coded in README.md, CONTRIBUTING.md and the
+// methodology template match. Run as the last step of `npm run test`; exits 1
+// on any mismatch so drift fails the build instead of silently accumulating.
+//
+// CONTRIBUTING.md was added to the guarded set only after it had already
+// proved the point: while README.md and the methodology template stayed
+// correct, CONTRIBUTING.md's copy of the same three numbers sat at 430 / 117 /
+// 71 against an actual 914 / 187 / 159 -- stale by more than half, purely
+// because nothing checked it. A surface that quotes these counts either gets
+// checked here or goes stale; there is no third outcome.
 //
 // CI runs the vitest suite as two shards on two runners (see
 // scripts/vitest-shard.mjs), which would hand this guard a partial count and
@@ -145,6 +152,25 @@ const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf-8');
 {
   const m = /(\d+)\s+client logic checks/.exec(readme);
   check('README.md', 'client logic checks', m ? Number(m[1]) : null, actual.clientTests);
+}
+
+// ── CONTRIBUTING.md ─────────────────────────────────────────────────────────
+// Deliberately the same three patterns as README.md: the sentence there is
+// worded to match, so contributors reading either file see one set of numbers
+// and this guard needs no second dialect to maintain.
+const contributing = fs.readFileSync(path.join(root, 'CONTRIBUTING.md'), 'utf-8');
+{
+  const m = /(\d+)\s+vitest unit tests across\s+(\d+)\s+files/.exec(contributing);
+  check('CONTRIBUTING.md', 'vitest unit tests', m ? Number(m[1]) : null, actual.vitestTests);
+  check('CONTRIBUTING.md', 'vitest test files', m ? Number(m[2]) : null, actual.vitestFiles);
+}
+{
+  const m = /(\d+)\s+solver validation tests/.exec(contributing);
+  check('CONTRIBUTING.md', 'solver validation tests', m ? Number(m[1]) : null, actual.solverTests);
+}
+{
+  const m = /(\d+)\s+client logic checks/.exec(contributing);
+  check('CONTRIBUTING.md', 'client logic checks', m ? Number(m[1]) : null, actual.clientTests);
 }
 
 // ── Methodology PDF template (server/index.ts) ─────────────────────────────
