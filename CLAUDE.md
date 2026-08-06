@@ -3,14 +3,33 @@
 ## Project Overview
 STORMFEA is an FDM-aware finite element analysis tool built with TypeScript/Node.js (server) and a single-file vanilla-JS client. The project uses npm for dependency management and runs automated tests via GitHub Actions.
 
+## Keeping This File Accurate
+This file is instructions an agent acts on, not a description to skim past — a
+wrong claim here (a stale line number, a guessed commit hash, a "this always
+happens" that doesn't) actively misleads instead of merely failing to help.
+Before writing a fact into this file:
+- Verify it against source (read/grep the actual code) — don't extrapolate
+  from memory of an earlier version of the file or the code.
+- Cite symbols, not line numbers. Line numbers drift with every unrelated
+  edit; symbol names are the stable handle (`docs/INVARIANTS.md` states this
+  same rule for its own rows — it applies here too).
+- If a claim can't be verified, say so or leave it out — don't round several
+  plausible answers up to one confident-sounding one.
+- When a change to this repo touches an invariant, constant, or behavior
+  described here, update this file in the same PR. A stale CLAUDE.md is a bug
+  in the same sense a stale test is.
+
 ## Table of Contents
 1. [Project Structure](#project-structure)
 2. [Repo Hygiene & Git Safety](#repo-hygiene--git-safety)
-3. [Common Tasks](#common-tasks)
-4. [GitHub Actions Workflows](#github-actions-workflows)
-5. [Heatmap Rendering — Common Pitfalls & Lessons Learned](#heatmap-rendering--common-pitfalls--lessons-learned)
-6. [Two-Region Material Model — Invariants](#two-region-material-model--invariants)
-7. [Interlayer Failure & Bond Model — Invariants](#interlayer-failure--bond-model--invariants)
+3. [Related Documentation](#related-documentation)
+4. [Common Tasks](#common-tasks)
+5. [GitHub Actions Workflows](#github-actions-workflows)
+6. [Physics-First: Citations & Confidence](#physics-first-citations--confidence)
+7. [Frontend Design System](#frontend-design-system)
+8. [Heatmap Rendering — Common Pitfalls & Lessons Learned](#heatmap-rendering--common-pitfalls--lessons-learned)
+9. [Two-Region Material Model — Invariants](#two-region-material-model--invariants)
+10. [Interlayer Failure & Bond Model — Invariants](#interlayer-failure--bond-model--invariants)
 
 ## Project Structure
 - `server/` - Node.js backend (TypeScript)
@@ -58,6 +77,28 @@ These files define CI/CD behavior. Before modifying:
 - Ensure `npm ci` and `npm run test` pass locally
 - Document any new environment variables needed
 
+## Related Documentation
+CLAUDE.md is operational guidance for working in this repo, not a full
+description of it — check these before assuming a gap or a bug:
+- `docs/ARCHITECTURE.md` — the request lifecycle (upload → mesh → assemble →
+  solve → recover → report), a module-by-module map of `server/` and
+  `server/solver/`, and build/run/test commands.
+- `docs/API.md` — the HTTP route surface (drift-guarded in CI — see
+  [GitHub Actions Workflows](#github-actions-workflows)).
+- `docs/METHODOLOGY.md` — the physics and math behind the solver.
+- `docs/layer-model-audit.md`, `docs/bc-singularity-exclusion.md`,
+  `docs/load-distribution-default.md` — "landed decision" writeups: deliberate,
+  non-obvious behavior changes with the measurements that justified them
+  (e.g. the default load distribution is `contact_patch`, not `uniform`). If
+  something looks wrong, check whether one of these already explains it
+  before treating it as a bug.
+- `DESIGN.md` — the frontend design system in full (see
+  [Frontend Design System](#frontend-design-system) below for the summary).
+- `CONTRIBUTING.md` — contributor norms, including the physics-citation
+  requirement (see [Physics-First](#physics-first-citations--confidence)
+  below).
+- `ROADMAP.md` — planned work and priorities.
+
 ## Common Tasks
 
 ### Adding Dependencies
@@ -102,6 +143,38 @@ git push origin your-branch
    When adding a test file, put it in the light shard unless it costs more
    than ~30 s, and keep `scripts/heavy-tests.json` honest — the shards must
    PARTITION the suite or `check-doc-test-counts.mjs` fails the build.
+
+## Physics-First: Citations & Confidence
+Any change touching the solver, material model, or failure-mode logic needs a
+physical justification, not just a passing test suite. From `CONTRIBUTING.md`,
+enforced throughout the invariant sections below:
+- **Cite a source.** The 65% stiffness ratio (E_z) and 58% yield ratio
+  (σ_yield,Z) anchors are not arbitrary — they come from peer-reviewed
+  literature. If you have better data, bring the paper; don't nudge a
+  constant because a result "looks more reasonable."
+- **Tag confidence explicitly.** New failure modes and calibration constants
+  get a HIGH / MEDIUM / LOW confidence label based on how much FDM-specific
+  data backs them — see e.g. "Exponents are LOW confidence, locked by
+  `core-lattice.test.ts`" in the Two-Region invariants below.
+- **A LOW-confidence constant is a documented gap, not a bug.** Don't "fix"
+  it by guessing a better number; either bring calibration data that
+  justifies a change, or leave the tag alone.
+- **Every new failure mode needs a unit test asserting the correct SF at a
+  known load** — not just that the code runs without throwing.
+
+## Frontend Design System
+`client/index.html` is a single ~14,600-line file with no CSS framework
+enforcing consistency — it relies on people (and agents) following
+`DESIGN.md` by hand. Before any visual change:
+- **Three fonts, fixed roles** — Rajdhani (headings), Outfit (UI copy), DM
+  Mono (data/numbers/code). Never mix roles; never introduce a fourth font.
+- **Four type sizes only** — 9 / 11 / 13 / 16px. No 10, 12, or 14px.
+- **Three colors, two dimensions** — the gold accent, the four-step
+  base/text scales, and three semantic colors (`--warn` amber, `--danger`
+  rust red, `--success` = gold, never green). Never purple, cyan, blue,
+  green, or a gradient.
+- **Four spacing values** — 6 / 12 / 20 / 32px, used consistently.
+- This is a summary; read `DESIGN.md` in full before a UI-touching PR.
 
 ## Heatmap Rendering — Common Pitfalls & Lessons Learned
 
