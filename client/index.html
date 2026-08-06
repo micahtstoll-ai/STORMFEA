@@ -1338,11 +1338,12 @@ body:not(.has-results) #btn-stress { display: none !important; }
     <div id="results-sticky" style="display:none;flex-shrink:0;padding:12px 22px;
           background:var(--bg-panel);border-bottom:1px solid var(--border);
           display:flex;align-items:center;gap:16px">
-      <!-- Safety factor -->
-      <div style="display:flex;flex-direction:column;gap:1px">
-        <div style="font-size:10px;color:var(--text-lo);letter-spacing:.06em;font-weight:600">SAFETY FACTOR</div>
+      <!-- Safety factor (governing — issue #278) -->
+      <div style="display:flex;flex-direction:column;gap:1px" title="The governing safety factor: the lowest across every checked failure mode, the same number the verdict reports.">
+        <div style="font-size:10px;color:var(--text-lo);letter-spacing:.06em;font-weight:600">SAFETY FACTOR (GOVERNING)</div>
         <div id="sticky-sf" style="font-family:'DM Mono',monospace;font-size:22px;font-weight:700;
               color:var(--gold);line-height:1">—</div>
+        <div id="sticky-sf-sub" style="font-size:9px;color:var(--text-lo);line-height:1.2"></div>
       </div>
       <div style="width:1px;height:32px;background:var(--border);flex-shrink:0"></div>
       <!-- Peak stress -->
@@ -1353,10 +1354,11 @@ body:not(.has-results) #btn-stress { display: none !important; }
       </div>
       <div style="width:1px;height:32px;background:var(--border);flex-shrink:0"></div>
       <!-- Fail force -->
-      <div style="display:flex;flex-direction:column;gap:1px" title="Linear first-yield estimate, not an ultimate/collapse load — see full results for the caveat.">
-        <div style="font-size:10px;color:var(--text-lo);letter-spacing:.06em;font-weight:600">FAIL FORCE (EST.)</div>
+      <div style="display:flex;flex-direction:column;gap:1px" title="Applied load x the GOVERNING safety factor. Linear first-yield estimate, not an ultimate/collapse load — see full results for the caveat.">
+        <div style="font-size:10px;color:var(--text-lo);letter-spacing:.06em;font-weight:600">FAIL FORCE (EST., GOVERNING MODE)</div>
         <div id="sticky-fail" style="font-family:'DM Mono',monospace;font-size:13px;
               color:var(--text-hi);line-height:1.3">—</div>
+        <div id="sticky-fail-sub" style="font-size:9px;color:var(--text-lo);line-height:1.2"></div>
       </div>
       <div style="width:1px;height:32px;background:var(--border);flex-shrink:0"></div>
       <!-- Verdict -->
@@ -6281,7 +6283,15 @@ async function runAnalysis() {
   // ── Phase 2: fine mesh — background convergence check ────────────────────
   // Skip for C3D10 (quadratic elements are already accurate — no shear locking)
   // Skip if SF > 3.0 (clearly safe)
-  const stdSF = dataStd.summary.safetyFactor;
+  // Issue #278: this gate asks "is the STRESS FIELD comfortable enough that a
+  // finer mesh cannot change the answer", so it reads the BULK-yield SF — the
+  // only mesh-dependent one. The governing SF can be dragged below 3 by a
+  // closed-form analytic mode (thread strip-out, bearing) that no amount of
+  // remeshing moves, which would spend a fine-mesh solve to learn nothing.
+  // Falls back to safetyFactor for payloads from a pre-#278 server.
+  const stdSF = dataStd.summary.bulkSafetyFactor != null
+    ? dataStd.summary.bulkSafetyFactor
+    : dataStd.summary.safetyFactor;
   // Check actual nodesPerElem from the standard-run response, not the selector.
   if (dataStd.summary.nodesPerElem === 10) {
     // C3D10 already converged — no auto-upgrade needed
@@ -6501,6 +6511,29 @@ function sfVerdictTier(sf) {
   return 'safe';
 }
 
+// Issue #278: summary.safetyFactor / summary.estimatedFailForce are the
+// GOVERNING numbers — the minimum across bulk yield AND every checked analytic
+// failure mode, i.e. exactly what summary.verdict reports. The bulk-yield-only
+// pair travels alongside as bulkSafetyFactor / bulkFailForceN so the UI can
+// DISCLOSE it rather than hide it (before #278 the headline was the bulk pair
+// while the verdict was the governing one, so the same screen could read
+// "SF 3.00× — Safe" and "Fails ... (Thread strip-out)" at the same time).
+//
+// Every field is read with a fallback to the legacy one, so a session saved
+// before #278 — or a payload from an older server — still renders.
+function governingDisclosure(s) {
+  const sf     = s.safetyFactor;
+  const bulkSF = s.bulkSafetyFactor != null ? s.bulkSafetyFactor : sf;
+  const bulkN  = s.bulkFailForceN   != null ? s.bulkFailForceN   : s.estimatedFailForce;
+  const mode   = s.governingMode
+    || (s.failureModes && (s.failureModes.find(m => m.checked) || {}).mode)
+    || 'Bulk yield';
+  // Strictly-greater, not !==: equal-to-tolerance means bulk yield governs and
+  // there is nothing extra to disclose.
+  const analyticGoverns = sf != null && bulkSF != null && bulkSF > sf + 1e-9;
+  return { sf, bulkSF, bulkFailForceN: bulkN, mode, analyticGoverns };
+}
+
 // ── Sticky results summary ────────────────────────────────────────────────────
 function updateStickyResults(s) {
   const bar = document.getElementById('results-sticky');
@@ -6521,10 +6554,21 @@ function updateStickyResults(s) {
   const verEl  = document.getElementById('sticky-verdict');
   const matEl  = document.getElementById('sticky-material');
   const expBtn = document.getElementById('sticky-export-btn');
+  // Issue #278 disclosure: name the governing mode and, when it is NOT bulk
+  // yield, show what bulk yield alone said right next to the headline.
+  const gov      = governingDisclosure(s);
+  const sfSubEl  = document.getElementById('sticky-sf-sub');
+  const failSubEl = document.getElementById('sticky-fail-sub');
 
   if (sfEl)   { sfEl.textContent = sf.toFixed(2) + '×'; sfEl.style.color = sfColor; }
+  if (sfSubEl) sfSubEl.textContent = gov.analyticGoverns
+    ? `${gov.mode} · bulk yield ${gov.bulkSF.toFixed(2)}×`
+    : `${gov.mode}`;
   if (stEl)   stEl.textContent   = U.stressStr(s.maxVonMisesMPa, S.units === 'imperial' ? 0 : 1);
   if (failEl) failEl.textContent = U.forceStr(s.estimatedFailForce, 0);
+  if (failSubEl) failSubEl.textContent = gov.analyticGoverns
+    ? `bulk yield ${U.forceStr(gov.bulkFailForceN, 0)}`
+    : '';
   if (verEl)  { verEl.textContent = verdict; verEl.style.color = sfColor; }
   if (matEl) {
     const matSel = document.getElementById('s-material');
@@ -6631,8 +6675,18 @@ function showResults(s) {
   if (oldBadge) oldBadge.remove();
 
   const sfColor = s.safetyFactorAvailable ? (s.safetyFactor >= 2 ? 'var(--gold)' : s.safetyFactor >= 1 ? 'var(--gold)' : 'var(--danger)') : 'var(--text-lo)';
+  // Issue #278: the governing SF / mode / bulk-yield disclosure, from the
+  // server. Used by every block below so the panel cannot name one mode and
+  // print another mode's number.
+  const gov = governingDisclosure(s);
+  // `summary.yielding` is BULK yield only (see AnalysisResult). A part can pass
+  // bulk yield and still fail first by an analytic mode — never let that render
+  // as a green all-clear beside a "Fails" verdict (issue #278).
+  const govBelowOne = s.safetyFactorAvailable && gov.sf != null && gov.sf < 1;
   const yieldNote = s.yielding
     ? '<span style="color:var(--danger)"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Yield predicted at this load</span>'
+    : govBelowOne
+    ? `<span style="color:var(--danger)"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Bulk material stays below yield, but the part fails first by ${gov.mode}</span>`
     : '<span style="color:var(--success)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> Below yield threshold</span>';
 
   // Two-region's whole point is to diverge from the geometry-blind legacy
@@ -6666,10 +6720,15 @@ function showResults(s) {
     : `<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap"><div style="display:inline-flex;align-items:center;gap:5px;padding:3px 8px;background:var(--bg-card);border:1px solid var(--border);border-radius:2px;font-size:9px;color:var(--text-lo);letter-spacing:.06em"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4"><polygon points="5,1 9,5 5,9 1,5"/></svg> LITERATURE DEFAULTS</div><span style="font-size:9px;color:var(--text-lo)">· Calibrate from the Start Screen &nbsp;·&nbsp; See Sources from the Start Screen</span></div>`;
 
   // ── Build the top-line action sentence ────────────────────────────────
-  // Governing failure mode
-  const govMode = s.failureModes && s.failureModes.length
-    ? s.failureModes.find(m => m.checked) : null;
-  const govSF = govMode ? govMode.sf : (s.safetyFactorAvailable ? s.safetyFactor : null);
+  // Governing failure mode. Issue #278: this now comes from the SERVER's
+  // governing SF (summary.safetyFactor / summary.governingMode) instead of
+  // being re-derived here as "the first checked failure-mode row". The old
+  // re-derivation could disagree with both the verdict and the SAFETY FACTOR
+  // card below — it missed bulk yield entirely on a hole-free part (no
+  // "Bulk yield" row exists there) and could pick up the sf=999 "no buckling
+  // mode" sentinel as the headline.
+  const govSF   = s.safetyFactorAvailable ? s.safetyFactor : null;
+  const govMode = s.safetyFactorAvailable ? { mode: gov.mode, sf: govSF } : null;
 
   // Best recommendation
   const bestRec = s.recommendations && s.recommendations.length
@@ -6798,12 +6857,18 @@ function showResults(s) {
       </div>
       ${s.safetyFactorAvailable ? `
       <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px">
-        <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">SAFETY FACTOR</div>
+        <div style="font-size:10px;color:var(--text-label);margin-bottom:4px" title="Lowest SF across every checked failure mode — the same number the verdict reports (issue #278).">SAFETY FACTOR (GOVERNING)</div>
         <div style="font-size:18px;font-weight:500;color:${sfColor}">${s.safetyFactor.toFixed(2)}×</div>
-        <div style="font-size:10px;color:var(--text-lo);margin-top:2px" title="${s.sfCriterion === 'hill' ? `Hill (1948) anisotropic yield criterion — accounts for the weaker inter-layer (Z) direction. Von Mises SF on the same stress field: ${s.vonMisesSafetyFactor != null ? s.vonMisesSafetyFactor.toFixed(2) + '×' : 'n/a'}.` : 'Von Mises equivalent stress vs effective yield.'}">${s.sfCriterion === 'hill' ? 'Hill 1948 anisotropic yield' : 'von Mises yield / peak'}</div>
+        <div style="font-size:10px;color:var(--text-hi);margin-top:2px">Governed by <b>${gov.mode}</b></div>
+        ${gov.analyticGoverns ? `<div style="font-size:10px;color:var(--text-lo);margin-top:2px" title="${s.sfCriterion === 'hill' ? `Hill (1948) anisotropic yield criterion — accounts for the weaker inter-layer (Z) direction. Von Mises SF on the same stress field: ${s.vonMisesSafetyFactor != null ? s.vonMisesSafetyFactor.toFixed(2) + '×' : 'n/a'}.` : 'Von Mises equivalent stress vs effective yield.'}">Bulk yield alone: <b>${gov.bulkSF.toFixed(2)}×</b> (${s.sfCriterion === 'hill' ? 'Hill 1948 anisotropic yield' : 'von Mises yield / peak'}) — the highest-confidence single number, but not what governs here.</div>`
+          : `<div style="font-size:10px;color:var(--text-lo);margin-top:2px" title="${s.sfCriterion === 'hill' ? `Hill (1948) anisotropic yield criterion — accounts for the weaker inter-layer (Z) direction. Von Mises SF on the same stress field: ${s.vonMisesSafetyFactor != null ? s.vonMisesSafetyFactor.toFixed(2) + '×' : 'n/a'}.` : 'Von Mises equivalent stress vs effective yield.'}">${s.sfCriterion === 'hill' ? 'Hill 1948 anisotropic yield' : 'von Mises yield / peak'}</div>`}
         <div style="font-size:9px;color:var(--text-lo);margin-top:3px">Recommended minimum: 2×</div>
         ${s.safetyfactorLow !== undefined ? (() => {
-          const lo = s.safetyfactorLow, hi = s.safetyFactorHigh ?? s.safetyfactorLow, mid = s.safetyFactor;
+          // The band is a MATERIAL-property uncertainty on the bulk-yield SF —
+          // it is centred on the bulk number, not on the governing headline
+          // (issue #278), because its literature ranges propagate through the
+          // FEM criterion, not through the analytic hole formulas.
+          const lo = s.safetyfactorLow, hi = s.safetyFactorHigh ?? s.safetyfactorLow, mid = gov.bulkSF;
           const span = Math.max(hi - lo, 0.01);
           const pctMid = Math.round(((mid - lo) / span) * 100);
           // Green only at/above SAFE_SF_THRESHOLD (issue #141) — matches the
@@ -6811,7 +6876,7 @@ function showResults(s) {
           const loColor = lo < FAIL_SF_THRESHOLD ? '#c01717' : lo < SAFE_SF_THRESHOLD ? '#d97a00' : '#3a8a3a';
           const hiColor = hi < SAFE_SF_THRESHOLD ? '#d97a00' : '#3a8a3a';
           return `<div style="margin-top:5px" title="Material uncertainty range (yieldZ/yieldXY: 0.48–0.68, layer height slope: −1.3 to −0.7 /mm). Conservative=${lo.toFixed(2)}×, Central=${mid.toFixed(2)}×, Optimistic=${hi.toFixed(2)}×">
-            <div style="font-size:8px;color:var(--text-lo);margin-bottom:2px;letter-spacing:.03em">MATERIAL UNCERTAINTY</div>
+            <div style="font-size:8px;color:var(--text-lo);margin-bottom:2px;letter-spacing:.03em">MATERIAL UNCERTAINTY (BULK YIELD)</div>
             <div style="position:relative;height:6px;background:linear-gradient(to right,${loColor},${hiColor});border-radius:3px;width:100%">
               <div style="position:absolute;top:-2px;left:${pctMid}%;transform:translateX(-50%);width:3px;height:10px;background:var(--text-hi);border-radius:1px"></div>
             </div>
@@ -6833,14 +6898,16 @@ function showResults(s) {
         <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">MAX DISPLACEMENT</div>
         <div style="font-size:18px;font-weight:500;color:var(--text-hi)">${s.maxDisplacementMm.toFixed(4)} <span style="font-size:10px;color:var(--text-label)">mm</span></div>
       </div>
-      <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px" title="Linear first-yield estimate: assumes stress ∝ load and failure at first yield — not an ultimate/collapse load. Actual capacity is typically higher for ductile bending, lower if buckling governs.">
-        <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">ESTIMATED FAIL FORCE${bucklingGoverns ? ' <span style="color:var(--warn)">(buckling-limited)</span>' : ''}</div>
+      <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px" title="Applied load x the GOVERNING safety factor. Linear first-yield estimate: assumes stress ∝ load and failure at first yield — not an ultimate/collapse load. Actual capacity is typically higher for ductile bending, lower if buckling governs.">
+        <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">EST. FAIL FORCE (GOVERNING MODE)${bucklingGoverns ? ' <span style="color:var(--warn)">(buckling-limited)</span>' : ''}</div>
         <div style="font-size:18px;font-weight:500;color:var(--text-hi)">${U.force(displayFailForceN).toFixed(S.units==='imperial'?1:0)} <span style="font-size:10px;color:var(--text-label)">${U.forceLabel()}</span></div>
+        <div style="font-size:10px;color:var(--text-hi);margin-top:2px">${gov.mode}</div>
+        ${gov.analyticGoverns ? `<div style="font-size:10px;color:var(--text-lo);margin-top:2px">Bulk yield alone: <b>${U.force(gov.bulkFailForceN).toFixed(S.units==='imperial'?1:0)} ${U.forceLabel()}</b></div>` : ''}
         <div style="font-size:8px;color:var(--text-lo);margin-top:3px;line-height:1.3">Linear first-yield estimate, not ultimate/collapse load</div>
       </div>
     </div>
 
-    <div style="padding:10px 12px;background:${s.yielding?'var(--bg-card)':'var(--gold-faint)'};border:1px solid ${s.yielding?'var(--text-hi)33':'var(--gold-glow)'};border-radius:4px;margin-bottom:12px">
+    <div style="padding:10px 12px;background:${(s.yielding||govBelowOne)?'var(--bg-card)':'var(--gold-faint)'};border:1px solid ${(s.yielding||govBelowOne)?'var(--text-hi)33':'var(--gold-glow)'};border-radius:4px;margin-bottom:12px">
       <div style="font-size:10px;margin-bottom:4px">${yieldNote}</div>
       <div style="font-size:11px;color:var(--text-mid)">${s.verdict}</div>
     </div>
@@ -6850,7 +6917,7 @@ function showResults(s) {
       <span style="font-size:16px;line-height:1">&#9888;</span>
       <div>
         <div style="font-size:10px;font-weight:600;color:#8a5000;letter-spacing:.04em;margin-bottom:2px">MATERIAL UNCERTAINTY CAUTION</div>
-        <div style="font-size:11px;color:#6b3e00;line-height:1.5">Central SF ${s.safetyFactor.toFixed(2)}× clears the recommended 2× threshold, but conservative material properties (yieldZ/yieldXY=0.48, steeper layer height penalty) give SF ${s.safetyfactorLow.toFixed(2)}× — below 2×. Consider another design iteration or physical coupon testing to confirm margin.</div>
+        <div style="font-size:11px;color:#6b3e00;line-height:1.5">The governing SF ${s.safetyFactor.toFixed(2)}× clears the recommended 2× threshold, but conservative material properties (yieldZ/yieldXY=0.48, steeper layer height penalty) pull the bulk-yield SF (central ${gov.bulkSF.toFixed(2)}×) down to ${s.safetyfactorLow.toFixed(2)}× — below 2×. Consider another design iteration or physical coupon testing to confirm margin.</div>
       </div>
     </div>` : ''}
 
@@ -7140,7 +7207,9 @@ function showResults(s) {
                       : m.sf >= 1.0 ? 'var(--gold)' : 'var(--text-hi)';
         const confColor = {high:'var(--text-lo)', medium:'var(--text-mid)', low:'var(--gold-glow)', unchecked:'var(--text-hi)'}[m.confidence] || 'var(--text-mid)';
         const confLabel = {high:'<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> high confidence', medium:'~ medium confidence', low:'<svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> low confidence — see note', unchecked:'<svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg> not checked'}[m.confidence] || '';
-        const isGoverning = i === 0 && m.checked;
+        // Issue #278: flag the row that actually set the headline SF (by name,
+        // from summary.governingMode) instead of "whatever sorted first".
+        const isGoverning = m.checked && m.mode === gov.mode;
         return `<div style="padding:8px 10px;background:${isGoverning&&m.sf<2?'var(--gold-faint)':'var(--bg-card)'};border:1px solid ${isGoverning&&m.sf<2?'var(--gold-glow)':'var(--border)'};border-radius:3px;margin-bottom:5px">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
             ${isGoverning ? '<div style="font-size:10px;color:var(--gold);margin-right:2px"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,1.5 8,7.5 1,7.5"/></svg> GOVERNING</div>' : ''}
@@ -9644,12 +9713,7 @@ function toggleTheme() {
 
 // ─── Appearance toggle ────────────────────────────────────────────────────────
 function syncAppearanceBtns() {
-  const theme = document.documentElement.getAttribute('data-theme') || 'dark';
   const cmap  = S.colormap || 'viridis';
-  const lb = document.getElementById('theme-light-btn');
-  const db = document.getElementById('theme-dark-btn');
-  if (lb) lb.classList.toggle('active', theme === 'light');
-  if (db) db.classList.toggle('active', theme === 'dark');
   ['rainbow','viridis','plasma'].forEach(m => {
     const btn = document.getElementById('cmap-btn-' + m);
     if (btn) btn.classList.toggle('active', m === cmap);
@@ -10946,7 +11010,9 @@ function drawSummaryCanvas() {
 
       ctx.fillStyle = TEXT_MID;
       ctx.font = '9px monospace';
-      ctx.fillText('SAFETY FACTOR' + (s.sfCriterion === 'hill' ? ' (HILL 1948 ANISOTROPIC)' : ' (VON MISES)'), RX, RY);
+      // Issue #278: the big number is the GOVERNING SF, so the criterion name
+      // (which belongs to the bulk-yield mode) can no longer label it.
+      ctx.fillText('SAFETY FACTOR (GOVERNING MODE)', RX, RY);
       RY += 6;
 
       ctx.fillStyle = sfCol;
@@ -10996,7 +11062,8 @@ function drawSummaryCanvas() {
     }
 
     statRow('PEAK STRESS',   U.stressStr(s.maxVonMisesMPa, S.units==='imperial'?0:1), 0);
-    statRow('FAIL FORCE (EST.)', U.forceStr(s.estimatedFailForce, 0), 1);
+    // Issue #278: governing, not bulk-yield — matches the SF above it.
+    statRow('FAIL FORCE (EST., GOVERNING)', U.forceStr(s.estimatedFailForce, 0), 1);
     RY += 32;
     statRow('YIELD STRENGTH', U.stressStr(s.effectiveYieldMPa, S.units==='imperial'?0:1), 0);
     statRow('MESH NODES',    (s.nodeCount||0).toLocaleString(), 1);
@@ -11008,8 +11075,12 @@ function drawSummaryCanvas() {
     RY += 20;
 
     // ── Governing failure mode ──────────────────────────────────────────────
-    const govMode = s.failureModes && s.failureModes.length
-      ? s.failureModes.find(m => m.checked) || s.failureModes[0]
+    // Names the mode behind the headline SF above (issue #278) rather than
+    // re-deriving "first checked row", so the card cannot name one mode and
+    // print another mode's number.
+    const govC     = governingDisclosure(s);
+    const govModeC = s.failureModes && s.failureModes.length
+      ? s.failureModes.find(m => m.mode === govC.mode && m.checked)
       : null;
 
     ctx.fillStyle = TEXT_LO;
@@ -11018,12 +11089,20 @@ function drawSummaryCanvas() {
     RY += 14;
     ctx.fillStyle = TEXT_HI;
     ctx.font = '10px monospace';
-    ctx.fillText(govMode ? govMode.mode : 'Von Mises Yield', RX, RY);
+    ctx.fillText(govC.mode, RX, RY);
     RY += 14;
-    if (govMode && govMode.sf != null) {
+    if (s.safetyFactorAvailable && govC.sf != null) {
       ctx.fillStyle = TEXT_MID;
       ctx.font = '9px monospace';
-      ctx.fillText('SF ' + govMode.sf.toFixed(2) + '×  ·  ' + (govMode.confidence||''), RX, RY);
+      ctx.fillText('SF ' + govC.sf.toFixed(2) + '×  ·  ' + ((govModeC && govModeC.confidence) || 'high'), RX, RY);
+      // Keep the pre-#278 block height when there is no extra line to print.
+      RY += govC.analyticGoverns ? 14 : 16;
+    }
+    if (govC.analyticGoverns) {
+      ctx.fillStyle = TEXT_LO;
+      ctx.font = '8px monospace';
+      ctx.fillText('BULK YIELD ALONE: SF ' + govC.bulkSF.toFixed(2) + '×  ·  '
+                 + U.forceStr(govC.bulkFailForceN, 0), RX, RY);
       RY += 16;
     }
 
@@ -12302,8 +12381,11 @@ function renderABComparison() {
   const fA  = A.estimatedFailForce, fB = B.estimatedFailForce;
 
   // Governing failure mode for each
-  const govA = A.failureModes?.find(m=>m.checked)?.mode || 'Bulk yield';
-  const govB = B.failureModes?.find(m=>m.checked)?.mode || 'Bulk yield';
+  // Issue #278: prefer the server's governing mode (the one that actually set
+  // the headline SF being compared); fall back to the legacy re-derivation for
+  // baselines stored before #278.
+  const govA = A.governingMode || A.failureModes?.find(m=>m.checked)?.mode || 'Bulk yield';
+  const govB = B.governingMode || B.failureModes?.find(m=>m.checked)?.mode || 'Bulk yield';
   const govChanged = govA !== govB;
 
   // Helper to format setting values for display

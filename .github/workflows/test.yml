@@ -132,6 +132,17 @@ jobs:
           if-no-files-found: error
 
   # ── Client logic + drift guards ─────────────────────────────────────────────
+  # npm run test:client also runs the two static checks added for issue #283's
+  # "method notes worth keeping": check-client-identifiers.mjs (parses client/
+  # index.html's inline <script> blocks with the TypeScript compiler API and
+  # resolves every identifier against declared bindings + an explicit browser-
+  # global allowlist -- this class of bug is exactly how #275/#276 shipped)
+  # and check-nullish-precedence.mjs (`?? <numeric literal> <arithmetic-op>`
+  # without parentheses -- #274's `nodes[i] ?? 0 - px` shape -- over every *.ts
+  # file under server/ and scripts/ plus the same inline client scripts).
+  # Neither writes into client-logic-summary.json's count (same as
+  # check-invariants-symbols.mjs / check-api-routes.mjs below): they are pure
+  # pass/fail guards, not enumerated tests.
   client:
     name: Client logic + invariant/API guards
     runs-on: ubuntu-latest

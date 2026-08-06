@@ -265,6 +265,88 @@ export interface FailureModeResult {
   note:        string;
 }
 
+/** What `governingSafetyFactor` resolved. */
+export interface GoverningSF {
+  /** The governing (lowest) safety factor. */
+  sf:    number;
+  /**
+   * The checked row that produced `sf`, or null when the FEM bulk-yield SF
+   * governs and no explicit "Bulk yield" row exists to point at — which is the
+   * case on every part without bolted holes, since `checkFailureModes` (the
+   * only producer of that row) runs per hole.
+   */
+  mode:  FailureModeResult | null;
+  /** Display name for `mode` — its `.mode`, or "Bulk yield". */
+  label: string;
+}
+
+/**
+ * THE governing safety factor (issue #278) — the minimum over the FEM
+ * bulk-yield SF and every CHECKED analytic failure mode.
+ *
+ * One function, one value, three consumers: `summary.safetyFactor`,
+ * `summary.estimatedFailForce` (= totalAppliedForce × it) and `summary.verdict`.
+ * Before #278 the first two were `bulk.sf` while the verdict was already this
+ * minimum, so the UI could print "SF 3.00× — Safe" directly beside
+ * "Fails — predicted to yield at 283 N (Thread strip-out)". There is
+ * deliberately no second code path that could drift from this one.
+ *
+ * `bulkSF` seeds the reduce EXPLICITLY rather than being relied on through the
+ * "Bulk yield" row, because that row only exists on parts with bolted holes.
+ * On a hole-free part the checked rows are the interlayer/buckling ones alone,
+ * and their minimum can sit ABOVE the bulk SF — including the `sf = 999`
+ * "tensile-dominated, no buckling mode" sentinel, which used to let the verdict
+ * announce "Safe — large margin (SF 999.00×)" over an arbitrarily bad bulk SF.
+ *
+ * With NO checked rows this returns `bulkSF` itself — the same value, no
+ * arithmetic applied — so such parts are bit-identical to the pre-#278 headline.
+ */
+export function governingSafetyFactor(
+  bulkSF:       number,
+  failureModes: ReadonlyArray<FailureModeResult>,
+): GoverningSF {
+  const checked = failureModes.filter(m => m.checked);
+  const sf      = checked.reduce((lo, m) => Math.min(lo, m.sf), bulkSF);
+  const mode    = checked.find(m => m.sf === sf) ?? null;
+  return { sf, mode, label: mode?.mode ?? "Bulk yield" };
+}
+
+/**
+ * The headline verdict sentence, built from the GOVERNING safety factor
+ * (issue #278) — the same number `summary.safetyFactor` reports, so the two
+ * can never land in different tiers.
+ *
+ * `governingModeLabel` is `GoverningSF.mode?.mode`: undefined/null means bulk
+ * yield governs with no explicit row, and the sentence says "bulk yield".
+ */
+export function buildBaseVerdict(params: {
+  lowestSF:           number;
+  governingModeLabel: string | null | undefined;
+  totalAppliedForceN: number;
+  converged:          boolean;
+  cgIterations:       number;
+}): string {
+  const { lowestSF, totalAppliedForceN, converged, cgIterations } = params;
+  const gov = params.governingModeLabel ?? "bulk yield";
+  return !converged
+    // An unconverged solve gives an unreliable stress field, so the safety
+    // factor cannot be trusted in either direction — never report "Safe".
+    ? `Inconclusive — solver did not converge (${cgIterations} iters). ` +
+      `SF ${lowestSF.toFixed(2)}× shown for reference only; re-run with a finer mesh or check constraints.`
+    : lowestSF < FAIL_SF_THRESHOLD
+    ? `Fails — predicted to yield at ${(totalAppliedForceN * lowestSF).toFixed(0)} N (${gov})`
+    : lowestSF < ACCEPTABLE_SF_THRESHOLD
+    ? `Marginal — limited margin (SF ${lowestSF.toFixed(2)}×, governed by ${gov})`
+    : lowestSF < SAFE_SF_THRESHOLD
+    // Real positive margin, but below the tool's recommended 2× minimum —
+    // must never say "Safe" (issue #141: this used to fall into the "Safe —
+    // adequate margin" branch below, contradicting the client's 2× threshold).
+    ? `Acceptable — below recommended 2× margin (SF ${lowestSF.toFixed(2)}×, governed by ${gov})`
+    : lowestSF < 2.5
+    ? `Safe — adequate margin (SF ${lowestSF.toFixed(2)}×)`
+    : `Safe — large margin (SF ${lowestSF.toFixed(2)}×)`;
+}
+
 /**
  * Headline "bulk yield" safety factor for the verdict (issue #97).
  *
@@ -437,7 +519,7 @@ export function checkFailureModes(params: {
   // ── 3. Shear-out ──────────────────────────────────────────────────────────
   // Relevant when bolt is loaded laterally (shear force).
   // Two shear planes from hole edge to plate edge.
-  // τ = F / (2 × e × t)  where e = edge distance from hole centre
+  // τ = F / (2 × (e - d/2) × t)  where e = edge distance from hole centre, d = hole diameter
   // Only meaningful for lateral loads — flag as low confidence for axial loads
   if (edgeDistMm > d/2) {
     const shearArea = 2 * (edgeDistMm - d/2) * t;
@@ -2043,8 +2125,9 @@ export function layerHeightFactor(layerHeightMm: number): number {
  * Each crossing is a potential delamination point.
  * More crossings per thread = more penalty.
  *
- * penalty = base_reduction × (1 + 0.05 × extra_crossings_per_thread)
+ * penalty = base_reduction - (0.05 × extra_crossings_per_thread)
  * where extra_crossings = max(0, pitch/layerHeight - 1)
+ * Returns a strength multiplier, clamped to [0.50, 0.75].
  */
 export function threadLayerPenalty(pitchMm: number, layerHeightMm: number): number {
   const crossingsPerThread = pitchMm / layerHeightMm;
@@ -3297,25 +3380,68 @@ export interface AnalysisResult {
   maxVonMisesMPa:         number;
   maxDisplacementMm:      number;
   effectiveYieldMPa:      number;
+  /**
+   * THE headline safety factor: the GOVERNING SF (issue #278) — the minimum
+   * over the FEM bulk-yield SF and every CHECKED analytic failure mode
+   * (net-section tension, shear-out, thread strip-out, bearing, the interlayer
+   * rows, buckling BLF). Exactly the quantity `verdict` reports, so the two can
+   * never disagree.
+   *
+   * Before #278 this was `bulkSafetyFactor` (bulk yield only), which let the UI
+   * show "SF 3.00× — Safe" beside a verdict of "Fails ... (Thread strip-out)".
+   * On a part where no analytic mode is checked it collapses to exactly
+   * `bulkSafetyFactor`, so those parts are unchanged.
+   *
+   * Null on a mesh-fallback solve (no trustworthy SF at all).
+   */
   safetyFactor:           number | null;
-  /** Which yield criterion produced the headline safetyFactor (issue #97).
+  /**
+   * The FEM bulk-yield SF alone — what `safetyFactor` used to be (issue #278).
+   * Kept in the payload (disclosed, not hidden) because it is the single most
+   * trustworthy number in the result: it comes from the solved stress field and
+   * the calibrated material, whereas most analytic modes are closed-form
+   * estimates at medium/low confidence. `sfCriterion`, `vonMisesSafetyFactor`,
+   * `safetyfactorLow`/`safetyFactorHigh` and `sfBandComposition` all describe
+   * THIS number, not the governing one.
+   */
+  bulkSafetyFactor:       number | null;
+  /**
+   * Name of the failure mode that produced `safetyFactor` — one of the
+   * `failureModes[].mode` labels, or "Bulk yield" when the FEM bulk criterion
+   * governs (including hole-free parts, which carry no explicit "Bulk yield"
+   * row). Always present, so a UI can name the governing mode without
+   * re-deriving the argmin.
+   */
+  governingMode:          string;
+  /** Which yield criterion produced `bulkSafetyFactor` (issue #97).
    *  "fdm-interface" = the decoupled dual criterion (default);
    *  "hill" = legacy Hill 1948 (upright-no-bed fallback or explicit opt-in). */
   sfCriterion:            "fdm-interface" | "hill" | "von-mises";
   /**
    * Von Mises SF (effectiveYield / maxVM) — what a conventional isotropic
    * check gives on the same stress field. Kept for display/comparison next
-   * to the Hill-based headline SF.
+   * to the Hill-based bulk SF.
    */
   vonMisesSafetyFactor:   number | null;
+  /**
+   * Headline fail-force estimate: `totalAppliedForce × safetyFactor`, i.e.
+   * driven by the GOVERNING mode (issue #278). Linear first-yield
+   * extrapolation, not an ultimate/collapse load (issue #204).
+   */
   estimatedFailForce:     number;
-  /** Conservative SF using lower bound of literature uncertainty range */
+  /**
+   * `totalAppliedForce × bulkSafetyFactor` — the bulk-yield-only fail force,
+   * i.e. what `estimatedFailForce` was before #278. Equal to
+   * `estimatedFailForce` whenever bulk yield governs.
+   */
+  bulkFailForceN:         number;
+  /** Conservative BULK SF using lower bound of literature uncertainty range */
   safetyfactorLow:        number | null;
-  /** Optimistic SF using upper bound of literature uncertainty range */
+  /** Optimistic BULK SF using upper bound of literature uncertainty range */
   safetyFactorHigh:       number | null;
   /**
-   * Human-readable disclosure of which uncertainty terms contributed to the SF
-   * band (issues #172/#173): the interlayer yield-ratio and layer-height-slope
+   * Human-readable disclosure of which uncertainty terms contributed to the
+   * BULK SF band (issues #172/#173): the interlayer yield-ratio and layer-height-slope
    * literature ranges, plus — when active — the bond-model LOW-confidence
    * constants (process path) and the Gibson-Ashby core strength-exponent
    * spread (low-infill two-region path).
@@ -6186,9 +6312,15 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
 
   // ── Summary ────────────────────────────────────────────────────────────────
   const maxVM = result.maxVonMisesMPa;
-  // Headline SF (issue #97): the solver's per-element Hill (1948) minimum SF —
+  // BULK-YIELD SF (issue #97): the solver's per-element criterion minimum SF —
   // uses the calibrated, anisotropic yield of the material actually solved.
   // The von Mises SF is kept alongside for display/comparison.
+  //
+  // NOTE (issue #278): this is NOT the headline `summary.safetyFactor` any more.
+  // It is the FEM bulk-yield mode only; the headline is the GOVERNING SF —
+  // the minimum over this and every checked analytic failure mode — computed
+  // further down as `lowestSF` and reported alongside this one as
+  // `summary.bulkSafetyFactor`.
   const bulk = computeBulkSF({
     minSafetyFactor:   result.minSafetyFactor,
     maxVonMisesMPa:    maxVM,
@@ -6204,11 +6336,18 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // this, not the literature-only effectiveYield (issue #97).
   const solvedYieldXY = isOrthotropicLike(material) ? material.yieldXY : effectiveYield;
 
-  // Estimate failure force: linear scaling from applied loads
+  // Estimate failure force: linear scaling from applied loads.
+  // This is the BULK-YIELD fail force. The headline `estimatedFailForce` is
+  // derived from the governing SF further down (issue #278); this one stays in
+  // the payload as `bulkFailForceN` so the bulk number is disclosed, not hidden.
   const totalAppliedForce = req.forces.reduce((sum, f) => sum + f.magnitude, 0) || 1;
-  const estimatedFailForce = totalAppliedForce * sf;
+  const bulkFailForceN = totalAppliedForce * sf;
 
-  // Yielding per the same criterion that produced the headline SF
+  // Yielding per the same criterion that produced the BULK SF. Deliberately
+  // stays bulk-only (issue #278): it answers "does the material itself yield",
+  // which is a different question from "does the part fail" — an analytic mode
+  // such as thread strip-out or shear-out can govern the part without the bulk
+  // material reaching yield. The governing answer is `verdict` / `safetyFactor`.
   const yielding = sf < 1.0;
 
   const solverMs = Date.now() - t0;
@@ -6516,29 +6655,31 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     return a.sf - b.sf;
   });
 
-  // Override verdict if any failure mode governs below bulk yield
-  const checkedModes  = allFailureModes.filter(m => m.checked);
-  const lowestSF      = checkedModes.length > 0
-    ? Math.min(...checkedModes.map(m => m.sf))
-    : sf;
-  const governingMode2 = checkedModes.find(m => m.sf === lowestSF);
-  const baseVerdict = !result.converged
-    // An unconverged solve gives an unreliable stress field, so the safety
-    // factor cannot be trusted in either direction — never report "Safe".
-    ? `Inconclusive — solver did not converge (${result.cgIterations} iters). ` +
-      `SF ${lowestSF.toFixed(2)}× shown for reference only; re-run with a finer mesh or check constraints.`
-    : lowestSF < FAIL_SF_THRESHOLD
-    ? `Fails — predicted to yield at ${(totalForce2 * lowestSF).toFixed(0)} N (${governingMode2?.mode ?? "bulk yield"})`
-    : lowestSF < ACCEPTABLE_SF_THRESHOLD
-    ? `Marginal — limited margin (SF ${lowestSF.toFixed(2)}×, governed by ${governingMode2?.mode ?? "bulk yield"})`
-    : lowestSF < SAFE_SF_THRESHOLD
-    // Real positive margin, but below the tool's recommended 2× minimum —
-    // must never say "Safe" (issue #141: this used to fall into the "Safe —
-    // adequate margin" branch below, contradicting the client's 2× threshold).
-    ? `Acceptable — below recommended 2× margin (SF ${lowestSF.toFixed(2)}×, governed by ${governingMode2?.mode ?? "bulk yield"})`
-    : lowestSF < 2.5
-    ? `Safe — adequate margin (SF ${lowestSF.toFixed(2)}×)`
-    : `Safe — large margin (SF ${lowestSF.toFixed(2)}×)`;
+  // ── THE governing safety factor (issue #278) ──────────────────────────────
+  // ONE value, shared by the verdict AND the headline `summary.safetyFactor` /
+  // `summary.estimatedFailForce` — see governingSafetyFactor() for why `sf`
+  // seeds the minimum explicitly and why the no-checked-modes case collapses to
+  // exactly `sf`. Locked by governing-safety-factor.test.ts.
+  const governing         = governingSafetyFactor(sf, allFailureModes);
+  const lowestSF          = governing.sf;
+  const governingModeName = governing.label;
+
+  // Headline fail force, from the SAME governing SF the verdict uses. Same
+  // expression shape as the old bulk-only one (`totalAppliedForce * <sf>`), so
+  // when `lowestSF === sf` it reproduces `bulkFailForceN` exactly. The client's
+  // `computeDisplayFailForce` recovers the applied load as
+  // estimatedFailForce / safetyFactor — that inverse still holds exactly.
+  const estimatedFailForce = totalAppliedForce * lowestSF;
+
+  const baseVerdict = buildBaseVerdict({
+    lowestSF,
+    governingModeLabel: governing.mode?.mode,
+    // Identical value to totalAppliedForce (same reduce over req.forces);
+    // kept as totalForce2 so this sentence's number is untouched by #278.
+    totalAppliedForceN: totalForce2,
+    converged:          result.converged,
+    cgIterations:       result.cgIterations,
+  });
 
   // If TetGen failed, the geometry analysed was a featureless bounding box —
   // no holes, no fillets, no stress concentrations. The number is a rough
@@ -6988,6 +7129,12 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // reproduce the prior band bit-for-bit.
   const ifLow  = bandScalesSF ? yieldMul_low  * lhMul_low  * bondBandLow  : 1;
   const ifHigh = bandScalesSF ? yieldMul_high * lhMul_high * bondBandHigh : 1;
+  // Deliberately banded around the BULK SF (`sf`), not the governing SF
+  // (issue #278): every term in the band is a material-property uncertainty of
+  // the FEM bulk criterion. Re-anchoring it on an analytic mode that governs
+  // (thread strip-out, bearing, ...) would claim these literature ranges
+  // propagate through formulas they were never derived for. Both surfaces
+  // render it beside the disclosed bulk number, not around the headline.
   const sfLow  = +(sf * ifLow  * coreBandLow ).toFixed(2);
   const sfHigh = +(sf * ifHigh * coreBandHigh).toFixed(2);
 
@@ -7140,13 +7287,16 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     maxVonMisesMPa:     maxVM,
     maxDisplacementMm:  result.maxDisplacementMm,
     effectiveYieldMPa:  effectiveYield,
-    safetyFactor:       meshFallback ? null : sf,
+    safetyFactor:       meshFallback ? null : lowestSF,
+    bulkSafetyFactor:   meshFallback ? null : sf,
+    governingMode:      governingModeName,
     sfCriterion:        bulk.criterion,
     vonMisesSafetyFactor: meshFallback ? null : sfVonMises,
     safetyfactorLow:    meshFallback ? null : sfLow,
     safetyFactorHigh:   meshFallback ? null : sfHigh,
     sfBandComposition:  meshFallback ? null : sfBandComposition,
     estimatedFailForce,
+    bulkFailForceN,
     yielding,
     verdict:            governingVerdict,
     cgIterations:       result.cgIterations,

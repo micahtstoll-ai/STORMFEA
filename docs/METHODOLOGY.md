@@ -399,8 +399,8 @@ suite.
 
 ### Bolt-region and interlayer failure modes
 
-Beyond the headline SF, `server/analysis.ts` checks the mechanical failure modes
-around bolted holes, each with an individual confidence level:
+Beyond the bulk-yield SF, `server/analysis.ts` checks the mechanical failure
+modes around bolted holes, each with an individual confidence level:
 
 1. **Bulk yield** — the dual-criterion SF over the volume.
 2. **Net-section tension** — tension across the reduced section through a hole.
@@ -411,7 +411,7 @@ around bolted holes, each with an individual confidence level:
 
 When the dual criterion is active the layer interface is additionally
 **decomposed** into two reported rows so delamination is calibrated separately
-from the headline SF (both already folded into it):
+from the bulk-yield SF (both already folded into it):
 
 6. **Interlayer tension (delamination onset)** — peak through-layer opening
    stress `⟨σzz⟩₊` vs the bond tensile allowable `S_zt`. LOW confidence, raised
@@ -422,8 +422,21 @@ from the headline SF (both already folded into it):
 
 With in-plane raster anisotropy active, an **In-plane bead bond (cross-raster)**
 row is added likewise. The optional **Linear buckling (BLF)** mode is added when
-buckling is requested (§8). The governing (lowest-SF) mode drives the overall
-verdict.
+buckling is requested (§8).
+
+The **governing** mode — the lowest SF over bulk yield and every checked mode
+above — drives the overall verdict AND the headline numbers: `summary.safetyFactor`
+is that minimum and `summary.estimatedFailForce` is `totalAppliedForce ×` it
+(issue #278). The bulk-yield-only pair remains in the payload as
+`bulkSafetyFactor` / `bulkFailForceN`, and `governingMode` names the mode
+responsible; both surfaces (the app's results bar and the printed report) show
+the governing number, the mode that set it, and the bulk-yield number side by
+side. Bulk yield is the most trustworthy single number here — it comes from the
+solved stress field rather than a closed-form estimate — but a part that strips
+its threads at 283 N does not survive to its 600 N bulk-yield load, so the
+headline follows the governing mode and discloses the bulk one rather than the
+reverse. On a part where no analytic mode is checked the two are identical by
+construction.
 
 ### Fatigue (Goodman)
 

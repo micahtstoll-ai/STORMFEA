@@ -397,12 +397,20 @@ app.post("/api/analyse", async (req, res) => {
         maxVonMisesMPa:       +result.maxVonMisesMPa.toFixed(4),
         maxDisplacementMm:    +result.maxDisplacementMm.toFixed(6),
         effectiveYieldMPa:    +result.effectiveYieldMPa.toFixed(2),
+        // safetyFactor is the GOVERNING SF (min over bulk yield + every checked
+        // analytic mode) and estimatedFailForce is derived from it — the same
+        // quantity `verdict` reports (issue #278). The bulk-yield-only pair is
+        // disclosed alongside as bulkSafetyFactor / bulkFailForceN, and
+        // governingMode names which mode produced the headline.
         safetyFactor:         result.safetyFactor !== null ? +result.safetyFactor.toFixed(3) : null,
+        bulkSafetyFactor:     result.bulkSafetyFactor !== null ? +result.bulkSafetyFactor.toFixed(3) : null,
+        governingMode:        result.governingMode,
         sfCriterion:          result.sfCriterion,
         vonMisesSafetyFactor: result.vonMisesSafetyFactor !== null ? +result.vonMisesSafetyFactor.toFixed(3) : null,
         safetyfactorLow:      result.safetyfactorLow,
         safetyFactorHigh:     result.safetyFactorHigh,
         estimatedFailForce:   +result.estimatedFailForce.toFixed(1),
+        bulkFailForceN:       +result.bulkFailForceN.toFixed(1),
         surfaceTriangleCount: result.surfaceTriangleCount,
         yielding:             result.yielding,
         verdict:              result.verdict,
@@ -1473,6 +1481,17 @@ SF = min(SF_bulk, SF_int)</div>
   Mises fails at SF ≈ 0.58 (= Z/Y). The legacy Hill (1948) quadratic remains available for comparison
   and as the upright-with-no-bed fallback.
 </p>
+<h3>Governing vs Bulk Safety Factor</h3>
+<p>
+  The SF above is the <strong>bulk</strong> (FEM) result. Around bolted holes STORMFEA also runs
+  closed-form checks — net-section tension, shear-out, thread strip-out, bearing — plus the
+  interlayer decomposition and, when requested, linear buckling. The <strong>headline</strong>
+  safety factor and estimated failure load reported by the tool are the <em>governing</em> ones:
+  the minimum over the bulk SF and every checked mode, which is also what the verdict sentence
+  quotes. The bulk-yield pair is reported alongside it, never in place of it: bulk yield is the
+  highest-confidence single number (it comes from the solved stress field rather than a closed-form
+  estimate), but a part that strips its threads first does not survive to its bulk-yield load.
+</p>
 
 <h3>Orientation Derivation</h3>
 <p>
@@ -1722,9 +1741,58 @@ import { generateHtmlReport } from "./report.js";
 
 app.post("/api/report", async (req, res) => {
   try {
+    // Issue #281: `result` used to be validated only as "some non-null,
+    // non-array object" — every string field inside it (verdict, failure-mode
+    // notes, hole warnings, ...) then flowed unescaped into generateHtmlReport's
+    // HTML. Escaping in report.ts is the actual fix; this tightens the shape so
+    // the route rejects an arbitrary payload before it ever reaches the
+    // template, rather than relying on escaping alone.
     if (!validateBody(req, res, {
-      result: "object", "fileName?": "string",
-      "printSettings?": "object", "timestamp?": "string",
+      result: {
+        verdict:              "string",
+        maxVonMisesMPa:       "number",
+        maxDisplacementMm:    "number",
+        effectiveYieldMPa:    "number",
+        estimatedFailForce:   "number",
+        nodesPerElem:         "number",
+        converged:            "boolean",
+        meshFallback:         "boolean",
+        sfCriterion:          "fdm-interface|hill|von-mises",
+        materialModel:        "object",
+        fatigue:              "object",
+        isotropicComparison:  "object",
+        failureModes: [{
+          mode: "string", note: "string",
+          "checked?": "boolean", "sf?": "number", "confidence?": "string",
+        }],
+        holeClassifications: [{
+          type: "string", "warning?": "string", "bolt?": "object",
+        }],
+        topologySuggestions: [{
+          suggestion: "string", "stressMPa?": "number", "position?": "vec3",
+        }],
+        "safetyFactor?":      "number",
+        // Issue #278 disclosure trio. Optional so a report can still be
+        // rendered from a session/payload saved before #278.
+        "bulkSafetyFactor?":  "number",
+        "bulkFailForceN?":    "number",
+        "governingMode?":     "string",
+        "safetyfactorLow?":   "number",
+        "safetyFactorHigh?":  "number",
+        "singularity?":       "object",
+        "rigidBodyMode?":     "object",
+        "calibrationId?":     "string",
+      },
+      "fileName?": "string",
+      "printSettings?": {
+        "materialId?":    "string",
+        "infillPct?":     "number",
+        "wallCount?":     "number",
+        "pattern?":       "string",
+        "orientation?":   "string",
+        "layerHeightMm?": "number",
+      },
+      "timestamp?": "string",
     })) return;
     const { result, fileName, printSettings, timestamp } = req.body;
     const html = generateHtmlReport(result, fileName || "part", printSettings || {}, timestamp || new Date().toLocaleString());
