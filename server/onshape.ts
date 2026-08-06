@@ -66,10 +66,36 @@ export function parseOnshapeUrl(urlStr: string): OnshapeDocumentRef | null {
 }
 
 /**
+ * Build the exact HMAC signature base string per Onshape's documented
+ * APIKey scheme (`onshape-public/apikey`, `_make_auth`):
+ *
+ *   (method + '\n' + nonce + '\n' + date + '\n' + ctype + '\n' +
+ *    path + '\n' + query + '\n').lower()
+ *
+ * Note the TRAILING newline after `query` (present even when query === '').
+ * Exported so it can be pinned byte-for-byte in tests without re-deriving
+ * it via the same code path it's meant to check.
+ */
+export function buildOnshapeHmacString(
+  method: string,
+  nonce:  string,
+  date:   string,
+  ct:     string,
+  path:   string,
+  query:  string,
+): string {
+  return `${method}\n${nonce}\n${date}\n${ct}\n${path}\n${query}\n`.toLowerCase();
+}
+
+/**
  * Build an Onshape HMAC-signed request.
  * Uses APIKey authentication (not OAuth).
+ *
+ * Exported (in addition to `buildOnshapeHmacString`) so tests can assert the
+ * sent `Content-Type` header is exactly the value that was signed, without
+ * making a real network call.
  */
-function buildOnshapeRequest(
+export function buildOnshapeRequest(
   method:  string,
   path:    string,
   creds:   OnshapeCredentials,
@@ -77,18 +103,22 @@ function buildOnshapeRequest(
 ): { headers: Record<string, string>; url: string } {
   const date    = new Date().toUTCString();
   const nonce   = crypto.randomBytes(16).toString('hex');
-  const ct      = body ? 'application/json' : '';
   const baseUrl = 'https://cad.onshape.com';
 
-  // HMAC string: method\nnonce\ndate\ncontent-type\npath\n
-  const hmacStr = [
-    method.toLowerCase(),
-    nonce,
-    date,
-    ct,
-    path,
-    '',
-  ].join('\n').toLowerCase();
+  // Onshape's own reference client always sends (and signs) Content-Type:
+  // application/json, for GET as well as POST — it never omits the header
+  // or leaves it blank. We must sign exactly what we send, so match that
+  // for every method rather than signing '' on GETs.
+  const ct = 'application/json';
+
+  // Split off any query string so it is signed separately from the path,
+  // per the reference scheme. None of our current call sites append a
+  // query string, but this keeps the signer correct if one is added.
+  const qIdx     = path.indexOf('?');
+  const pathOnly = qIdx === -1 ? path : path.slice(0, qIdx);
+  const query    = qIdx === -1 ? '' : path.slice(qIdx + 1);
+
+  const hmacStr = buildOnshapeHmacString(method.toLowerCase(), nonce, date, ct, pathOnly, query);
 
   const sig = crypto
     .createHmac('sha256', creds.secretKey)
@@ -103,7 +133,7 @@ function buildOnshapeRequest(
       'Authorization': auth,
       'Date':          date,
       'On-Nonce':      nonce,
-      'Content-Type':  ct || 'application/json',
+      'Content-Type':  ct,
       'Accept':        'application/json',
     },
   };

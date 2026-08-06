@@ -437,7 +437,7 @@ export function checkFailureModes(params: {
   // ── 3. Shear-out ──────────────────────────────────────────────────────────
   // Relevant when bolt is loaded laterally (shear force).
   // Two shear planes from hole edge to plate edge.
-  // τ = F / (2 × e × t)  where e = edge distance from hole centre
+  // τ = F / (2 × (e - d/2) × t)  where e = edge distance from hole centre, d = hole diameter
   // Only meaningful for lateral loads — flag as low confidence for axial loads
   if (edgeDistMm > d/2) {
     const shearArea = 2 * (edgeDistMm - d/2) * t;
@@ -2043,8 +2043,9 @@ export function layerHeightFactor(layerHeightMm: number): number {
  * Each crossing is a potential delamination point.
  * More crossings per thread = more penalty.
  *
- * penalty = base_reduction × (1 + 0.05 × extra_crossings_per_thread)
+ * penalty = base_reduction - (0.05 × extra_crossings_per_thread)
  * where extra_crossings = max(0, pitch/layerHeight - 1)
+ * Returns a strength multiplier, clamped to [0.50, 0.75].
  */
 export function threadLayerPenalty(pitchMm: number, layerHeightMm: number): number {
   const crossingsPerThread = pitchMm / layerHeightMm;

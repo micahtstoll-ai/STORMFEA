@@ -9644,12 +9644,7 @@ function toggleTheme() {
 
 // ─── Appearance toggle ────────────────────────────────────────────────────────
 function syncAppearanceBtns() {
-  const theme = document.documentElement.getAttribute('data-theme') || 'dark';
   const cmap  = S.colormap || 'viridis';
-  const lb = document.getElementById('theme-light-btn');
-  const db = document.getElementById('theme-dark-btn');
-  if (lb) lb.classList.toggle('active', theme === 'light');
-  if (db) db.classList.toggle('active', theme === 'dark');
   ['rainbow','viridis','plasma'].forEach(m => {
     const btn = document.getElementById('cmap-btn-' + m);
     if (btn) btn.classList.toggle('active', m === cmap);
