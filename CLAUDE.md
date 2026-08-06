@@ -25,11 +25,12 @@ Before writing a fact into this file:
 3. [Related Documentation](#related-documentation)
 4. [Common Tasks](#common-tasks)
 5. [GitHub Actions Workflows](#github-actions-workflows)
-6. [Physics-First: Citations & Confidence](#physics-first-citations--confidence)
-7. [Frontend Design System](#frontend-design-system)
-8. [Heatmap Rendering — Common Pitfalls & Lessons Learned](#heatmap-rendering--common-pitfalls--lessons-learned)
-9. [Two-Region Material Model — Invariants](#two-region-material-model--invariants)
-10. [Interlayer Failure & Bond Model — Invariants](#interlayer-failure--bond-model--invariants)
+6. [GitHub Issue Workflow](#github-issue-workflow)
+7. [Physics-First: Citations & Confidence](#physics-first-citations--confidence)
+8. [Frontend Design System](#frontend-design-system)
+9. [Heatmap Rendering — Common Pitfalls & Lessons Learned](#heatmap-rendering--common-pitfalls--lessons-learned)
+10. [Two-Region Material Model — Invariants](#two-region-material-model--invariants)
+11. [Interlayer Failure & Bond Model — Invariants](#interlayer-failure--bond-model--invariants)
 
 ## Project Structure
 - `server/` - Node.js backend (TypeScript)
@@ -143,6 +144,28 @@ git push origin your-branch
    When adding a test file, put it in the light shard unless it costs more
    than ~30 s, and keep `scripts/heavy-tests.json` honest — the shards must
    PARTITION the suite or `check-doc-test-counts.mjs` fails the build.
+
+## GitHub Issue Workflow
+Track real work in GitHub issues, not just in conversation or code comments —
+this repo already does this (see `docs/INVARIANTS.md`'s "Gaps found" notes,
+several of which were filed as their own issues, and the commit/issue numbers
+cited throughout the invariant sections below).
+- **Open an issue** for anything that needs doing but isn't part of the
+  current change: a follow-up, a known limitation, a documentation gap, a
+  test-coverage hole. Use the **Bug Report** template for defects
+  (`CONTRIBUTING.md`). Don't let a code TODO or a chat message be the only
+  record of it.
+- **Link issues to the PR that fixes them** with a `Fixes #N` / `Closes #N`
+  keyword (see the "Linked Issue" field in
+  `.github/pull_request_template.md`) so merging closes the issue
+  automatically — that's the default path, not a manual close-it-yourself
+  step.
+- **Close an issue directly**, with a short comment on what changed and
+  where, when it's resolved some other way — already fixed, superseded by
+  another change, or landed without a `Fixes #` keyword in the commit.
+- **Don't close speculatively.** An issue closes when the fix has actually
+  landed (merged, or in an active session, pushed and verified) — not when
+  you expect it will.
 
 ## Physics-First: Citations & Confidence
 Any change touching the solver, material model, or failure-mode logic needs a
