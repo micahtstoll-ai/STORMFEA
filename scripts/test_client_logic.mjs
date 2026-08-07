@@ -505,16 +505,25 @@ console.log('\n[H] computeDominantPrincipal — dominant signed principal');
 console.log('\n[I] computeDivergingColors — threshold filter greys the other side');
 {
   const fnCode = extractFunction(html, 'computeDivergingColors\\(stressArr, absMaxOverride, filter\\)', 'setColormap');
+  // The filter's neutral grey is written in the GPU's LINEAR space, so the
+  // expected value is srgbToLinear(0.5), not 0.5. Pull the real conversion out
+  // of the client rather than hardcoding the constant, so this test tracks the
+  // implementation instead of pinning a number beside it.
+  const srgbSrc = html.match(/function srgbToLinear\(c\) \{[\s\S]*?\n\}/);
+  if (!srgbSrc) throw new Error('Could not extract srgbToLinear');
+  const srgbToLinear = new Function(srgbSrc[0] + '\nreturn srgbToLinear;')();
+  const GREY_LIN = srgbToLinear(0.5);
+
   const mod = { exports: {} };
-  // divergingColor is a separate helper; a stub that never returns grey lets us
-  // detect filter-greyed vertices unambiguously ([0.5,0.5,0.5]).
-  new Function('module','exports','divergingColor',
+  // divergingColorLinear is a separate helper; a stub that never returns grey
+  // lets us detect filter-greyed vertices unambiguously.
+  new Function('module','exports','divergingColorLinear','FILTER_GREY_LINEAR',
     fnCode + '\nmodule.exports = { computeDivergingColors };')(
-    mod, mod.exports, () => [1, 0, 0]);
+    mod, mod.exports, () => [1, 0, 0], GREY_LIN);
   const { computeDivergingColors } = mod.exports;
 
   const arr = new Float32Array([ 10, -10, 2, -2, 0 ]);   // absMax override = 10
-  const isGrey = (c, i) => Math.abs(c[i*3]-0.5)<1e-6 && Math.abs(c[i*3+1]-0.5)<1e-6 && Math.abs(c[i*3+2]-0.5)<1e-6;
+  const isGrey = (c, i) => Math.abs(c[i*3]-GREY_LIN)<1e-6 && Math.abs(c[i*3+1]-GREY_LIN)<1e-6 && Math.abs(c[i*3+2]-GREY_LIN)<1e-6;
 
   // above, frac 0.5 -> threshold |σ| >= 5: keep 10 and -10, grey 2,-2,0
   const a = computeDivergingColors(arr, 10, { enabled:true, side:'above', frac:0.5 });
@@ -1242,6 +1251,147 @@ console.log('\n[S] Headline spread — separates a converged number from a sampl
     test('identical results report a zero spread, not null',
       flat !== null && flat.peakSpread === 0 && flat.safetyFactorSpread === 0);
     test('a zero spread is not material', flat.material === false);
+  }
+}
+
+// ── Test group T: heatmap display color space + light rig ───────────────────
+// The model's colors ARE the data, so what the GPU finally emits must equal
+// what the legend shows for the same stress. Two independent bugs broke that:
+// sRGB colormap constants written into Three's LINEAR working space, and a
+// light rig summing to ~1.65x that clipped channels unevenly (rotating hue,
+// so one stress read as several different colors depending on facet normal).
+// These tests pin the end-to-end property, not the intermediate steps.
+console.log('\n[T] Heatmap display color space — model color == legend color');
+{
+  // Same extraction window as group [L]: the gamma IIFE through
+  // updateLegendSwatches, which contains COLORMAPS, stressColor/divergingColor
+  // and the *Linear conversions built on them.
+  const m = html.match(/\(function\(\) \{\n  const stored = localStorage\.getItem\('sf-gamma-disabled'\);[\s\S]*?\n\}\n\n\/\/ Restore saved colormap/);
+  if (!m) throw new Error('Could not extract gamma-init IIFE..updateLegendSwatches block');
+
+  global.document = { getElementById: () => ({ style: {}, classList: { toggle() {} }, textContent: '' }) };
+  global.window = { location: { search: '' } };
+  global.localStorage = { _s: {}, getItem(k) { return this._s[k] ?? null; }, setItem(k, v) { this._s[k] = v; } };
+  global.S = { colormap: 'viridis' };
+
+  const mod = { exports: {} };
+  new Function('module', 'exports', m[0] +
+    '\nmodule.exports = { srgbToLinear, stressColor, stressColorLinear, divergingColor,' +
+    ' divergingColorLinear, FILTER_GREY_LINEAR, DEFAULT_MESH_LINEAR, COLORMAPS };'
+  )(mod, mod.exports);
+  const { srgbToLinear, stressColor, stressColorLinear, divergingColor,
+          divergingColorLinear, FILTER_GREY_LINEAR, DEFAULT_MESH_LINEAR, COLORMAPS } = mod.exports;
+
+  // Inverse of the client's srgbToLinear — what Three's outputColorSpace='srgb'
+  // applies on the way out of the shader. The test owns this direction; the
+  // client owns the other.
+  const linearToSrgb = (c) => c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+  const b255 = (c) => Math.round(Math.max(0, Math.min(1, c)) * 255);
+
+  // ── The sRGB transfer function itself, at its defined anchors ─────────────
+  test('srgbToLinear(0) = 0', srgbToLinear(0) === 0);
+  test('srgbToLinear(1) = 1', Math.abs(srgbToLinear(1) - 1) < 1e-12, `got ${srgbToLinear(1)}`);
+  test('srgbToLinear(0.5) ~ 0.2140 (not 0.5 — the fix is not a no-op)',
+    Math.abs(srgbToLinear(0.5) - 0.21404114) < 1e-6, `got ${srgbToLinear(0.5)}`);
+  test('srgbToLinear is monotonic and round-trips through its inverse',
+    [0, 0.02, 0.25, 0.5, 0.75, 1].every(v => Math.abs(linearToSrgb(srgbToLinear(v)) - v) < 1e-9));
+  test('FILTER_GREY_LINEAR is the converted mid-grey, not the raw 0.5',
+    Math.abs(FILTER_GREY_LINEAR - srgbToLinear(0.5)) < 1e-12 && FILTER_GREY_LINEAR !== 0.5);
+  test('DEFAULT_MESH_LINEAR is the converted default blue',
+    DEFAULT_MESH_LINEAR.length === 3 &&
+    [0.32, 0.50, 0.72].every((v, i) => Math.abs(DEFAULT_MESH_LINEAR[i] - srgbToLinear(v)) < 1e-12));
+
+  // ── Light rig: the bound that makes the round-trip exact ─────────────────
+  // Parsed from initThree's real source so retuning the balance without
+  // preserving the unit sum fails here rather than in a screenshot.
+  const amb = html.match(/new THREE\.AmbientLight\(0x([0-9a-f]{6}), ([\d.]+)\)/);
+  const dirs = [...html.matchAll(/new THREE\.DirectionalLight\(0x([0-9a-f]{6}), ([\d.]+)\)/g)];
+  test('light rig parsed from initThree (1 ambient + 2 directional)',
+    !!amb && dirs.length === 2, `ambient=${!!amb} directional=${dirs.length}`);
+  const sum = parseFloat(amb[2]) + dirs.reduce((a, d) => a + parseFloat(d[2]), 0);
+  test('light intensities sum to exactly 1.0 (no channel can exceed the colormap color)',
+    Math.abs(sum - 1.0) < 1e-9, `sum=${sum}`);
+  test('all lights are untinted white (a tint would scale channels unequally)',
+    amb[1] === 'ffffff' && dirs.every(d => d[1] === 'ffffff'),
+    `ambient=#${amb[1]} directional=${dirs.map(d => '#' + d[1]).join(',')}`);
+
+  // ── Stress material is matte: specular is ADDITIVE and would re-clip ──────
+  const matSrc = html.match(/function makeStressMaterial\(extra\) \{[\s\S]*?\n\}/);
+  test('makeStressMaterial exists and is the single stress-material factory', !!matSrc);
+  test('stress material is fully matte (specular 0x000000, shininess 0)',
+    /specular:\s*0x000000/.test(matSrc[0]) && /shininess:\s*0\b/.test(matSrc[0]));
+  test('stress material keeps Gouraud shading (CLAUDE.md heatmap invariant)',
+    /flatShading:\s*false/.test(matSrc[0]));
+  test('no stress mesh still builds a raw shiny MeshPhongMaterial with vertexColors',
+    !/new THREE\.MeshPhongMaterial\(\{ vertexColors: true, shininess: 55 \}\)/.test(html));
+
+  // ── The end-to-end property this whole change exists for ─────────────────
+  // A fully-lit facet (multiplier 1.0) must emit EXACTLY the legend's color.
+  // Model:  stressColorLinear(t) -> *1.0 -> linearToSrgb -> 8-bit
+  // Legend: stressColor(t) -> 8-bit  (CSS rgb() is sRGB by definition)
+  for (const map of ['viridis', 'plasma', 'rainbow']) {
+    const mismatches = [];
+    for (let i = 0; i <= 20; i++) {
+      const t = i / 20;
+      const model = stressColorLinear(t, map).map(c => b255(linearToSrgb(c)));
+      const legend = stressColor(t, map).map(b255);
+      if (!model.every((v, j) => v === legend[j])) mismatches.push({ t, model, legend });
+    }
+    test(`${map}: model color == legend color at all 21 sampled stops (fully lit)`,
+      mismatches.length === 0,
+      mismatches.length ? `first mismatch t=${mismatches[0].t} model=${mismatches[0].model} legend=${mismatches[0].legend}` : '');
+  }
+  {
+    const mismatches = [];
+    for (let i = 0; i <= 20; i++) {
+      const t = i / 20;
+      const model = divergingColorLinear(t).map(c => b255(linearToSrgb(c)));
+      const legend = divergingColor(t).map(b255);
+      if (!model.every((v, j) => v === legend[j])) mismatches.push(t);
+    }
+    test('diverging (σ₁/σ₃) scale: model color == legend color at all 21 stops',
+      mismatches.length === 0, `mismatched at t=${mismatches.join(',')}`);
+  }
+
+  // Proves the above is a real constraint: the OLD path (sRGB constants written
+  // straight into the linear attribute) fails it, and by a visible margin.
+  {
+    const t = 0;                                   // viridis #440154, the worst case
+    const old = stressColor(t, 'viridis').map(c => b255(linearToSrgb(c)));
+    const legend = stressColor(t, 'viridis').map(b255);
+    const maxErr = Math.max(...old.map((v, j) => Math.abs(v - legend[j])));
+    test('regression guard: the pre-fix path is off by >40/255 on viridis dark purple',
+      maxErr > 40, `maxErr=${maxErr} old=rgb(${old}) legend=rgb(${legend})`);
+  }
+
+  // ── No channel can clip, at any stop, under any facet orientation ─────────
+  // Clipping is what rotated hue (viridis purple rendered magenta). With
+  // colorLinear <= 1 and the rig <= 1, the product is bounded by construction.
+  {
+    let worst = 0;
+    for (const map of Object.keys(COLORMAPS)) {
+      for (let i = 0; i <= 100; i++) {
+        for (const L of [0, 0.55, 0.85, sum]) {   // unlit .. ambient-only .. fully lit
+          worst = Math.max(worst, ...stressColorLinear(i / 100, map).map(c => c * L));
+        }
+      }
+    }
+    test('no channel of any colormap exceeds 1.0 under the normalized rig (no hue rotation)',
+      worst <= 1 + 1e-12, `worst channel=${worst}`);
+  }
+
+  // ── The cut face reads the shared gamma, not its own copy of the URL flag ──
+  {
+    const fn = html.match(/function _colorInteriorValues\(values, mode\) \{[\s\S]*?\n\}/);
+    test('_colorInteriorValues exists', !!fn);
+    test('_colorInteriorValues uses currentGamma() (shared toggle, issue #142)',
+      /const GAMMA = currentGamma\(\);/.test(fn[0]));
+    // Match the CODE, not the word — the function's comment names the old flag
+    // to explain why it is gone, and that mention must not fail the check.
+    test('_colorInteriorValues no longer reads the URL flag itself',
+      !/URLSearchParams/.test(fn[0]) && !/const\s+disableGamma\s*=/.test(fn[0]));
+    test('_colorInteriorValues paints in linear space',
+      /stressColorLinear\(/.test(fn[0]) && /divergingColorLinear\(/.test(fn[0]));
   }
 }
 
