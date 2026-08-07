@@ -144,7 +144,12 @@ export interface BoltSize {
   system:         "metric" | "inch";
 }
 
-const BOLT_SIZES: BoltSize[] = [
+// Exported for the #290 collision guard in
+// server/tests/unit/classify-hole-clearance-collapse.test.ts: the twin-collapse
+// in classifyHole is only safe for thread strip-out while the tapDrill75/50
+// columns stay free of duplicates, and that has to be checked against the real
+// table rather than asserted in a comment.
+export const BOLT_SIZES: BoltSize[] = [
   // ── Metric coarse (ISO 724) ────────────────────────────────────────────────
   { label:"M2",   nominalMm:2.0,  clearanceClose:2.2,  clearanceFree:2.4,  tapDrill75:1.60, tapDrill50:1.75, pitch:0.40, system:"metric" },
   { label:"M2.5", nominalMm:2.5,  clearanceClose:2.7,  clearanceFree:2.9,  tapDrill75:2.05, tapDrill50:2.20, pitch:0.45, system:"metric" },

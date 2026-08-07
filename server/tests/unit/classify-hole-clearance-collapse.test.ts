@@ -27,7 +27,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { classifyHole } from "../../analysis.js";
+import { classifyHole, BOLT_SIZES } from "../../analysis.js";
 import { parseSTL } from "../../stl.js";
 import { detectHoles } from "../../holes.js";
 import {
@@ -59,17 +59,31 @@ describe("#290: same-clearance twins collapse instead of reporting phantom ambig
     expect(cls.warning).toContain("1/4-20");
   });
 
-  it("BOLT_SIZES has exactly one colliding pair, and only on the clearance columns", () => {
-    // Locks the "zero blast radius on thread strip-out" claim: if a future
-    // edit to BOLT_SIZES introduces a tapDrill75/50 duplicate, the collapse
-    // logic would silently start suppressing a genuine tapped-vs-tapped
-    // ambiguity. This test fails loudly instead. Reproduces the table by
-    // classifying the exact tie points and would need updating in lockstep
-    // with any intentional BOLT_SIZES change.
-    const tieClose = classifyHole(5.16 / 2, 100);
-    const tieFree  = classifyHole(5.61 / 2, 100);
-    expect(tieClose.bolt?.label).toBe("#10-24"); // ambiguous vs 1/4-20 — not a twin group
-    expect(tieFree.bolt?.label).toBe("#10-24 / #10-32");
+  it("BOLT_SIZES collides ONLY on the clearance columns, never on a tap drill", () => {
+    // This is the whole safety argument for the change, checked against the
+    // real table rather than asserted in a comment. classifyHole's twin
+    // collapse suppresses a reported ambiguity, so it must never fire between
+    // two TAPPED candidates: tapped_75/tapped_50 are the only types gating the
+    // thread strip-out check in checkFailureModes, and silently collapsing a
+    // genuine tapped-vs-tapped ambiguity would move a governing safety factor.
+    // Today no tap-drill duplicates exist, so the collapse is unreachable on
+    // those columns. If a future BOLT_SIZES edit introduces one, this fails.
+    const collisions = (col: keyof typeof BOLT_SIZES[number]) => {
+      const byValue = new Map<number, string[]>();
+      for (const b of BOLT_SIZES) {
+        const v = b[col] as number;
+        byValue.set(v, [...(byValue.get(v) ?? []), b.label]);
+      }
+      return [...byValue.entries()].filter(([, labels]) => labels.length > 1);
+    };
+
+    // The tap-drill columns must be collision-free.
+    expect(collisions("tapDrill75")).toEqual([]);
+    expect(collisions("tapDrill50")).toEqual([]);
+
+    // The clearance columns collide exactly once each, and only #10-24/#10-32.
+    expect(collisions("clearanceClose")).toEqual([[5.16, ["#10-24", "#10-32"]]]);
+    expect(collisions("clearanceFree")).toEqual([[5.61, ["#10-24", "#10-32"]]]);
   });
 });
 
