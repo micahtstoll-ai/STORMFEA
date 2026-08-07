@@ -2926,9 +2926,29 @@ function initThree() {
   renderer.setPixelRatio(window.devicePixelRatio);
   el.appendChild(renderer.domElement);
 
-  scene.add(new THREE.AmbientLight(0xffffff, 0.45));
-  const d1 = new THREE.DirectionalLight(0xfff5e0, 1.2); d1.position.set(2,4,3); scene.add(d1);
-  const d2 = new THREE.DirectionalLight(0xd0e8ff, 0.5); d2.position.set(-3,-1,-2); scene.add(d2);
+  // ── Light rig: normalized to unit total, untinted ─────────────────────────
+  // The mesh's vertex colors ARE the data, so the rig must never add to them —
+  // it may only darken. Two properties make that true, and both matter:
+  //
+  //  1. The intensities SUM TO EXACTLY 1.0. Three r152 defaults
+  //     useLegacyLights = true, so intensity is a raw multiplier with no 1/PI
+  //     falloff; the previous 0.45 + 1.2 + 0.5 rig drove a lit face to ~1.65x
+  //     its own color. Channels then clipped at 1.0 INDEPENDENTLY, which
+  //     rotates hue rather than merely brightening — viridis's dark purple
+  //     (#440154) clipped its blue channel and rendered magenta, its teal
+  //     rendered pale mint. The same stress read as a different color
+  //     depending on which way a facet happened to point, which is precisely
+  //     the property a perceptually-uniform colormap exists to provide.
+  //  2. The lights are WHITE. The old warm (0xfff5e0) / cool (0xd0e8ff) pair
+  //     scaled the channels unequally, tinting the reading itself.
+  //
+  // Net effect: a fully-lit facet renders its colormap color exactly, and every
+  // other facet renders a darkened version of the right hue. Shading still
+  // reads the part's form; it can no longer misreport a number. Keep the sum at
+  // 1.0 if you retune the balance between the three.
+  scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+  const d1 = new THREE.DirectionalLight(0xffffff, 0.30); d1.position.set(2,4,3); scene.add(d1);
+  const d2 = new THREE.DirectionalLight(0xffffff, 0.15); d2.position.set(-3,-1,-2); scene.add(d2);
 
   // ── Permanent gold build-plate grid at Y=0 (XZ plane) ─────────────────────
   // GridHelper lies in the XZ plane by default with Y-up — exactly what we want.
@@ -3139,6 +3159,36 @@ function divergingColor(t) {
   return c[i].map((v, j) => v + f * (c[i+1][j] - v));
 }
 
+// ── Display color space ───────────────────────────────────────────────────────
+// The COLORMAPS / DIVERGING_BWR tables above are sRGB values — that is the
+// space viridis and plasma are DEFINED in, and the space the legend needs,
+// because CSS rgb() and canvas fillStyle are sRGB by definition.
+//
+// The GPU is a different space. This app pins Three r152
+// (client/vendor/three.min.js), where WebGLRenderer.outputColorSpace defaults
+// to 'srgb' and ColorManagement is enabled, making the shader's working space
+// LINEAR-sRGB. Three converts material.color for you, but it never touches a
+// vertex-color BufferAttribute — per its color-management contract those are
+// assumed to ALREADY be in the working space. Writing sRGB numbers straight
+// into the color attribute therefore had them read as linear and re-encoded on
+// output, applying a spurious ~1/2.2 brightening to every color on the model
+// while the legend beside it stayed correct. The two could not agree no matter
+// how carefully their gamma curves were aligned: issue #142 aligned the CURVES,
+// this aligns the SPACE they land in.
+//
+// Rule: stressColor / divergingColor for anything the BROWSER paints (CSS
+// gradients, canvas 2D export). The *Linear variants for anything the GPU
+// paints — every geometry 'color' attribute, without exception.
+function srgbToLinear(c) {
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+function stressColorLinear(t, map) { return stressColor(t, map).map(srgbToLinear); }
+function divergingColorLinear(t)   { return divergingColor(t).map(srgbToLinear); }
+// Neutral mid-grey for filtered-out vertices and the un-analysed default mesh,
+// pre-converted so they render as the tone they are named for.
+const FILTER_GREY_LINEAR = srgbToLinear(0.5);
+const DEFAULT_MESH_LINEAR = [0.32, 0.50, 0.72].map(srgbToLinear);
+
 // Combined tension/compression field: the dominant principal stress at each
 // vertex — σ₁ (most tensile) when it outweighs σ₃ in magnitude, else σ₃ (most
 // compressive). Signed, so it feeds the diverging color scale directly:
@@ -3178,11 +3228,14 @@ function computeDivergingColors(stressArr, absMaxOverride, filter) {
     if (filterOn) {
       const mag = Math.abs(stressArr[i] ?? 0);
       const show = filter.side === 'above' ? mag >= thr : mag <= thr;
-      if (!show) { colors[i*3] = 0.5; colors[i*3+1] = 0.5; colors[i*3+2] = 0.5; continue; }
+      if (!show) {
+        colors[i*3] = FILTER_GREY_LINEAR; colors[i*3+1] = FILTER_GREY_LINEAR; colors[i*3+2] = FILTER_GREY_LINEAR;
+        continue;
+      }
     }
     // Map [-absMax, +absMax] → [0, 1]
     const t = 0.5 + 0.5 * Math.max(-1, Math.min(1, (stressArr[i] ?? 0) / absMax));
-    const [r, g, b] = divergingColor(t);
+    const [r, g, b] = divergingColorLinear(t);
     colors[i*3] = r; colors[i*3+1] = g; colors[i*3+2] = b;
   }
   return { colors, effectiveMin: -absMax, effectiveMax: absMax, range: 2 * absMax, absMax };
@@ -3208,7 +3261,7 @@ function setColormap(name) {
     for (let i = 0; i < nVerts; i++) {
       const linear = Math.max(0, Math.min(1, (S.stressColors[i] - S.stressMin) / range));
       const t = Math.pow(linear, GAMMA);
-      const [r, g, b] = stressColor(t);
+      const [r, g, b] = stressColorLinear(t);
       cols[i*3] = r; cols[i*3+1] = g; cols[i*3+2] = b;
     }
     mesh3d.geometry.attributes.color.needsUpdate = true;
@@ -3383,11 +3436,20 @@ function refreshUnitsDisplay() {
       const steps = labels.children.length;
       const range = S.stressMax - S.stressMin;
       const unit = (S.stressMode === 'dmg') ? '' : (' ' + U.stressLabel());
+      // Re-apply the percentile-clip markers set by applyStressColorsFromArrays.
+      // This path rewrites every label from scratch on a unit change, so without
+      // this the >= / <= would silently disappear the first time the user
+      // toggled SI/imperial, leaving the legend overstating its own coverage
+      // again.
+      const clip = S._legendClip || {};
       Array.from(labels.children).forEach((el, i) => {
         const mpa = S.stressMax - (i / (steps - 1)) * range;
-        const valText = U.stress(mpa).toFixed(S.units==='imperial'?0:1);
+        let valText = U.stress(mpa).toFixed(S.units==='imperial'?0:1);
         const isEdge = (i === 0 || i === steps - 1); // HIGH / LOW rows
-        el.textContent = valText + (isEdge ? unit : '');
+        valText += (isEdge ? unit : '');
+        if (i === 0 && clip.hi) valText = '≥ ' + valText;
+        if (i === steps - 1 && clip.lo) valText = '≤ ' + valText;
+        el.textContent = valText;
       });
     }
   }
@@ -3498,6 +3560,23 @@ function buildGeometryFromPositions(positions) {
   return { geo, scale, center: cen.clone(), size: sz.clone() };
 }
 
+// Material for any mesh whose vertex colors carry data (the part, the split-view
+// A mesh, the section cut-face). Fully matte ON PURPOSE: MeshPhongMaterial's
+// specular term is ADDITIVE, so a highlight lobe both lays a white sheen over
+// the reading and can push an already-unit-scale color past 1.0, reintroducing
+// exactly the per-channel clipping the light rig was normalized to avoid.
+// specular black + shininess 0 makes the shading purely Lambertian, which with
+// the unit-sum rig bounds output at the colormap color itself.
+// flatShading stays false — Gouraud, per CLAUDE.md's heatmap invariants.
+function makeStressMaterial(extra) {
+  return new THREE.MeshPhongMaterial(Object.assign({
+    vertexColors: true,
+    specular: 0x000000,
+    shininess: 0,
+    flatShading: false,
+  }, extra || {}));
+}
+
 function loadMeshFromPositions(posB64) {
   const buf = Uint8Array.from(atob(posB64), c => c.charCodeAt(0));
   const positions = new Float32Array(buf.buffer);
@@ -3510,10 +3589,12 @@ function loadMeshFromPositions(posB64) {
   // Vertex colors (default blue)
   const vCount = positions.length / 3;
   const cols = new Float32Array(vCount * 3);
-  for (let i = 0; i < vCount; i++) { cols[i*3]=0.32; cols[i*3+1]=0.50; cols[i*3+2]=0.72; }
+  for (let i = 0; i < vCount; i++) {
+    cols[i*3]=DEFAULT_MESH_LINEAR[0]; cols[i*3+1]=DEFAULT_MESH_LINEAR[1]; cols[i*3+2]=DEFAULT_MESH_LINEAR[2];
+  }
   geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
 
-  mesh3d = new THREE.Mesh(geo, new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 55 }));
+  mesh3d = new THREE.Mesh(geo, makeStressMaterial());
   mesh3d.scale.setScalar(scale);
   mesh3d.userData = { scale, offset: cen.clone() };
   rotX = 0; rotY = 0;
@@ -3781,11 +3862,14 @@ function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverrid
   for (let i = 0; i < nVerts; i++) {
     if (filterOn) {
       const show = filter.side === 'above' ? smoothed[i] >= thr : smoothed[i] <= thr;
-      if (!show) { colors[i*3] = 0.5; colors[i*3+1] = 0.5; colors[i*3+2] = 0.5; continue; }
+      if (!show) {
+        colors[i*3] = FILTER_GREY_LINEAR; colors[i*3+1] = FILTER_GREY_LINEAR; colors[i*3+2] = FILTER_GREY_LINEAR;
+        continue;
+      }
     }
     const linear = range > 0 ? Math.max(0, Math.min(1, (smoothed[i] - effectiveMin) / range)) : 0;
     const t = Math.pow(linear, GAMMA);
-    const [r, g, b] = stressColor(t);
+    const [r, g, b] = stressColorLinear(t);
     colors[i*3] = r; colors[i*3+1] = g; colors[i*3+2] = b;
   }
 
@@ -4091,7 +4175,9 @@ function markPeakStressLocation(vertexStress, maxStress) {
 function resetColors() {
   if (!mesh3d) return;
   const cols = mesh3d.geometry.attributes.color.array;
-  for (let i = 0; i < cols.length / 3; i++) { cols[i*3]=0.32; cols[i*3+1]=0.50; cols[i*3+2]=0.72; }
+  for (let i = 0; i < cols.length / 3; i++) {
+    cols[i*3]=DEFAULT_MESH_LINEAR[0]; cols[i*3+1]=DEFAULT_MESH_LINEAR[1]; cols[i*3+2]=DEFAULT_MESH_LINEAR[2];
+  }
   mesh3d.geometry.attributes.color.needsUpdate = true;
 }
 
@@ -8481,9 +8567,11 @@ function openSplitView() {
   const { geo: geoA, scale: scaleA } = buildGeometryFromPositions(positionsA);
   const vCountA = positionsA.length / 3;
   const colsA = new Float32Array(vCountA * 3);
-  for (let i = 0; i < vCountA; i++) { colsA[i*3]=0.32; colsA[i*3+1]=0.50; colsA[i*3+2]=0.72; }
+  for (let i = 0; i < vCountA; i++) {
+    colsA[i*3]=DEFAULT_MESH_LINEAR[0]; colsA[i*3+1]=DEFAULT_MESH_LINEAR[1]; colsA[i*3+2]=DEFAULT_MESH_LINEAR[2];
+  }
   geoA.setAttribute('color', new THREE.BufferAttribute(colsA, 3));
-  _splitMeshA = new THREE.Mesh(geoA, new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 55 }));
+  _splitMeshA = new THREE.Mesh(geoA, makeStressMaterial());
   _splitMeshA.scale.setScalar(scaleA);
   // Match mesh3d's current rotation (set by snapToBed when the user picks a
   // print-bed face). Without this, _splitMeshA renders in its raw,
@@ -8597,7 +8685,7 @@ function renderSplitFrame() {
   const nVertsA = Math.min(_splitStressA.length, colorsA.length / 3);
   for (let i = 0; i < nVertsA; i++) {
     const t = Math.pow(Math.max(0, Math.min(1, (_splitStressA[i] ?? 0) / range)), GAMMA);
-    const [r, g, b] = stressColor(t);
+    const [r, g, b] = stressColorLinear(t);
     colorsA[i*3] = r; colorsA[i*3+1] = g; colorsA[i*3+2] = b;
   }
   _splitMeshA.geometry.attributes.color.needsUpdate = true;
@@ -8616,7 +8704,7 @@ function renderSplitFrame() {
   const nVertsB = Math.min(_splitStressB.length, colorsB.length / 3);
   for (let i = 0; i < nVertsB; i++) {
     const t = Math.pow(Math.max(0, Math.min(1, (_splitStressB[i] ?? 0) / range)), GAMMA);
-    const [r, g, b] = stressColor(t);
+    const [r, g, b] = stressColorLinear(t);
     colorsB[i*3] = r; colorsB[i*3+1] = g; colorsB[i*3+2] = b;
   }
   mesh3d.geometry.attributes.color.needsUpdate = true;
@@ -13244,8 +13332,12 @@ function _colorInteriorValues(values, mode) {
   const meta = MODE_META[mode] || MODE_META[DEFAULT_STRESS_MODE];
   const n = values.length;
   const colors = new Float32Array(n * 3);
-  const disableGamma = new URLSearchParams(window.location.search).has('disableGamma');
-  const GAMMA = disableGamma ? 1.0 : 0.55;
+  // currentGamma() — NOT a second copy of the disableGamma URL flag. This path
+  // kept its own copy, so it read the URL parameter but ignored the legend's
+  // LINEAR/γ toggle: switching the scale repainted the surface and left the cut
+  // face on the other curve, in the one view where the two are adjacent and
+  // issue #190 requires the cut face to match probe values on the same scale.
+  const GAMMA = currentGamma();
   const sc = (S._filterScale && S._filterScale.mode === mode) ? S._filterScale : null;
   if (meta.kind === 'diverging') {
     const absMax = (sc && sc.kind === 'diverging' && sc.absMax > 0)
@@ -13253,7 +13345,7 @@ function _colorInteriorValues(values, mode) {
       : (meta.divAbs ? meta.divAbs() : 1) || 1;
     for (let i = 0; i < n; i++) {
       const t = 0.5 + 0.5 * Math.max(-1, Math.min(1, (values[i] ?? 0) / absMax));
-      const [r, g, b] = divergingColor(t);
+      const [r, g, b] = divergingColorLinear(t);
       colors[i*3] = r; colors[i*3+1] = g; colors[i*3+2] = b;
     }
   } else {
@@ -13262,7 +13354,7 @@ function _colorInteriorValues(values, mode) {
     for (let i = 0; i < n; i++) {
       const linear = Math.max(0, Math.min(1, ((values[i] ?? 0) - min) / range));
       const t = Math.pow(linear, GAMMA);
-      const [r, g, b] = stressColor(t);
+      const [r, g, b] = stressColorLinear(t);
       colors[i*3] = r; colors[i*3+1] = g; colors[i*3+2] = b;
     }
   }
@@ -13294,11 +13386,8 @@ function _refreshInteriorCap() {
 
   if (!S._interiorCap) {
     const geo = new THREE.BufferGeometry();
-    const mat = new THREE.MeshPhongMaterial({
-      vertexColors: true,
-      shininess: 25,
+    const mat = makeStressMaterial({
       side: THREE.DoubleSide,   // lit correctly whichever half is kept
-      flatShading: false,       // Gouraud shading — CLAUDE.md heatmap invariant
       depthTest: false,         // always wins over the coplanar grey fallback cap
       depthWrite: true,
       // Same stencil recipe as the grey cap (test != 0 to draw, then Replace
@@ -13453,12 +13542,12 @@ function applyStressColorsFromArrays(arrays) {
 
   const filter = (S.stressFilter && S.stressFilter.enabled && S.stressFilter.forMode === S.stressMode)
     ? S.stressFilter : null;
-  let colors, effectiveMin, effectiveMax, range, absMax;
+  let colors, effectiveMin, effectiveMax, range, absMax, rawMax, rawMin;
   if (meta.kind === 'diverging') {
     ({ colors, effectiveMin, effectiveMax, range, absMax } =
       computeDivergingColors(arr, meta.divAbs ? meta.divAbs() : undefined, filter));
   } else {
-    ({ colors, effectiveMin, effectiveMax, range } =
+    ({ colors, effectiveMin, effectiveMax, range, rawMax, rawMin } =
       computeSmoothedStressColors(arr, meta.max, meta.min, filter));
   }
   S.stressMax = effectiveMax;
@@ -13491,13 +13580,29 @@ function applyStressColorsFromArrays(arrays) {
   if (labels) {
     const steps = labels.children.length;
     const unit = meta.unit();
+    // The sequential scale clips to the p02..p98 percentile band so one
+    // singular vertex can't wash out the whole map. That clip was SILENT: with
+    // a peak well above p98, every vertex from p98 up painted the same top
+    // color and the legend still read as if p98 were the maximum, so the real
+    // hotspot did not read as a hotspot and the number beside it disagreed
+    // with the MAX STRESS card. Mark the clipped ends with >= / <= so the
+    // legend states the range it actually covers.
+    const clipHi = rawMax != null && rawMax > effectiveMax * (1 + 1e-6);
+    const clipLo = rawMin != null && rawMin < effectiveMin * (1 - 1e-6);
+    S._legendClip = { hi: clipHi, lo: clipLo };   // survives a unit toggle (refreshUnitsDisplay)
     Array.from(labels.children).forEach((el,i) => {
       const v = effectiveMax - (i/(steps-1)) * range;
       let valText = v.toFixed(meta.dec);
       if (meta.perValueUnit) valText += unit;                 // e.g. dmg "1.25×"
       else if ((i === 0 || i === steps - 1) && unit) valText += ' ' + unit;
+      if (i === 0 && clipHi) valText = '≥ ' + valText;
+      if (i === steps - 1 && clipLo) valText = '≤ ' + valText;
       el.textContent = valText;
     });
+    labels.title = clipHi
+      ? `Color scale clipped at the 98th percentile (${effectiveMax.toFixed(meta.dec)}${unit ? ' ' + unit : ''}); `
+        + `peak on the mesh is ${rawMax.toFixed(meta.dec)}${unit ? ' ' + unit : ''}.`
+      : '';
   }
 
   // Update legend gradient bar

@@ -186,7 +186,7 @@ enforced throughout the invariant sections below:
   known load** — not just that the code runs without throwing.
 
 ## Frontend Design System
-`client/index.html` is a single ~14,600-line file with no CSS framework
+`client/index.html` is a single ~14,800-line file with no CSS framework
 enforcing consistency — it relies on people (and agents) following
 `DESIGN.md` by hand. Before any visual change:
 - **Three fonts, fixed roles** — Rajdhani (headings), Outfit (UI copy), DM
@@ -224,20 +224,67 @@ When modifying heatmap or mesh coloring code:
 3. **Use consistent grid-cell indexing** — match server's `floor((x - min) / cell)` approach, never `round(x / cell)`
 4. **Test on edge cases:** negative coordinates, mesh boundaries, seams between large and small triangles
 
+### Display Color Space (Invariants)
+The model's colors ARE the reading, so the pixel the GPU emits must equal the
+color the legend shows for that same stress. Three things enforce that, and all
+three are locked by test group [T] in `scripts/test_client_logic.mjs`:
+
+1. **sRGB for the browser, LINEAR for the GPU.** The `COLORMAPS` /
+   `DIVERGING_BWR` tables are sRGB — that is the space viridis and plasma are
+   defined in, and what CSS `rgb()` and canvas `fillStyle` expect. Three r152
+   (`client/vendor/three.min.js`) defaults `outputColorSpace = 'srgb'` with
+   ColorManagement on, so the shader's working space is linear-sRGB, and per
+   Three's contract a vertex-color `BufferAttribute` is assumed to ALREADY be
+   linear — it is never converted for you. Use `stressColor` /`divergingColor`
+   for anything the BROWSER paints and `stressColorLinear` /
+   `divergingColorLinear` (and `FILTER_GREY_LINEAR`, `DEFAULT_MESH_LINEAR`) for
+   every geometry `color` attribute. Writing sRGB values straight into the
+   attribute applies a spurious ~1/2.2 brightening to the model while the
+   legend stays correct, and no amount of gamma alignment can reconcile them.
+2. **The light rig sums to exactly 1.0 and is untinted white.** r152 defaults
+   `useLegacyLights = true`, so intensity is a raw multiplier with no 1/PI
+   falloff. Over-unity lighting clips channels INDEPENDENTLY, which rotates hue
+   rather than merely brightening — the same stress then reads as a different
+   color depending on which way a facet points, destroying the point of a
+   perceptually-uniform colormap. A tinted light does the same thing more
+   quietly. Retune the balance between the three lights if you like; keep the
+   sum at 1.0.
+3. **Data-carrying meshes are matte.** Build them with `makeStressMaterial()`
+   (specular `0x000000`, shininess 0, `flatShading: false`). Phong's specular
+   term is ADDITIVE: a highlight lays a white sheen over the reading and can
+   push a unit-scale color past 1.0, reintroducing the clipping (2) exists to
+   prevent.
+
+Together these bound output at the colormap color itself: a fully-lit facet
+renders it exactly, every other facet renders a darkened version of the right
+hue. Shading reads the part's form; it cannot misreport a number.
+
 ### Material & Shading Essentials
 - **Always use Gouraud shading** (vertex-interpolated) for stress heatmaps: `flatShading: false` in MeshPhongMaterial
 - **Never use flat-shading** on ColorAttribute geometries — creates hard edges at triangle boundaries that appear as artifacts
 - **Color clamping:** Use per-vertex colors, not per-triangle; gamma curve (`GAMMA = 0.55`) expands low-stress regions
+- **`currentGamma()` is the single source of truth** for that curve — every
+  paint path reads it (issue #142), including the section cut-face
+  (`_colorInteriorValues`). Never keep a second copy of the `disableGamma`
+  flag: the copy drifts the moment the in-app LINEAR/γ toggle is used.
+- **The sequential scale clips to p02..p98** so one singular vertex can't wash
+  out the map. That clip is REPORTED, not silent — the legend's end labels get
+  a `≥` / `≤` marker (`S._legendClip`, re-applied by `refreshUnitsDisplay` so a
+  unit toggle can't drop it). Without it the legend overstates its own coverage
+  and disagrees with the MAX STRESS card.
 
 ### Debug Tools Available
 - `?debugWeld=true` — Logs vertex grouping statistics, discontinuity detection, potential welding issues
-- `?disableGamma=true` — Disables gamma curve (test if color banding is from gamma expansion)
+- `?disableGamma=true` — Sets the INITIAL gamma state (the in-app LINEAR/γ button in the legend then owns it, persisted in `localStorage` as `sf-gamma-disabled`)
 - Console output includes group size distribution and high-discontinuity triangles
 
 ### Code Review Checklist (Stress Rendering Changes)
 Before submitting a PR that modifies mesh visualization or stress heatmap:
 - [ ] Are coincident vertices being welded BEFORE color assignment? (weld tolerance: 0.01mm)
 - [ ] Is shading mode explicitly set to Gouraud (`flatShading: false`)? 
+- [ ] Does every write to a geometry `color` attribute use a `*Linear` color helper, and every browser-painted swatch the sRGB one?
+- [ ] Do the light intensities still sum to 1.0, with no tinted lights?
+- [ ] Is the mesh built via `makeStressMaterial()` rather than a hand-rolled MeshPhongMaterial?
 - [ ] Does every display vertex receive a stress value (no NaN, no Infinity)?
 - [ ] Stress array length validated: `vertexStress.length === triangleCount * 3`?
 - [ ] Spatial grid indexing is consistent: floor-based with bounding-box normalization?
@@ -248,6 +295,8 @@ Before submitting a PR that modifies mesh visualization or stress heatmap:
 ### References
 Search by symbol, not line number — these move:
 - Vertex Welding: `client/index.html`, function `computeSmoothedStressColors`
+- Color space: `client/index.html`, `srgbToLinear` / `stressColorLinear` /
+  `divergingColorLinear` / `makeStressMaterial`; light rig in `initThree`
 - Server Spatial Grid: `server/analysis.ts`, function `nearestNodeStress`
 - Stress Recovery: `server/solver/stress.ts` — `sprSmoothedStress6` (tensor) is
   the ONE recovered nodal field: it feeds the ZZ estimator, and on C3D10 the
