@@ -541,6 +541,52 @@ the solver-accuracy campaign; adaptive mesh refinement (#149) shipped in PR #246
   trap that matters: group 30's manufactured solution is quadratic, which C3D10
   reproduces exactly, so it CANNOT anchor a C3D10 effectivity index — that needs
   a cubic-or-higher exact solution
+- **The two mesher paths size themselves on incompatible philosophies, and only
+  one of them targets an element budget** (issue #295) — `tetMaxVolumeForTier`
+  (`server/tetgen.ts`) is SCALE-RELATIVE: it divides the bounding-box volume by
+  `TET_TARGET_ELEMENTS` (coarse 4,000 / standard 12,000 / fine 40,000), so an STL
+  part gets that many elements whatever its size. The STEP/Gmsh path in
+  `runAnalysis` (`server/analysis.ts`) is ABSOLUTE: its per-tier `clOpts` set
+  `clMin`/`clMax`/`clCurv` in millimetres (fine = 0.2/2.0/30), which fixes an
+  element SIZE and lets the resulting count float freely with part size. So
+  "fine" means "40,000 elements" for an STL and "2 mm elements" for a STEP, and
+  only the first guarantees a resolution budget. The absolute form is defensible
+  on its own terms — a 2 mm cap resolves a fillet the same way on any part, and
+  `clCurv` is what refines hole bores — but it has no FLOOR: a thin plate meshed
+  at `clMax` 2.0 mm gets one or two quadratic elements through a 3-4 mm wall,
+  which is under-resolved for bending regardless of how many elements the part
+  carries in total. Neither `docs/` nor this file records the absolute choice as
+  a landed decision, and the shipped list above has an entry for teaching the STL
+  path to honour the tier with no STEP counterpart. Fix direction: keep the
+  curvature-driven sizing, add a scale-relative cap so the tier still targets a
+  count, and add a through-thickness floor so the smallest dimension always
+  carries enough elements to bend. Blocks the two-region entry below
+- **Enable and harden the two-region (walls vs infill) model, once the mesh can
+  resolve it** (issue #297) — the model is built, validated, and reachable
+  (`print.twoRegion`, `server/twoRegion.ts`, `two-region-toggle` in the client)
+  but defaults OFF, so the default analysis represents infill as a scalar
+  knockdown with no spatial structure. The blocker is resolution, not the model:
+  two-region invariant #4 puts the wall band at ~1.35 mm, and at the element
+  sizes the tiers currently deliver the classification has nothing to bite on.
+  Sequenced AFTER the mesh-sizing entry above for that reason. Note the core
+  homogenization exponents remain confidence-LOW (see KNOWN LIMITATIONS); this
+  entry is about making an existing validated model the default and surfacing the
+  shell/core split, not about moving those constants
+- **Symmetry-preserving meshing** (issue #296) — an unstructured tet mesh of a mirror-symmetric
+  part is not itself mirror-symmetric, so the recovered stress field carries an
+  asymmetry the geometry does not have. Measured on a symmetric cantilever
+  fixture: only 128 of 384 element centroids had a mirror partner at all, and the
+  SPR nodal field's mirror asymmetry ran 1.83% / 0.88% / 0.52% rms across
+  384/3,072/10,368 elements while the DISPLACEMENT field stayed symmetric to
+  0.001%. Mesh symmetry is a property of the geometry and independent of the load
+  case: detect the symmetry plane, mesh the fundamental domain, mirror and weld,
+  and then any asymmetry left in a result is real rather than injected.
+  `runLinearStaticWithK` already anticipates mirrored input — the assemblers
+  auto-orient via `Math.abs(sixV)`/`Math.abs(detJ)`, and the mesh-quality gate
+  deliberately keys on shape rather than Jacobian SIGN so "a MIRROR-oriented but
+  well shaped mesh solves correctly and must pass the gate". Scope limit: only
+  applies where the geometry actually HAS a symmetry plane, and it does not
+  reduce the mesh-to-mesh artifact below
 - **Anisotropic (honeycomb) DFA extension** — the shipped core yield criterion
   is the isotropic-foam form. Extending pressure sensitivity per-axis would
   match the per-axis stiffness and strength laws the core already uses;
@@ -614,6 +660,21 @@ waiting for a consistent empirical table._
   KIND is exercised somewhere in the suite, not that a specific geometry, load
   case, or material is proven correct — and it names its combination gaps (e.g.
   two-region validation runs exclusively on C3D10 meshes)
+- The DISPLAYED stress field carries a mesh-dependent artifact tail that the ZZ
+  estimator cannot flag, and this is only PARTLY disclosed (issue #294). Measured
+  on a symmetric cantilever fixture at 3,072 elements, two different meshes of
+  the same geometry under the same load disagree by a median of 0.03% of peak but
+  a p95 of 7.9% and a max of 16.1% — the field is excellent almost everywhere
+  with a scattered tail, and the hot spots MOVE when the part is re-meshed.
+  Refinement is the only measured lever (three recovery-side fixes were
+  prototyped and were neutral or regressions: boundary-patch borrowing, the
+  cascade thresholds, and `SPR_MAX_AMPLIFICATION_QUADRATIC`, which is
+  bit-identical from 60 down to 5). The per-element `errorEstimate` does NOT
+  predict these locations — Spearman 0.015 against the actual mesh-to-mesh
+  disagreement — because ZZ differences the recovered and raw fields and an
+  artifact inherited by both cancels. `globalRelativeError` is shown on the
+  RESULTS tab, so a user reading the 3D view alone gets no signal at all;
+  `topErrorElements` should not be read as "here is where the picture lies"
 
 _Resolved: the TetGen box-mesh fallback previously always produced C3D4 (≈55%
 bending underprediction) regardless of the element-order selector; it now honours
