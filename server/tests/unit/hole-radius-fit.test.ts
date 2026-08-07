@@ -218,13 +218,20 @@ describe("#280 ground truth: the shipped demo bracket", () => {
     expect(cls.bolt?.label).not.toBe("M6");
 
     // At the true Ø5.2 the nearest standard hole is the #10 close clearance
-    // (5.16), 0.04 mm away; M5 close clearance (5.30) is second at 0.10 mm.
-    // #10-24 and #10-32 share that clearance figure, so classifyHole reports
-    // them as ambiguous — a pre-existing property of the bolt table (thread
-    // pitch is irrelevant to a clearance hole), not of this fit.
+    // (5.16), 0.04 mm away. #10-24 and #10-32 share that clearance figure —
+    // issue #290 fixed classifyHole to collapse that pair instead of
+    // reporting a phantom "#10-24 vs #10-32" ambiguity no measurement could
+    // ever resolve (see classify-hole-clearance-collapse.test.ts). This hole
+    // still comes back "ambiguous", but now for a real reason: M6's
+    // 50%-thread tap drill (5.25) is a genuinely different candidate only
+    // 0.01mm further away than the #10 clearance match. That is NOT the #280
+    // radius-fit defect this file covers, and NOT the #290 twin-duplicate
+    // defect either — it is a separate, pre-existing property of the
+    // ambiguity band, tracked on its own.
     expect(cls.type).toBe("ambiguous");
     expect(cls.bolt?.label).toBe("#10-24");
-    expect(cls.warning).toContain("Clearance (close fit)");
+    expect(cls.warning).not.toContain("#10-32");
+    expect(cls.warning).toContain("M6");
   });
 });
 

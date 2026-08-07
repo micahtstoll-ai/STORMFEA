@@ -144,7 +144,12 @@ export interface BoltSize {
   system:         "metric" | "inch";
 }
 
-const BOLT_SIZES: BoltSize[] = [
+// Exported for the #290 collision guard in
+// server/tests/unit/classify-hole-clearance-collapse.test.ts: the twin-collapse
+// in classifyHole is only safe for thread strip-out while the tapDrill75/50
+// columns stay free of duplicates, and that has to be checked against the real
+// table rather than asserted in a comment.
+export const BOLT_SIZES: BoltSize[] = [
   // ── Metric coarse (ISO 724) ────────────────────────────────────────────────
   { label:"M2",   nominalMm:2.0,  clearanceClose:2.2,  clearanceFree:2.4,  tapDrill75:1.60, tapDrill50:1.75, pitch:0.40, system:"metric" },
   { label:"M2.5", nominalMm:2.5,  clearanceClose:2.7,  clearanceFree:2.9,  tapDrill75:2.05, tapDrill50:2.20, pitch:0.45, system:"metric" },
@@ -196,6 +201,17 @@ export interface HoleClassification {
 
 const MATCH_TOL = 0.20;  // mm — tolerance for matching detected diameter to standard
 
+/** The BOLT_SIZES dimension classifyHole actually compares a match's `type` against. */
+function matchedDimensionMm(bolt: BoltSize, type: HoleType): number {
+  switch (type) {
+    case "clearance_close": return bolt.clearanceClose;
+    case "clearance_free":  return bolt.clearanceFree;
+    case "tapped_75":       return bolt.tapDrill75;
+    case "tapped_50":       return bolt.tapDrill50;
+    default:                return NaN;
+  }
+}
+
 export function classifyHole(
   radiusMm:        number,
   plateDimMinMm:   number,   // smallest plate dimension — for oversized check
@@ -233,22 +249,54 @@ export function classifyHole(
   // Pick best match (smallest delta)
   matches.sort((a,b) => a.delta - b.delta);
   const best = matches[0]!;
+  const bestValueMm = matchedDimensionMm(best.bolt, best.type);
 
-  // Check for ambiguity — multiple good matches
-  const ambiguous = matches.filter(m => m.delta < MATCH_TOL * 0.5 && m.bolt.label !== best.bolt.label);
+  // Same-clearance twins (issue #290): another bolt matching the SAME type at
+  // the IDENTICAL dimension as best (e.g. #10-24 / #10-32 both clearance-close
+  // at 5.16mm — thread pitch doesn't move a clearance or tap-drill diameter).
+  // These are not a second answer to "what size is this hole" — they're one
+  // answer with an undetermined thread pitch — so they're excluded from the
+  // ambiguity check below and reported as a group instead.
+  const twins = matches.filter(m =>
+    m.type === best.type &&
+    m.bolt.label !== best.bolt.label &&
+    matchedDimensionMm(m.bolt, m.type) === bestValueMm,
+  );
+
+  // Check for ambiguity — other good matches at a genuinely different size
+  // (different dimension and/or a different hole type, e.g. clearance vs.
+  // tap drill). Twins are excluded: matching precision can never separate
+  // them, so flagging them "ambiguous" only hides the real question.
+  const ambiguous = matches.filter(m =>
+    m.delta < MATCH_TOL * 0.5 &&
+    m.bolt.label !== best.bolt.label &&
+    !(m.type === best.type && matchedDimensionMm(m.bolt, m.type) === bestValueMm),
+  );
   if (ambiguous.length > 0) {
     return { type:"ambiguous", bolt:best.bolt, detectedDiamMm:d,
       warning:`Hole diameter ${d.toFixed(2)}mm could be ${best.bolt.label} (${HOLE_TYPE_LABEL[best.type as keyof typeof HOLE_TYPE_LABEL]}) or ${ambiguous[0]!.bolt.label} (${HOLE_TYPE_LABEL[ambiguous[0]!.type as keyof typeof HOLE_TYPE_LABEL]}). Verify which bolt is intended.` };
   }
 
-  // Minor diameter for tapped holes
+  // Minor diameter for tapped holes — read off the representative bolt
+  // (best.bolt), never the group-labelled one below: pitch is exactly the
+  // dimension a twin group leaves undetermined, so it would be wrong to
+  // pretend one value speaks for the whole group.
   const minorDiamMm = best.type.startsWith("tapped")
     ? best.bolt.nominalMm - best.bolt.pitch  // approximate minor diameter
     : undefined;
 
+  // The diameter and type ARE resolved — warning stays null, matching every
+  // other clean match, so report.ts's OK/warning coloring doesn't repaint a
+  // correctly-identified hole as a defect (issue #290's core complaint).
+  // What's genuinely undetermined (thread pitch) surfaces in `bolt.label`
+  // instead, which every consumer already renders as plain text.
+  const bolt = twins.length > 0
+    ? { ...best.bolt, label: [best.bolt.label, ...twins.map(t => t.bolt.label)].join(" / ") }
+    : best.bolt;
+
   return {
     type:           best.type,
-    bolt:           best.bolt,
+    bolt,
     detectedDiamMm: d,
     warning:        null,
     minorDiamMm,
