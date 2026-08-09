@@ -600,7 +600,25 @@ the solver-accuracy campaign; adaptive mesh refinement (#149) shipped in PR #246
   deliberately keys on shape rather than Jacobian SIGN so "a MIRROR-oriented but
   well shaped mesh solves correctly and must pass the gate". Scope limit: only
   applies where the geometry actually HAS a symmetry plane, and it does not
-  reduce the mesh-to-mesh artifact below
+  reduce the mesh-to-mesh artifact below.
+  DETECTION HAS LANDED (`server/solver/symmetry.ts`, `detectSymmetryPlanes`).
+  It verifies mesh-INDEPENDENTLY — each mirrored sample point is measured
+  against the surface as a geometric object via `pointTriangleDistance`, never
+  against mesh entities, because the condition being detected is precisely a
+  symmetric part with an asymmetric mesh and an entity-matching test would
+  reject every real case. Candidates are the three coordinate axes plus the
+  principal axes of the area-weighted surface covariance. Cost is 0.6 s at
+  28k elements for a fully symmetric part and 5 ms for an asymmetric one, which
+  short-circuits on the first violating sample. Both tolerances
+  (`SYMMETRY_DEFAULT_TOL_REL`, `SYMMETRY_DEDUP_ANGLE_DEG`) are confidence-LOW:
+  argued from STL chord error and from measured eigenvector spread, not tuned
+  against a corpus of real parts.
+  STILL TO DO, and it is the risky half: clipping the input surface at the
+  plane, capping the cut face so the mesher receives a closed volume, meshing
+  that fundamental domain, and mirroring plus welding the result. The weld at
+  the symmetry plane has to be exact or the seam becomes a fresh artifact
+  source — the same class of defect as the vertex-welding bug in CLAUDE.md's
+  heatmap section
 - **Anisotropic (honeycomb) DFA extension** — the shipped core yield criterion
   is the isotropic-foam form. Extending pressure sensitivity per-axis would
   match the per-axis stiffness and strength laws the core already uses;
