@@ -56,19 +56,41 @@ export const GMSH_TIER_ABSOLUTE = {
  *
  * This is the floor the absolute sizing lacked. A plate meshed at a 2.0 mm
  * `clMax` carries one or two quadratic elements through a 3-4 mm wall, which is
- * under-resolved for bending however many elements the part holds in total —
- * and bending is the dominant FTC bracket load case. Three is the conventional
- * minimum for a quadratic element through a bending section; C3D10 represents a
- * linear through-thickness stress gradient exactly within one element, so this
- * is about resolving the SPR patch neighbourhood and any gradient along the
- * section, not about the element's own order.
+ * under-resolved however many elements the part holds in total — and bending is
+ * the dominant FTC bracket load case.
  *
- * Confidence: MEDIUM. The "3 quadratic elements through thickness" rule is
- * standard FE practice rather than a STORMFEA measurement; what IS measured
- * here is that the recovered field's mesh-to-mesh artifact is refinement-limited
- * (issue #294).
+ * MEASURED, not conventional. A 60x30x6 mm cantilever with a 1.35 mm wall band
+ * (shell E_xy 2400 / core E_xy 600 MPa) was solved with the two-region field
+ * active and against the homogenized average at the same resolution, sweeping
+ * elements through the 6 mm thickness. The quantity that matters is how much of
+ * the converged SANDWICH STIFFENING (26.1% at 8 elements through) each
+ * resolution recovers:
+ *
+ *   1 through: 4% of the stiffening, tip deflection 29.0% off converged
+ *   2 through: 57%, 13.1% off
+ *   3 through: 83%,  4.75% off
+ *   4 through: 100%, 0.84% off
+ *   8 through: 100%, converged (reference)
+ *
+ * Four is where the structural effect is fully recovered. Three — the
+ * conventional textbook figure, and what this constant was first set to —
+ * leaves 17% of it behind. At ONE element through thickness the two-region
+ * model returns essentially the homogenized answer while reporting itself
+ * active, which is worse than not offering it.
+ *
+ * Note the wall-band CLASSIFICATION converges far faster than the structural
+ * response: the same fixture recovers the exact analytic shell volume fraction
+ * to 3.2% at one element per 4.4 band widths and to 0.06% at h = 1.5 mm,
+ * because `tetFractionBelowIso` integrates the level set INSIDE the element
+ * (two-region invariant 2). Volume fraction is therefore the wrong thing to
+ * size the mesh against; the through-thickness layering is the binding
+ * constraint, and this constant is set from it.
+ *
+ * Confidence: MEDIUM. One geometry and one shell/core contrast — the threshold
+ * could move with a much stiffer or much thinner skin. It is a floor rather
+ * than a target, so erring high is the safe direction.
  */
-export const MIN_ELEMENTS_THROUGH_THICKNESS = 3;
+export const MIN_ELEMENTS_THROUGH_THICKNESS = 4;
 
 /**
  * How far past the tier's element target the sizing may land before it is

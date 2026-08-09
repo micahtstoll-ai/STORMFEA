@@ -565,10 +565,24 @@ the solver-accuracy campaign; adaptive mesh refinement (#149) shipped in PR #246
   resolve it** (issue #297) — the model is built, validated, and reachable
   (`print.twoRegion`, `server/twoRegion.ts`, `two-region-toggle` in the client)
   but defaults OFF, so the default analysis represents infill as a scalar
-  knockdown with no spatial structure. The blocker is resolution, not the model:
-  two-region invariant #4 puts the wall band at ~1.35 mm, and at the element
-  sizes the tiers currently deliver the classification has nothing to bite on.
-  Sequenced AFTER the mesh-sizing entry above for that reason. Note the core
+  knockdown with no spatial structure. The blocker is resolution, but NOT in
+  the way first assumed here — the wall-band CLASSIFICATION is not the fragile
+  part. Measured on a 60x30x6 mm plate with a 1.35 mm band, against the exact
+  analytic shell volume fraction: 3.2% error with the element 4.4x the band
+  width, 0.06% at h = 1.5 mm. `tetFractionBelowIso` integrates the level set
+  INSIDE the element (invariant #2), so it does not need elements finer than
+  the band to get the volume right.
+  What DOES need resolution is the structural effect the model exists to
+  capture. Same fixture as a cantilever, two-region against the homogenized
+  average at matched resolution, measuring how much of the converged 26.1%
+  sandwich stiffening each mesh recovers: 1 element through thickness gives 4%
+  (tip deflection 29.0% off), 2 gives 57% (13.1% off), 3 gives 83% (4.75% off),
+  4 gives 100% (0.84% off). At one element through thickness the model returns
+  essentially the homogenized answer while reporting itself active, which is
+  worse than not offering it. That measurement set
+  `MIN_ELEMENTS_THROUGH_THICKNESS` to 4 (issue #295) — it was 3 on textbook
+  convention, which leaves 17% of the effect behind. Still sequenced after the
+  mesh-sizing entry, now for the measured reason. Note the core
   homogenization exponents remain confidence-LOW (see KNOWN LIMITATIONS); this
   entry is about making an existing validated model the default and surfacing the
   shell/core split, not about moving those constants
@@ -592,10 +606,9 @@ the solver-accuracy campaign; adaptive mesh refinement (#149) shipped in PR #246
   match the per-axis stiffness and strength laws the core already uses;
   currently α is one scalar per bin
 - **Close the invariant-coverage gaps catalogued in `docs/INVARIANTS.md`** —
-  five invariants are locked on their core numeric claim but only partially on
+  four invariants are locked on their core numeric claim but only partially on
   the structural half: exhaustive sign-case coverage for `tetFractionBelowIso`
-  (two-region #2); a direct test that boundary nodes seed at exactly 0
-  (two-region #4); an automated check that whole-part vs. per-element material
+  (two-region #2); an automated check that whole-part vs. per-element material
   consumers stay on their correct side of the `material` / `ElementMaterialField`
   split (two-region #6); a negative test keeping `yieldZShear` out of the
   assembly-worker payload (interlayer #5); and a grep-style CI guard — the shape
