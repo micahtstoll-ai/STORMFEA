@@ -93,7 +93,9 @@ import {
   meshWithTetGen, meshWithTetGenSizing, TetGenNotFoundError, probeTetGen,
   tetMaxVolumeForTier,
 } from "./tetgen.js";
-import { meshStepWithGmsh }                 from "./gmsh_mesh.js";
+import { meshStepWithGmsh, gmshSizingForTier,
+         GMSH_MAX_BUDGET_OVERSHOOT,
+         MIN_ELEMENTS_THROUGH_THICKNESS }   from "./gmsh_mesh.js";
 import { C3D10OrderingError }               from "./c3d10_ordering.js";
 import {
   computeFingerprint, computeValidationCoverage,
@@ -4964,16 +4966,38 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     console.log(`[analysis] adaptive: solving pre-built mesh (${mesh.nodeCount} nodes, ${mesh.elementCount} elements)`);
   } else if (req.fileType === "step" && req.stepBuffer) {
     // ── STEP path: Gmsh with curvature-based refinement ──────────────────────
-    const clOpts = {
-      coarse:   { clMin: 0.5, clMax: 4.0, clCurv: 15 },
-      standard: { clMin: 0.3, clMax: 3.0, clCurv: 20 },
-      fine:     { clMin: 0.2, clMax: 2.0, clCurv: 30 },
-    };
-    const opts = clOpts[req.analysis.meshQuality as keyof typeof clOpts] ?? clOpts.standard;
+    // Sizing is scale-relative and floored on the thinnest section (issue
+    // #295); it was absolute millimetres, so this tier targeted an element SIZE
+    // while the TetGen tier targets an element COUNT.
+    const sizing = gmshSizingForTier(
+      req.bounds,
+      (req.analysis.meshQuality as import("./tetgen.js").MeshTier) ?? "standard",
+    );
     const elementOrder = req.analysis.meshOrder ?? 2;
     _snapAnalysis("before Gmsh mesh");
-    console.log("[analysis] meshing STEP with Gmsh...");
-    gmshResult = await meshStepWithGmsh(req.stepBuffer, { ...opts, elementOrder });
+    console.log(
+      `[analysis] meshing STEP with Gmsh (clMin=${sizing.clMin.toPrecision(3)}, ` +
+      `clMax=${sizing.clMax.toPrecision(3)}, clCurv=${sizing.clCurv}); ` +
+      `predicted ~${Math.round(sizing.predictedElements)} elements against a ` +
+      `${sizing.targetElements} target, ` +
+      `${sizing.elementsThroughThickness.toFixed(1)} across the thinnest section`,
+    );
+    if (sizing.budgetClamped) {
+      console.warn(
+        `[analysis] Gmsh sizing hit the ${GMSH_MAX_BUDGET_OVERSHOOT}x element-budget ceiling; ` +
+        `clMax was pulled back to ${sizing.clMax.toPrecision(3)} mm and the thinnest section now ` +
+        `carries ${sizing.elementsThroughThickness.toFixed(1)} elements ` +
+        `(target ${MIN_ELEMENTS_THROUGH_THICKNESS}). Results in bending may be under-resolved.`,
+      );
+    } else if (sizing.elementsThroughThickness < MIN_ELEMENTS_THROUGH_THICKNESS) {
+      console.warn(
+        `[analysis] Gmsh sizing leaves only ${sizing.elementsThroughThickness.toFixed(1)} elements ` +
+        `across the thinnest section (target ${MIN_ELEMENTS_THROUGH_THICKNESS}).`,
+      );
+    }
+    gmshResult = await meshStepWithGmsh(req.stepBuffer, {
+      clMin: sizing.clMin, clMax: sizing.clMax, clCurv: sizing.clCurv, elementOrder,
+    });
     mesh = gmshResult.mesh;
     surfaceFaces = gmshResult.surfaceTriangles;
     _snapAnalysis("after Gmsh mesh");
