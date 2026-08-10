@@ -103,6 +103,10 @@ import {
 } from "./meshSizing.js";
 import { tetCornerVolume }                  from "./solver/adaptiveMesh.js";
 import { C3D10OrderingError }               from "./c3d10_ordering.js";
+import { detectSymmetryPlanes }             from "./solver/symmetry.js";
+import { clipSurfaceAtPlane }               from "./solver/clip.js";
+import { mirrorTetMesh }                    from "./solver/mirrorMesh.js";
+import { weldVertices }                     from "./tetgen.js";
 import {
   computeFingerprint, computeValidationCoverage,
   type ValidationCoverageReport, type CriterionValue as CoverageCriterionValue,
@@ -1830,6 +1834,26 @@ export interface AnalysisSettings {
    */
   twoRegion?:    boolean;
   /**
+   * When true, mesh only the fundamental domain of a detected symmetry plane
+   * and MIRROR it, so the mesh stops injecting an asymmetry the part does not
+   * have (issue #296). An unstructured tet mesh of a symmetric part is chiral:
+   * measured 33% of element centroids with a mirror partner and 3.9% rms
+   * asymmetry in the SPR nodal field, against 100% and 0.0000% for a mirrored
+   * mesh of the same size.
+   *
+   * OPT-IN (default false) for two reasons. It changes the mesh of every
+   * symmetric STL part, and it costs an extra mesh: detection needs a mesh to
+   * run on, so the part is meshed once to detect and once more for the half.
+   * It also degrades silently to the ordinary path wherever it cannot apply —
+   * no plane detected, a clip that does not close, or a mesher failure — which
+   * `summary.symmetryMesh` reports.
+   *
+   * Note it does NOT by itself guarantee a symmetric picture on a force-loaded
+   * part: the default `contact_patch` load distribution is separately
+   * asymmetric (issue #305).
+   */
+  symmetryMesh?: boolean;
+  /**
    * When true, also return a volumetric stress payload (analysis-mesh node
    * positions + corner-tet connectivity + per-node stress/utilization arrays)
    * for the section-view interior heatmap (issue #190). Off by default: the
@@ -3417,6 +3441,21 @@ export interface MaterialModelInfo {
  * All arrays are per-node (indexed by nodeIndex, 0..nodeCount-1) except
  * `tets`, which is 4 node indices per tet (cornerTetCount*4 length).
  */
+export interface SymmetryMeshReport {
+  /** True when the solved mesh is a mirrored fundamental domain. */
+  applied:        boolean;
+  /** Why it was not applied. Null when it was. */
+  reason:         string | null;
+  /** Unit normal of the plane used, when applied. */
+  planeNormal:    readonly [number, number, number] | null;
+  /** Detector residual for that plane, as a fraction of the bbox diagonal. */
+  planeResidual:  number | null;
+  /** Nodes shared between the two halves (the welded seam). */
+  seamNodeCount:  number | null;
+  /** Elements in the final mirrored mesh. */
+  elementCount:   number | null;
+}
+
 export interface VolumeFieldPayload {
   nodeCount:    number;
   cornerTetCount: number;
@@ -3575,6 +3614,12 @@ export interface AnalysisResult {
    * that matters) and on the adaptive path's pre-built meshes.
    */
   meshResolution:         MeshResolutionReport | null;
+  /**
+   * Symmetry-preserving meshing report (issue #296). Null when the opt-in was
+   * not requested. Otherwise `applied` says whether the mesh is a mirrored
+   * fundamental domain, and `reason` says why not when it is not.
+   */
+  symmetryMesh:           SymmetryMeshReport | null;
   solverMs:               number;
   nodeCount:              number;
   elementCount:           number;
@@ -4982,6 +5027,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   let surfaceFaces: Int32Array | null = null;
   let gmshResult: import("./gmsh_mesh.js").GmshMeshResult | null = null;
   let meshFallback = false;
+  let symmetryMesh: SymmetryMeshReport | null = null;
   /** Set by the guard-retry ladder when C3D10 had to be abandoned (issue #265). */
   let meshOrderDowngrade: MeshOrderDowngrade | null = null;
 
@@ -5099,6 +5145,82 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       mesh          = tetResult.mesh;
       surfaceToNode = tetResult.surfaceToNode;
       surfaceFaces  = tetResult.surfaceFaces;
+
+      // ── Symmetry-preserving meshing (issue #296) ─────────────────────────
+      // Opt-in. Detect a symmetry plane on the mesh just built, clip the STL
+      // surface at it, re-mesh only that half, and mirror. Every failure path
+      // keeps the mesh already in hand, so this can degrade but never break a
+      // solve — and it says which happened rather than going quiet.
+      if (req.analysis.symmetryMesh) {
+        symmetryMesh = await (async (): Promise<SymmetryMeshReport> => {
+          const nope = (reason: string): SymmetryMeshReport => ({
+            applied: false, reason, planeNormal: null, planeResidual: null,
+            seamNodeCount: null, elementCount: null,
+          });
+          try {
+            const planes = detectSymmetryPlanes(mesh, surfaceFaces);
+            if (planes.length === 0) return nope("no symmetry plane detected");
+            const plane = planes[0]!;
+
+            // The clip needs a WELDED closed surface; the raw STL soup shares
+            // no vertices between triangles, so it has no edges to be manifold
+            // about. This is the same weld TetGen is fed.
+            const weld = weldVertices(req.positions, req.triangleCount);
+            const surface = {
+              positions: Float64Array.from(weld.positions.subarray(0, weld.vertCount * 3)),
+              faces:     Int32Array.from(weld.faces.subarray(0, weld.triCount * 3)),
+            };
+            const clip = clipSurfaceAtPlane(surface, plane);
+            if (clip.surface.faces.length === 0) return nope("clip discarded the whole part");
+            if (!clip.closure.closed) return nope(
+                `clipped surface is not closed (${clip.closure.openEdges} open, `
+                + `${clip.closure.nonManifoldEdges} non-manifold, ${clip.closure.inconsistentEdges} inconsistent edges)`,
+              );
+            if (clip.degenerateCapTriangles > 0) {
+              return nope(`cap produced ${clip.degenerateCapTriangles} degenerate triangle(s)`);
+            }
+
+            // Re-mesh the half at the SAME absolute volume cap, so the mirrored
+            // whole lands at the tier's element budget rather than double it.
+            const halfPositions = Float32Array.from(clip.surface.positions);
+            const halfTriCount  = clip.surface.faces.length / 3;
+            const halfSoup = new Float32Array(halfTriCount * 9);
+            for (let t = 0; t < halfTriCount * 3; t++) {
+              const v = clip.surface.faces[t]!;
+              halfSoup[t * 3]     = halfPositions[v * 3]     ?? 0;
+              halfSoup[t * 3 + 1] = halfPositions[v * 3 + 1] ?? 0;
+              halfSoup[t * 3 + 2] = halfPositions[v * 3 + 2] ?? 0;
+            }
+            const halfResult = await meshWithTetGen(halfSoup, halfTriCount, tetOrder, tetMaxVol);
+            const mirroredResult = mirrorTetMesh(halfResult.mesh, plane);
+
+            mesh         = mirroredResult.mesh;
+            surfaceFaces = extractSurfaceFaces(mesh);
+            // Spatial nearest-node lookup drives every display mapping, so an
+            // identity map is correct here — the STL-vertex correspondence
+            // TetGen's -Y gives does not survive clipping in any case.
+            surfaceToNode = new Int32Array(mesh.nodeCount);
+            for (let i = 0; i < surfaceToNode.length; i++) surfaceToNode[i] = i;
+
+            console.log(
+              `[analysis] symmetry mesh: plane n=(${plane.normal.map(v => v.toFixed(3)).join(",")}) ` +
+              `residual=${plane.residual.toExponential(2)}; half ${halfResult.mesh.elementCount} elems ` +
+              `-> mirrored ${mesh.elementCount}, seam ${mirroredResult.seamNodeCount} nodes`,
+            );
+            return {
+              applied: true, reason: null,
+              planeNormal: plane.normal, planeResidual: plane.residual,
+              seamNodeCount: mirroredResult.seamNodeCount,
+              elementCount: mesh.elementCount,
+            };
+          } catch (err) {
+            // Includes NotAFundamentalDomainError, a TetGen failure on the
+            // clipped half, and anything else: the already-meshed whole part is
+            // still in `mesh`, so degrading is always safe.
+            return nope(`failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        })();
+      }
       console.log(`[analysis] TetGen mesh: ${mesh.nodeCount} nodes, ${mesh.elementCount} elements (${mesh.nodesPerElem}-node)`);
       _snapAnalysis("after TetGen mesh");
     } catch (err) {
@@ -7579,6 +7701,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     unitsWarning,
     meshOrderDowngrade,
     meshResolution,
+    symmetryMesh,
     safetyFactorAvailable: !meshFallback,
     solverMs,
     nodeCount:          mesh.nodeCount,
