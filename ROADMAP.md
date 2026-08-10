@@ -541,15 +541,126 @@ the solver-accuracy campaign; adaptive mesh refinement (#149) shipped in PR #246
   trap that matters: group 30's manufactured solution is quadratic, which C3D10
   reproduces exactly, so it CANNOT anchor a C3D10 effectivity index — that needs
   a cubic-or-higher exact solution
+- **The two mesher paths size themselves on incompatible philosophies, and only
+  one of them targets an element budget** (issue #295) — `tetMaxVolumeForTier`
+  (`server/tetgen.ts`) is SCALE-RELATIVE: it divides the bounding-box volume by
+  `TET_TARGET_ELEMENTS` (coarse 4,000 / standard 12,000 / fine 40,000), so an STL
+  part gets that many elements whatever its size. The STEP/Gmsh path in
+  `runAnalysis` (`server/analysis.ts`) is ABSOLUTE: its per-tier `clOpts` set
+  `clMin`/`clMax`/`clCurv` in millimetres (fine = 0.2/2.0/30), which fixes an
+  element SIZE and lets the resulting count float freely with part size. So
+  "fine" means "40,000 elements" for an STL and "2 mm elements" for a STEP, and
+  only the first guarantees a resolution budget. The absolute form is defensible
+  on its own terms — a 2 mm cap resolves a fillet the same way on any part, and
+  `clCurv` is what refines hole bores — but it has no FLOOR: a thin plate meshed
+  at `clMax` 2.0 mm gets one or two quadratic elements through a 3-4 mm wall,
+  which is under-resolved for bending regardless of how many elements the part
+  carries in total. Neither `docs/` nor this file records the absolute choice as
+  a landed decision, and the shipped list above has an entry for teaching the STL
+  path to honour the tier with no STEP counterpart. Fix direction: keep the
+  curvature-driven sizing, add a scale-relative cap so the tier still targets a
+  count, and add a through-thickness floor so the smallest dimension always
+  carries enough elements to bend. Blocks the two-region entry below
+- **Enable and harden the two-region (walls vs infill) model, once the mesh can
+  resolve it** (issue #297) — the model is built, validated, and reachable
+  (`print.twoRegion`, `server/twoRegion.ts`, `two-region-toggle` in the client)
+  but defaults OFF, so the default analysis represents infill as a scalar
+  knockdown with no spatial structure. The blocker is resolution, but NOT in
+  the way first assumed here — the wall-band CLASSIFICATION is not the fragile
+  part. Measured on a 60x30x6 mm plate with a 1.35 mm band, against the exact
+  analytic shell volume fraction: 3.2% error with the element 4.4x the band
+  width, 0.06% at h = 1.5 mm. `tetFractionBelowIso` integrates the level set
+  INSIDE the element (invariant #2), so it does not need elements finer than
+  the band to get the volume right.
+  What DOES need resolution is the structural effect the model exists to
+  capture. Same fixture as a cantilever, two-region against the homogenized
+  average at matched resolution, measuring how much of the converged 26.1%
+  sandwich stiffening each mesh recovers: 1 element through thickness gives 4%
+  (tip deflection 29.0% off), 2 gives 57% (13.1% off), 3 gives 83% (4.75% off),
+  4 gives 100% (0.84% off). At one element through thickness the model returns
+  essentially the homogenized answer while reporting itself active, which is
+  worse than not offering it. That measurement set
+  `MIN_ELEMENTS_THROUGH_THICKNESS` to 4 (issue #295) — it was 3 on textbook
+  convention, which leaves 17% of the effect behind. Still sequenced after the
+  mesh-sizing entry, now for the measured reason. Note the core
+  homogenization exponents remain confidence-LOW (see KNOWN LIMITATIONS); this
+  entry is about making an existing validated model the default and surfacing the
+  shell/core split, not about moving those constants
+- **Symmetry-preserving meshing** (issue #296) — an unstructured tet mesh of a mirror-symmetric
+  part is not itself mirror-symmetric, so the recovered stress field carries an
+  asymmetry the geometry does not have. Measured on a symmetric cantilever
+  fixture: only 128 of 384 element centroids had a mirror partner at all, and the
+  SPR nodal field's mirror asymmetry ran 1.83% / 0.88% / 0.52% rms across
+  384/3,072/10,368 elements while the DISPLACEMENT field stayed symmetric to
+  0.001%. Mesh symmetry is a property of the geometry and independent of the load
+  case: detect the symmetry plane, mesh the fundamental domain, mirror and weld,
+  and then any asymmetry left in a result is real rather than injected.
+  `runLinearStaticWithK` already anticipates mirrored input — the assemblers
+  auto-orient via `Math.abs(sixV)`/`Math.abs(detJ)`, and the mesh-quality gate
+  deliberately keys on shape rather than Jacobian SIGN so "a MIRROR-oriented but
+  well shaped mesh solves correctly and must pass the gate". Scope limit: only
+  applies where the geometry actually HAS a symmetry plane, and it does not
+  reduce the mesh-to-mesh artifact below.
+  DETECTION HAS LANDED (`server/solver/symmetry.ts`, `detectSymmetryPlanes`).
+  It verifies mesh-INDEPENDENTLY — each mirrored sample point is measured
+  against the surface as a geometric object via `pointTriangleDistance`, never
+  against mesh entities, because the condition being detected is precisely a
+  symmetric part with an asymmetric mesh and an entity-matching test would
+  reject every real case. Candidates are the three coordinate axes plus the
+  principal axes of the area-weighted surface covariance. Cost is 0.6 s at
+  28k elements for a fully symmetric part and 5 ms for an asymmetric one, which
+  short-circuits on the first violating sample. Both tolerances
+  (`SYMMETRY_DEFAULT_TOL_REL`, `SYMMETRY_DEDUP_ANGLE_DEG`) are confidence-LOW:
+  argued from STL chord error and from measured eigenvector spread, not tuned
+  against a corpus of real parts.
+  STILL TO DO: clipping and capping the input surface (split out as its own
+  entry below, issue #300 — it is the risky half and a standalone capability),
+  then meshing the fundamental domain and mirroring plus welding the result.
+  The weld at the symmetry plane has to be exact or the seam becomes a fresh
+  artifact source — the same class of defect as the vertex-welding bug in
+  CLAUDE.md's heatmap section — and it must share one snap tolerance with the
+  clipper rather than carrying a second literal that can drift
+- **Watertight surface clipping at a plane** (issue #300) — given a closed
+  triangulated surface and a plane, produce the closed surface of the
+  half-space intersection. The prerequisite for the entry above, split out
+  because it is substantial on its own and nothing in the repo does it today:
+  `sliceTetsByAxisPlane` (`client/index.html`) is a marching-tet slice of the
+  VOLUME mesh for display only, producing a cut face to colour rather than a
+  watertight surface a mesher can consume, and it runs client-side after the
+  solve. Different operation, different pipeline stage.
+  Classify each triangle against the plane, split the straddling ones,
+  re-triangulate the keep-side remainder, extract the open boundary loops, and
+  cap them. **The cap is where the difficulty is, and it is not a triangle
+  fan** — cutting a plate through its bore leaves an outer loop plus the bore's
+  cross-section as an inner loop, so the cap is a constrained triangulation of
+  a polygon WITH HOLES. A fan over the outer loop would tile straight across
+  the bore and hand the mesher a solid where the part has a hole.
+  Failure modes to design against, several of which this repo has already paid
+  for once: watertightness is binary (TetGen wants a closed PLC, and one
+  unclosed loop either fails outright or silently tetrahedralises something
+  that is not the part, so closure needs its own check BEFORE the mesher is
+  invoked rather than a downstream quality gate catching the consequences); a
+  vertex within epsilon of the plane must SNAP to it rather than emit a
+  zero-area sliver (see the `-m` background-metric episode in
+  AI_ORCHESTRATION entry 12 and the hard sliver gate from #166); loop
+  orientation has to be consistent to distinguish an outer boundary from a
+  hole; and a flat face lying exactly ON the symmetry plane is an ordinary FTC
+  bracket, not a pathological input.
+  Almost all of it is pure geometry and testable with no mesher present —
+  closure (every edge shared by exactly two triangles), signed volume against
+  the analytic half, a bore-through cap against the analytic annulus area,
+  coplanar and on-plane fixtures, and a clip/mirror/weld round trip back to
+  the original volume. The one part that genuinely needs TetGen or Gmsh is
+  confirming the mesher accepts the output, which belongs in the
+  mesher-gated shard alongside the existing skips
 - **Anisotropic (honeycomb) DFA extension** — the shipped core yield criterion
   is the isotropic-foam form. Extending pressure sensitivity per-axis would
   match the per-axis stiffness and strength laws the core already uses;
   currently α is one scalar per bin
 - **Close the invariant-coverage gaps catalogued in `docs/INVARIANTS.md`** —
-  five invariants are locked on their core numeric claim but only partially on
+  four invariants are locked on their core numeric claim but only partially on
   the structural half: exhaustive sign-case coverage for `tetFractionBelowIso`
-  (two-region #2); a direct test that boundary nodes seed at exactly 0
-  (two-region #4); an automated check that whole-part vs. per-element material
+  (two-region #2); an automated check that whole-part vs. per-element material
   consumers stay on their correct side of the `material` / `ElementMaterialField`
   split (two-region #6); a negative test keeping `yieldZShear` out of the
   assembly-worker payload (interlayer #5); and a grep-style CI guard — the shape
@@ -614,6 +725,21 @@ waiting for a consistent empirical table._
   KIND is exercised somewhere in the suite, not that a specific geometry, load
   case, or material is proven correct — and it names its combination gaps (e.g.
   two-region validation runs exclusively on C3D10 meshes)
+- The DISPLAYED stress field carries a mesh-dependent artifact tail that the ZZ
+  estimator cannot flag, and this is only PARTLY disclosed (issue #294). Measured
+  on a symmetric cantilever fixture at 3,072 elements, two different meshes of
+  the same geometry under the same load disagree by a median of 0.03% of peak but
+  a p95 of 7.9% and a max of 16.1% — the field is excellent almost everywhere
+  with a scattered tail, and the hot spots MOVE when the part is re-meshed.
+  Refinement is the only measured lever (three recovery-side fixes were
+  prototyped and were neutral or regressions: boundary-patch borrowing, the
+  cascade thresholds, and `SPR_MAX_AMPLIFICATION_QUADRATIC`, which is
+  bit-identical from 60 down to 5). The per-element `errorEstimate` does NOT
+  predict these locations — Spearman 0.015 against the actual mesh-to-mesh
+  disagreement — because ZZ differences the recovered and raw fields and an
+  artifact inherited by both cancels. `globalRelativeError` is shown on the
+  RESULTS tab, so a user reading the 3D view alone gets no signal at all;
+  `topErrorElements` should not be read as "here is where the picture lies"
 
 _Resolved: the TetGen box-mesh fallback previously always produced C3D4 (≈55%
 bending underprediction) regardless of the element-order selector; it now honours
