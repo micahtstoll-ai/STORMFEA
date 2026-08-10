@@ -44,6 +44,7 @@ import { fileURLToPath as ftu }               from "url";
 import type { TetMesh }                       from "./solver/types.js";
 import { verifyC3D10MidsideOrdering }         from "./c3d10_ordering.js";
 import { extractSurfaceFaces }                from "./solver/meshgen.js";
+import { surfaceSnapTolerance }               from "./solver/clip.js";
 import {
   sizeFieldToVolFile, meshToNodeFile, meshToEleFile, extractCornerBackground, type SizeField,
 } from "./solver/adaptiveMesh.js";
@@ -95,9 +96,16 @@ export function boundingBoxOf(
  * 1e-6 grid is one decade looser, tight enough to keep distinct features apart).
  * The floor keeps a strictly-positive tolerance for a degenerate zero-size input
  * so the reciprocal used for quantisation never divides by zero.
+ *
+ * The value itself lives in `solver/clip.ts` as `surfaceSnapTolerance`, and this
+ * function delegates rather than repeating the literal (issue #300). The plane
+ * clipper decides which vertices sit exactly ON a symmetry plane; the weld
+ * decides which of those are the same point after mirroring. If the two
+ * tolerances ever differ, the seam does not close — so there is one definition,
+ * not two literals that agree today.
  */
 export function weldToleranceForDiag(diag: number): number {
-  return Math.max(diag * 1e-6, 1e-12);
+  return surfaceSnapTolerance(diag);
 }
 
 export function weldVertices(stlPositions: Float32Array, triangleCount: number): WeldResult {
