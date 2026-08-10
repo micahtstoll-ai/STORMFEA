@@ -6867,6 +6867,29 @@ function showResults(s) {
       <div style="font-size:11px;color:var(--text-mid);line-height:1.5">Linear tetrahedra underpredict bending stress by up to ~55% due to shear locking — the safety factor shown may be more optimistic than the true value for bending-loaded geometry. Re-run with C3D10 (MATERIAL tab → Element order) before trusting this margin.</div>
     </div>`;
   }
+  // Mesh resolution shortfall (issue #295). The tier promises an element count
+  // AND a floor of elements across the thinnest section; a count budget alone
+  // lets a large thin plate spend its elements on plan area and carry two
+  // through the wall. The server measures what the mesher actually delivered
+  // and sets `warning` only when it matters — an under-resolved section (which
+  // reads as a part stiffer and stronger than it is, the optimistic direction,
+  // so it belongs in this banner) or a count under half the target. An
+  // overshoot is never warned about.
+  if (s.meshResolution && s.meshResolution.warning) {
+    const mr = s.meshResolution;
+    const headline = mr.belowThroughThicknessFloor
+      ? 'Thin section is under-resolved'
+      : 'Mesh is coarser than the selected quality';
+    // Sizes/radius per DESIGN.md (13px body heading, 4px card radius, 9px DM
+    // Mono data label at .08em). The five banners above predate that scale and
+    // still carry 12px headings and a 6px radius; they are not swept here
+    // because this is an issue-#295 change, not a design pass.
+    reliabilityBanner += `<div style="padding:12px 14px;background:#3a1a00;border:2px solid var(--warn);border-radius:4px;margin-bottom:12px">
+      <div style="font-size:13px;font-weight:600;color:var(--warn);margin-bottom:4px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> ${headline}</div>
+      <div style="font-size:11px;color:var(--text-mid);line-height:1.5">${mr.warning}</div>
+      <div style="font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);margin-top:6px;letter-spacing:.08em">${mr.achievedElements.toLocaleString()} ELEMENTS · ${mr.targetElements.toLocaleString()} TARGET (${mr.tier.toUpperCase()}) · ${mr.elementsThroughThickness.toFixed(1)} THROUGH THINNEST SECTION</div>
+    </div>`;
+  }
 
   // Issue #204: estimatedFailForce is a LINEAR first-yield extrapolation
   // (totalAppliedForce × SF, server/analysis.ts) — onset of yield under an

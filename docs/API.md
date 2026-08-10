@@ -372,6 +372,34 @@ Read it as a caveat on the numbers: C3D4 shear-locks in bending and can
 UNDERPREDICT displacements and bending stresses by tens of percent, which is the
 optimistic direction. `nodesPerElem` will read `4` on such a run.
 
+**Achieved vs target mesh resolution** (`summary.meshResolution`, issue #295).
+What the selected `meshQuality` tier actually DELIVERED, measured on the mesh
+that came back:
+
+```json
+"meshResolution": {
+  "tier": "standard", "targetElements": 12000, "achievedElements": 27153,
+  "budgetRatio": 2.26, "characteristicEdge": 1.50,
+  "elementsThroughThickness": 4.0, "belowThroughThicknessFloor": false,
+  "warning": null
+}
+```
+
+A tier promises two things: an element COUNT, and a floor of 4 elements across
+the part's thinnest section (`MIN_ELEMENTS_THROUGH_THICKNESS`). Both meshers
+treat the sizing they are handed as a REQUEST — TetGen's switch-set fallback
+chain relaxes `-a` and can end with no volume constraint at all, and Gmsh's
+`clmax` yields where a curvature constraint disagrees — so this is measured
+after the fact rather than predicted from the flags. `characteristicEdge` is the
+mean element volume back-figured to a regular-tet edge length.
+
+`warning` is non-null only when the section is under-resolved (which outranks
+everything: it reads as a part stiffer and stronger than it is) or the count
+came in under half the target. An OVERSHOOT is never warned about — a finer
+mesh than asked for costs time, not truth. `null` on the box-mesh fallback,
+where `meshFallback` is the disclosure that matters, and on the adaptive path's
+pre-built meshes. See `docs/mesh-sizing.md`.
+
 **BC share of the discretization error** (`summary.bcSingularityErrorFraction`,
 issue #259). How much of `globalRelativeError`'s energy sits at boundary-
 condition discontinuities — the rim of a constrained or loaded patch. In

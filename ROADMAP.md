@@ -489,6 +489,58 @@ paths now run a runtime midside self-check instead of trusting the binary (#167)
 
 ---
 
+### Mesh-tier resolution contract on both mesher paths (issue #295 — shipped)
+- [x] A mesh tier now makes ONE promise, in two parts, and both meshers make it
+      against the same constants (`server/meshSizing.ts`): a target element
+      COUNT (coarse 4,000 / standard 12,000 / fine 40,000) and a FLOOR of
+      `MIN_ELEMENTS_THROUGH_THICKNESS` = 4 elements across the part's smallest
+      dimension. Each path resolves that into its own mesher's units — TetGen's
+      `-a` is a VOLUME, Gmsh's `clmax` a LENGTH — through one shared relation
+      (`regularTetVolumeForEdge`, the same 6·√2 as `sizeFieldToVolFile`), so the
+      two describe the same geometry rather than two tables that agree today.
+      "Fine" no longer means 40,000 elements for an STL and 2 mm elements for a
+      STEP. Landed decision written up in `docs/mesh-sizing.md`, whose ABSENCE
+      was part of the original finding — nothing in `docs/` marked the absolute
+      Gmsh sizing as deliberate, so there was no way to tell a decision from an
+      oversight
+- [x] The STL path needed the floor too, which was not the original reading.
+      It has been scale-relative since #168, but only against a COUNT — and a
+      count is a budget for the WHOLE part, so a large thin plate spends its
+      elements on plan area. On a 60x30x6 mm plate at the STANDARD tier the
+      count budget gives 0.9 mm³ per element, a 1.97 mm regular-tet edge, and
+      3.0 elements through the 6 mm section: under the floor, on the geometry
+      class this tool exists to analyse, at the DEFAULT tier. Fine reached 4.6
+      and was always fine; standard was not. `tetSizingForTier` takes the
+      smaller of the count budget and the through-thickness volume, so it can
+      only refine
+- [x] The achieved-vs-target readout is MEASURED, not predicted
+      (`achievedResolution` → `summary.meshResolution`, `docs/API.md`). Both
+      meshers treat a size cap as a REQUEST: TetGen's switch-set fallback chain
+      relaxes `-a` and can end at `-pQ` with no volume constraint at all, and
+      Gmsh's `clmax` yields where a curvature constraint disagrees. A readout
+      built from the flags would report the mesh that was ASKED for, which is
+      exactly the mesh that is not in doubt. It reaches the user as a
+      reliability banner next to the verdict, alongside the mesh-fallback and
+      C3D4 caveats — an under-resolved section reads as a part stiffer and
+      stronger than it is, so it belongs in the optimistic-direction set. An
+      OVERSHOOT is never warned about: a finer mesh than asked for costs time,
+      not truth
+- [x] The prediction that drives the clamp has an error with a known SIGN, which
+      is what makes it usable: a real mesh emits somewhat MORE elements than the
+      regular-tet relation says (the equivalent ratio on the tier path drifts
+      ~2.5 to ~5.5 with density — what `VOLUME_CAP_SCALE` absorbs on the
+      adaptive path), so elements are SMALLER than predicted and a floor derived
+      this way delivers at least the layers it asks for. It errs fine, never
+      coarse
+- [x] Found by the new tests rather than by review: `tetMaxVolumeForTier`
+      promised in its own docblock that a degenerate bbox still yields "a usable
+      positive bound", and returned NaN for a non-finite one — `Math.max(NaN, x)`
+      is NaN, so the floor never fired. `meshWithTetGen` caught it again at the
+      call site, so nothing shipped broken; the definition is now true on its own
+      terms instead of relying on a guard two modules away
+
+---
+
 ## IN PROGRESS / NEXT
 
 _Previous entries (DFA core yield, per-failure-mode yield selection) shipped in
@@ -591,28 +643,11 @@ the solver-accuracy campaign; adaptive mesh refinement (#149) shipped in PR #246
   trap that matters: group 30's manufactured solution is quadratic, which C3D10
   reproduces exactly, so it CANNOT anchor a C3D10 effectivity index — that needs
   a cubic-or-higher exact solution
-- **The two mesher paths size themselves on incompatible philosophies, and only
-  one of them targets an element budget** (issue #295) — `tetMaxVolumeForTier`
-  (`server/tetgen.ts`) is SCALE-RELATIVE: it divides the bounding-box volume by
-  `TET_TARGET_ELEMENTS` (coarse 4,000 / standard 12,000 / fine 40,000), so an STL
-  part gets that many elements whatever its size. The STEP/Gmsh path in
-  `runAnalysis` (`server/analysis.ts`) is ABSOLUTE: its per-tier `clOpts` set
-  `clMin`/`clMax`/`clCurv` in millimetres (fine = 0.2/2.0/30), which fixes an
-  element SIZE and lets the resulting count float freely with part size. So
-  "fine" means "40,000 elements" for an STL and "2 mm elements" for a STEP, and
-  only the first guarantees a resolution budget. The absolute form is defensible
-  on its own terms — a 2 mm cap resolves a fillet the same way on any part, and
-  `clCurv` is what refines hole bores — but it has no FLOOR: a thin plate meshed
-  at `clMax` 2.0 mm gets one or two quadratic elements through a 3-4 mm wall,
-  which is under-resolved for bending regardless of how many elements the part
-  carries in total. Neither `docs/` nor this file records the absolute choice as
-  a landed decision, and the shipped list above has an entry for teaching the STL
-  path to honour the tier with no STEP counterpart. Fix direction: keep the
-  curvature-driven sizing, add a scale-relative cap so the tier still targets a
-  count, and add a through-thickness floor so the smallest dimension always
-  carries enough elements to bend. Blocks the two-region entry below
-- **Enable and harden the two-region (walls vs infill) model, once the mesh can
-  resolve it** (issue #297) — the model is built, validated, and reachable
+- **Enable and harden the two-region (walls vs infill) model** (issue #297) —
+  NOW UNBLOCKED: the mesh-sizing entry it waited on shipped (issue #295, above),
+  so both mesher paths floor at the 4 elements through thickness this model
+  needs. What remains is making it the default and surfacing the shell/core
+  split, not a resolution problem — the model is built, validated, and reachable
   (`print.twoRegion`, `server/twoRegion.ts`, `two-region-toggle` in the client)
   but defaults OFF, so the default analysis represents infill as a scalar
   knockdown with no spatial structure. The blocker is resolution, but NOT in
@@ -631,8 +666,8 @@ the solver-accuracy campaign; adaptive mesh refinement (#149) shipped in PR #246
   essentially the homogenized answer while reporting itself active, which is
   worse than not offering it. That measurement set
   `MIN_ELEMENTS_THROUGH_THICKNESS` to 4 (issue #295) — it was 3 on textbook
-  convention, which leaves 17% of the effect behind. Still sequenced after the
-  mesh-sizing entry, now for the measured reason. Note the core
+  convention, which leaves 17% of the effect behind — and that floor is now
+  enforced on BOTH mesher paths, which is what closes the sequencing. Note the core
   homogenization exponents remain confidence-LOW (see KNOWN LIMITATIONS); this
   entry is about making an existing validated model the default and surfacing the
   shell/core split, not about moving those constants
