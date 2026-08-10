@@ -327,14 +327,24 @@ Search by symbol, not line number — these move:
 > implementing symbol and locking test — check there first when a change
 > might touch one of these.
 
-The opt-in two-region model (`print.twoRegion`) classifies elements into dense
+The two-region model (`analysis.twoRegion`, DEFAULT TRUE since issue #297 —
+pass `false` for the legacy single-material path) classifies elements into dense
 perimeter walls vs homogenized infill core (`server/twoRegion.ts`,
 `server/solver/distance.ts`, `server/solver/wallfrac.ts`, consumed via
 `ElementMaterialField` in `server/solver/types.ts`). When modifying it:
 
 1. **Flag off must stay bit-identical** — with no field, assembly/recovery/mass
    must reproduce the legacy single-material path exactly (tested to 1e-12 on
-   full solves in `solver_validation.ts` group 25).
+   full solves in `solver_validation.ts` group 25). Since #297 the flag DEFAULTS
+   ON, so "off" means an explicit `twoRegion: false` rather than an absent flag;
+   the bit-identity requirement is unchanged and is what makes that explicit
+   opt-out meaningful.
+   The model also self-degrades to the uniform path (reporting
+   `materialModel.degraded`) when the emitted mesh resolves fewer than
+   `MIN_ELEMENTS_THROUGH_THICKNESS` elements across the thinnest section: below
+   that it recovers almost none of the sandwich stiffening it exists to capture
+   while reporting itself active. The gate reads `meshResolution`, i.e. the mesh
+   that came back, and an explicit opt-in does NOT override it.
 2. **No NaN by construction** — the level-set volume fraction
    (`tetFractionBelowIso`) is written per sign-case so every denominator is a
    strictly-negative-minus-non-negative difference; keep it that way.
@@ -372,6 +382,19 @@ perimeter walls vs homogenized infill core (`server/twoRegion.ts`,
    orientation must never enter core STIFFNESS — only the weakAxis
    rotation/scalar-swap and the strength multiplier do. Exponents are LOW
    confidence, locked by `server/tests/unit/core-lattice.test.ts`.
+9. **The split is only visible on a SECTION CUT** (issue #297) — a part's
+   boundary is wall by construction (every boundary node sits at distance 0
+   from the surface, inside the wall band), so the classification on the
+   DISPLAY mesh is identically 1.0 on every part and carries no information.
+   Measured, not argued: min 1.0 / max 1.0 on the 24x12x6 fixture against a
+   50.6% shell volume fraction. It is published on `volumeField`
+   (`nodeShellFractionB64`) and painted on the cut face. Do not re-add it as a
+   display-mesh vertex field — that revision existed and was caught only by a
+   test asserting the picture was not constant. Locked by
+   `server/tests/unit/two-region-default.test.ts`.
+
+   (New invariants are APPENDED, never inserted: `docs/INVARIANTS.md` and
+   comments throughout `server/` reference these by number.)
 
 ## Interlayer Failure & Bond Model — Invariants
 

@@ -1815,8 +1815,18 @@ export interface AnalysisSettings {
    * When true, run the two-region material model: dense perimeter walls
    * (solid material, calibrated coupon props) vs homogenized infill core,
    * classified geometrically per element by wall-band volume fraction. The
-   * wall band uses print.extrusionWidthMm. Default false — the empirical
-   * single-material model.
+   * wall band uses print.extrusionWidthMm.
+   *
+   * DEFAULT TRUE as of issue #297. Infill is one of the defining variables of
+   * an FDM part, and the single-material path represents it as a scalar
+   * knockdown with no spatial structure at all — a user could not see walls,
+   * see the core, or tell a 2-wall part from a 5-wall one except as a
+   * different number. The model is validated (sandwich cantilever within 0.3%
+   * of composite-EI theory, where the homogenized model is ~23% too soft), so
+   * the default was the only thing keeping it out of ordinary results.
+   *
+   * Pass `false` explicitly for the legacy single-material path, which remains
+   * bit-identical (two-region invariant 1). Absent is no longer that path.
    */
   twoRegion?:    boolean;
   /**
@@ -3414,6 +3424,18 @@ export interface VolumeFieldPayload {
   /** Per-node anisotropic utilization ratios (0-2ish); null if unavailable (isotropic material with no tensor recovery). */
   nodeXyUtilB64:          string | null;
   nodeZUtilB64:            string | null;
+  /**
+   * Per-node shell (wall) fraction in [0, 1] — 0 pure infill core, 1 pure solid
+   * wall/skin (issue #297). Null when no two-region field ran.
+   *
+   * This is the ONLY surface the split can be seen on. A part's boundary is
+   * wall BY CONSTRUCTION — every boundary node sits at distance 0 from the
+   * surface and so inside the wall band — so the same field on the display
+   * mesh is identically 1.0 on every part and carries no information. The
+   * walls, the core, and the difference between a 2-wall and a 5-wall part are
+   * only visible on a CUT.
+   */
+  nodeShellFractionB64:   string | null;
 }
 
 export interface AnalysisResult {
@@ -5108,9 +5130,14 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // at all, and Gmsh's clmax yields where a curvature constraint disagrees, so
   // a readout built from the flags would report the mesh that is not in doubt.
   // Skipped on the box fallback, where the geometry itself was replaced and
-  // `meshFallback` is the disclosure that matters.
+  // `meshFallback` is the disclosure that matters. Computed for PRE-BUILT
+  // meshes too (the adaptive seam): elements-across-the-thinnest-section is a
+  // property of the mesh, not of how it was requested, and the two-region
+  // resolution gate below depends on it being present on every real mesh. The
+  // count half of the readout is tier-relative and an adaptively-refined mesh
+  // legitimately overshoots its tier — which is never warned about anyway.
   let meshResolution: MeshResolutionReport | null = null;
-  if (!meshFallback && !req._prebuiltMesh) {
+  if (!meshFallback) {
     let meshedVolume = 0;
     for (let e = 0; e < mesh.elementCount; e++) meshedVolume += tetCornerVolume(mesh, e);
     const resTier = (req.analysis.meshQuality === "fine" ? "fine"
@@ -5181,7 +5208,11 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       note:           bondRel.note,
     } } : {}),
   };
-  if (req.analysis.twoRegion) {
+  // Default TRUE (issue #297) — `?? true`, so an explicit `false` still selects
+  // the legacy single-material path bit-identically (invariant 1) and only an
+  // ABSENT flag changes meaning. Every guard below can still degrade it back.
+  const twoRegionRequested = req.analysis.twoRegion ?? true;
+  if (twoRegionRequested) {
     const degrade = (why: string): void => {
       console.warn(`[analysis] two-region requested but degraded to uniform: ${why}`);
       materialModel = { ...materialModel, degraded: why };
@@ -5195,6 +5226,36 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       degrade("no boundary surface available");
     } else if (mesh.elementCount > TWO_REGION_MAX_ELEMENTS) {
       degrade(`mesh too large (${mesh.elementCount} > ${TWO_REGION_MAX_ELEMENTS} elements)`);
+    } else if (meshResolution?.belowThroughThicknessFloor) {
+      // ── The resolution gate (issue #297) ───────────────────────────────────
+      // The CLASSIFICATION is not the fragile part — `tetFractionBelowIso`
+      // integrates the level set INSIDE the element (invariant #2), so the
+      // shell volume fraction is within 3.2% even when the element is 4.4x the
+      // band width. What needs resolution is the STRUCTURAL EFFECT the model
+      // exists to capture. Measured on a 60x30x6 mm sandwich cantilever, as
+      // the share of the converged 26.1% stiffening each mesh recovers:
+      //
+      //   1 element through thickness:   4%   (tip deflection 29.0% off)
+      //   2 elements:                   57%   (13.1% off)
+      //   3 elements:                   83%   (4.75% off)
+      //   4 elements:                  100%   (0.84% off)
+      //
+      // At one element through thickness the model returns essentially the
+      // homogenized answer WHILE REPORTING ITSELF ACTIVE, which is worse than
+      // not offering it: the user reads "two-region" and a shell fraction on a
+      // result that is uniform in all but name. Degrading is the honest
+      // outcome — same answer, accurate label, and a reason that names the fix.
+      //
+      // This is measured on the emitted mesh (`meshResolution`), not on the
+      // sizing request, because both meshers treat a size cap as a request
+      // (issue #295). The tiers now FLOOR at MIN_ELEMENTS_THROUGH_THICKNESS, so
+      // this fires only where the mesher could not honour that floor — a very
+      // thin section against the element-budget ceiling, or a mesher fallback.
+      degrade(
+        `mesh resolves only ${meshResolution.elementsThroughThickness.toFixed(1)} elements across ` +
+        `the thinnest section (needs ${MIN_ELEMENTS_THROUGH_THICKNESS}); the shell/core split would ` +
+        `report itself active while returning the homogenized answer`,
+      );
     } else {
       const lineWidth = Math.min(2.0, Math.max(0.1, req.print.extrusionWidthMm ?? 0.45));
       const tWall = req.print.wallCount * lineWidth;
@@ -6068,6 +6129,56 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         nodeYieldZ[n]  = utilYieldZ;
         nodeYieldZS[n] = utilYieldZS;
       }
+    }
+  }
+
+  // ── Shell/core classification as a displayable field (issue #297) ──────────
+  // The two-region split is otherwise invisible: the results text reports a
+  // shell VOLUME FRACTION for the whole part, so a user cannot see where the
+  // walls are, cannot see the core, and cannot tell a 2-wall part from a
+  // 5-wall one except as a different scalar. This projects the per-element
+  // classification the solver actually used onto nodes so it can be painted.
+  //
+  // Volume-weighted, not a plain incidence count: elements meeting at a node
+  // differ in size, and an unweighted mean would let a cluster of small
+  // elements outvote the large one that carries the material. Weighting by
+  // element volume makes the nodal value the same quantity the volume
+  // fractions in `materialModel` report, so the picture and the number agree.
+  //
+  // Feeds the VOLUME payload only (`volumeField.nodeShellFractionB64`), never
+  // the display mesh. A part's boundary is wall by construction — every
+  // boundary node sits at distance 0 from the surface, inside the wall band —
+  // so the same field on the display mesh is identically 1.0 on every part and
+  // shows nothing. Measured, not assumed: on the 24x12x6 fixture the surface
+  // field came back min 1.0 / max 1.0 against a 50.6% shell volume fraction.
+  // The split is an INTERIOR property and the section cut is the only place it
+  // can be seen.
+  //
+  // Null when the field is absent (flag off, or degraded), so the client can
+  // hide the view rather than painting a constant that would imply it ran.
+  let nodeShellFrac: Float64Array | null = null;
+  if (materialField) {
+    const acc = new Float64Array(mesh.nodeCount);
+    const wgt = new Float64Array(mesh.nodeCount);
+    const npe = mesh.nodesPerElem ?? 4;
+    for (let e = 0; e < mesh.elementCount; e++) {
+      const bin = materialField.binOfElement[e] ?? 0;
+      const f   = materialField.shellFrac[bin] ?? 0;
+      // Corner volume is the right weight for C3D10 too: the midside nodes sit
+      // on the same element and share its material, so the straight-edged
+      // corner volume is the element's weight regardless of order.
+      const vol = tetCornerVolume(mesh, e);
+      if (!(vol > 0)) continue;
+      for (let k = 0; k < npe; k++) {
+        const n = mesh.elements[e * npe + k] ?? 0;
+        acc[n] = (acc[n] ?? 0) + f * vol;
+        wgt[n] = (wgt[n] ?? 0) + vol;
+      }
+    }
+    nodeShellFrac = new Float64Array(mesh.nodeCount);
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      const w = wgt[n] ?? 0;
+      nodeShellFrac[n] = w > 0 ? (acc[n] ?? 0) / w : 0;
     }
   }
 
@@ -7351,6 +7462,12 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       nXyUtilB64 = Buffer.from(nXY.buffer).toString("base64");
       nZUtilB64  = Buffer.from(nZ.buffer).toString("base64");
     }
+    let nShellB64: string | null = null;
+    if (nodeShellFrac) {
+      const nSF = new Float32Array(mesh.nodeCount);
+      for (let n = 0; n < mesh.nodeCount; n++) nSF[n] = nodeShellFrac[n] ?? 0;
+      nShellB64 = Buffer.from(nSF.buffer).toString("base64");
+    }
     volumeField = {
       nodeCount: mesh.nodeCount,
       cornerTetCount,
@@ -7363,6 +7480,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       nodePrincipal3B64:     Buffer.from(nP3.buffer).toString("base64"),
       nodeXyUtilB64: nXyUtilB64,
       nodeZUtilB64:  nZUtilB64,
+      nodeShellFractionB64: nShellB64,
     };
     // Payload-size visibility (issue #190 acceptance criterion: "payload size
     // impact measured"). Opt-in only, so this never fires on an ordinary
@@ -7373,7 +7491,8 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       volumeField.nodeVonMisesB64.length + volumeField.nodeSignedVonMisesB64.length +
       volumeField.nodePrincipal1B64.length + volumeField.nodePrincipal2B64.length +
       volumeField.nodePrincipal3B64.length +
-      (volumeField.nodeXyUtilB64?.length ?? 0) + (volumeField.nodeZUtilB64?.length ?? 0);
+      (volumeField.nodeXyUtilB64?.length ?? 0) + (volumeField.nodeZUtilB64?.length ?? 0) +
+      (volumeField.nodeShellFractionB64?.length ?? 0);
     console.log(
       `[analyse] volumeField: ${mesh.nodeCount} nodes, ${cornerTetCount} tets, ` +
       `~${(approxBytes / 1024).toFixed(0)} KB base64 (opt-in, includeVolumeField=true)`
