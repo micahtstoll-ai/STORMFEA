@@ -6880,10 +6880,14 @@ function showResults(s) {
     const headline = mr.belowThroughThicknessFloor
       ? 'Thin section is under-resolved'
       : 'Mesh is coarser than the selected quality';
-    reliabilityBanner += `<div style="padding:12px 14px;background:#3a1a00;border:2px solid var(--warn);border-radius:6px;margin-bottom:12px">
-      <div style="font-size:12px;font-weight:600;color:var(--warn);margin-bottom:4px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> ${headline}</div>
+    // Sizes/radius per DESIGN.md (13px body heading, 4px card radius, 9px DM
+    // Mono data label at .08em). The five banners above predate that scale and
+    // still carry 12px headings and a 6px radius; they are not swept here
+    // because this is an issue-#295 change, not a design pass.
+    reliabilityBanner += `<div style="padding:12px 14px;background:#3a1a00;border:2px solid var(--warn);border-radius:4px;margin-bottom:12px">
+      <div style="font-size:13px;font-weight:600;color:var(--warn);margin-bottom:4px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> ${headline}</div>
       <div style="font-size:11px;color:var(--text-mid);line-height:1.5">${mr.warning}</div>
-      <div style="font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);margin-top:6px;letter-spacing:.04em">${mr.achievedElements.toLocaleString()} ELEMENTS · ${mr.targetElements.toLocaleString()} TARGET (${mr.tier.toUpperCase()}) · ${mr.elementsThroughThickness.toFixed(1)} THROUGH THINNEST SECTION</div>
+      <div style="font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);margin-top:6px;letter-spacing:.08em">${mr.achievedElements.toLocaleString()} ELEMENTS · ${mr.targetElements.toLocaleString()} TARGET (${mr.tier.toUpperCase()}) · ${mr.elementsThroughThickness.toFixed(1)} THROUGH THINNEST SECTION</div>
     </div>`;
   }
 

@@ -129,8 +129,12 @@ git push origin your-branch
    tests `npm run test` runs locally, but split across five concurrent jobs
    sized to their measured cost, because the suite is CPU-bound on real FE
    solves and running it as one `&&` chain made the wall time their SUM:
-   - `unit-light` - 78 vitest files, ~2 min. The fast "is this obviously
-     broken" signal; look here first when CI goes red.
+   - `unit-light` - every vitest file except the heavy ones (92 of 96 as of
+     2026-08-10), ~2 min. The fast "is this obviously broken" signal; look
+     here first when CI goes red. `vitest-shard.mjs` derives this shard as the
+     exact COMPLEMENT of `heavy-tests.json`, so the count moves with every
+     added test file and nothing in CI checks it — treat the figure here as a
+     dated snapshot, not a number to trust.
    - `unit-heavy` - the 4 files in `scripts/heavy-tests.json`, ~10.5 min. The
      critical path. These are acceptance gates (#149, #261, #160) doing real
      30k-75k element solves.
