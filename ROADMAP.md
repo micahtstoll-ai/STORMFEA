@@ -437,6 +437,56 @@ paths now run a runtime midside self-check instead of trusting the binary (#167)
       cover the driver-produced reasons, so the documented API contract is
       type-enforced instead of free-form strings
 
+### Watertight surface clipping at a plane (issue #300 — shipped)
+- [x] `server/solver/clip.ts` — given a closed triangulated surface and a plane,
+      `clipSurfaceAtPlane` produces the closed surface of the half-space
+      intersection: the input a mesher needs for a fundamental domain (#296).
+      Nothing in the repo did this before; `sliceTetsByAxisPlane`
+      (`client/index.html`) is a marching-tet slice of the VOLUME mesh for
+      display, producing a cut face to colour rather than a watertight surface,
+      and it runs client-side after the solve. Different operation, different
+      pipeline stage. Scope is clipping and capping only — mirroring, welding
+      and wiring into the analysis path stay under #296, so nothing on the
+      user-facing path changes yet
+- [x] Closure is a property of the construction, then CHECKED (never inferred):
+      one snap pass on vertices before anything is classified, so every triangle
+      sharing a vertex classifies it identically and a vertex a hair off the
+      plane cannot emit a sliver; split points cached per EDGE, so the two
+      triangles sharing an edge get the same index and bit-identical
+      coordinates; and `checkSurfaceClosure` — every directed edge used exactly
+      once, which catches a flipped neighbour that an undirected edge count
+      passes — run on every result before any mesher can be handed it
+- [x] **The cap is a constrained triangulation of a polygon with holes**, which
+      was the reason this was its own issue. Outer boundaries and holes are
+      separated by CONTAINMENT DEPTH rather than winding, which generalises for
+      free to a cut with several disjoint cross-sections and to a bore inside a
+      boss; holes are spliced in on visibility-tested bridges and the result is
+      ear-clipped. Measured on the plate-with-bore fixture (60x60x6, Ø10 bore as
+      a 64-gon) cut at mid-thickness: cap area 3521.5862877363506 against the
+      analytic square-minus-bore-polygon 3521.5862877363516 — one ULP apart,
+      2.6e-16 relative. A triangle fan over the outer loop gives 3600 — a
+      closed, plausible solid with the bore tiled over. TetGen accepts the
+      output and tetrahedralises it to the analytic half volume (mesher-gated,
+      alongside the existing skips)
+- [x] The failure found by measurement rather than review: the ear clipper's
+      geometric predicates need a tolerance that scales with diag SQUARED, not
+      diag, because a 2D cross product is an AREA. Boundary vertices that are
+      collinear in the PART are only collinear to round-off in the DATA — the
+      plate fixture's square edge, built as `t·cosθ` with `t = half-width/|cosθ|`,
+      lands on x = 30 ± 1e-14 — so exact-zero predicates read a point sitting on
+      an edge as outside it about half the time. The clipper then cut a diagonal
+      straight along a run of the boundary and left it behind as a zero-area
+      chain: 7 degenerate cap triangles and 6 triangulation fallbacks, with the
+      cap AREA unchanged at one ULP. Nothing but the explicit sliver count
+      on the result would have caught it, and the mesher would have been handed
+      degenerate facets. Both are asserted at zero on the fixture
+- [x] The snap tolerance is one definition, not two literals that agree today:
+      `surfaceSnapTolerance` (`clip.ts`), which `weldToleranceForDiag`
+      (`tetgen.ts`) now delegates to. The clip decides which vertices sit
+      exactly ON the plane and the weld decides which of those are the same
+      point after mirroring, so if the two ever differ the seam does not close.
+      A test asserts the two agree across four scales rather than trusting it
+
 ---
 
 ## IN PROGRESS / NEXT
@@ -613,46 +663,20 @@ the solver-accuracy campaign; adaptive mesh refinement (#149) shipped in PR #246
   (`SYMMETRY_DEFAULT_TOL_REL`, `SYMMETRY_DEDUP_ANGLE_DEG`) are confidence-LOW:
   argued from STL chord error and from measured eigenvector spread, not tuned
   against a corpus of real parts.
-  STILL TO DO: clipping and capping the input surface (split out as its own
-  entry below, issue #300 — it is the risky half and a standalone capability),
-  then meshing the fundamental domain and mirroring plus welding the result.
-  The weld at the symmetry plane has to be exact or the seam becomes a fresh
-  artifact source — the same class of defect as the vertex-welding bug in
-  CLAUDE.md's heatmap section — and it must share one snap tolerance with the
-  clipper rather than carrying a second literal that can drift
-- **Watertight surface clipping at a plane** (issue #300) — given a closed
-  triangulated surface and a plane, produce the closed surface of the
-  half-space intersection. The prerequisite for the entry above, split out
-  because it is substantial on its own and nothing in the repo does it today:
-  `sliceTetsByAxisPlane` (`client/index.html`) is a marching-tet slice of the
-  VOLUME mesh for display only, producing a cut face to colour rather than a
-  watertight surface a mesher can consume, and it runs client-side after the
-  solve. Different operation, different pipeline stage.
-  Classify each triangle against the plane, split the straddling ones,
-  re-triangulate the keep-side remainder, extract the open boundary loops, and
-  cap them. **The cap is where the difficulty is, and it is not a triangle
-  fan** — cutting a plate through its bore leaves an outer loop plus the bore's
-  cross-section as an inner loop, so the cap is a constrained triangulation of
-  a polygon WITH HOLES. A fan over the outer loop would tile straight across
-  the bore and hand the mesher a solid where the part has a hole.
-  Failure modes to design against, several of which this repo has already paid
-  for once: watertightness is binary (TetGen wants a closed PLC, and one
-  unclosed loop either fails outright or silently tetrahedralises something
-  that is not the part, so closure needs its own check BEFORE the mesher is
-  invoked rather than a downstream quality gate catching the consequences); a
-  vertex within epsilon of the plane must SNAP to it rather than emit a
-  zero-area sliver (see the `-m` background-metric episode in
-  AI_ORCHESTRATION entry 12 and the hard sliver gate from #166); loop
-  orientation has to be consistent to distinguish an outer boundary from a
-  hole; and a flat face lying exactly ON the symmetry plane is an ordinary FTC
-  bracket, not a pathological input.
-  Almost all of it is pure geometry and testable with no mesher present —
-  closure (every edge shared by exactly two triangles), signed volume against
-  the analytic half, a bore-through cap against the analytic annulus area,
-  coplanar and on-plane fixtures, and a clip/mirror/weld round trip back to
-  the original volume. The one part that genuinely needs TetGen or Gmsh is
-  confirming the mesher accepts the output, which belongs in the
-  mesher-gated shard alongside the existing skips
+  CLIPPING AND CAPPING HAS ALSO LANDED (issue #300 — see the shipped section
+  above). The snap tolerance the weld must share is now one exported
+  definition, `surfaceSnapTolerance` in `server/solver/clip.ts`, which
+  `weldToleranceForDiag` delegates to rather than repeating the literal.
+  STILL TO DO: meshing the fundamental domain, then mirroring and welding the
+  result. The weld at the symmetry plane has to be exact or the seam becomes a
+  fresh artifact source — the same class of defect as the vertex-welding bug in
+  CLAUDE.md's heatmap section. `ClipResult.capFaceStart` exists for that step:
+  the cap is the seam, so both halves' cap faces must be dropped before
+  joining, or the seam becomes a doubled internal wall. The round trip is
+  already exercised end to end in `surface-clip.test.ts` (clip the plate,
+  mirror, weld through the production `weldVertices`, and the original volume
+  comes back watertight), so what remains is the MESHING half, not the
+  geometry
 - **Anisotropic (honeycomb) DFA extension** — the shipped core yield criterion
   is the isotropic-foam form. Extending pressure sensitivity per-axis would
   match the per-axis stiffness and strength laws the core already uses;
