@@ -102,10 +102,21 @@ export interface TwoRegionResult {
    * IS the uniform material when field is null.
    */
   averageMaterial: OrthotropicMaterial;
-  /** Shell (wall-band) share of total part volume, ∈ [0, 1]. */
-  shellVolumeFraction: number;
+  /**
+   * Shell (wall-band) share of total part volume, ∈ [0, 1]. NULL when the
+   * classification was skipped because shell ≡ core (issue #297) — the split
+   * is not computed there, so no fraction is reported rather than a made-up
+   * one. See `collapsedReason`.
+   */
+  shellVolumeFraction: number | null;
   /** Wall-band (vertical perimeter) thickness used for classification, mm. */
   wallThicknessMm: number;
+  /**
+   * Set when the model collapsed to a uniform part WITHOUT computing the
+   * classification. Distinct from a degradation: the model ran, and the answer
+   * is that this part has no split.
+   */
+  collapsedReason?: string;
   /** Top solid-skin (ceiling) band thickness, mm — only when skins were modeled. */
   skinTopThicknessMm?: number;
   /** Bottom solid-skin (floor) band thickness, mm — only when skins were modeled. */
@@ -254,6 +265,24 @@ function blendMaterial(
 }
 
 /** Relative difference helper for the shell ≡ core degenerate check. */
+/**
+ * Do shell and core describe the SAME material? Then there is no split to
+ * compute and the classification can be skipped entirely (issue #297).
+ *
+ * Exported so the predicate lives in one place: `buildTwoRegionField` uses it
+ * to short-circuit, and callers can reason about the collapse without
+ * duplicating the tolerance.
+ */
+export function materialsEqualFor(
+  shellMat: OrthotropicMaterial,
+  coreMat:  OrthotropicMaterial,
+): boolean {
+  return relDiff(shellMat.E_xy, coreMat.E_xy) < 1e-9
+      && relDiff(shellMat.E_z, coreMat.E_z) < 1e-9
+      && relDiff(shellMat.yieldXY, coreMat.yieldXY) < 1e-9
+      && relDiff(shellMat.yieldZ, coreMat.yieldZ) < 1e-9;
+}
+
 function relDiff(a: number, b: number): number {
   const s = Math.max(Math.abs(a), Math.abs(b), 1e-12);
   return Math.abs(a - b) / s;
@@ -380,11 +409,30 @@ export function buildTwoRegionField(
   }
 
   // ── Degenerate: shell ≡ core (e.g. 100% infill) → uniform solid ──────────
-  const materialsEqual =
-    relDiff(shellMat.E_xy, coreMat.E_xy) < 1e-9 &&
-    relDiff(shellMat.E_z, coreMat.E_z) < 1e-9 &&
-    relDiff(shellMat.yieldXY, coreMat.yieldXY) < 1e-9 &&
-    relDiff(shellMat.yieldZ, coreMat.yieldZ) < 1e-9;
+  // Checked BEFORE the distance field, not after (issue #297). This branch used
+  // to fall through, build the full classification, and then discard it — which
+  // cost nothing while the model was opt-in and became the dominant cost of
+  // every solid-part analysis the moment it became the default. MEASURED on the
+  // #149 adaptive fixture, which is 100% infill: 248.7 s before the default
+  // flip, 433.5 s after, 236.4 s with the flag forced off. The whole 1.74x was
+  // this field being computed for a part that has no split.
+  //
+  // What is given up is `shellVolumeFraction` on this path: it is a true
+  // statement about the GEOMETRY but a distinction without a difference about
+  // the MATERIAL, since both regions are the same. Nothing derived depends on
+  // it here — at rho = 1 the strength fraction is exactly 1.0, so
+  // `impliedAvgStrengthMul` reduces to `orientFallbackMul` for any Vf — so the
+  // only loss is a percentage in the results text on a part where the split
+  // cannot change a number.
+  if (materialsEqualFor(shellMat, coreMat)) {
+    return {
+      field: null,
+      averageMaterial: blendMaterial(shellMat, coreMat, 1, shellMat.label),
+      shellVolumeFraction: null,
+      wallThicknessMm: tWall,
+      collapsedReason: "shell and core are the same material (no split to compute)",
+    };
+  }
 
   // ── Wall fractions ────────────────────────────────────────────────────────
   // Single perimeter band → the legacy distance path (bit-identical). With
@@ -418,15 +466,6 @@ export function buildTwoRegionField(
     volShell += g.V * (wallFrac[e] ?? 0);
   }
   const Vf = volTotal > 0 ? volShell / volTotal : 0;
-
-  if (materialsEqual) {
-    return {
-      field: null,
-      averageMaterial: blendMaterial(shellMat, coreMat, 1, shellMat.label),
-      shellVolumeFraction: Vf,
-      wallThicknessMm: tWall,
-    };
-  }
 
   const avgLabel = `two-region avg (shell ${(Vf * 100).toFixed(0)}%): ${shellMat.label}`;
   const averageMaterial = blendMaterial(shellMat, coreMat, Vf, avgLabel);

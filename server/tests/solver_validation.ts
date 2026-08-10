@@ -1849,7 +1849,7 @@ console.log("\n[25] Two-region material field — solve equivalence + sandwich b
     });
     const tr = buildTwoRegionField(mesh, faces, isoOrtho(E_S, "skin"), isoOrtho(E_C, "core"), T_WALL);
     test("[25.2] classification produced a mixed field", tr.field !== null,
-      `Vf=${tr.shellVolumeFraction.toFixed(3)}`);
+      `Vf=${tr.shellVolumeFraction!.toFixed(3)}`);
 
     const fixed: number[] = [], tip: number[] = [];
     for (let n = 0; n < mesh.nodeCount; n++) {
@@ -1880,9 +1880,9 @@ console.log("\n[25] Two-region material field — solve equivalence + sandwich b
 
     // Report the divergence from the volume-averaged uniform model (whose
     // EI = E_avg·I_outer) — that difference is the model's point.
-    const eAvg = tr.shellVolumeFraction * E_S + (1 - tr.shellVolumeFraction) * E_C;
+    const eAvg = tr.shellVolumeFraction! * E_S + (1 - tr.shellVolumeFraction!) * E_C;
     const deltaAvgModel = P * L ** 3 / (3 * eAvg * Iouter);
-    console.log(`    Vf=${(tr.shellVolumeFraction * 100).toFixed(1)}% ` +
+    console.log(`    Vf=${(tr.shellVolumeFraction! * 100).toFixed(1)}% ` +
       `δ_FE=${uzTip.toFixed(4)} δ_composite=${deltaAnalytic.toFixed(4)} δ_avgModel=${deltaAvgModel.toFixed(4)}mm ` +
       `(${mesh.elementCount} C3D10 elems)`);
   }

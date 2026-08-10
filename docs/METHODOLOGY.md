@@ -94,10 +94,12 @@ exactly, so `knockdown = 1` and every path reproduces the solid (anchor). Densit
 knockdown is now decoupled from the strength multiplier, which keeps driving
 `yieldXY` on its own linear infill curve.
 
-**Two-region model (walls vs infill, opt-in).** The default model above smears
-perimeter walls and infill into ONE homogenized material (walls enter only as a
-geometry-blind +10%-per-wall strength bonus). The two-region model
-(`print.twoRegion`, MATERIAL tab toggle) instead classifies each element
+**Two-region model (walls vs infill) — the DEFAULT since issue #297.** The
+single-material model above smears perimeter walls and infill into ONE
+homogenized material (walls enter only as a geometry-blind +10%-per-wall
+strength bonus); it is still selectable with an explicit `twoRegion: false`,
+and remains bit-identical to its pre-#297 self. The two-region model
+(`analysis.twoRegion`, MATERIAL tab toggle) instead classifies each element
 geometrically:
 
 - **Wall band** = `wallCount × extrusionWidthMm` (line width auto-imported from

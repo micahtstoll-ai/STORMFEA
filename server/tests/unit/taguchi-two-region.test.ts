@@ -100,7 +100,7 @@ function executeRun(run: number, levels: readonly [number, number, number, numbe
   const Vf = tr.shellVolumeFraction;
 
   const lattice = sStr; // s(ρ) = min(1, patternMul·ρ^m)
-  const implied = (Vf + (1 - Vf) * lattice) * angledNoBedFallbackMul(orient, null);
+  const implied = (Vf! + (1 - Vf!) * lattice) * angledNoBedFallbackMul(orient, null);
 
   let binYieldsMonotone = true;
   let allFinite = Number.isFinite(Vf) && Number.isFinite(implied);
@@ -126,7 +126,7 @@ function executeRun(run: number, levels: readonly [number, number, number, numbe
     avg.E_xy <= Math.max(shell.E_xy, core.E_xy) + eps;
 
   return {
-    run, levels, shell, core, Vf,
+    run, levels, shell, core, Vf: Vf!,
     fieldBins: tr.field ? tr.field.binCount : null,
     implied, binYieldsMonotone, avgBounded, allFinite,
   };

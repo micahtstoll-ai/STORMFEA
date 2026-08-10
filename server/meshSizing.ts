@@ -173,6 +173,19 @@ export function bboxIsUsable(bounds: MeshBounds): boolean {
  * (see `tetCornerVolume`, solver/adaptiveMesh.ts). Falling back to the bounding
  * box overestimates the mean element volume for anything non-boxy and so
  * UNDER-reports the achieved resolution — conservative, but worth avoiding.
+ *
+ * ASSUMES ROUGHLY ISOTROPIC ELEMENTS, which is what it is measuring against:
+ * `elementsThroughThickness` is derived from the mean element VOLUME, so it
+ * reports the mean element SIZE across the thin direction, not a layer count.
+ * The two agree for the meshes this pipeline produces — TetGen runs with
+ * `-q1.4` bounding the radius-edge ratio — but they diverge for a deliberately
+ * anisotropic mesh. A structured box mesh of 2 x 2 x 0.75 mm cells through a
+ * 6 mm plate has EIGHT nominal layers and reads 3.7 here, because its mean
+ * element is 1.6 mm on a side. The divergence is one-sided: an anisotropic mesh
+ * always reads LOWER than its layer count, never higher, so a consumer gating
+ * on this figure errs toward declaring a mesh under-resolved. Deliberate — the
+ * two-region resolution gate (issue #297) would rather refuse a mesh it could
+ * have used than claim a structural effect the mesh cannot carry.
  */
 export interface MeshResolutionReport {
   tier: MeshTier;

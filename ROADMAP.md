@@ -541,6 +541,52 @@ paths now run a runtime midside self-check instead of trusting the binary (#167)
 
 ---
 
+### Two-region (walls vs infill) as the default (issue #297 — shipped)
+- [x] `analysis.twoRegion` now defaults TRUE. Infill is one of the defining
+      variables of an FDM part and the single-material path represented it as a
+      scalar knockdown with no spatial structure — a user could not see walls,
+      see the core, or tell a 2-wall part from a 5-wall one except as a
+      different number. The model was already built and validated (sandwich
+      cantilever within 0.3% of composite-EI theory, where the homogenized
+      model is ~23% too soft), so the DEFAULT was the only thing keeping it out
+      of ordinary results. Explicit `false` still selects the legacy path
+      bit-identically (invariant 1); only an ABSENT flag changed meaning
+- [x] A resolution GATE, which is what "harden" turned out to mean. The
+      measurement behind `MIN_ELEMENTS_THROUGH_THICKNESS` says that at one
+      element through thickness the model recovers 4% of the converged 26.1%
+      sandwich stiffening while REPORTING ITSELF ACTIVE — worse than not
+      offering it, because the user reads "two-region" and a shell fraction on
+      a result that is uniform in all but name. Two-region now degrades, with a
+      reason naming the fix, whenever the emitted mesh resolves fewer than 4
+      elements across the thinnest section. It reads `meshResolution` (#295), so
+      it measures the mesh that came back rather than the sizing that was asked
+      for, and it is not overridable by an explicit opt-in: the gate is about
+      what the mesh can represent, not about what was requested
+- [x] The split is surfaced on the SECTION CUT, not the model surface — the one
+      real finding of this branch, and it inverted the plan. The first revision
+      published the classification as a display-mesh vertex field, exactly as
+      the issue's "make it visible in the heatmap" implies. **It is identically
+      1.0 on every part.** A part's boundary is wall BY CONSTRUCTION: every
+      boundary node sits at distance 0 from the surface and therefore inside the
+      wall band. Measured on the 24x12x6 fixture, the surface field came back
+      min 1.0 / max 1.0 against a 50.6% shell volume fraction. The wall/core
+      split is an INTERIOR property, so it now rides on `volumeField`
+      (`nodeShellFractionB64`) and paints the section cut face, with the mode
+      offered only when that payload carries it
+- [x] Caught by a test asserting the picture was not a constant, which existed
+      only because "would this be useless?" is a cheap thing to assert. Nothing
+      else would have found it: the field was correct, bounded, non-NaN, and
+      agreed with the reported volume fraction — it was simply constant on the
+      one surface it was being painted on
+- [x] `achievedResolution` gained the caveat this made load-bearing: it reports
+      mean element SIZE across the thin direction, not a layer count, so an
+      anisotropic structured mesh reads LOWER than its nominal layering (a
+      2x2x0.75 mm cell through a 6 mm plate has eight layers and reads 3.7).
+      One-sided, so a consumer gating on it errs toward declaring a mesh
+      under-resolved — which is the direction this gate wants
+
+---
+
 ## IN PROGRESS / NEXT
 
 _Previous entries (DFA core yield, per-failure-mode yield selection) shipped in
@@ -643,34 +689,6 @@ the solver-accuracy campaign; adaptive mesh refinement (#149) shipped in PR #246
   trap that matters: group 30's manufactured solution is quadratic, which C3D10
   reproduces exactly, so it CANNOT anchor a C3D10 effectivity index — that needs
   a cubic-or-higher exact solution
-- **Enable and harden the two-region (walls vs infill) model** (issue #297) —
-  NOW UNBLOCKED: the mesh-sizing entry it waited on shipped (issue #295, above),
-  so both mesher paths floor at the 4 elements through thickness this model
-  needs. What remains is making it the default and surfacing the shell/core
-  split, not a resolution problem — the model is built, validated, and reachable
-  (`print.twoRegion`, `server/twoRegion.ts`, `two-region-toggle` in the client)
-  but defaults OFF, so the default analysis represents infill as a scalar
-  knockdown with no spatial structure. The blocker is resolution, but NOT in
-  the way first assumed here — the wall-band CLASSIFICATION is not the fragile
-  part. Measured on a 60x30x6 mm plate with a 1.35 mm band, against the exact
-  analytic shell volume fraction: 3.2% error with the element 4.4x the band
-  width, 0.06% at h = 1.5 mm. `tetFractionBelowIso` integrates the level set
-  INSIDE the element (invariant #2), so it does not need elements finer than
-  the band to get the volume right.
-  What DOES need resolution is the structural effect the model exists to
-  capture. Same fixture as a cantilever, two-region against the homogenized
-  average at matched resolution, measuring how much of the converged 26.1%
-  sandwich stiffening each mesh recovers: 1 element through thickness gives 4%
-  (tip deflection 29.0% off), 2 gives 57% (13.1% off), 3 gives 83% (4.75% off),
-  4 gives 100% (0.84% off). At one element through thickness the model returns
-  essentially the homogenized answer while reporting itself active, which is
-  worse than not offering it. That measurement set
-  `MIN_ELEMENTS_THROUGH_THICKNESS` to 4 (issue #295) — it was 3 on textbook
-  convention, which leaves 17% of the effect behind — and that floor is now
-  enforced on BOTH mesher paths, which is what closes the sequencing. Note the core
-  homogenization exponents remain confidence-LOW (see KNOWN LIMITATIONS); this
-  entry is about making an existing validated model the default and surfacing the
-  shell/core split, not about moving those constants
 - **Symmetry-preserving meshing** (issue #296) — an unstructured tet mesh of a mirror-symmetric
   part is not itself mirror-symmetric, so the recovered stress field carries an
   asymmetry the geometry does not have. Measured on a symmetric cantilever

@@ -1163,6 +1163,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <button class="btn vmode-btn"        id="btn-dmg"    onclick="setStressMode('dmg')"    style="display:flex" title="Damage ratio — stress as a fraction of material yield strength (1.0 = at yield)"><span class="vmode-abbr">DMG</span><span class="vmode-cap">Damage</span></button>
         <button class="btn vmode-btn"        id="btn-xyutil" onclick="setStressMode('xyutil')" style="display:flex" title="XY in-plane utilization — sqrt(σxx²+σyy²-σxx·σyy+3·σxy²) / yieldXY. Red at 1.0 = at in-plane yield. High → add infill."><span class="vmode-abbr">U<sub>XY</sub></span><span class="vmode-cap">In-plane use</span></button>
         <button class="btn vmode-btn"        id="btn-zutil"  onclick="setStressMode('zutil')"  style="display:flex" title="Interlayer interface utilization — tension-only ⟨σzz⟩₊/S_zt interacting with interlayer shear τ/S_zs (compression gets a friction credit instead). Red at 1.0 = delamination/shear onset. High → reorient or add walls."><span class="vmode-abbr">U<sub>Z</sub></span><span class="vmode-cap">Z-layer use</span></button>
+        <button class="btn vmode-btn"        id="btn-shell"  onclick="setStressMode('shell')"  style="display:flex" title="Wall / core — the two-region classification the solver used. 1.0 = solid perimeter wall or top/bottom skin, 0 = homogenized infill core. A GEOMETRIC field, not a stress: it shows where the material is, not how hard it is working. The outer surface is all wall by definition, so this only tells you anything on the SECTION CUT — open the section view and drag the plane through the part."><span class="vmode-abbr">W/C</span><span class="vmode-cap">Wall / core</span></button>
         <button class="btn vmode-btn"        id="btn-error"  onclick="setStressMode('error')"  style="display:flex" title="Error estimate η (Zienkiewicz-Zhu) — each element's SHARE of the mesh-wide discretization error, not an absolute % error on its stress. Ranks WHERE the mesh limits accuracy; red does not mean 'this stress is wrong by that much.' See the global % figure under the legend for overall accuracy."><span class="vmode-abbr">η</span><span class="vmode-cap">Mesh quality</span></button>
       </div>
     </div>
@@ -1960,16 +1961,17 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <!-- Two-Region Material Model toggle -->
       <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;margin-bottom:16px">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-          <b style="color:var(--text-hi);font-size:11px">Two-Region Material Model (walls vs infill)</b>
+          <b style="color:var(--text-hi);font-size:11px">Two-Region Material Model (walls vs infill) &middot; <span style="color:var(--text-lo);font-weight:400">on by default</span></b>
           <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:10px;color:var(--text-mid)">
-            <input type="checkbox" id="two-region-toggle" onchange="onTwoRegionToggle(this.checked)" style="accent-color:var(--gold);width:13px;height:13px">
+            <input type="checkbox" id="two-region-toggle" checked onchange="onTwoRegionToggle(this.checked)" style="accent-color:var(--gold);width:13px;height:13px">
             Enable
           </label>
         </div>
         <div style="font-size:10px;color:var(--text-lo);line-height:1.7;margin-bottom:8px">
           Classifies each element geometrically: <b style="color:var(--text-mid)">dense perimeter walls</b> (solid material) vs <b style="color:var(--text-mid)">homogenized infill core</b> (strength ~ linear in infill density × pattern), instead of one averaged material everywhere. Wall band = wall count × line width; <b style="color:var(--text-mid)">top/bottom solid skins</b> (floors/ceilings) get their own band = layer count × layer height. Stiffness, strength, and mass all follow the split.
+          Turning this <b style="color:var(--text-mid)">off</b> falls back to the legacy single averaged material, where infill is a scalar knockdown with no spatial structure &mdash; the walls, the core, and the difference between a 2-wall and a 5-wall part all collapse into one number.
         </div>
-        <div id="two-region-details" style="display:none">
+        <div id="two-region-details">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
             <label for="two-region-linewidth" style="font-size:10px;color:var(--text-mid);white-space:nowrap">Line width (mm)</label>
             <input type="number" id="two-region-linewidth" min="0.1" max="2.0" step="0.05" value="0.45"
@@ -3944,13 +3946,14 @@ function decodeVolumeField(vfRaw, effYield) {
   const s3     = _decodeStressF32(vfRaw.nodePrincipal3B64);
   const xyutil = vfRaw.nodeXyUtilB64 ? _decodeStressF32(vfRaw.nodeXyUtilB64) : null;
   const zutil  = vfRaw.nodeZUtilB64  ? _decodeStressF32(vfRaw.nodeZUtilB64)  : null;
+  const shell  = vfRaw.nodeShellFractionB64 ? _decodeStressF32(vfRaw.nodeShellFractionB64) : null;
   const tc = (s1 && s3) ? computeDominantPrincipal(s1, s3) : null;
   const yield_ = effYield || 1;
   const dmg = new Float32Array(vm.length);
   for (let i = 0; i < vm.length; i++) dmg[i] = (vm[i] ?? 0) / yield_;
   return {
     nodeCount: vfRaw.nodeCount, tetCount: vfRaw.cornerTetCount,
-    nodes, tets, vm, svm, s1, s2, s3, tc, dmg, xyutil, zutil,
+    nodes, tets, vm, svm, s1, s2, s3, tc, dmg, xyutil, zutil, shell,
   };
 }
 
@@ -3960,7 +3963,13 @@ function decodeVolumeField(vfRaw, effYield) {
 // counterpart (Zienkiewicz-Zhu error is an element-level estimate that is
 // only projected to the SURFACE mesh server-side) — the cap honestly falls
 // back to the flat "no data" material for that mode rather than fabricating
-// a value.
+// a value. `shell` is the OPPOSITE case: it exists ONLY here. A part's
+// boundary is wall by construction — every boundary node sits at distance 0
+// from the surface, inside the wall band — so the same field on the display
+// mesh is identically 1.0 on every part and shows nothing. Measured on the
+// 24x12x6 fixture: surface field min 1.0 / max 1.0 against a 50.6% shell
+// volume fraction. The split is an interior property and this is the only
+// surface it can be seen on.
 const VOLUME_MODE_DATA = {
   tc:     vf => vf.tc,
   vm:     vf => vf.vm,
@@ -3972,6 +3981,7 @@ const VOLUME_MODE_DATA = {
   xyutil: vf => vf.xyutil,
   zutil:  vf => vf.zutil,
   error:  () => null,
+  shell:  vf => vf.shell,
 };
 
 /**
@@ -4096,6 +4106,15 @@ function applyStressColorsFromResults(results, { fresh = false } = {}) {
   // present when the request opted in (analysis.includeVolumeField, driven by
   // the SECTION panel's "interior stress" toggle). Absent on ordinary solves.
   S._volumeField = decodeVolumeField(results.volumeField, effYield);
+  // Wall/core (#297) is a SECTION-VIEW mode, offered only when the volume
+  // payload carries the classification — i.e. the section view is open AND the
+  // two-region model actually ran. The display-mesh array is a synthesized
+  // constant 1.0, which is not a placeholder but the correct value: every point
+  // on the part's boundary lies inside the wall band, so the outside of a part
+  // IS all wall. All the information is on the cut face.
+  cache.shell = (S._volumeField && S._volumeField.shell)
+    ? new Float32Array(vertexStress.length).fill(1)
+    : null;
   if (S.clipActive) _refreshInteriorCap();
 
   S._stressArrays = cache;
@@ -10521,6 +10540,14 @@ window.addEventListener('DOMContentLoaded', () => {
   // already patched inline below
 });
 
+// The two-region panel is open from the start now that the model is the default
+// (#297), so its wall-band readout has to be filled at load. It used to be
+// populated by onTwoRegionToggle when the user opened the panel, and
+// updateSettingsPreview — its only other caller — runs on change events only,
+// so without this the readout would sit at the "—" placeholder until the user
+// happened to touch a material setting.
+window.addEventListener('DOMContentLoaded', () => { updateWallBandReadout(); });
+
 
 // ══════════════════════════════════════════════════════════════════════════════
 // CALIBRATION SYSTEM
@@ -13483,11 +13510,16 @@ const MODE_META = {
   xyutil: { kind:'sequential', legend:()=>'XY In-Plane Utilization (0–2)',                   hover:'XY utilization',         unit:()=>'',  dec:2, data:a=>a.xyutil, max:2.0, min:0 },
   zutil:  { kind:'sequential', legend:()=>'Interlayer Interface Utilization (0–2)',          hover:'Interlayer utilization', unit:()=>'',  dec:2, data:a=>a.zutil,  max:2.0, min:0 },
   error:  { kind:'sequential', legend:()=>'Error Estimate η (0–1)',                          hover:'Error η',                unit:()=>'',  dec:3, data:a=>a.error,  max:1.0, min:0 },
+  // Geometric, not mechanical: the two-region classification itself (#297).
+  // Fixed 0..1 domain because the endpoints MEAN something (pure core / pure
+  // wall) — letting it autoscale would paint a part whose shell fraction never
+  // exceeds 0.6 as if it were solid wall at the top of the scale.
+  shell:  { kind:'sequential', legend:()=>'Wall / Core — cut to see the split',              hover:'Wall fraction',          unit:()=>'',  dec:2, data:a=>a.shell,  max:1.0, min:0 },
 };
 // Always-visible modes lead the left column; the rest live behind the MORE
 // toggle. STRESS_MODE_ORDER is their concatenation.
 const ALWAYS_MODES = ['tc','vm','svm','s1','s2','s3'];
-const OVERFLOW_MODES = ['dmg','xyutil','zutil','error'];
+const OVERFLOW_MODES = ['dmg','xyutil','zutil','error','shell'];
 const STRESS_MODE_ORDER = [...ALWAYS_MODES, ...OVERFLOW_MODES];
 const DEFAULT_STRESS_MODE = 'tc';
 
