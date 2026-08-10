@@ -613,12 +613,46 @@ the solver-accuracy campaign; adaptive mesh refinement (#149) shipped in PR #246
   (`SYMMETRY_DEFAULT_TOL_REL`, `SYMMETRY_DEDUP_ANGLE_DEG`) are confidence-LOW:
   argued from STL chord error and from measured eigenvector spread, not tuned
   against a corpus of real parts.
-  STILL TO DO, and it is the risky half: clipping the input surface at the
-  plane, capping the cut face so the mesher receives a closed volume, meshing
-  that fundamental domain, and mirroring plus welding the result. The weld at
-  the symmetry plane has to be exact or the seam becomes a fresh artifact
-  source — the same class of defect as the vertex-welding bug in CLAUDE.md's
-  heatmap section
+  STILL TO DO: clipping and capping the input surface (split out as its own
+  entry below, issue #300 — it is the risky half and a standalone capability),
+  then meshing the fundamental domain and mirroring plus welding the result.
+  The weld at the symmetry plane has to be exact or the seam becomes a fresh
+  artifact source — the same class of defect as the vertex-welding bug in
+  CLAUDE.md's heatmap section — and it must share one snap tolerance with the
+  clipper rather than carrying a second literal that can drift
+- **Watertight surface clipping at a plane** (issue #300) — given a closed
+  triangulated surface and a plane, produce the closed surface of the
+  half-space intersection. The prerequisite for the entry above, split out
+  because it is substantial on its own and nothing in the repo does it today:
+  `sliceTetsByAxisPlane` (`client/index.html`) is a marching-tet slice of the
+  VOLUME mesh for display only, producing a cut face to colour rather than a
+  watertight surface a mesher can consume, and it runs client-side after the
+  solve. Different operation, different pipeline stage.
+  Classify each triangle against the plane, split the straddling ones,
+  re-triangulate the keep-side remainder, extract the open boundary loops, and
+  cap them. **The cap is where the difficulty is, and it is not a triangle
+  fan** — cutting a plate through its bore leaves an outer loop plus the bore's
+  cross-section as an inner loop, so the cap is a constrained triangulation of
+  a polygon WITH HOLES. A fan over the outer loop would tile straight across
+  the bore and hand the mesher a solid where the part has a hole.
+  Failure modes to design against, several of which this repo has already paid
+  for once: watertightness is binary (TetGen wants a closed PLC, and one
+  unclosed loop either fails outright or silently tetrahedralises something
+  that is not the part, so closure needs its own check BEFORE the mesher is
+  invoked rather than a downstream quality gate catching the consequences); a
+  vertex within epsilon of the plane must SNAP to it rather than emit a
+  zero-area sliver (see the `-m` background-metric episode in
+  AI_ORCHESTRATION entry 12 and the hard sliver gate from #166); loop
+  orientation has to be consistent to distinguish an outer boundary from a
+  hole; and a flat face lying exactly ON the symmetry plane is an ordinary FTC
+  bracket, not a pathological input.
+  Almost all of it is pure geometry and testable with no mesher present —
+  closure (every edge shared by exactly two triangles), signed volume against
+  the analytic half, a bore-through cap against the analytic annulus area,
+  coplanar and on-plane fixtures, and a clip/mirror/weld round trip back to
+  the original volume. The one part that genuinely needs TetGen or Gmsh is
+  confirming the mesher accepts the output, which belongs in the
+  mesher-gated shard alongside the existing skips
 - **Anisotropic (honeycomb) DFA extension** — the shipped core yield criterion
   is the isotropic-foam form. Extending pressure sensitivity per-axis would
   match the per-axis stiffness and strength laws the core already uses;
