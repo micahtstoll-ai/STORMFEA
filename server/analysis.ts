@@ -3312,6 +3312,17 @@ export interface MaterialModelInfo {
   shellYieldXYMPa:      number | null;
   coreYieldXYMPa:       number | null;
   /**
+   * Set when the two-region model ran and found NOTHING TO SPLIT — shell and
+   * core are the same material (100% infill), so the classification was
+   * skipped entirely rather than computed and discarded (issue #297).
+   *
+   * Deliberately not `degraded`: that means "requested but undeliverable on
+   * this mesh" and is rendered as a warning. This is a correct, complete
+   * answer — the part genuinely has one material — so it is reported as a
+   * neutral note.
+   */
+  collapsed?:           string;
+  /**
    * Anchor diagnostics: the volume-weighted average strength multiplier the
    * two-region split implies vs the legacy geometry-blind global multiplier.
    * Reported, deliberately NOT renormalized — the divergence is the point.
@@ -5395,6 +5406,18 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         };
       }
 
+      // ── Collapse: shell ≡ core, so there is no split (issue #297) ─────────
+      // `buildTwoRegionField` short-circuits BEFORE computing the
+      // classification here, because on a 100%-infill part it would cost the
+      // dominant share of the analysis to produce a percentage that cannot
+      // change a single reported number. Report the collapse honestly — the
+      // model ran and found nothing to split, which is not a degradation (it
+      // was not "asked for and undeliverable") and not a two-region solve
+      // either. `materialModel.twoRegion` stays false, matching the fact that
+      // the solve IS uniform.
+      if (tr.shellVolumeFraction === null) {
+        materialModel = { ...materialModel, collapsed: tr.collapsedReason ?? "no split" };
+      } else {
       // Anchor diagnostics: what the geometric split implies vs the legacy
       // geometry-blind global multiplier. Reported, deliberately not
       // renormalized — the divergence is the point of the model. Reuses the
@@ -5440,6 +5463,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         `bins=${tr.field ? tr.field.binCount : "collapsed-to-uniform"}, ` +
         `impliedAvgMul=${impliedAvgStrengthMul.toFixed(3)} vs globalMul=${strengthMul.toFixed(3)}`
       );
+      }
     }
   }
 

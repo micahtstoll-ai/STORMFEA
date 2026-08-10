@@ -129,7 +129,7 @@ describe("buildTwoRegionField skins == tWall reproduces the no-skin field", () =
     });
     expect(base.field).not.toBeNull();
     expect(withSkin.field).not.toBeNull();
-    expect(withSkin.shellVolumeFraction).toBeCloseTo(base.shellVolumeFraction, 12);
+    expect(withSkin.shellVolumeFraction).toBeCloseTo(base.shellVolumeFraction!, 12);
     const a = base.field!, b = withSkin.field!;
     for (let e = 0; e < mesh.elementCount; e++) expect(b.binOfElement[e]).toBe(a.binOfElement[e]);
     for (let i = 0; i < a.C.length; i++) expect(b.C[i]).toBe(a.C[i]);
@@ -158,7 +158,7 @@ describe("box with thicker floor/ceiling than perimeter → union-of-bands volum
     const core3 = (W - 2 * T_WALL) * (D - 2 * T_WALL) * (H - T_TOP - T_BOT);
     const shellVolAnalytic = outer - core3;
     const VfAnalytic = shellVolAnalytic / outer;
-    expect(Math.abs(tr.shellVolumeFraction - VfAnalytic) / VfAnalytic).toBeLessThan(0.06);
+    expect(Math.abs(tr.shellVolumeFraction! - VfAnalytic) / VfAnalytic).toBeLessThan(0.06);
   });
 
   it("thicker skins raise the shell fraction above the uniform-tWall model", () => {
@@ -166,7 +166,7 @@ describe("box with thicker floor/ceiling than perimeter → union-of-bands volum
     const withSkin = buildTwoRegionField(mesh, faces, shell, core, T_WALL, {
       buildAxis: [0, 0, 1], tSkinTop: T_TOP, tSkinBot: T_BOT,
     });
-    expect(withSkin.shellVolumeFraction).toBeGreaterThan(uniform.shellVolumeFraction);
+    expect(withSkin.shellVolumeFraction).toBeGreaterThan(uniform.shellVolumeFraction!);
     expect(withSkin.skinTopThicknessMm).toBe(T_TOP);
     expect(withSkin.skinBotThicknessMm).toBe(T_BOT);
   });

@@ -43,7 +43,7 @@ describe("buildTwoRegionField", () => {
     const outer = 20 * 12 * 8;
     const inner = (20 - 2 * T_WALL) * (12 - 2 * T_WALL) * (8 - 2 * T_WALL);
     const analytic = (outer - inner) / outer;
-    expect(Math.abs(tr.shellVolumeFraction - analytic) / analytic).toBeLessThan(0.05);
+    expect(Math.abs(tr.shellVolumeFraction! - analytic) / analytic).toBeLessThan(0.05);
     // Mixed: some pure-core elements and some (partially) shell elements
     let sawCore = false, sawShellish = false;
     for (let e = 0; e < mesh.elementCount; e++) {
@@ -83,12 +83,12 @@ describe("buildTwoRegionField", () => {
     expect(f.yieldZShear[0]).toBe(4);
     expect(f.yieldZShear[f.binCount - 1]).toBe(20);
     expect(tr.averageMaterial.yieldZShear).toBeCloseTo(
-      tr.shellVolumeFraction * 20 + (1 - tr.shellVolumeFraction) * 4, 10);
+      tr.shellVolumeFraction! * 20 + (1 - tr.shellVolumeFraction!) * 4, 10);
   });
 
   it("average material is the Vf-weighted blend", () => {
     const tr = buildTwoRegionField(mesh, faces, SHELL, CORE, 1.35);
-    const Vf = tr.shellVolumeFraction;
+    const Vf = tr.shellVolumeFraction!;
     expect(tr.averageMaterial.E_xy).toBeCloseTo(Vf * SHELL.E_xy + (1 - Vf) * CORE.E_xy, 8);
     expect(tr.averageMaterial.yieldXY).toBeCloseTo(Vf * SHELL.yieldXY + (1 - Vf) * CORE.yieldXY, 8);
     expect(tr.averageMaterial.massRho).toBeCloseTo(Vf * SHELL.massRho! + (1 - Vf) * CORE.massRho!, 8);
@@ -353,7 +353,7 @@ describe("anchor policy: implied average vs legacy global multiplier", () => {
     const m = generateBoxMeshC3D4(0, 0, 0, bx, by, bz, nx, ny, nz);
     const f = extractSurfaceFaces(m);
     const tr = buildTwoRegionField(m, f, SHELL, CORE, T_WALL);
-    const Vf = tr.shellVolumeFraction;
+    const Vf = tr.shellVolumeFraction!;
     // Orientation-free on both sides (audit A4): flat carries no fallback
     // scalar, so implied and global compare pure section/lattice models.
     const coreLattice = coreStrengthMultiplier(INFILL, PATTERN);
