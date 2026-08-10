@@ -26,6 +26,15 @@ import * as path                 from "path";
 import { fileURLToPath as ftu }  from "url";
 import type { TetMesh }          from "./solver/types.js";
 import type { MeshTier }         from "./tetgen.js";
+import {
+  MESH_TARGET_ELEMENTS,
+  MESH_MAX_BUDGET_OVERSHOOT,
+  MIN_ELEMENTS_THROUGH_THICKNESS,
+  regularTetEdgeForCount,
+  regularTetCountForEdge,
+  bboxMetrics,
+  bboxIsUsable,
+} from "./meshSizing.js";
 import { verifyC3D10MidsideOrdering } from "./c3d10_ordering.js";
 
 const execFileAsync = promisify(execFile);
@@ -33,11 +42,13 @@ const execFileAsync = promisify(execFile);
 // ─── Tier sizing ──────────────────────────────────────────────────────────────
 
 /**
- * Element-count targets per tier, deliberately the same numbers as
- * `TET_TARGET_ELEMENTS` (tetgen.ts) so a tier means the same resolution BUDGET
- * whichever file format the part arrived in (issue #295).
+ * Element-count targets per tier. Re-exported from `meshSizing.ts`, which is
+ * the single definition both mesher paths size against, so a tier means the
+ * same resolution BUDGET whichever file format the part arrived in (issue
+ * #295). Kept under this name because the tests and callers that predate the
+ * shared module import it from here.
  */
-export const GMSH_TARGET_ELEMENTS = { coarse: 4_000, standard: 12_000, fine: 40_000 } as const;
+export const GMSH_TARGET_ELEMENTS = MESH_TARGET_ELEMENTS;
 
 /**
  * The historical absolute (millimetre) sizing per tier. Retained as an UPPER
@@ -52,55 +63,16 @@ export const GMSH_TIER_ABSOLUTE = {
 } as const;
 
 /**
- * Minimum elements across the part's SMALLEST bounding-box dimension.
- *
- * This is the floor the absolute sizing lacked. A plate meshed at a 2.0 mm
- * `clMax` carries one or two quadratic elements through a 3-4 mm wall, which is
- * under-resolved however many elements the part holds in total — and bending is
- * the dominant FTC bracket load case.
- *
- * MEASURED, not conventional. A 60x30x6 mm cantilever with a 1.35 mm wall band
- * (shell E_xy 2400 / core E_xy 600 MPa) was solved with the two-region field
- * active and against the homogenized average at the same resolution, sweeping
- * elements through the 6 mm thickness. The quantity that matters is how much of
- * the converged SANDWICH STIFFENING (26.1% at 8 elements through) each
- * resolution recovers:
- *
- *   1 through: 4% of the stiffening, tip deflection 29.0% off converged
- *   2 through: 57%, 13.1% off
- *   3 through: 83%,  4.75% off
- *   4 through: 100%, 0.84% off
- *   8 through: 100%, converged (reference)
- *
- * Four is where the structural effect is fully recovered. Three — the
- * conventional textbook figure, and what this constant was first set to —
- * leaves 17% of it behind. At ONE element through thickness the two-region
- * model returns essentially the homogenized answer while reporting itself
- * active, which is worse than not offering it.
- *
- * Note the wall-band CLASSIFICATION converges far faster than the structural
- * response: the same fixture recovers the exact analytic shell volume fraction
- * to 3.2% at one element per 4.4 band widths and to 0.06% at h = 1.5 mm,
- * because `tetFractionBelowIso` integrates the level set INSIDE the element
- * (two-region invariant 2). Volume fraction is therefore the wrong thing to
- * size the mesh against; the through-thickness layering is the binding
- * constraint, and this constant is set from it.
- *
- * Confidence: MEDIUM. One geometry and one shell/core contrast — the threshold
- * could move with a much stiffer or much thinner skin. It is a floor rather
- * than a target, so erring high is the safe direction.
+ * Minimum elements across the part's SMALLEST bounding-box dimension, and the
+ * ceiling on how far past the tier's element target the sizing may land before
+ * it is pulled back. Both are re-exported from `meshSizing.ts` — they are
+ * properties of what a TIER promises, not of the Gmsh path, and they were
+ * defined here only because the Gmsh path is where the floor first landed
+ * (issue #295). The measurement behind the floor is documented at its
+ * definition.
  */
-export const MIN_ELEMENTS_THROUGH_THICKNESS = 4;
-
-/**
- * How far past the tier's element target the sizing may land before it is
- * pulled back. The floors above can demand more elements than the budget wants
- * — a large thin plate is the standard conflict — and resolving the section
- * matters more than hitting a count, so the allowance is deliberately loose.
- * It exists to stop a pathological geometry from building a mesh the solver
- * cannot finish, not to enforce the target.
- */
-export const GMSH_MAX_BUDGET_OVERSHOOT = 4;
+export { MIN_ELEMENTS_THROUGH_THICKNESS } from "./meshSizing.js";
+export const GMSH_MAX_BUDGET_OVERSHOOT = MESH_MAX_BUDGET_OVERSHOOT;
 
 export interface GmshSizing {
   clMin:  number;
@@ -114,22 +86,6 @@ export interface GmshSizing {
   elementsThroughThickness: number;
   /** True when GMSH_MAX_BUDGET_OVERSHOOT pulled `clMax` back coarser. */
   budgetClamped: boolean;
-}
-
-/**
- * Edge length of a regular tetrahedron that fills `volume` with `count`
- * elements. Uses the same 6·√2 relation as `sizeFieldToVolFile`
- * (solver/adaptiveMesh.ts), so the two sizing paths describe the same geometry.
- *
- * Confidence: LOW as an absolute predictor. A real Gmsh mesh is not regular
- * tets and typically emits somewhat MORE elements than this for a given
- * `clmax`, exactly as `VOLUME_CAP_SCALE` (adaptiveMesh.ts, calibrated to 13 on
- * one geometry) exists to absorb on the TetGen side. Nothing downstream trusts
- * the predicted count as truth — it drives a log line and the overshoot clamp,
- * and the clamp is deliberately loose for that reason.
- */
-function regularTetEdgeForCount(volume: number, count: number): number {
-  return Math.cbrt((6 * Math.SQRT2 * volume) / count);
 }
 
 /**
@@ -159,15 +115,11 @@ export function gmshSizingForTier(
   const abs    = GMSH_TIER_ABSOLUTE[tier] ?? GMSH_TIER_ABSOLUTE.standard;
   const target = GMSH_TARGET_ELEMENTS[tier] ?? GMSH_TARGET_ELEMENTS.standard;
 
-  const dx = bounds.maxX - bounds.minX;
-  const dy = bounds.maxY - bounds.minY;
-  const dz = bounds.maxZ - bounds.minZ;
-  const bboxVol = dx * dy * dz;
-  const minDim  = Math.min(dx, dy, dz);
+  const { volume: bboxVol, minDim } = bboxMetrics(bounds);
 
   // A degenerate or unusable bbox carries no scale information; keep the
   // historical absolute sizing rather than inventing one from a bad number.
-  if (!(bboxVol > 0) || !Number.isFinite(bboxVol) || !(minDim > 0)) {
+  if (!bboxIsUsable(bounds)) {
     return {
       clMin: abs.clMin, clMax: abs.clMax, clCurv: abs.clCurv,
       predictedElements: NaN, targetElements: target,
@@ -184,7 +136,7 @@ export function gmshSizingForTier(
   // finish. Pull back to the overshoot ceiling and say so.
   let budgetClamped = false;
   const ceiling = target * GMSH_MAX_BUDGET_OVERSHOOT;
-  if (bboxVol / (Math.pow(clMax, 3) / (6 * Math.SQRT2)) > ceiling) {
+  if (regularTetCountForEdge(bboxVol, clMax) > ceiling) {
     clMax = regularTetEdgeForCount(bboxVol, ceiling);
     budgetClamped = true;
   }
@@ -196,7 +148,7 @@ export function gmshSizingForTier(
     clMin,
     clMax,
     clCurv: abs.clCurv,
-    predictedElements: bboxVol / (Math.pow(clMax, 3) / (6 * Math.SQRT2)),
+    predictedElements: regularTetCountForEdge(bboxVol, clMax),
     targetElements: target,
     elementsThroughThickness: minDim / clMax,
     budgetClamped,

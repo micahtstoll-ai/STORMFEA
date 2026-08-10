@@ -46,6 +46,17 @@ import { verifyC3D10MidsideOrdering }         from "./c3d10_ordering.js";
 import { extractSurfaceFaces }                from "./solver/meshgen.js";
 import { surfaceSnapTolerance }               from "./solver/clip.js";
 import {
+  MESH_TARGET_ELEMENTS,
+  MESH_MAX_BUDGET_OVERSHOOT,
+  MIN_ELEMENTS_THROUGH_THICKNESS,
+  regularTetVolumeForEdge,
+  regularTetEdgeForCount,
+  bboxMetrics,
+  bboxIsUsable,
+  type MeshBounds,
+  type MeshTier as MeshTierT,
+} from "./meshSizing.js";
+import {
   sizeFieldToVolFile, meshToNodeFile, meshToEleFile, extractCornerBackground, type SizeField,
 } from "./solver/adaptiveMesh.js";
 
@@ -175,9 +186,9 @@ export function weldVertices(stlPositions: Float32Array, triangleCount: number):
  * standard 120000/12000 = 10 mm³, coarse /4000 = 30 mm³, fine /40000 = 3 mm³.
  * The tier RATIOS (30:10:3) are preserved for any reference size.
  */
-const TET_TARGET_ELEMENTS = { coarse: 4_000, standard: 12_000, fine: 40_000 } as const;
+const TET_TARGET_ELEMENTS = MESH_TARGET_ELEMENTS;
 
-export type MeshTier = keyof typeof TET_TARGET_ELEMENTS;
+export type { MeshTier } from "./meshSizing.js";
 
 /**
  * Scale-relative TetGen max-element volume (-a switch) for a bounding-box volume
@@ -186,9 +197,103 @@ export type MeshTier = keyof typeof TET_TARGET_ELEMENTS;
  * usable positive bound. No millimetre assumption — the result is in the model's
  * own units³, exactly what TetGen's -a expects (issue #168).
  */
-export function tetMaxVolumeForTier(bboxVolume: number, tier: MeshTier): number {
+export function tetMaxVolumeForTier(bboxVolume: number, tier: MeshTierT): number {
   const target = TET_TARGET_ELEMENTS[tier] ?? TET_TARGET_ELEMENTS.standard;
-  return Math.max(bboxVolume / target, 1e-12);
+  const v = bboxVolume / target;
+  // `Math.max(NaN, 1e-12)` is NaN, so the floor below has to test for finiteness
+  // rather than lean on max() — otherwise a non-finite bbox (a malformed STL
+  // reaches this before any geometry check does) returns a NaN `-a` switch and
+  // the docblock's promise of "a usable positive bound" is false exactly where
+  // it is needed. `meshWithTetGen` catches this again at the call site; this is
+  // the definition being true on its own terms.
+  return Number.isFinite(v) && v > 1e-12 ? v : 1e-12;
+}
+
+export interface TetSizing {
+  /** The TetGen `-a` bound, in the model's own units³. */
+  maxVolume: number;
+  /** Regular-tet estimate of the element count this bound implies. */
+  predictedElements: number;
+  /** The tier's target, for an achieved-vs-target readout. */
+  targetElements: number;
+  /** Elements across the smallest bbox dimension at `maxVolume`. */
+  elementsThroughThickness: number;
+  /** True when the through-thickness floor, not the count budget, is binding. */
+  thicknessFloorBinding: boolean;
+  /** True when MESH_MAX_BUDGET_OVERSHOOT pulled `maxVolume` back coarser. */
+  budgetClamped: boolean;
+}
+
+/**
+ * Resolve a mesh tier to a TetGen `-a` bound for a specific part (issue #295).
+ *
+ * `tetMaxVolumeForTier` above gives this path its COUNT budget and has since
+ * issue #168 — that half was never the gap. What it lacks is a FLOOR: a count
+ * target is a budget for the whole part, so a large thin plate can spend its
+ * 40,000 elements on plan area and carry two of them through a 4 mm wall.
+ * Worked in the numbers that matter here: a 60x30x6 mm plate at the standard
+ * tier gets 10,800/12,000 = 0.9 units³ per element, a 1.97 mm regular-tet edge,
+ * and 3.0 elements through the 6 mm section — under the floor of 4, on the
+ * geometry class this tool exists to analyse. The fine tier reaches 4.6 and is
+ * fine; the default tier was not.
+ *
+ * `maxVolume` is therefore the SMALLER of the count budget and the volume of a
+ * regular tet at the through-thickness edge length, so this can only refine
+ * relative to the historical value (except via the overshoot clamp, which
+ * reports itself). That mirrors `gmshSizingForTier` (gmsh_mesh.ts) exactly,
+ * against the same constants, which is the point of issue #295 — the two
+ * meshers now make the same promise and break it in the same reported way.
+ *
+ * The bound is a REQUEST, not a guarantee: the switch-set fallback chain in
+ * `meshWithTetGen` relaxes `-a` and can end at `-pQ` with no volume constraint
+ * at all. `achievedResolution` (meshSizing.ts) is what reports the mesh that
+ * actually came back.
+ *
+ * Pure and mesher-free, so it is unit-testable without a TetGen binary.
+ */
+export function tetSizingForTier(bounds: MeshBounds, tier: MeshTierT): TetSizing {
+  const target = TET_TARGET_ELEMENTS[tier] ?? TET_TARGET_ELEMENTS.standard;
+  const { volume: bboxVol, minDim } = bboxMetrics(bounds);
+
+  // A degenerate or unusable bbox carries no scale information; fall back to
+  // the count budget alone rather than inventing a size from a bad number.
+  if (!bboxIsUsable(bounds)) {
+    return {
+      maxVolume: tetMaxVolumeForTier(bboxVol, tier),
+      predictedElements: NaN,
+      targetElements: target,
+      elementsThroughThickness: NaN,
+      thicknessFloorBinding: false,
+      budgetClamped: false,
+    };
+  }
+
+  const vBudget = bboxVol / target;
+  const vThick  = regularTetVolumeForEdge(minDim / MIN_ELEMENTS_THROUGH_THICKNESS);
+
+  let maxVolume = Math.min(vBudget, vThick);
+  const thicknessFloorBinding = vThick < vBudget;
+
+  // Pathology guard: the floor can demand a mesh the solver cannot finish.
+  // Pull back to the overshoot ceiling and say so.
+  let budgetClamped = false;
+  const ceiling = target * MESH_MAX_BUDGET_OVERSHOOT;
+  if (bboxVol / maxVolume > ceiling) {
+    maxVolume = bboxVol / ceiling;
+    budgetClamped = true;
+  }
+
+  // Same finiteness floor as tetMaxVolumeForTier — `-a` must be a real number.
+  maxVolume = Number.isFinite(maxVolume) && maxVolume > 1e-12 ? maxVolume : 1e-12;
+
+  return {
+    maxVolume,
+    predictedElements: bboxVol / maxVolume,
+    targetElements: target,
+    elementsThroughThickness: minDim / regularTetEdgeForCount(maxVolume, 1),
+    thicknessFloorBinding,
+    budgetClamped,
+  };
 }
 
 // ─── Write OFF file ───────────────────────────────────────────────────────────

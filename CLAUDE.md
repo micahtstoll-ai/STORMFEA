@@ -88,9 +88,11 @@ description of it — check these before assuming a gap or a bug:
   [GitHub Actions Workflows](#github-actions-workflows)).
 - `docs/METHODOLOGY.md` — the physics and math behind the solver.
 - `docs/layer-model-audit.md`, `docs/bc-singularity-exclusion.md`,
-  `docs/load-distribution-default.md` — "landed decision" writeups: deliberate,
-  non-obvious behavior changes with the measurements that justified them
-  (e.g. the default load distribution is `contact_patch`, not `uniform`). If
+  `docs/load-distribution-default.md`, `docs/mesh-sizing.md` — "landed
+  decision" writeups: deliberate, non-obvious behavior changes with the
+  measurements that justified them (e.g. the default load distribution is
+  `contact_patch`, not `uniform`; a mesh tier promises an element count AND a
+  floor of 4 elements across the thinnest section, on both mesher paths). If
   something looks wrong, check whether one of these already explains it
   before treating it as a bug.
 - `DESIGN.md` — the frontend design system in full (see

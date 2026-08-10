@@ -91,11 +91,17 @@ import { flagMergedHoleWarnings }           from "./holes.js";
 import type { HoleFeature }                 from "./holes.js";
 import {
   meshWithTetGen, meshWithTetGenSizing, TetGenNotFoundError, probeTetGen,
-  tetMaxVolumeForTier,
+  tetSizingForTier,
 } from "./tetgen.js";
 import { meshStepWithGmsh, gmshSizingForTier,
-         GMSH_MAX_BUDGET_OVERSHOOT,
-         MIN_ELEMENTS_THROUGH_THICKNESS }   from "./gmsh_mesh.js";
+         GMSH_MAX_BUDGET_OVERSHOOT }        from "./gmsh_mesh.js";
+import {
+  MIN_ELEMENTS_THROUGH_THICKNESS,
+  MESH_MAX_BUDGET_OVERSHOOT,
+  achievedResolution,
+  type MeshResolutionReport,
+} from "./meshSizing.js";
+import { tetCornerVolume }                  from "./solver/adaptiveMesh.js";
 import { C3D10OrderingError }               from "./c3d10_ordering.js";
 import {
   computeFingerprint, computeValidationCoverage,
@@ -3525,6 +3531,17 @@ export interface AnalysisResult {
    * was replaced by a bounding box. Null on every normal run.
    */
   meshOrderDowngrade:     MeshOrderDowngrade | null;
+  /**
+   * What the selected mesh tier actually DELIVERED, measured on the returned
+   * mesh (issue #295). A tier promises an element count and a floor of
+   * `MIN_ELEMENTS_THROUGH_THICKNESS` elements across the thinnest section;
+   * both meshers treat that as a request rather than a guarantee, so this is
+   * how a shortfall becomes visible instead of silent. `warning` is non-null
+   * only when the section is under-resolved or the count fell below half the
+   * target. Null on the box fallback (where `meshFallback` is the disclosure
+   * that matters) and on the adaptive path's pre-built meshes.
+   */
+  meshResolution:         MeshResolutionReport | null;
   solverMs:               number;
   nodeCount:              number;
   elementCount:           number;
@@ -5021,11 +5038,26 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       const tetTier = (req.analysis.meshQuality === "fine" ? "fine"
                      : req.analysis.meshQuality === "coarse" ? "coarse"
                      : "standard") as import("./tetgen.js").MeshTier;
-      const bboxVol = (req.bounds.maxX - req.bounds.minX)
-                    * (req.bounds.maxY - req.bounds.minY)
-                    * (req.bounds.maxZ - req.bounds.minZ);
-      const tetMaxVol = tetMaxVolumeForTier(bboxVol, tetTier);
-      console.log(`[analysis] meshing with TetGen (order=${tetOrder}, maxVol=${tetMaxVol.toPrecision(4)} units³, quality=${req.analysis.meshQuality})...`);
+      // Sized against the tier's element COUNT (issue #168) and floored on the
+      // thinnest section (issue #295) — the count budget alone let a large thin
+      // plate spend its elements on plan area and carry two through the wall.
+      const tetSizing = tetSizingForTier(req.bounds, tetTier);
+      const tetMaxVol = tetSizing.maxVolume;
+      console.log(
+        `[analysis] meshing with TetGen (order=${tetOrder}, maxVol=${tetMaxVol.toPrecision(4)} units³, ` +
+        `quality=${req.analysis.meshQuality}); predicted ~${Math.round(tetSizing.predictedElements)} elements ` +
+        `against a ${tetSizing.targetElements} target, ` +
+        `${tetSizing.elementsThroughThickness.toFixed(1)} across the thinnest section` +
+        `${tetSizing.thicknessFloorBinding ? " (through-thickness floor binding)" : ""}...`,
+      );
+      if (tetSizing.budgetClamped) {
+        console.warn(
+          `[analysis] TetGen sizing hit the ${MESH_MAX_BUDGET_OVERSHOOT}x element-budget ceiling; ` +
+          `maxVol was pushed back to ${tetMaxVol.toPrecision(4)} units³ and the thinnest section now ` +
+          `carries ${tetSizing.elementsThroughThickness.toFixed(1)} elements ` +
+          `(target ${MIN_ELEMENTS_THROUGH_THICKNESS}). Results in bending may be under-resolved.`,
+        );
+      }
       const tetResult = await meshWithGuardRetry(
         tetOrder,
         order => meshWithTetGen(req.positions, req.triangleCount, order, tetMaxVol),
@@ -5066,6 +5098,33 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       surfaceFaces = extractSurfaceFaces(mesh);
       surfaceToNode = new Int32Array(req.triangleCount * 3);
       for (let i = 0; i < surfaceToNode.length; i++) surfaceToNode[i] = i % mesh.nodeCount;
+    }
+  }
+
+  // ── Achieved vs target resolution (issue #295) ───────────────────────────
+  // Measured on the mesh that came back, not predicted from the flags that
+  // were sent: both meshers treat a size cap as a request. TetGen's switch-set
+  // fallback chain relaxes `-a` and can end at `-pQ` with no volume constraint
+  // at all, and Gmsh's clmax yields where a curvature constraint disagrees, so
+  // a readout built from the flags would report the mesh that is not in doubt.
+  // Skipped on the box fallback, where the geometry itself was replaced and
+  // `meshFallback` is the disclosure that matters.
+  let meshResolution: MeshResolutionReport | null = null;
+  if (!meshFallback && !req._prebuiltMesh) {
+    let meshedVolume = 0;
+    for (let e = 0; e < mesh.elementCount; e++) meshedVolume += tetCornerVolume(mesh, e);
+    const resTier = (req.analysis.meshQuality === "fine" ? "fine"
+                   : req.analysis.meshQuality === "coarse" ? "coarse"
+                   : "standard") as import("./tetgen.js").MeshTier;
+    meshResolution = achievedResolution(req.bounds, resTier, mesh.elementCount, meshedVolume);
+    if (meshResolution?.warning) {
+      console.warn(
+        `[analysis] mesh resolution: ${meshResolution.achievedElements} elements against a ` +
+        `${meshResolution.targetElements} ${resTier} target ` +
+        `(${meshResolution.budgetRatio.toFixed(2)}x), ` +
+        `${meshResolution.elementsThroughThickness.toFixed(1)} across the thinnest section. ` +
+        meshResolution.warning,
+      );
     }
   }
 
@@ -7376,6 +7435,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     meshFallback,
     unitsWarning,
     meshOrderDowngrade,
+    meshResolution,
     safetyFactorAvailable: !meshFallback,
     solverMs,
     nodeCount:          mesh.nodeCount,
