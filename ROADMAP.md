@@ -720,16 +720,25 @@ the solver-accuracy campaign; adaptive mesh refinement (#149) shipped in PR #246
   above). The snap tolerance the weld must share is now one exported
   definition, `surfaceSnapTolerance` in `server/solver/clip.ts`, which
   `weldToleranceForDiag` delegates to rather than repeating the literal.
-  STILL TO DO: meshing the fundamental domain, then mirroring and welding the
-  result. The weld at the symmetry plane has to be exact or the seam becomes a
-  fresh artifact source — the same class of defect as the vertex-welding bug in
-  CLAUDE.md's heatmap section. `ClipResult.capFaceStart` exists for that step:
-  the cap is the seam, so both halves' cap faces must be dropped before
-  joining, or the seam becomes a doubled internal wall. The round trip is
-  already exercised end to end in `surface-clip.test.ts` (clip the plate,
-  mirror, weld through the production `weldVertices`, and the original volume
-  comes back watertight), so what remains is the MESHING half, not the
-  geometry
+  THE MESHING HALF HAS LANDED TOO (`mirrorTetMesh`, `server/solver/mirrorMesh.js`,
+  PR #307), so #296 itself is done: measured 0.07% -> 99.85% element-centroid
+  pairing end to end through TetGen, and on a controlled comparison where mesh
+  connectivity is the only variable, SPR nodal von Mises mirror asymmetry
+  3.909% -> 0.0000%. Seam nodes are SNAPPED onto the plane before mirroring, so
+  a node's image is bit-identical to itself and maps back to the same index —
+  the exactness the weld needed. It is OPT-IN (`analysis.symmetryMesh`), it
+  costs an extra mesh (detection needs a mesh to run on), and
+  `summary.symmetryMesh` is reported on the API but not yet surfaced in the
+  client.
+  AND THE LOAD HAD TO BE FIXED BEFORE ANY OF IT WAS VISIBLE (issue #305): the
+  DEFAULT `contact_patch` distribution chose its surface from the load
+  direction, so a push landed on the far face of the part as a one-triangle
+  point load — 5.04% asymmetry on a mesh with 100% centroid pairing. A
+  symmetric mesh alone therefore did NOT deliver a symmetric picture for
+  force-loaded parts; it does now, measured 0.0000% on the default path.
+  Two follow-ups, both open: #309 (surface `summary.symmetryMesh` in the client
+  and decide whether to flip it on by default) and #308 (a contact patch placed
+  on a sharp EDGE is 3x less mesh-stable than one on a flat face)
 - **Anisotropic (honeycomb) DFA extension** — the shipped core yield criterion
   is the isotropic-foam form. Extending pressure sensitivity per-axis would
   match the per-axis stiffness and strength laws the core already uses;

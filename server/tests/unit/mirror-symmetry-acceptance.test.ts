@@ -19,13 +19,18 @@
  * revision of this file risked, and why the counts are in the test rather than
  * in a comment.
  *
- * ── The load has to be symmetric, and that is not automatic ──────────────────
- * These use `loadDistribution: "uniform"`. The DEFAULT `contact_patch` (#271)
- * injects its own asymmetry: measured on the perfectly symmetric mirrored mesh
- * below, with the load placed exactly ON the symmetry plane, it produces 5.04%
- * SPR asymmetry where uniform produces 0.0000%. That is a defect in the load
- * distribution, not in the mesh, and it is tracked separately — but it means a
- * symmetry measurement using the default load would be measuring the load.
+ * ── The load has to be symmetric, and that was not automatic ─────────────────
+ * These use `loadDistribution: "uniform"`. When they were written the DEFAULT
+ * `contact_patch` (#271) injected its own asymmetry — 5.04% on this exact
+ * mirrored mesh with the load placed ON the symmetry plane, against 0.0000%
+ * for uniform — so a symmetry measurement using the default would have been
+ * measuring the load rather than the mesh.
+ *
+ * That was #305, and it is FIXED: the patch was selecting its surface from the
+ * load direction, so a push landed on the far face as a one-triangle point
+ * load. `uniform` stays pinned here anyway, to keep the variable under test
+ * confined to mesh connectivity; the default's own symmetry is now measured in
+ * `contact-patch-surface.test.ts`.
  */
 import { describe, it, expect } from "vitest";
 import { runAnalysis, type AnalysisRequest } from "../../analysis.js";
