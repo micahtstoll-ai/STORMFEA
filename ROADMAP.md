@@ -585,6 +585,48 @@ paths now run a runtime midside self-check instead of trusting the binary (#167)
       One-sided, so a consumer gating on it errs toward declaring a mesh
       under-resolved — which is the direction this gate wants
 
+### Bounded distance-field grid, and a corrected coverage claim (issue #298 — shipped)
+- [x] `computeNodeSurfaceDistancesAndNormals` sized its triangle-bucket grid as
+      `CELL = max(dMax, 1e-6)` and inserted every boundary triangle into every
+      cell its AABB spanned, so a `dMax` far below element scale made one
+      triangle span millions of cells and the bucket `Map` threw
+      `RangeError: Map maximum size exceeded` — 34 s of thrash then an
+      OOM-shaped crash, on a 56-triangle box. `computeNodeBandPenetration`
+      carried a verbatim copy of the same grid and the same hazard; the issue
+      named only the first
+- [x] Filed as a LATENT hazard and it really was one: both callers derive
+      `dMax = band + maxCornerEdge(mesh)`, always at least one element edge. The
+      fix is worth having anyway because the constraint was invisible from the
+      call sites — nothing in either signature said `dMax` had to be on the
+      order of the element size, so a future caller wanting a tight search
+      radius met a crash rather than a slow path
+- [x] The grid is an ACCELERATION STRUCTURE, not part of the answer, so the
+      guard COARSENS rather than rejecting: `chooseGridCellSize` doubles the
+      cell until the insertions it implies fit a budget. Raising the cell only
+      widens the candidate set a query examines, and `cell >= dMax` still holds,
+      which is what keeps the 27-cell one-ring search complete. Locked by
+      asserting the gridded output equals a no-grid brute-force reference
+      EXACTLY (`toBe`, not `closeTo`) at every cell size tested
+- [x] The budget is `64` cells per triangle, a limit on WASTE rather than on
+      memory: cells finer than a triangle buy no selectivity, they just copy the
+      same triangle into more buckets. A first attempt used a flat 2M-insertion
+      cap, which is correct but disproportionate — it left the reported case at
+      518 ms for 56 triangles. Scaling with the triangle count took it to 5 ms
+- [x] The other half of the tests is the one no result can show: that the guard
+      does NOT fire at the `dMax` production passes. Coarsening every real
+      analysis would be slower, still correct, and invisible to every other
+      assertion in the suite, so `chooseGridCellSize` is exported purely so a
+      test can pin `cell === dMax` on production-shaped inputs
+- [x] A claim in `distance-boundary-seed.test.ts` was corrected on the way past.
+      It said the crash was what blocked a test isolating the SEED loop from the
+      point-triangle sweep, and that the curved-bore case proved "the corners
+      were seeded, not searched." No test can separate them, for a reason
+      unrelated to #298: a boundary corner is a VERTEX of a boundary triangle,
+      so it sits at distance 0 — inside any positive radius — and Ericson's
+      kernel returns bit-exact 0 in the vertex region. Measured by deleting the
+      seed loop outright: every test in that file still passed. The seed is an
+      optimization; invariant #4 holds on both paths
+
 ---
 
 ## IN PROGRESS / NEXT
