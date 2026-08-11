@@ -223,12 +223,40 @@ enforcing consistency — it relies on people (and agents) following
 
 **Key Insight:** The server's spatial grid (`nearestNodeStress` in `analysis.ts`) uses `Math.floor((x - xMin) / cellSize)`, so the client's vertex welding should match this approach for consistency and to avoid edge-case artifacts.
 
+### Known Issue: Weld Grouped by Cell Occupancy (FIXED, issue #292)
+**Problem:** The grid was an accelerator that had quietly become the decision.
+A vertex took the group of the first OCCUPIED cell in the 27-cell
+neighborhood with no distance test, then wrote that borrowed group back under
+its own cell key. So: vertices up to ~7x `WELD_EPS` apart welded (opposite
+corners of the neighborhood, ~0.069 mm), a run of adjacent occupied cells
+chained one group arbitrarily far across the mesh, and the partition depended
+on vertex ORDER rather than on geometry. Latent on typical meshes (vertex
+spacing ~mm vs a 0.02 mm cell), reachable on slivers and fine local
+refinement.
+
+**Solution:** grouping moved to `weldCoincidentVertices` (`client/index.html`).
+The hash now holds, per cell, the group ids whose REPRESENTATIVE lives in that
+cell; a vertex joins the NEAREST representative within `WELD_EPS` (ties to the
+lowest group id) or starts its own group registered under its own cell. Cells
+stay `2*WELD_EPS` wide so any representative within tolerance is still in the
+27-cell neighborhood, and the scan visits the vertex's own cell first — an
+exact STL duplicate resolves in one lookup, which makes the distance-tested
+version measurably FASTER than the occupancy one on a real display mesh, not
+slower.
+
 ### Vertex Welding Requirements (Invariants)
 When modifying heatmap or mesh coloring code:
 1. **Every vertex in display mesh MUST receive a stress value** — verify `vertexStress.length === triangleCount * 3`
 2. **Vertices at same location (distance < 1 micron) MUST get identical stress** — weld before color assignment
-3. **Use consistent grid-cell indexing** — match server's `floor((x - min) / cell)` approach, never `round(x / cell)`
-4. **Test on edge cases:** negative coordinates, mesh boundaries, seams between large and small triangles
+3. **And the converse: vertices NOT at the same location must not be forced to
+   share one** (issue #292) — every member of a weld group is within
+   `WELD_EPS` of that group's representative, so a group can never be wider
+   than `2*WELD_EPS` and groups cannot chain. Locked by test group [U] in
+   `scripts/test_client_logic.mjs`, which also pins order-independence and
+   keeps the pre-fix occupancy algorithm around as the regression guard
+   showing those tests are a real constraint.
+4. **Use consistent grid-cell indexing** — match server's `floor((x - min) / cell)` approach, never `round(x / cell)`
+5. **Test on edge cases:** negative coordinates, mesh boundaries, seams between large and small triangles
 
 ### Display Color Space (Invariants)
 The model's colors ARE the reading, so the pixel the GPU emits must equal the
@@ -287,6 +315,7 @@ hue. Shading reads the part's form; it cannot misreport a number.
 ### Code Review Checklist (Stress Rendering Changes)
 Before submitting a PR that modifies mesh visualization or stress heatmap:
 - [ ] Are coincident vertices being welded BEFORE color assignment? (weld tolerance: 0.01mm)
+- [ ] Does the weld still DISTANCE-TEST candidates against the group representative, rather than accepting whatever occupies a neighboring cell (issue #292)?
 - [ ] Is shading mode explicitly set to Gouraud (`flatShading: false`)? 
 - [ ] Does every write to a geometry `color` attribute use a `*Linear` color helper, and every browser-painted swatch the sRGB one?
 - [ ] Do the light intensities still sum to 1.0, with no tinted lights?
@@ -300,7 +329,9 @@ Before submitting a PR that modifies mesh visualization or stress heatmap:
 
 ### References
 Search by symbol, not line number — these move:
-- Vertex Welding: `client/index.html`, function `computeSmoothedStressColors`
+- Vertex Welding: `client/index.html`, function `weldCoincidentVertices` (the
+  grouping itself), consumed by `computeSmoothedStressColors` (which owns
+  `WELD_EPS` and the `?debugWeld=true` verification pass)
 - Color space: `client/index.html`, `srgbToLinear` / `stressColorLinear` /
   `divergingColorLinear` / `makeStressMaterial`; light rig in `initThree`
 - Server Spatial Grid: `server/analysis.ts`, function `nearestNodeStress`
