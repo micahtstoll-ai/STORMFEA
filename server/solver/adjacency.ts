@@ -103,6 +103,80 @@ export function buildEdgeMidsideMap(mesh: TetMesh): Map<number, number> | null {
   return map;
 }
 
+/** CSR-style triangle → neighbouring-triangle adjacency over a surface. */
+export interface TriangleAdjacency {
+  /** ptr[t] .. ptr[t+1] indexes `list` for triangle t. Length triCount+1. */
+  ptr:  Int32Array;
+  /** Neighbouring triangle ids, grouped by triangle. */
+  list: Int32Array;
+}
+
+/**
+ * Edge adjacency over a boundary-triangle list — which triangles share an edge
+ * with which.
+ *
+ * This is what makes "the same surface as this point" answerable without a
+ * geodesic: a patch grown by EDGE ADJACENCY from a seed triangle cannot cross
+ * to the far side of the material, because the far side is not edge-connected
+ * to the near side except around the part's rim. A purely Euclidean ball has no
+ * such property — it reaches straight through a thin part (`load.ts`,
+ * `assembleContactPatchLoad`).
+ *
+ * Keyed on the two CORNER node indices of each edge (lo·nodeCount + hi, the same
+ * scheme as `buildEdgeMidsideMap`), so it works for C3D4 and C3D10 alike — the
+ * boundary-triangle list carries corners only in both cases. A non-manifold edge
+ * (more than two triangles) links all of them; a degenerate triangle with a
+ * repeated corner simply contributes a self-edge, which is filtered out.
+ */
+export function buildSurfaceTriangleAdjacency(
+  faces:     Int32Array,
+  nodeCount: number,
+): TriangleAdjacency {
+  const triCount = Math.floor(faces.length / 3);
+  const key = (p: number, q: number): number => (p < q ? p * nodeCount + q : q * nodeCount + p);
+
+  // edge → the DISTINCT triangles on it. Distinct matters: a triangle with a
+  // repeated corner, (4,4,5), walks the same edge twice, and listing it twice
+  // makes the counting pass reserve two slots that the fill pass then skips as
+  // self-pairs — leaving zeros in `list`, i.e. a phantom neighbour numbered 0.
+  // Found by the degenerate-input case in `contact-patch-surface.test.ts`, not
+  // by reading this loop.
+  const edgeTris = new Map<number, number[]>();
+  for (let t = 0; t < triCount; t++) {
+    const a = faces[t*3] ?? 0, b = faces[t*3+1] ?? 0, c = faces[t*3+2] ?? 0;
+    for (const [p, q] of [[a, b], [b, c], [c, a]] as const) {
+      if (p === q) continue;                      // degenerate edge
+      const k = key(p, q);
+      const l = edgeTris.get(k);
+      if (!l) edgeTris.set(k, [t]);
+      else if (!l.includes(t)) l.push(t);
+    }
+  }
+
+  const ptr = new Int32Array(triCount + 1);
+  for (const tris of edgeTris.values()) {
+    if (tris.length < 2) continue;
+    for (const t of tris) ptr[t + 1] = (ptr[t + 1] ?? 0) + tris.length - 1;
+  }
+  for (let t = 0; t < triCount; t++) ptr[t + 1] = (ptr[t + 1] ?? 0) + (ptr[t] ?? 0);
+
+  const list   = new Int32Array(ptr[triCount] ?? 0);
+  const cursor = Int32Array.from(ptr.subarray(0, triCount));
+  for (const tris of edgeTris.values()) {
+    if (tris.length < 2) continue;
+    for (const t of tris) {
+      for (const u of tris) {
+        if (u === t) continue;
+        const at = cursor[t] ?? 0;
+        list[at] = u;
+        cursor[t] = at + 1;
+      }
+    }
+  }
+
+  return { ptr, list };
+}
+
 /**
  * Build node → element adjacency as plain arrays (number[][]).
  * Convenience form for consumers that iterate patches with for..of

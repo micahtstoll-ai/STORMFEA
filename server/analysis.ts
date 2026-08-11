@@ -1698,7 +1698,12 @@ export interface ForceSpec {
    *   'contact_patch'  — a raised-cosine DISC centred on `position`, tapering
    *                      in every surface direction. The only mode that reads
    *                      `position` (issue #271), and the only one with no
-   *                      untapered patch edge anywhere.
+   *                      untapered patch edge anywhere. It acts on the surface
+   *                      `position` LIES ON, grown by edge adjacency, so
+   *                      `direction` selects no face and a push and a pull at
+   *                      the same point load the same patch with opposite sign
+   *                      (issue #305). The legacy modes are the other way
+   *                      round: they read `direction` and ignore `position`.
    * Absent → `DEFAULT_LOAD_DISTRIBUTION` ('contact_patch'). Ask for 'uniform'
    * explicitly to get the legacy cascade back, bit-identical.
    */
@@ -5670,13 +5675,15 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
           }
         }
         // The snap distance is the one number that says whether the load landed
-        // where the user put it. A large snap means the application point was
-        // not on a surface facing the load — worth seeing, not worth failing.
+        // where the user put it: the point's true distance from the surface
+        // (point-to-triangle, so it is not an alias for the element size). A
+        // large snap means the point is not on the part at all — worth seeing,
+        // not worth failing.
         const snapNote = patch.centreSnapMm > (patch.radiusMm || 1)
           ? ` — WARNING: the application point is ${patch.centreSnapMm.toFixed(2)}mm from the nearest ` +
-            `surface facing this load, further than the patch radius. The load was applied at the ` +
-            `nearest windward surface instead. Check the force direction against where it was placed.`
-          : ` (application point ${patch.centreSnapMm.toFixed(3)}mm from the nearest windward face)`;
+            `surface, further than the patch radius. The load was applied at the nearest surface ` +
+            `instead. Check where the force was placed.`
+          : ` (application point ${patch.centreSnapMm.toFixed(3)}mm from the surface)`;
         console.log(`[analysis] force ${f.magnitude}N in (${dx},${dy},${dz}): contact patch at ` +
           `(${f.position.join(",")}) radius=${patch.radiusMm.toFixed(3)}mm over ` +
           `${patch.loadedTriangles} triangles, ${applied} loaded nodes, ` +

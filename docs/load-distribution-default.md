@@ -14,7 +14,10 @@ modes; this makes the second one the default.
 
 `DEFAULT_LOAD_DISTRIBUTION = 'contact_patch'` (`server/analysis.ts`). An absent
 `loadDistribution` now means: apply the load over a tapered disc centred on
-`ForceSpec.position`, restricted to surfaces facing the load.
+`ForceSpec.position`, on the surface that point lies on. (It was originally
+"restricted to surfaces facing the load"; that rule was wrong and was replaced —
+see [The surface the patch acts on](#the-surface-the-patch-acts-on-issue-305)
+below.)
 
 It used to mean: find the extreme face along `direction`, take every node within
 a hard 0.5 mm of it, and split the load between them — ignoring `position`
@@ -103,6 +106,129 @@ semantics — absent means contact_patch, contact_patch respects `position`,
 `uniform` still reaches legacy and still ignores `position`, and the two give
 materially different answers — through `runAnalysis` on a prebuilt box mesh, so
 it needs no TetGen and never skips.
+
+## The surface the patch acts on (issue #305)
+
+The mode shipped selecting its surface from the load DIRECTION: only triangles
+with `n·d > 0` were eligible — the same test `selectPressureRegion('facing')`
+uses, and the rule every legacy mode follows. On this mode that is wrong, and
+wrong in the case it is named after.
+
+**A contact pushes.** At the surface it presses on, the force points INTO the
+material, so `n·d < 0` there. The eligibility test therefore excluded the
+surface under the user's arrow on every compressive load and left only the far
+side of the part — a full thickness away, outside the patch radius. The taper
+then selected nothing, and the "patch fell between the triangles" fallback put
+the ENTIRE force onto ONE triangle of the opposite face, chosen by index among
+tied candidates.
+
+So on the default path, a 120 N push placed on the top of a bar was applied as
+a point load on the bottom. Measured on the #296 bar (24 x 12 x 6, 384 C3D10
+elements, load at `[24, 6, 6]` in `-z`, default 2.75 mm radius):
+
+| | before | after |
+|---|---|---|
+| loaded triangles | **1** | 8 |
+| face loaded | z = 0 (the far one) | z = 6 and the end face — where the point is |
+| SPR nodal VM mirror asymmetry | **5.0441 %** | **0.0000 %** |
+| σ₁ / σ₃ asymmetry | 6.4493 % / 2.5654 % | 0.0000 % / 0.0000 % |
+| max displacement | 0.57431 mm | 0.55648 mm |
+
+The asymmetry was #305's filed symptom, and it is a symptom of the fallback,
+not of a rim tie-break as the issue guessed: a single triangle cannot be
+mirror-symmetric, so a symmetric part with the load exactly ON its symmetry
+plane came back asymmetric. The mesh was not at fault — 100 % of its element
+centroids have a mirror partner (#296).
+
+### The rule now
+
+The patch grows from the triangle nearest `position` by EDGE ADJACENCY,
+admitting neighbours while they are inside the radius. `direction` selects no
+face at all; it only has to be non-zero. A push and a pull at the same point
+produce the same patch with opposite sign, which is correct — whether a load is
+contact or a bolted pad in tension is the sign of the force, not a property of
+the surface.
+
+What still must not happen is the patch reaching THROUGH the part onto the far
+face: a 3-D ball centred on a thin part's top face contains most of its bottom
+face. Adjacency is what stops it, and it is worth saying why it is better than
+the obvious alternatives. A same-side-as-the-anchor normal test needs a
+tolerance, and no tolerance is right for both a thin plate (where the far face
+is a millimetre away) and a tight bore (where the near surface curves away from
+its own tangent plane by `r²/2R` across the patch). Adjacency needs none: the
+far face is not edge-connected to the near one except around the part's rim, so
+it is excluded exactly when the rim is further away than the radius and
+included exactly when the contact really does wrap an edge. Measured on the
+same bar with a 6 mm radius against a 6 mm thickness — a ball that reaches the
+far face outright — the patch stays entirely on the placed face.
+
+A normal-test would also have needed a tie-break to pick its anchor, and
+resolving a tie by triangle index is what produced this bug. The connected
+component of a disc is independent of traversal order, so nothing about the
+result depends on triangle numbering.
+
+Two smaller things came with it:
+
+- **The under-resolved fallback loads every TIED nearest triangle**, not the
+  first one found. It is still reached only when the radius is below the local
+  mesh size, but when it is reached it is now symmetric.
+- **`centreSnapMm` is a true point-to-triangle distance**, not point-to-centroid.
+  The old measure aliased the element size: a point sitting exactly on a coarse
+  face reported itself 2.24 mm off the surface against a 2.75 mm radius, and
+  `analysis.ts` warns the user when that number exceeds the radius. It now
+  reports 0.000 mm for a point on the surface. Same aliasing CLAUDE.md's
+  two-region invariant 4 exists to prevent in the distance field.
+
+### What it costs on the benchmark fixture, and why
+
+The Ø5-bore tube's own application point, `(6, 0, 5)`, is exactly ON the outer
+top rim — a sharp 90° edge. The old rule could not load the top annulus there
+(its normal is perpendicular to the load, so `n·d = 0` failed the test); the
+new one wraps onto it, because the point is on the edge and a contact at an
+edge really does bear on both faces. That moves this fixture's answer, and it
+is the largest single consequence of the change:
+
+| elements | old peak | new peak | old SF | new SF |
+|---|---|---|---|---|
+| 20 291 | 28.642 MPa | **37.473 MPa** | 1.75 | **1.33** |
+| 54 373 | 29.312 MPa | **42.566 MPa** | 1.71 | **1.17** |
+| ~79 000 | 29.257 MPa | **43.380 MPa** | 1.71 | **1.15** |
+| **spread** | 2.3 % | **15.7 %** | | |
+
+(The old rows are this document's own table above, re-listed for the three
+rungs measured here; the last new row is 79 710 elements against the old
+76 898 — TetGen's count is not reproducible to the element across runs.)
+
+Two honest readings, and both belong here:
+
+- **More conservative, which is the safe direction.** The load is now applied
+  where the arrow was placed, over both faces the contact touches, and the
+  governing peak lands inside the patch on the top annulus 0.4-0.7 mm from the
+  application point. A tool that reports an optimistic safety factor is the
+  dangerous failure; this moves the other way.
+- **Less mesh-stable on this fixture, and that is a genuine loss.** 3.6% spread
+  was #271's headline improvement. It is not lost in general: moving the SAME
+  load off the rim to mid-height on the outer wall — no edge, no wrap — the
+  peak goes 10.999 MPa at 20 291 elements to 11.503 MPa at 79 710, **4.6%
+  across a 4x element range**, with the peak in the same place relative to the
+  patch. The instability is specific to a load point placed ON a sharp edge,
+  where the traction acts across the corner, and it is not something the patch
+  rule can smooth away: it is what a distributed load at a rim does.
+
+Tracked as **#308** — the options are a geodesic taper (which would actually
+restore the spread), flagging an edge-spanning patch on the existing
+reliability banner, or deciding this is simply what a load at a corner does.
+
+Neither number is evidence about which idealization is closer to a real
+contact. What can be said is that the previous behaviour was not an
+idealization at all: it applied the load to a face the part is not touched on.
+
+### What this does not settle
+
+The radius is still `CONTACT_PATCH_RADIUS_FRACTION`, still a judgement, and now
+that the patch lands on the correct face it is doing MORE of the work than it
+was — a wrong-face point load did not depend on it at all. The guidance above
+stands, more strongly: pass `loadPatchRadiusMm`.
 
 ## What is still open
 

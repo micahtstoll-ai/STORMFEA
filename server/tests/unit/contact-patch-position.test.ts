@@ -10,7 +10,7 @@
  * The headline assertion is therefore the one the legacy path fails: MOVING THE
  * APPLICATION POINT MOVES THE LOAD. Everything else here guards the ways a
  * position-centred patch can go wrong that a direction-only patch cannot —
- * wrapping onto a face the load cannot bear against, and falling between the
+ * wrapping onto a face the load never touches, and falling between the
  * triangles into a silent zero-load solve (the issue #157 failure mode).
  */
 import { describe, it, expect } from "vitest";
@@ -77,18 +77,19 @@ describe("assembleContactPatchLoad — position is load-bearing (#271)", () => {
 });
 
 describe("assembleContactPatchLoad — guards", () => {
-  it("loads only surfaces facing the load, never the lee side", () => {
-    // A thin plate: 10x10x1. A 3-D ball centred on the top face with a radius
-    // of a few mm trivially reaches the bottom face, which cannot bear a
-    // downward push. The windward test is what stops it.
+  it("loads only the surface the point is on, never the far face", () => {
+    // A thin plate: 10x10x1. A 3-D ball centred on one face with a radius of a
+    // few mm trivially reaches the other one, 1 mm away, which the load never
+    // touches. Growing the patch by edge adjacency is what stops it (#305);
+    // `contact-patch-surface.test.ts` covers the rule itself.
     const mesh = generateBoxMeshC3D4(0, 0, 0, L, L, 1, 10, 10, 2);
     const faces = extractSurfaceFaces(mesh);
     const r = assembleContactPatchLoad(mesh, faces, [0, 0, -1], [0, 0, -100], [5, 5, 0], 4);
-    // Direction is -z, so the windward face is the BOTTOM (z = 0).
+    // The point is on the BOTTOM face (z = 0), so the patch is.
     for (let n = 0; n < mesh.nodeCount; n++) {
       const mag = Math.hypot(r.forces[n*3] ?? 0, r.forces[n*3+1] ?? 0, r.forces[n*3+2] ?? 0);
       if (mag === 0) continue;
-      expect(mesh.nodes[n*3+2], `node ${n} loaded on the lee face`).toBeLessThan(0.5);
+      expect(mesh.nodes[n*3+2], `node ${n} loaded on the far face`).toBeLessThan(0.5);
     }
     expect(loadCentroid(mesh, r.forces).fz).toBeCloseTo(-100, 9);
   });
