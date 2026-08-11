@@ -5,7 +5,8 @@ name: Test Suite
 # was nine test bodies solving 25k-75k element meshes. What WAS wasted was
 # scheduling -- everything ran as one `&&` chain on one runner, so the 4m14s
 # solver-validation suite sat behind vitest despite being independent of it,
-# and one vitest worker carried the four expensive files plus all 78 cheap ones.
+# and one vitest worker carried the four expensive files plus all 78 cheap ones
+# the suite held at the time.
 #
 # So the work is split across runners that execute concurrently. The jobs are
 # sized to their measured cost, and the critical path is now the single most
@@ -13,7 +14,7 @@ name: Test Suite
 #
 #   unit-heavy   ~10.5 min  4 files, 1811 s of the 1895 s of vitest file time
 #   solver       ~5 min     tsc + solver_validation.js + parallel assembly
-#   unit-light   ~2 min     the other 78 vitest files -- the fast failure signal
+#   unit-light   ~2 min     every other vitest file -- the fast failure signal
 #   client       ~1 min     client logic + invariant/API drift guards
 #   doc-counts   ~20 s      merges the shard summaries, gates README drift
 #
@@ -37,7 +38,10 @@ concurrency:
 
 jobs:
   # ── The cheap files, first ──────────────────────────────────────────────────
-  # 78 of the 82 vitest files, ~84 s of file time between them. This is the job
+  # Every vitest file EXCEPT the four in scripts/heavy-tests.json -- the shard is
+  # derived as that list's exact complement by scripts/vitest-shard.mjs, so it
+  # picks up new test files automatically and no count here needs maintaining
+  # (97 of 101 files as of 2026-08-11, ~84 s between them). This is the job
   # that tells you within a couple of minutes whether a change is obviously
   # broken, instead of that signal being buried behind ten minutes of adaptive
   # meshing. It carries the mesher-gated tests (issue #108) because they are
