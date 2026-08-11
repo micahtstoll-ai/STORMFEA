@@ -1165,6 +1165,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <button class="btn vmode-btn"        id="btn-zutil"  onclick="setStressMode('zutil')"  style="display:flex" title="Interlayer interface utilization — tension-only ⟨σzz⟩₊/S_zt interacting with interlayer shear τ/S_zs (compression gets a friction credit instead). Red at 1.0 = delamination/shear onset. High → reorient or add walls."><span class="vmode-abbr">U<sub>Z</sub></span><span class="vmode-cap">Z-layer use</span></button>
         <button class="btn vmode-btn"        id="btn-shell"  onclick="setStressMode('shell')"  style="display:flex" title="Wall / core — the two-region classification the solver used. 1.0 = solid perimeter wall or top/bottom skin, 0 = homogenized infill core. A GEOMETRIC field, not a stress: it shows where the material is, not how hard it is working. The outer surface is all wall by definition, so this only tells you anything on the SECTION CUT — open the section view and drag the plane through the part."><span class="vmode-abbr">W/C</span><span class="vmode-cap">Wall / core</span></button>
         <button class="btn vmode-btn"        id="btn-error"  onclick="setStressMode('error')"  style="display:flex" title="Error estimate η (Zienkiewicz-Zhu) — each element's SHARE of the mesh-wide discretization error, not an absolute % error on its stress. Ranks WHERE the mesh limits accuracy; red does not mean 'this stress is wrong by that much.' See the global % figure under the legend for overall accuracy."><span class="vmode-abbr">η</span><span class="vmode-cap">Mesh quality</span></button>
+        <button class="btn vmode-btn"        id="btn-meshsens" onclick="setStressMode('meshsens')" style="display:flex" title="Mesh sensitivity — how far the displayed value at each point MOVED between two meshes of this part, as a % of the surface peak. Appears only once a second mesh has been solved (MESH CONVERGENCE STUDY). Red = the color there is set partly by the mesh, not only by the part. This is the one view η cannot give you: η differences the recovered field against the raw one, so an artifact carried by both cancels."><span class="vmode-abbr">Δ<sub>M</sub></span><span class="vmode-cap">Mesh sensitivity</span></button>
       </div>
     </div>
 
@@ -1203,6 +1204,14 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <div id="eta-explainer" style="display:none;max-width:220px;text-align:right;font-size:10px;line-height:1.5;color:var(--text-lo);margin-bottom:2px">
         <div>η ranks elements by their <b>share</b> of total estimated mesh (discretization) error — not the % error of that element's stress. Red = the mesh limits accuracy most here; use it to decide <i>where</i> to refine, not <i>how wrong</i> a value is.</div>
         <div id="eta-global-error" style="margin-top:4px;color:var(--text-mid)"></div>
+      </div>
+      <!-- Mesh-sensitivity explainer (issue #294) — only shown while that mode is
+           active. It is a measurement of the PICTURE, not of the part, so it needs
+           to say what moved and between which two meshes; populated/toggled from
+           applyStressColorsFromArrays(). -->
+      <div id="meshsens-explainer" style="display:none;max-width:220px;text-align:right;font-size:10px;line-height:1.5;color:var(--text-lo);margin-bottom:2px">
+        <div>How far the value here <b>moved</b> between two meshes of this part, as a % of the surface peak. Red = the mesh is choosing that color as much as the part is. Low is weak evidence, not proof — two meshes agreeing is not convergence.</div>
+        <div id="meshsens-pair" style="margin-top:4px;color:var(--text-mid)"></div>
       </div>
       <div id="legend-labels" style="display:flex;align-items:stretch;gap:8px">
         <div id="legend-val-stack" style="display:flex;flex-direction:column;justify-content:space-between;align-items:flex-end">
@@ -2453,6 +2462,10 @@ const S = {
   orientMul:     0.55,        // current orientation strength multiplier
   // Convergence cache — stored after auto-check runs
   _convergenceData: null,
+  // Per-location mesh-sensitivity measurement (#294): the per-vertex field plus
+  // its summary, present only once TWO meshes of this part have been solved.
+  // Null means "not measured", which is not the same as "measured as zero".
+  _meshSensitivity: null,
   // Hole bolt-type overrides: holeId -> string key
   holeTypeOverrides: {},
   // Section-view interior stress opt-in (#190) — persisted across solves so
@@ -3327,6 +3340,29 @@ const U = {
   parseForce: (val) => S.units === 'imperial' ? val / 0.22481 : val,
 };
 
+// Text for ONE legend value label, for every heatmap mode.
+//
+// One implementation because there are two callers — the paint path
+// (applyStressColorsFromArrays) and the unit-toggle repaint
+// (refreshUnitsDisplay) — and they each carried their own copy, which drifted
+// in both directions: the paint path printed raw MPa under an imperial LABEL
+// (24.4 "psi" for 24.4 MPa), and the repaint ran U.stress() over every mode,
+// so toggling units relabelled the unitless maps (η, utilization, wall/core,
+// mesh sensitivity) as though a share or a percentage were a stress.
+//
+// The rule is in MODE_META, not here: `stressUnit` marks the modes whose
+// numbers are a stress the user can switch the unit of. Everything else is
+// already in its own unit and must never be converted.
+function legendValueText(meta, value, isEdge) {
+  const unit = meta.unit();
+  let txt = meta.stressUnit
+    ? U.stress(value).toFixed(S.units === 'imperial' ? 0 : meta.dec)
+    : value.toFixed(meta.dec);
+  if (meta.perValueUnit) txt += unit;              // e.g. dmg "1.25×"
+  else if (isEdge && unit) txt += ' ' + unit;      // unit on the HIGH/LOW rows only
+  return txt;
+}
+
 function setUnits(sys) {
   S.units = sys;
   localStorage.setItem('sf-units', sys);
@@ -3437,7 +3473,7 @@ function refreshUnitsDisplay() {
     if (labels) {
       const steps = labels.children.length;
       const range = S.stressMax - S.stressMin;
-      const unit = (S.stressMode === 'dmg') ? '' : (' ' + U.stressLabel());
+      const meta  = MODE_META[S.stressMode] || MODE_META.vm;
       // Re-apply the percentile-clip markers set by applyStressColorsFromArrays.
       // This path rewrites every label from scratch on a unit change, so without
       // this the >= / <= would silently disappear the first time the user
@@ -3445,10 +3481,9 @@ function refreshUnitsDisplay() {
       // again.
       const clip = S._legendClip || {};
       Array.from(labels.children).forEach((el, i) => {
-        const mpa = S.stressMax - (i / (steps - 1)) * range;
-        let valText = U.stress(mpa).toFixed(S.units==='imperial'?0:1);
+        const v = S.stressMax - (i / (steps - 1)) * range;
         const isEdge = (i === 0 || i === steps - 1); // HIGH / LOW rows
-        valText += (isEdge ? unit : '');
+        let valText = legendValueText(meta, v, isEdge);
         if (i === 0 && clip.hi) valText = '≥ ' + valText;
         if (i === steps - 1 && clip.lo) valText = '≤ ' + valText;
         el.textContent = valText;
@@ -4145,6 +4180,10 @@ function applyStressColorsFromResults(results, { fresh = false } = {}) {
   } catch (e) { console.error(e.message); return; }
 
   // ── Merge decoded arrays into the cache ──────────────────────────────────
+  // A fresh solve invalidates the mesh-sensitivity overlay outright (#294): it
+  // was measured against the PREVIOUS pair of meshes, and keeping it would let a
+  // stale measurement describe a picture it never saw.
+  if (fresh) S._meshSensitivity = null;
   const cache = fresh ? {} : (S._stressArrays || {});
   cache.vm = vertexStress;
   const put = (key, b64) => { const v = _decodeStressF32(b64); if (v) cache[key] = v; };
@@ -4991,7 +5030,10 @@ function handleStressHover(e) {
   const arr  = meta.data(targetStressArrays);
   const val  = arr ? (arr[bestVi] ?? 0) : 0;
 
-  const text = `${meta.hover}: ${val.toFixed(meta.dec)} ${meta.unit()}`.trim();
+  // Same formatter as the legend (legendValueText) so the number under the
+  // cursor and the number beside the bar are in the same unit — the hover used
+  // to print raw MPa under an imperial label for the stress modes.
+  const text = `${meta.hover}: ${legendValueText(meta, val, true)}`.trim();
 
   const panel = document.getElementById('stress-readout');
   const panelText = document.getElementById('stress-readout-text');
@@ -6555,6 +6597,10 @@ async function runAnalysis() {
       changePct, converged,
     };
 
+    // Two solves at two densities on one display mesh is exactly what the
+    // per-location overlay needs (#294) — install it without asking for a third.
+    installMeshSensitivity([stdDatum, fineDatum]);
+
   } catch(e) {
     // Fine mesh failed — clear the badge and surface a warning banner
     showConvergenceBadge('failed');
@@ -6591,7 +6637,12 @@ function showConvergenceBadge(state, changePct, nodesStd, nodesFine, opts) {
       color: 'var(--success)', bg: 'var(--gold-faint)', border: 'var(--gold-glow)',
       icon: '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg>',
       text: `C3D10 quadratic elements — no shear locking`,
-      sub: `Quadratic tetrahedra: more accurate at stress concentrations, correct bending behavior. Mesh-independent within 5% tolerance.`,
+      // "Mesh-independent within 5% tolerance" used to sit here, on a path that
+      // returns BEFORE any second mesh is solved (issue #294): it stated a
+      // measurement that had not been taken. What is actually known on this path
+      // is a property of the element, not of this part's mesh — so say that, and
+      // point at the study that would measure the rest.
+      sub: `Quadratic tetrahedra: more accurate at stress concentrations, correct bending behavior — so no fine-mesh check was run. Only one mesh was solved, so how much of the displayed field is mesh-dependent is unmeasured for this part; run MESH CONVERGENCE STUDY below to measure it per location.`,
     },
     skipped: {
       color: 'var(--success)', bg: 'var(--gold-faint)', border: 'var(--gold-glow)',
@@ -9462,6 +9513,101 @@ function stressPercentile(stressArr, pct) {
   return arr[idx];
 }
 
+// ─── Per-location mesh sensitivity (issue #294) ──────────────────────────────
+//
+// How much of the picture is the part, and how much is the mesh it happened to
+// get? Nothing already on screen answers that. The ZZ error estimate η is
+// structurally unable to: η is the gap between the RECOVERED and the RAW element
+// field, so an artifact inherited by both cancels in the difference. Measured on
+// the #294 cantilever fixture, the Spearman rank correlation between a mesh's
+// own errorEstimate and the actual mesh-to-mesh disagreement at the same
+// location is 0.015, and re-measuring at the post-#295 tier densities gave
+// 0.061 / -0.066 / -0.164 (server/tests/measure294.ts). η remains valid for the
+// global energy-norm error it was built for — it is simply blind to this.
+//
+// The one thing that does measure it is solving twice on different meshes and
+// differencing. The convergence study already solves twice and then reduced the
+// result to global scalars; this keeps the spatial information.
+//
+// The comparison is exact, not interpolated. Every analyse response paints the
+// SAME display mesh — server/analysis.ts maps its nodal field onto req.positions,
+// the client's upload-time geometry, whatever the analysis mesh density — so
+// index v in one payload's vertexStress is the same point in space as index v in
+// another's.
+//
+// Normalised by the peak of the two SURFACE fields, which is the number beside
+// the legend, not summary.maxVonMisesMPa (that is an element field and can peak
+// inside the part).
+//
+// Returns null rather than a zero field when there is nothing to compare: an
+// UNMEASURED location must never read as a measured-zero one.
+function meshSensitivityField(a, b) {
+  if (!a || !b || !a.length || a.length !== b.length) return null;
+  let peak = 0;
+  for (let i = 0; i < a.length; i++) {
+    const va = a[i] ?? 0, vb = b[i] ?? 0;
+    if (va > peak) peak = va;
+    if (vb > peak) peak = vb;
+  }
+  if (!(peak > 0) || !isFinite(peak)) return null;
+  const field = new Float32Array(a.length);
+  for (let i = 0; i < a.length; i++) {
+    const d = Math.abs((a[i] ?? 0) - (b[i] ?? 0));
+    field[i] = isFinite(d) ? (d / peak) * 100 : 0;
+  }
+  const sorted = Array.prototype.slice.call(field).sort((x, y) => x - y);
+  const at = p => sorted[Math.min(sorted.length - 1, Math.max(0, Math.round((p / 100) * (sorted.length - 1))))];
+  return { field, peakMPa: peak, median: at(50), p95: at(95), max: at(100) };
+}
+
+// Install the per-location field from the two FINEST meshes a run produced, and
+// reveal the MESH SENSITIVITY view mode. The two finest because the coarsest
+// mesh's disagreement is dominated by ordinary under-resolution, which the study
+// already reports as a scalar — the interesting claim is that the two meshes a
+// user would actually trust still disagree locally.
+//
+// Refuses to install a field sized to a different display mesh (a stale study
+// against a part that has since been re-uploaded): the overlay would then be
+// painting one part's numbers on another's geometry.
+function installMeshSensitivity(datums) {
+  // Drop any previous measurement FIRST. Everything below can decline to
+  // install, and a stale field surviving that would keep painting the old
+  // meshes' disagreement under the new run's label.
+  S._meshSensitivity = null;
+  if (S._stressArrays) S._stressArrays.meshsens = null;
+  const abandon = () => {
+    // The mode's data just went away; leaving it selected would show a stale
+    // map with a greyed button. Fall back to the default view.
+    if (S.stressMode === 'meshsens') setStressMode(DEFAULT_STRESS_MODE);
+    else refreshStressModeButtons();
+    return null;
+  };
+  if (!Array.isArray(datums)) return abandon();
+  const usable = datums.filter(d => d && d.vs && d.vs.length);
+  if (usable.length < 2) return abandon();
+  const byDensity = usable.slice().sort((p, q) => (p.nodes || 0) - (q.nodes || 0));
+  const coarser = byDensity[byDensity.length - 2];
+  const finer   = byDensity[byDensity.length - 1];
+  const sens = meshSensitivityField(coarser.vs, finer.vs);
+  if (!sens) return abandon();
+  const expect = mesh3d?.geometry?.attributes?.position?.count || 0;
+  if (expect && sens.field.length !== expect) {
+    console.warn('[meshsens] field length', sens.field.length, 'vs display mesh', expect, '— not installed');
+    return abandon();
+  }
+  sens.nodesCoarse = coarser.nodes;
+  sens.nodesFine   = finer.nodes;
+  S._meshSensitivity = sens;
+  if (S._stressArrays) {
+    S._stressArrays.meshsens = sens.field;
+    refreshStressModeButtons();
+    // Already looking at the overlay when a new study lands: repaint, don't
+    // leave the previous pair's colors on screen.
+    if (S.stressMode === 'meshsens' && mesh3d) applyStressColorsFromArrays(S._stressArrays);
+  }
+  return sens;
+}
+
 // Extract the per-mesh convergence datum from a full analyse payload. Captures
 // the singularity-robust p99 metric (decoded from the vertex-stress array the
 // payload already carries) and the server's singularity flag, so both the
@@ -9477,6 +9623,9 @@ function convDatumFromPayload(data) {
     safetyFactorAvailable: s.safetyFactorAvailable,
     nodesPerElem:         s.nodesPerElem,
     p99:                  vs ? stressPercentile(vs, 99) : null,
+    // The display-mesh vertex field itself, kept (not just its p99) so two
+    // meshes can be differenced per LOCATION rather than only per scalar (#294).
+    vs,
     singularity:          s.singularity || null,
   };
 }
@@ -9616,6 +9765,27 @@ async function runConvergenceStudy() {
     </div>`;
   })() : '';
 
+  // Issue #294: everything above is a global scalar, and the study had the
+  // spatial information all along — it solved the same display mesh twice and
+  // then kept only percentiles of each. The displayed field carries a
+  // mesh-dependent tail that no scalar here can localise and that the ZZ
+  // estimate cannot rank (Spearman 0.015 against actual mesh-to-mesh
+  // disagreement), so say WHERE the picture moved, and offer to paint it.
+  const sens = installMeshSensitivity(results);
+  const sensitivityNote = sens ? (() => {
+    // Same 5% cutoff the study's own convergence criterion uses, deliberately:
+    // two readouts of mesh-dependence in one panel must not use two thresholds.
+    const hot = sens.p95 >= 5;
+    const col = hot ? 'var(--warn)' : 'var(--gold-dim)';
+    const bg  = hot ? 'var(--bg-card)' : 'var(--gold-faint)';
+    return `<div style="padding:6px 8px;margin-top:6px;background:${bg};border:1px solid ${col}55;border-radius:3px;font-size:10px;color:${col};line-height:1.6">
+      <b>Per-location movement</b> between the two finest meshes (${(sens.nodesCoarse||0).toLocaleString()} → ${(sens.nodesFine||0).toLocaleString()} nodes), as a share of the ${U.stressStr(sens.peakMPa,2)} surface peak:
+      median <b>${sens.median.toFixed(2)}%</b>, p95 <b>${sens.p95.toFixed(2)}%</b>, max <b>${sens.max.toFixed(2)}%</b>.
+      <div style="color:var(--text-lo);margin-top:3px">Where this is large, the color at that spot is set partly by the mesh rather than by the part. Where it is small it is weak evidence, not proof — two meshes agreeing is not convergence. The <b>η</b> (Mesh quality) view does not predict these locations: η differences the recovered field against the raw one, and an artifact carried by both cancels.</div>
+      <button class="btn" onclick="setStressMode('meshsens')" style="font-size:9px;padding:2px 6px;margin-top:6px" title="Paint the per-location mesh-to-mesh movement on the model">SHOW ON MODEL</button>
+    </div>`;
+  })() : '';
+
   const metricName = useRobust ? '99th-percentile stress' : 'peak stress';
   const statusColor = converged ? 'var(--success)' : 'var(--warn)';
   const statusText  = converged
@@ -9644,6 +9814,7 @@ async function runConvergenceStudy() {
     </div>
     ${rows}
     ${spreadNote}
+    ${sensitivityNote}
     ${singularNote}
     <div style="padding:5px 0;font-size:10px;color:var(--text-lo);border-bottom:1px solid var(--border);line-height:1.6">${orderDiag}</div>
     ${richardsonNote ? `<div style="padding:5px 0;font-size:10px;color:var(--text-label);border-bottom:1px solid var(--border)">${richardsonNote}</div>` : ''}
@@ -13564,16 +13735,27 @@ function _disposeInteriorCap() {
 // applyStressColorsFromArrays, the hover readout, and the units-refresh all
 // read from it, so a label or a new mode is defined in exactly one place.
 const MODE_META = {
-  tc:     { kind:'diverging',  legend:()=>'Tension / Compression ('+U.stressLabel()+')',     hover:'Dominant principal',     unit:()=>U.stressLabel(), dec:1, data:a=>a.tc },
-  vm:     { kind:'sequential', legend:()=>'von Mises ('+U.stressLabel()+')',                 hover:'von Mises',              unit:()=>U.stressLabel(), dec:1, data:a=>a.vm },
-  svm:    { kind:'diverging',  legend:()=>'Signed von Mises ('+U.stressLabel()+')',          hover:'Signed VM',              unit:()=>U.stressLabel(), dec:1, data:a=>a.svm, divAbs:()=>S.results?.summary?.effectiveYieldMPa ?? 1 },
-  s1:     { kind:'diverging',  legend:()=>'Max Principal σ₁ ('+U.stressLabel()+')',          hover:'Principal σ₁',           unit:()=>U.stressLabel(), dec:1, data:a=>a.s1 },
-  s2:     { kind:'diverging',  legend:()=>'Mid Principal σ₂ ('+U.stressLabel()+')',          hover:'Principal σ₂',           unit:()=>U.stressLabel(), dec:1, data:a=>a.s2 },
-  s3:     { kind:'diverging',  legend:()=>'Min Principal σ₃ ('+U.stressLabel()+')',          hover:'Principal σ₃',           unit:()=>U.stressLabel(), dec:1, data:a=>a.s3 },
+  tc:     { kind:'diverging',  legend:()=>'Tension / Compression ('+U.stressLabel()+')',     hover:'Dominant principal',     unit:()=>U.stressLabel(), dec:1, stressUnit:true, data:a=>a.tc },
+  vm:     { kind:'sequential', legend:()=>'von Mises ('+U.stressLabel()+')',                 hover:'von Mises',              unit:()=>U.stressLabel(), dec:1, stressUnit:true, data:a=>a.vm },
+  svm:    { kind:'diverging',  legend:()=>'Signed von Mises ('+U.stressLabel()+')',          hover:'Signed VM',              unit:()=>U.stressLabel(), dec:1, stressUnit:true, data:a=>a.svm, divAbs:()=>S.results?.summary?.effectiveYieldMPa ?? 1 },
+  s1:     { kind:'diverging',  legend:()=>'Max Principal σ₁ ('+U.stressLabel()+')',          hover:'Principal σ₁',           unit:()=>U.stressLabel(), dec:1, stressUnit:true, data:a=>a.s1 },
+  s2:     { kind:'diverging',  legend:()=>'Mid Principal σ₂ ('+U.stressLabel()+')',          hover:'Principal σ₂',           unit:()=>U.stressLabel(), dec:1, stressUnit:true, data:a=>a.s2 },
+  s3:     { kind:'diverging',  legend:()=>'Min Principal σ₃ ('+U.stressLabel()+')',          hover:'Principal σ₃',           unit:()=>U.stressLabel(), dec:1, stressUnit:true, data:a=>a.s3 },
   dmg:    { kind:'sequential', legend:()=>'Damage Ratio (XY/Z)',                             hover:'Damage ratio',           unit:()=>'×', dec:2, data:a=>a.dmg,    max:2.0, min:0, perValueUnit:true },
   xyutil: { kind:'sequential', legend:()=>'XY In-Plane Utilization (0–2)',                   hover:'XY utilization',         unit:()=>'',  dec:2, data:a=>a.xyutil, max:2.0, min:0 },
   zutil:  { kind:'sequential', legend:()=>'Interlayer Interface Utilization (0–2)',          hover:'Interlayer utilization', unit:()=>'',  dec:2, data:a=>a.zutil,  max:2.0, min:0 },
   error:  { kind:'sequential', legend:()=>'Error Estimate η (0–1)',                          hover:'Error η',                unit:()=>'',  dec:3, data:a=>a.error,  max:1.0, min:0 },
+  // How much this location MOVED between two meshes, as a % of the surface peak
+  // (issue #294). Not a stress and not an error bound — a measurement of the
+  // picture's own mesh-dependence, available only once a second mesh has been
+  // solved (the convergence study, or the C3D4 auto fine-mesh check).
+  //
+  // Autoscaled rather than pinned to a fixed domain: the whole point is to rank
+  // LOCATIONS against each other, and a fixed 0–10% ceiling paints a part whose
+  // p95 is 1.4% (the measured standard-tier figure) as uniformly black. The
+  // legend carries the absolute numbers, and the sequential scale's p02..p98
+  // clip already marks itself with >= when a spike is off the end.
+  meshsens: { kind:'sequential', legend:()=>'Mesh Sensitivity (% of peak)',                  hover:'Moved between meshes',   unit:()=>'%', dec:2, data:a=>a.meshsens, min:0 },
   // Geometric, not mechanical: the two-region classification itself (#297).
   // Fixed 0..1 domain because the endpoints MEAN something (pure core / pure
   // wall) — letting it autoscale would paint a part whose shell fraction never
@@ -13583,7 +13765,7 @@ const MODE_META = {
 // Always-visible modes lead the left column; the rest live behind the MORE
 // toggle. STRESS_MODE_ORDER is their concatenation.
 const ALWAYS_MODES = ['tc','vm','svm','s1','s2','s3'];
-const OVERFLOW_MODES = ['dmg','xyutil','zutil','error','shell'];
+const OVERFLOW_MODES = ['dmg','xyutil','zutil','error','shell','meshsens'];
 const STRESS_MODE_ORDER = [...ALWAYS_MODES, ...OVERFLOW_MODES];
 const DEFAULT_STRESS_MODE = 'tc';
 
@@ -13698,7 +13880,6 @@ function applyStressColorsFromArrays(arrays) {
   const labels = document.getElementById('legend-val-stack');
   if (labels) {
     const steps = labels.children.length;
-    const unit = meta.unit();
     // The sequential scale clips to the p02..p98 percentile band so one
     // singular vertex can't wash out the whole map. That clip was SILENT: with
     // a peak well above p98, every vertex from p98 up painted the same top
@@ -13711,16 +13892,14 @@ function applyStressColorsFromArrays(arrays) {
     S._legendClip = { hi: clipHi, lo: clipLo };   // survives a unit toggle (refreshUnitsDisplay)
     Array.from(labels.children).forEach((el,i) => {
       const v = effectiveMax - (i/(steps-1)) * range;
-      let valText = v.toFixed(meta.dec);
-      if (meta.perValueUnit) valText += unit;                 // e.g. dmg "1.25×"
-      else if ((i === 0 || i === steps - 1) && unit) valText += ' ' + unit;
+      let valText = legendValueText(meta, v, i === 0 || i === steps - 1);
       if (i === 0 && clipHi) valText = '≥ ' + valText;
       if (i === steps - 1 && clipLo) valText = '≤ ' + valText;
       el.textContent = valText;
     });
     labels.title = clipHi
-      ? `Color scale clipped at the 98th percentile (${effectiveMax.toFixed(meta.dec)}${unit ? ' ' + unit : ''}); `
-        + `peak on the mesh is ${rawMax.toFixed(meta.dec)}${unit ? ' ' + unit : ''}.`
+      ? `Color scale clipped at the 98th percentile (${legendValueText(meta, effectiveMax, true)}); `
+        + `peak on the mesh is ${legendValueText(meta, rawMax, true)}.`
       : '';
   }
 
@@ -13773,6 +13952,23 @@ function applyStressColorsFromArrays(arrays) {
       }
     } else {
       etaBox.style.display = 'none';
+    }
+  }
+  // Mesh-sensitivity panel (#294) — names the two meshes being differenced, so
+  // the map cannot be read as a property of the part alone.
+  const msBox = document.getElementById('meshsens-explainer');
+  if (msBox) {
+    const sens = S._meshSensitivity;
+    if (S.stressMode === 'meshsens' && sens) {
+      msBox.style.display = 'block';
+      const pairEl = document.getElementById('meshsens-pair');
+      if (pairEl) {
+        pairEl.textContent =
+          `${(sens.nodesCoarse||0).toLocaleString()} vs ${(sens.nodesFine||0).toLocaleString()} nodes · ` +
+          `median ${sens.median.toFixed(2)}% · p95 ${sens.p95.toFixed(2)}%`;
+      }
+    } else {
+      msBox.style.display = 'none';
     }
   }
 }

@@ -1629,6 +1629,181 @@ console.log('\n[U] Vertex weld grouping — distance-tested, no chaining, order-
   }
 }
 
+// ── Test group V: meshSensitivityField — per-location mesh sensitivity (#294) ─
+// The displayed field carries a mesh-dependent tail the ZZ estimator cannot
+// flag (Spearman 0.015 against actual mesh-to-mesh disagreement, re-measured at
+// the post-#295 tier densities in server/tests/measure294.ts). This is the only
+// thing in the tool that measures it: two solves of the same display mesh,
+// differenced per location. What these tests pin is that it stays a measurement
+// — never a smoothed picture, never a zero standing in for "not measured", and
+// never normalised in a way that depends on argument order.
+console.log('\n[V] Mesh sensitivity — per-location, symmetric, measured-zero != unmeasured (#294)');
+{
+  const src = html.match(/function meshSensitivityField\(a, b\) \{[\s\S]*?\n\}\n/);
+  if (!src) throw new Error('Could not extract meshSensitivityField');
+  const mod = { exports: {} };
+  new Function('module', 'exports', src[0] + '\nmodule.exports = { meshSensitivityField };')(mod, mod.exports);
+  const { meshSensitivityField } = mod.exports;
+
+  // ── "Not measured" must never render as "measured zero" ──────────────────
+  test('null with no second mesh', meshSensitivityField(new Float32Array([1,2]), null) === null);
+  test('null with no first mesh',  meshSensitivityField(null, new Float32Array([1,2])) === null);
+  test('null on empty fields',     meshSensitivityField(new Float32Array(0), new Float32Array(0)) === null);
+  // Different display meshes cannot be compared index-by-index; the overlay must
+  // refuse rather than paint one part's numbers on another's geometry.
+  test('null on length mismatch',
+    meshSensitivityField(new Float32Array([1,2,3]), new Float32Array([1,2])) === null);
+  // An all-zero pair has no peak to normalise by. Percent-of-nothing is not 0%.
+  test('null when both fields are identically zero',
+    meshSensitivityField(new Float32Array([0,0,0]), new Float32Array([0,0,0])) === null);
+
+  // ── Two meshes that agree everywhere: measured, and measured as zero ──────
+  {
+    const a = new Float32Array([3, 7, 11, 5]);
+    const s = meshSensitivityField(a, Float32Array.from(a));
+    test('identical fields return a result (not null)', s !== null);
+    test('identical fields measure 0% everywhere',
+      s && Array.from(s.field).every(v => v === 0), s && Array.from(s.field).join(','));
+    test('identical fields: median/p95/max all 0',
+      s && s.median === 0 && s.p95 === 0 && s.max === 0);
+  }
+
+  // ── The arithmetic, on a case computable by hand ─────────────────────────
+  {
+    // peak = 11 (from b). |a-b| = [0, 0, 1, 0] -> 1/11 = 9.0909...%
+    const a = new Float32Array([10, 10, 10, 10]);
+    const b = new Float32Array([10, 10, 11, 10]);
+    const s = meshSensitivityField(a, b);
+    test('normalises by the peak across BOTH fields', Math.abs(s.peakMPa - 11) < 1e-9, `${s.peakMPa}`);
+    test('one location moved 1 of 11 -> 9.09%', Math.abs(s.max - 100/11) < 1e-4, `${s.max}`);
+    test('the other three did not move',
+      s.field[0] === 0 && s.field[1] === 0 && s.field[3] === 0);
+    // CLAUDE.md heatmap invariant 1: every display vertex gets a value.
+    test('field is one value per vertex, all finite',
+      s.field.length === a.length && Array.from(s.field).every(Number.isFinite));
+  }
+
+  // ── Symmetry: which mesh is "A" is an accident of study order ────────────
+  {
+    const a = new Float32Array([1, 9, 4, 12, 0.5]);
+    const b = new Float32Array([1.4, 8, 4, 11, 2]);
+    const ab = meshSensitivityField(a, b);
+    const ba = meshSensitivityField(b, a);
+    test('field is identical under argument swap',
+      Array.from(ab.field).every((v, i) => Math.abs(v - ba.field[i]) < 1e-12));
+    test('summary is identical under argument swap',
+      ab.median === ba.median && ab.p95 === ba.p95 && ab.max === ba.max && ab.peakMPa === ba.peakMPa);
+  }
+
+  // ── Percentiles are nearest-rank, matching stressPercentile ──────────────
+  {
+    // 100 vertices; one of them moved by the full peak, 99 did not. A MEAN would
+    // report 1% and hide it; the max is the number that has to survive.
+    const a = new Float32Array(100);
+    const b = new Float32Array(100);
+    for (let i = 0; i < 100; i++) { a[i] = 20; b[i] = 20; }
+    b[42] = 40;                                  // peak becomes 40, moved by 20
+    const s = meshSensitivityField(a, b);
+    test('a single moved vertex is reported at full amplitude',
+      Math.abs(s.max - 50) < 1e-4, `${s.max}`);
+    test('a single moved vertex does not move the median', s.median === 0);
+    test('a single moved vertex does not move p95', s.p95 === 0);
+  }
+
+  // ── Non-finite input cannot leak into the painted field ─────────────────
+  {
+    // An infinite peak has no usable normaliser at all: refuse outright.
+    test('a non-finite peak returns null',
+      meshSensitivityField(new Float32Array([10, Infinity, 10]), new Float32Array([10, 10, 10])) === null);
+    // A NaN at ONE vertex must not poison the other 99.99% of the map, and must
+    // not paint as a hotspot either.
+    const s = meshSensitivityField(new Float32Array([10, 10, NaN]), new Float32Array([10, 12, 10]));
+    test('a NaN vertex leaves the rest of the field finite',
+      s !== null && Array.from(s.field).every(Number.isFinite), s && Array.from(s.field).join(','));
+    test('a NaN vertex reads as 0%, not as movement', s !== null && s.field[2] === 0);
+  }
+
+  // ── It is wired to a view mode, and only shows when measured ────────────
+  {
+    test('meshsens is a registered heatmap mode', /meshsens:\s*\{\s*kind:'sequential'/.test(html));
+    test('meshsens lives in the overflow group (not a default view)',
+      /const OVERFLOW_MODES = \[[^\]]*'meshsens'[^\]]*\]/.test(html));
+    // stressModeAvailable() gates every mode on its array existing, so a null
+    // field hides the button rather than painting an empty map.
+    // Every exit path below the clear may decline to install, so the clear has
+    // to happen before the first of them — otherwise a declined install leaves
+    // the PREVIOUS pair's field on screen under the new run's label.
+    const inst = html.match(/function installMeshSensitivity\(datums\) \{[\s\S]*?\n\}\n/);
+    test('installMeshSensitivity extracted', !!inst);
+    test('installMeshSensitivity clears the field before any early return',
+      inst && inst[0].indexOf('S._meshSensitivity = null') < inst[0].indexOf('return'),
+      inst && `clear@${inst[0].indexOf('S._meshSensitivity = null')} return@${inst[0].indexOf('return')}`);
+    test('a fresh solve invalidates the previous measurement',
+      /if \(fresh\) S\._meshSensitivity = null;/.test(html));
+  }
+}
+
+// ── Test group W: legendValueText — one formatter, two (three) callers ───────
+// Found while adding the mesh-sensitivity mode (#294): the legend's label text
+// existed twice, in the paint path and in the unit-toggle repaint, and the two
+// copies disagreed. The repaint ran the stress conversion over EVERY mode, so
+// toggling to imperial relabelled the unitless maps (η, utilization, wall/core,
+// and the new % of peak) as a stress; the paint path did the opposite, printing
+// unconverted MPa under the imperial label. A heatmap whose legend can misstate
+// its own unit is the same class of defect as the p02..p98 clip that used to be
+// silent — the picture is the reading, so the number beside it has to be right.
+console.log('\n[W] Legend value text — unit conversion applies to stress modes only');
+{
+  const src = html.match(/function legendValueText\(meta, value, isEdge\) \{[\s\S]*?\n\}\n/);
+  if (!src) throw new Error('Could not extract legendValueText');
+  const state = { units: 'si' };
+  const Umock = {
+    stressLabel: () => state.units === 'imperial' ? 'psi' : 'MPa',
+    stress: (mpa) => state.units === 'imperial' ? mpa * 145.038 : mpa,
+  };
+  const mod = { exports: {} };
+  new Function('module', 'exports', 'S', 'U',
+    src[0] + '\nmodule.exports = { legendValueText };')(mod, mod.exports, state, Umock);
+  const { legendValueText } = mod.exports;
+
+  const vmMeta   = { unit: () => Umock.stressLabel(), dec: 1, stressUnit: true };
+  const etaMeta  = { unit: () => '',  dec: 3 };
+  const sensMeta = { unit: () => '%', dec: 2 };
+  const dmgMeta  = { unit: () => '×', dec: 2, perValueUnit: true };
+
+  state.units = 'si';
+  test('SI: stress prints MPa unconverted on the edge rows',
+    legendValueText(vmMeta, 24.42, true) === '24.4 MPa', legendValueText(vmMeta, 24.42, true));
+  test('middle rows carry the number only',
+    legendValueText(vmMeta, 24.42, false) === '24.4', legendValueText(vmMeta, 24.42, false));
+
+  state.units = 'imperial';
+  // 24.42 MPa = 3542.0 psi. The old paint path printed "24.4 psi" here.
+  test('imperial: stress is CONVERTED, not merely relabelled',
+    legendValueText(vmMeta, 24.42, true) === '3542 psi', legendValueText(vmMeta, 24.42, true));
+  // ...and the old repaint printed "210.30 psi" for a 1.45% mesh-sensitivity.
+  test('imperial: a % of peak is untouched by the unit toggle',
+    legendValueText(sensMeta, 1.45, true) === '1.45 %', legendValueText(sensMeta, 1.45, true));
+  test('imperial: η stays a bare 0–1 share',
+    legendValueText(etaMeta, 0.125, true) === '0.125', legendValueText(etaMeta, 0.125, true));
+  test('perValueUnit modes keep the unit on every row',
+    legendValueText(dmgMeta, 1.25, false) === '1.25×', legendValueText(dmgMeta, 1.25, false));
+
+  state.units = 'si';
+  test('SI round-trip: the unitless modes read the same in both systems',
+    legendValueText(sensMeta, 1.45, true) === '1.45 %' && legendValueText(etaMeta, 0.125, true) === '0.125');
+
+  // The point of extracting it: nobody may keep a private copy again.
+  const paint = html.match(/function applyStressColorsFromArrays\(arrays\) \{[\s\S]*?\n\}\n/);
+  test('the paint path formats via legendValueText',
+    paint && /legendValueText\(meta,/.test(paint[0]));
+  const units = html.match(/function refreshUnitsDisplay\(\) \{[\s\S]*?\n\}\n/);
+  test('the unit-toggle repaint formats via legendValueText',
+    units && /legendValueText\(meta,/.test(units[0]));
+  test('the unit-toggle repaint no longer hard-codes the stress unit for every mode',
+    units && !/U\.stressLabel\(\)/.test(units[0]));
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 
