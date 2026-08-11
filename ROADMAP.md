@@ -812,20 +812,27 @@ waiting for a consistent empirical table._
   case, or material is proven correct — and it names its combination gaps (e.g.
   two-region validation runs exclusively on C3D10 meshes)
 - The DISPLAYED stress field carries a mesh-dependent artifact tail that the ZZ
-  estimator cannot flag, and this is only PARTLY disclosed (issue #294). Measured
-  on a symmetric cantilever fixture at 3,072 elements, two different meshes of
-  the same geometry under the same load disagree by a median of 0.03% of peak but
-  a p95 of 7.9% and a max of 16.1% — the field is excellent almost everywhere
-  with a scattered tail, and the hot spots MOVE when the part is re-meshed.
-  Refinement is the only measured lever (three recovery-side fixes were
-  prototyped and were neutral or regressions: boundary-patch borrowing, the
+  estimator cannot flag (issue #294). It is now MEASURABLE per location — the
+  MESH CONVERGENCE STUDY differences the two finest meshes per display vertex
+  and paints the result as the Δ_M (Mesh sensitivity) view — but it is not
+  removed, and it is measured only when a second mesh has been solved. Re-taken
+  at the post-#295 tier densities (`server/tests/measure294.ts`,
+  `docs/display-field-mesh-sensitivity.md`): p95 1.45% / max 1.83% of peak at
+  the standard tier and p95 2.15% / max 14.61% at coarse (15% node
+  displacement), against the p95 7.9% / max 16.1% originally reported at 3,072
+  elements — so refinement, which #295 delivered, shrank it, and the coarse tier
+  is where it still lives (p95 12.18% / max 18.40% at 25% displacement).
+  Refinement is the only measured lever on amplitude (three recovery-side fixes
+  were prototyped and were neutral or regressions: boundary-patch borrowing, the
   cascade thresholds, and `SPR_MAX_AMPLIFICATION_QUADRATIC`, which is
   bit-identical from 60 down to 5). The per-element `errorEstimate` does NOT
-  predict these locations — Spearman 0.015 against the actual mesh-to-mesh
-  disagreement — because ZZ differences the recovered and raw fields and an
-  artifact inherited by both cancels. `globalRelativeError` is shown on the
-  RESULTS tab, so a user reading the 3D view alone gets no signal at all;
-  `topErrorElements` should not be read as "here is where the picture lies"
+  predict these locations — Spearman 0.015 originally and 0.061 / -0.066 /
+  -0.164 on re-measurement — because ZZ differences the recovered and raw fields
+  and an artifact inherited by both cancels; `topErrorElements` should not be
+  read as "here is where the picture lies". Still open: the C3D10 default path
+  solves ONE mesh, so nothing is measured there until the user runs the study,
+  and `globalRelativeError` is still only on the RESULTS tab and in the η
+  explainer rather than in the 3D view itself
 
 _Resolved: the TetGen box-mesh fallback previously always produced C3D4 (≈55%
 bending underprediction) regardless of the element-order selector; it now honours
