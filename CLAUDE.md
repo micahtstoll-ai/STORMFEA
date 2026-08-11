@@ -88,7 +88,8 @@ description of it — check these before assuming a gap or a bug:
   [GitHub Actions Workflows](#github-actions-workflows)).
 - `docs/METHODOLOGY.md` — the physics and math behind the solver.
 - `docs/layer-model-audit.md`, `docs/bc-singularity-exclusion.md`,
-  `docs/load-distribution-default.md`, `docs/mesh-sizing.md` — "landed
+  `docs/load-distribution-default.md`, `docs/mesh-sizing.md`,
+  `docs/display-field-mesh-sensitivity.md` — "landed
   decision" writeups: deliberate, non-obvious behavior changes with the
   measurements that justified them (e.g. the default load distribution is
   `contact_patch`, not `uniform`; a mesh tier promises an element count AND a
@@ -307,6 +308,41 @@ hue. Shading reads the part's form; it cannot misreport a number.
   unit toggle can't drop it). Without it the legend overstates its own coverage
   and disagrees with the MAX STRESS card.
 
+### The Picture's Own Mesh-Dependence (issue #294)
+The displayed field carries a scattered, mesh-dependent tail: re-mesh the same
+part at the same density and the hot spots move. Re-measured on the #294
+cantilever fixture at the post-#295 tier densities
+(`server/tests/measure294.ts`), `|A-B|` as a share of the surface peak is p95
+1.45% / max 1.83% at the standard tier and p95 2.15% / max 14.61% at coarse
+(15% node displacement); at 25% displacement coarse reaches p95 12.18% / max
+18.40%. Refinement shrinks it monotonically and is still the only lever on
+amplitude. Confidence: the MECHANISM below is HIGH (structural, and measured
+four times independently); the AMPLITUDES are MEDIUM — one geometry class, one
+material, structured meshes, so they support the comparison BETWEEN tiers and
+not a per-part number. Do not quote 1.45% as "the" figure for another part.
+
+Three rules follow, and `docs/display-field-mesh-sensitivity.md` has the
+measurements behind them:
+- **The ZZ estimator cannot flag these locations, and that is mechanism, not a
+  bug to fix.** eta differences the RECOVERED field against the RAW element
+  field, so an artifact carried by both cancels. Measured Spearman against
+  actual mesh-to-mesh disagreement: 0.015 originally, 0.061 / -0.066 / -0.164
+  on re-measurement. Never present `topErrorElements` as "here is where the
+  picture lies".
+- **Disclosure, not smoothing.** The model's colors ARE the reading (see the
+  Display Color Space invariants above), so the answer to an untrustworthy
+  region is to SAY it is untrustworthy. `meshSensitivityField` /
+  `installMeshSensitivity` (`client/index.html`) difference the two finest
+  meshes a run produced, per display vertex, and publish it as the `meshsens`
+  view mode. This is free because every analyse response paints the SAME
+  display mesh (`req.positions`) whatever the analysis density — so the
+  comparison is an array difference, never a re-projection. Do not "improve"
+  it into an interpolated comparison of two analysis meshes.
+- **Null means unmeasured and must never render as zero.** One mesh cannot
+  measure its own mesh-dependence: with no second solve the mode does not
+  appear. Same rule `headlineSpread` follows (#256). Locked by test group [V]
+  in `scripts/test_client_logic.mjs`.
+
 ### Debug Tools Available
 - `?debugWeld=true` — Logs vertex grouping statistics, discontinuity detection, potential welding issues
 - `?disableGamma=true` — Sets the INITIAL gamma state (the in-app LINEAR/γ button in the legend then owns it, persisted in `localStorage` as `sf-gamma-disabled`)
@@ -314,6 +350,7 @@ hue. Shading reads the part's form; it cannot misreport a number.
 
 ### Code Review Checklist (Stress Rendering Changes)
 Before submitting a PR that modifies mesh visualization or stress heatmap:
+- [ ] Does any new "this value is uncertain" signal say WHERE, or only globally? (issue #294 — a global scalar on the RESULTS tab is invisible to someone reading the 3D view)
 - [ ] Are coincident vertices being welded BEFORE color assignment? (weld tolerance: 0.01mm)
 - [ ] Does the weld still DISTANCE-TEST candidates against the group representative, rather than accepting whatever occupies a neighboring cell (issue #292)?
 - [ ] Is shading mode explicitly set to Gouraud (`flatShading: false`)? 
@@ -329,6 +366,9 @@ Before submitting a PR that modifies mesh visualization or stress heatmap:
 
 ### References
 Search by symbol, not line number — these move:
+- Mesh sensitivity: `client/index.html`, `meshSensitivityField` /
+  `installMeshSensitivity` / `MODE_META.meshsens`; re-measurement in
+  `server/tests/measure294.ts`
 - Vertex Welding: `client/index.html`, function `weldCoincidentVertices` (the
   grouping itself), consumed by `computeSmoothedStressColors` (which owns
   `WELD_EPS` and the `?debugWeld=true` verification pass)
