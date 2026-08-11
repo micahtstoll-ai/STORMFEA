@@ -215,6 +215,10 @@ Two honest readings, and both belong here:
   where the traction acts across the corner, and it is not something the patch
   rule can smooth away: it is what a distributed load at a rim does.
 
+Tracked as **#308** — the options are a geodesic taper (which would actually
+restore the spread), flagging an edge-spanning patch on the existing
+reliability banner, or deciding this is simply what a load at a corner does.
+
 Neither number is evidence about which idealization is closer to a real
 contact. What can be said is that the previous behaviour was not an
 idealization at all: it applied the load to a face the part is not touched on.

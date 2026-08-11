@@ -135,7 +135,12 @@ export function buildSurfaceTriangleAdjacency(
   const triCount = Math.floor(faces.length / 3);
   const key = (p: number, q: number): number => (p < q ? p * nodeCount + q : q * nodeCount + p);
 
-  // edge → the triangles on it
+  // edge → the DISTINCT triangles on it. Distinct matters: a triangle with a
+  // repeated corner, (4,4,5), walks the same edge twice, and listing it twice
+  // makes the counting pass reserve two slots that the fill pass then skips as
+  // self-pairs — leaving zeros in `list`, i.e. a phantom neighbour numbered 0.
+  // Found by the degenerate-input case in `contact-patch-surface.test.ts`, not
+  // by reading this loop.
   const edgeTris = new Map<number, number[]>();
   for (let t = 0; t < triCount; t++) {
     const a = faces[t*3] ?? 0, b = faces[t*3+1] ?? 0, c = faces[t*3+2] ?? 0;
@@ -143,7 +148,8 @@ export function buildSurfaceTriangleAdjacency(
       if (p === q) continue;                      // degenerate edge
       const k = key(p, q);
       const l = edgeTris.get(k);
-      if (l) l.push(t); else edgeTris.set(k, [t]);
+      if (!l) edgeTris.set(k, [t]);
+      else if (!l.includes(t)) l.push(t);
     }
   }
 
