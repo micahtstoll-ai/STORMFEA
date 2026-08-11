@@ -129,8 +129,8 @@ git push origin your-branch
    tests `npm run test` runs locally, but split across five concurrent jobs
    sized to their measured cost, because the suite is CPU-bound on real FE
    solves and running it as one `&&` chain made the wall time their SUM:
-   - `unit-light` - every vitest file except the heavy ones (92 of 96 as of
-     2026-08-10), ~2 min. The fast "is this obviously broken" signal; look
+   - `unit-light` - every vitest file except the heavy ones (98 of 102 as of
+     2026-08-11), ~2 min. The fast "is this obviously broken" signal; look
      here first when CI goes red. `vitest-shard.mjs` derives this shard as the
      exact COMPLEMENT of `heavy-tests.json`, so the count moves with every
      added test file and nothing in CI checks it — treat the figure here as a
@@ -390,6 +390,17 @@ perimeter walls vs homogenized infill core (`server/twoRegion.ts`,
 4. **Distance field must be point-to-triangle** — nearest-NODE distance aliases
    (3–6 mm boundary triangles vs ~1.35 mm wall band). Boundary nodes seed at
    exactly 0.
+   Two clarifications, both measured (issue #298). The seeding is NOT separately
+   observable: a boundary corner is a VERTEX of a boundary triangle, so it lies
+   at distance 0 — inside any positive search radius — and Ericson's kernel
+   returns bit-exact 0 in the vertex region, so the sweep produces exactly what
+   the seed does (deleting the seed loop leaves `distance-boundary-seed.test.ts`
+   fully passing). The seed is an optimization; the invariant is about the VALUE,
+   which holds on both paths. Do not try again to write a test separating them.
+   And the bucket grid behind the field may only ever RAISE its cell above
+   `dMax` (`chooseGridCellSize`): coarsening merely widens the candidate set a
+   query examines, while refining below `dMax` would silently truncate the
+   27-cell one-ring search and make the field wrong rather than slow.
 5. **Anchor endpoints, report divergence, never renormalize** — 100% infill and
    all-shell parts must collapse to the uniform path; interior divergence from
    `effectiveStrengthMultiplier` is surfaced in `summary.materialModel`, not
