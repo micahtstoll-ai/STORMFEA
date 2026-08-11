@@ -1741,6 +1741,32 @@ console.log('\n[V] Mesh sensitivity — per-location, symmetric, measured-zero !
     test('a fresh solve invalidates the previous measurement',
       /if \(fresh\) S\._meshSensitivity = null;/.test(html));
   }
+
+  // ── DESIGN.md compliance of the markup this issue adds ──────────────────
+  // Scoped to the new blocks on purpose. The file at large is not compliant
+  // (10px appears 270 times, #312; the results banners are 12px/6px, #303) and
+  // a whole-file assertion would just fail. What is pinned here is the rule the
+  // mesh-resolution banner in PR #302 set: NEW markup follows DESIGN.md even
+  // when its neighbours do not, so the sweep stays a sweep instead of a rewrite.
+  {
+    const block = html.match(/const sensitivityNote = sens \? \(\(\) => \{[\s\S]*?\}\)\(\) : '';/);
+    test('study-report block extracted', !!block);
+    test('study-report block uses the type-scale tokens, not 10/12/14px',
+      block && !/font-size:\s*1[024]px/.test(block[0]) && /var\(--text-sm\)/.test(block[0]) && /var\(--text-xs\)/.test(block[0]));
+    test('study-report block is a callout (border-left), not an off-scale radius card',
+      block && !/border-radius/.test(block[0]) && /border-left:2px solid/.test(block[0]));
+    test('study-report numbers are DM Mono (they are data, not copy)',
+      block && /font-family:'DM Mono',monospace/.test(block[0]));
+    test('study-report button carries no font-size or padding override',
+      block && /class="btn" onclick="setStressMode\('meshsens'\)" style="margin-top:6px"/.test(block[0]));
+
+    const explainer = html.match(/<div id="meshsens-explainer"[\s\S]*?\n      <\/div>/);
+    test('legend explainer extracted', !!explainer);
+    test('legend explainer uses the type-scale tokens, not 10/12/14px',
+      explainer && !/font-size:\s*1[024]px/.test(explainer[0]) && /var\(--text-sm\)/.test(explainer[0]));
+    test('legend explainer data line is DM Mono 9px',
+      explainer && /font-family:'DM Mono',monospace;font-size:var\(--text-xs\)/.test(explainer[0]));
+  }
 }
 
 // ── Test group W: legendValueText — one formatter, two (three) callers ───────

@@ -316,7 +316,10 @@ cantilever fixture at the post-#295 tier densities
 1.45% / max 1.83% at the standard tier and p95 2.15% / max 14.61% at coarse
 (15% node displacement); at 25% displacement coarse reaches p95 12.18% / max
 18.40%. Refinement shrinks it monotonically and is still the only lever on
-amplitude.
+amplitude. Confidence: the MECHANISM below is HIGH (structural, and measured
+four times independently); the AMPLITUDES are MEDIUM — one geometry class, one
+material, structured meshes, so they support the comparison BETWEEN tiers and
+not a per-part number. Do not quote 1.45% as "the" figure for another part.
 
 Three rules follow, and `docs/display-field-mesh-sensitivity.md` has the
 measurements behind them:

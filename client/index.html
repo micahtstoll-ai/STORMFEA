@@ -1208,10 +1208,13 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <!-- Mesh-sensitivity explainer (issue #294) — only shown while that mode is
            active. It is a measurement of the PICTURE, not of the part, so it needs
            to say what moved and between which two meshes; populated/toggled from
-           applyStressColorsFromArrays(). -->
-      <div id="meshsens-explainer" style="display:none;max-width:220px;text-align:right;font-size:10px;line-height:1.5;color:var(--text-lo);margin-bottom:2px">
+           applyStressColorsFromArrays(). Typed to DESIGN.md rather than to the
+           10px eta-explainer above it: 11px Outfit for the copy, DM Mono 9px for
+           the data line, since the two meshes and their percentages are data.
+           The eta panel's size is part of the #303/#312 sweep. -->
+      <div id="meshsens-explainer" style="display:none;max-width:220px;text-align:right;font-size:var(--text-sm);line-height:1.5;color:var(--text-lo);margin-bottom:6px">
         <div>How far the value here <b>moved</b> between two meshes of this part, as a % of the surface peak. Red = the mesh is choosing that color as much as the part is. Low is weak evidence, not proof — two meshes agreeing is not convergence.</div>
-        <div id="meshsens-pair" style="margin-top:4px;color:var(--text-mid)"></div>
+        <div id="meshsens-pair" style="font-family:'DM Mono',monospace;font-size:var(--text-xs);letter-spacing:.08em;margin-top:6px;color:var(--text-mid)"></div>
       </div>
       <div id="legend-labels" style="display:flex;align-items:stretch;gap:8px">
         <div id="legend-val-stack" style="display:flex;flex-direction:column;justify-content:space-between;align-items:flex-end">
@@ -9777,12 +9780,17 @@ async function runConvergenceStudy() {
     // two readouts of mesh-dependence in one panel must not use two thresholds.
     const hot = sens.p95 >= 5;
     const col = hot ? 'var(--warn)' : 'var(--gold-dim)';
-    const bg  = hot ? 'var(--bg-card)' : 'var(--gold-faint)';
-    return `<div style="padding:6px 8px;margin-top:6px;background:${bg};border:1px solid ${col}55;border-radius:3px;font-size:10px;color:${col};line-height:1.6">
-      <b>Per-location movement</b> between the two finest meshes (${(sens.nodesCoarse||0).toLocaleString()} → ${(sens.nodesFine||0).toLocaleString()} nodes), as a share of the ${U.stressStr(sens.peakMPa,2)} surface peak:
-      median <b>${sens.median.toFixed(2)}%</b>, p95 <b>${sens.p95.toFixed(2)}%</b>, max <b>${sens.max.toFixed(2)}%</b>.
-      <div style="color:var(--text-lo);margin-top:3px">Where this is large, the color at that spot is set partly by the mesh rather than by the part. Where it is small it is weak evidence, not proof — two meshes agreeing is not convergence. The <b>η</b> (Mesh quality) view does not predict these locations: η differences the recovered field against the raw one, and an artifact carried by both cancels.</div>
-      <button class="btn" onclick="setStressMode('meshsens')" style="font-size:9px;padding:2px 6px;margin-top:6px" title="Paint the per-location mesh-to-mesh movement on the model">SHOW ON MODEL</button>
+    // DESIGN.md, Cards → Status/callout: a note is border-left + padding-left,
+    // no card box and no background. The blocks either side of this one are
+    // boxed 10px/3px cards, which DESIGN.md's type scale and radius table both
+    // forbid — that drift is issue #303/#312 and gets swept there. New markup
+    // complies, exactly as the mesh-resolution banner in PR #302 did rather
+    // than copying the five non-compliant banners beside it.
+    return `<div style="border-left:2px solid ${col};padding-left:10px;margin-top:12px">
+      <div style="font-size:var(--text-sm);color:${col};line-height:1.6">Per-location movement between the two finest meshes (${(sens.nodesCoarse||0).toLocaleString()} → ${(sens.nodesFine||0).toLocaleString()} nodes), as a share of the ${U.stressStr(sens.peakMPa,2)} surface peak</div>
+      <div style="font-family:'DM Mono',monospace;font-size:var(--text-xs);letter-spacing:.08em;color:var(--text-mid);margin-top:6px">median ${sens.median.toFixed(2)}% · p95 ${sens.p95.toFixed(2)}% · max ${sens.max.toFixed(2)}%</div>
+      <div style="font-size:var(--text-sm);color:var(--text-lo);line-height:1.6;margin-top:6px">Where this is large, the color at that spot is set partly by the mesh rather than by the part. Where it is small it is weak evidence, not proof — two meshes agreeing is not convergence. The η (Mesh quality) view does not predict these locations: η differences the recovered field against the raw one, and an artifact carried by both cancels.</div>
+      <button class="btn" onclick="setStressMode('meshsens')" style="margin-top:6px" title="Paint the per-location mesh-to-mesh movement on the model">SHOW ON MODEL</button>
     </div>`;
   })() : '';
 

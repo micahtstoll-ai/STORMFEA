@@ -144,6 +144,33 @@ two meshes, so the overlay appears there without any extra solve at all.
   its own mesh-dependence, so with no second solve the mode does not appear at
   all. The same rule `headlineSpread` follows (#256).
 
+## Confidence
+
+Two claims here, and they do not carry the same weight.
+
+**The mechanism — that the ZZ estimator cannot rank these locations: HIGH.**
+It is structural, not statistical: eta is `‖σ* − σ_h‖` and an artifact present in
+both terms subtracts out. The measurement agrees four times independently
+(0.015 in #294, then 0.061 / -0.066 / -0.164 here), across two different
+perturbation amplitudes and three densities, and the sign flips are noise rather
+than a relationship. Nothing about it is specific to this fixture.
+
+**The amplitudes in the tables — MEDIUM.** One geometry class (a plate in
+bending), one isotropic material, one perturbation model, structured meshes
+rather than TetGen output. What the amplitudes support is the comparison BETWEEN
+tiers, which is what the conclusion rests on: every quantity falls monotonically
+with density, at both perturbation amplitudes, which is a within-fixture
+comparison and therefore robust to the fixture. What they do NOT support is
+quoting "p95 1.45%" as the number for some other part. A user's part is not this
+plate, which is exactly why the tool measures the overlay per-part rather than
+shipping a constant.
+
+Erring direction is known: a structured box mesh perturbed by a fixed fraction
+of its cell is a TAME model of "a different mesh of the same part" compared with
+re-running TetGen, which changes connectivity as well as node placement. So the
+real spread between two tier-equivalent meshes is likely LARGER than these
+tables, not smaller.
+
 ## What this does not do
 
 - It does not remove the artifact. Refinement is still the only lever on
