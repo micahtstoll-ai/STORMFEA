@@ -130,20 +130,56 @@ describe("two-region invariant #4 — boundary nodes seed at exactly 0", () => {
     expect(worst).toBeLessThan(1e-12);
   });
 
-  // NOTE on a test that is deliberately absent: the obvious way to prove the
-  // SEED loop (rather than the sweep) is what zeroes the corners would be to
-  // pass a dMax far below element scale, so the search cannot reach any
-  // triangle. That is not a legitimate input and cannot be tested here — the
-  // spatial grid uses CELL = max(dMax, 1e-6), so a tiny dMax makes every
-  // triangle span millions of cells and the bucket Map throws "Map maximum
-  // size exceeded". It is unreachable in production (every caller passes
-  // dMax = maxBand + maxCornerEdge(mesh), always at least one element edge),
-  // so it is a latent robustness hazard rather than a live defect.
+  // The note that used to sit here said a tiny dMax could not be passed at all
+  // (the grid threw "Map maximum size exceeded"), and that the curved-bore case
+  // above proved the corners were SEEDED rather than searched. The first half is
+  // fixed — issue #298 capped the grid, and the case is exercised below. The
+  // second half was wrong, and worth correcting rather than deleting:
   //
-  // The curved-bore case above carries the evidence instead, and more
-  // directly: corners come back bit-exactly 0 while swept boundary midsides
-  // land at ~1.8e-15. Identical geometry, different values, therefore
-  // different code paths — the corners were seeded, not searched.
+  // No test can separate the seed loop from the sweep on a well-formed mesh, for
+  // a reason that has nothing to do with #298. A boundary corner is a VERTEX of
+  // a boundary triangle, so it sits at distance 0 — inside ANY positive search
+  // radius, however small — and Ericson's closest-point kernel returns p − a for
+  // the vertex region, i.e. bit-exact 0, not float noise. The sweep therefore
+  // produces exactly the value the seed does. Measured, not argued: deleting the
+  // seed loop outright leaves every test in this file passing, the one below
+  // included.
+  //
+  // So the seed is an OPTIMIZATION (it lets boundary nodes skip the sweep), and
+  // invariant #4's "boundary nodes seed at exactly 0" is satisfied on both
+  // paths. The tests above still earn their place — they pin the VALUE the
+  // invariant is about, which is what downstream wallfrac consumes, and the
+  // corner/midside split still shows that only corners get there exactly.
+
+  it("dMax far below element scale: 0 on the boundary, exactly dMax elsewhere (#298)", () => {
+    // The input the old note called untestable. Before #298 this threw
+    // RangeError after ~34 s of grid thrash; now the field is total, and the
+    // clamp is visible in its purest form — nothing is within 1e-6 of the
+    // surface except the surface itself.
+    const m = generateBoxMeshC3D10(0, 0, 0, 20, 10, 5, 4, 2, 1);
+    const mesh: TetMesh = { nodes: m.nodes, elements: m.elements, nodeCount: m.nodeCount,
+                            elementCount: m.elementCount, nodesPerElem: 10 };
+    const faces = extractSurfaceFaces(mesh);
+    const DMAX = 1e-6;
+    const dist = computeNodeSurfaceDistances(mesh, faces, DMAX);
+
+    const corners = boundaryCorners(faces);
+    for (const n of corners) expect(dist[n]).toBe(0);
+
+    // Boundary midsides lie in the plane of their triangles, so they too are
+    // found at 0 — a distance of 0 is inside even a 1e-6 radius.
+    const mids = boundaryMidsides(mesh, faces);
+    for (const n of mids) expect(dist[n]).toBe(0);
+
+    // Everything else is at millimetre scale from the surface and clamps.
+    let clamped = 0;
+    for (let n = 0; n < mesh.nodeCount; n++) {
+      if (corners.has(n) || mids.has(n)) continue;
+      expect(dist[n]).toBe(DMAX);
+      clamped++;
+    }
+    expect(clamped).toBeGreaterThan(0);
+  });
 
   it("an interior node is strictly positive — the field is not all zeros", () => {
     // Guards against the degenerate pass where everything reads 0.
