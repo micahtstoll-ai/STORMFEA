@@ -3642,6 +3642,105 @@ function loadMeshFromPositions(posB64) {
 }
 
 /**
+ * Groups coincident vertices of an unindexed (STL) position array into weld
+ * groups: every member of a group is within `weldEps` of that group's
+ * REPRESENTATIVE vertex, so a group can never be wider than 2*weldEps.
+ *
+ * The spatial hash is an accelerator, not the decision (issue #292). An
+ * earlier version grouped by cell OCCUPANCY — it took the first occupied cell
+ * in the 27-cell neighborhood with no distance test, and then wrote its own
+ * cell key with the group it had borrowed. That welded vertices up to ~7x
+ * WELD_EPS apart (opposite corners of the neighborhood), let a run of adjacent
+ * occupied cells chain one group arbitrarily far across the mesh, and made the
+ * partition depend on vertex ORDER (whichever cell the fixed di/dj/dk scan hit
+ * first) rather than on geometry.
+ *
+ * Here the map holds, per cell, the ids of the groups whose REPRESENTATIVE
+ * lives in that cell; a vertex joins the NEAREST representative within
+ * weldEps (ties broken by lowest group id) or else starts a group of its own.
+ * Cells are 2*weldEps wide, so any representative within weldEps is
+ * guaranteed to be in the 27-cell neighborhood — the search stays O(1) per
+ * vertex.
+ *
+ * @param posArr   Flat xyz position array (3 floats per vertex).
+ * @param nVerts   Number of vertices to consider (posArr may be longer).
+ * @param weldEps  Weld radius in mm — max distance from a group's rep.
+ * @returns { weldGroup: Int32Array (group id per vertex), nGroups }
+ */
+function weldCoincidentVertices(posArr, nVerts, weldEps) {
+  // The 27 cell offsets, own cell (0,0,0) first — see the search loop below.
+  const WELD_NEIGHBORHOOD = [0, 0, 0];
+  for (let di = -1; di <= 1; di++)
+    for (let dj = -1; dj <= 1; dj++)
+      for (let dk = -1; dk <= 1; dk++)
+        if (di !== 0 || dj !== 0 || dk !== 0) WELD_NEIGHBORHOOD.push(di, dj, dk);
+
+  const weldGroup = new Int32Array(nVerts).fill(-1);
+  const cell = weldEps * 2;
+  const epsSq = weldEps * weldEps;
+  // Cell key -> ids of groups whose representative sits in that cell.
+  const cellGroups = new Map();
+  // Representative coordinates, indexed by group id.
+  const repX = [], repY = [], repZ = [];
+  let nGroups = 0;
+
+  // Bounding box for stable grid indexing. FLOOR-based (consistent with the
+  // server's spatial grid in analysis.ts, nearestNodeStress): Math.round()
+  // hashes negative coordinates inconsistently — round(-0.75) = -1 but
+  // round(-0.25) = 0 — which spreads a cluster over non-adjacent cells.
+  let xMin = Infinity, yMin = Infinity, zMin = Infinity;
+  for (let i = 0; i < nVerts; i++) {
+    const x = posArr[i*3], y = posArr[i*3+1], z = posArr[i*3+2];
+    if (x < xMin) xMin = x;
+    if (y < yMin) yMin = y;
+    if (z < zMin) zMin = z;
+  }
+  if (!Number.isFinite(xMin)) { xMin = 0; yMin = 0; zMin = 0; }
+
+  for (let i = 0; i < nVerts; i++) {
+    const px = posArr[i*3], py = posArr[i*3+1], pz = posArr[i*3+2];
+    const ci = Math.floor((px - xMin) / cell);
+    const cj = Math.floor((py - yMin) / cell);
+    const ck = Math.floor((pz - zMin) / cell);
+
+    // Nearest representative within weldEps wins. Scanning ALL candidates
+    // (rather than breaking on the first) is what makes the result a function
+    // of geometry instead of of the scan order. WELD_NEIGHBORHOOD puts the
+    // vertex's own cell first, so the common case — an exact STL duplicate of
+    // a vertex already seen — stops after one lookup (nothing can beat d2 = 0,
+    // and no two representatives can be coincident).
+    let best = -1, bestD2 = Infinity;
+    for (let o = 0; o < WELD_NEIGHBORHOOD.length; o += 3) {
+      const ids = cellGroups.get(`${ci+WELD_NEIGHBORHOOD[o]},${cj+WELD_NEIGHBORHOOD[o+1]},${ck+WELD_NEIGHBORHOOD[o+2]}`);
+      if (ids === undefined) continue;
+      for (let n = 0; n < ids.length; n++) {
+        const g = ids[n];
+        const dx = px - repX[g], dy = py - repY[g], dz = pz - repZ[g];
+        const d2 = dx*dx + dy*dy + dz*dz;
+        // Ties go to the lower group id so the outcome is deterministic for a
+        // given set of representatives.
+        if (d2 < bestD2 || (d2 === bestD2 && g < best)) { best = g; bestD2 = d2; }
+      }
+      if (bestD2 === 0) break;
+    }
+
+    if (best === -1 || bestD2 > epsSq) {
+      // No representative close enough — this vertex becomes one itself, and
+      // is registered under ITS OWN cell (never a neighbor's), which is what
+      // stops groups from chaining.
+      best = nGroups++;
+      repX.push(px); repY.push(py); repZ.push(pz);
+      const key = `${ci},${cj},${ck}`;
+      const ids = cellGroups.get(key);
+      if (ids === undefined) cellGroups.set(key, [best]); else ids.push(best);
+    }
+    weldGroup[i] = best;
+  }
+
+  return { weldGroup, nGroups };
+}
+
+/**
  * Computes smoothed, percentile-clipped, gamma-curved per-vertex colors for
  * a stress array against the current mesh geometry. Shared by
  * applyStressColorsFromResults (initial display, from server-computed nodal stress)
@@ -3669,61 +3768,26 @@ function computeSmoothedStressColors(vertexStress, maxValOverride, minValOverrid
   // vert gets its own color and you get a faceted / per-triangle look
   // instead of a smooth gradient.
   const WELD_EPS  = 0.01;   // mm — 10 microns, catches typical STL float imprecision
-  const WELD_CELL = WELD_EPS * 2;
-  const weldGroup = new Int32Array(nVerts).fill(-1);
-  const groupStressSum = new Float64Array(nVerts);
-  const groupStressCnt = new Int32Array(nVerts);
-  let nGroups = 0;
-  const weldMap = new Map();
   const debugMode = new URLSearchParams(window.location.search).has('debugWeld');
-  const debugVertices = new Set();
 
-  // Find bounding box for stable grid indexing. Uses FLOOR-based indexing
-  // (consistent with server-side spatial grid in analysis.ts:1728-1730).
-  // This avoids edge cases with Math.round() on negative coordinates:
-  // round(-0.75) = -1, but round(-0.25) = 0, causing vertices that should
-  // weld together to hash into non-adjacent cells.
-  let xMin = Infinity, xMax = -Infinity;
-  let yMin = Infinity, yMax = -Infinity;
-  let zMin = Infinity, zMax = -Infinity;
+  // Grouping itself lives in weldCoincidentVertices: a vertex joins a group
+  // only if it is genuinely within WELD_EPS of that group's representative
+  // (issue #292), so groups can neither exceed the tolerance nor chain.
+  const { weldGroup, nGroups } = weldCoincidentVertices(posArr, nVerts, WELD_EPS);
+  const groupStressSum = new Float64Array(nGroups);
+  const groupStressCnt = new Int32Array(nGroups);
   for (let i = 0; i < nVerts; i++) {
-    const x = posArr[i*3], y = posArr[i*3+1], z = posArr[i*3+2];
-    if (x < xMin) xMin = x; if (x > xMax) xMax = x;
-    if (y < yMin) yMin = y; if (y > yMax) yMax = y;
-    if (z < zMin) zMin = z; if (z > zMax) zMax = z;
+    const g = weldGroup[i];
+    groupStressSum[g] += vertexStress[i] ?? 0;
+    groupStressCnt[g]++;
   }
 
-  for (let i = 0; i < nVerts; i++) {
-    const px = posArr[i*3], py = posArr[i*3+1], pz = posArr[i*3+2];
-    // Floor-based grid: consistent with server's spatial indexing algorithm
-    const ci = Math.floor((px - xMin) / WELD_CELL);
-    const cj = Math.floor((py - yMin) / WELD_CELL);
-    const ck = Math.floor((pz - zMin) / WELD_CELL);
-    let foundGroup = -1;
-    let foundAt = null;
-    outer: for (let di = -1; di <= 1; di++) {
-      for (let dj = -1; dj <= 1; dj++) {
-        for (let dk = -1; dk <= 1; dk++) {
-          const key = `${ci+di},${cj+dj},${ck+dk}`;
-          const existing = weldMap.get(key);
-          if (existing !== undefined) { foundGroup = existing; foundAt = key; break outer; }
-        }
-      }
-    }
-    if (foundGroup === -1) {
-      foundGroup = nGroups++;
-      if (debugMode) debugVertices.add(i);
-    }
-    weldMap.set(`${ci},${cj},${ck}`, foundGroup);
-    weldGroup[i] = foundGroup;
-    groupStressSum[foundGroup] += vertexStress[i] ?? 0;
-    groupStressCnt[foundGroup]++;
-  }
-
-  // Optional verification pass (debug mode only): ensure grid-based grouping
-  // correctly captured all vertices within WELD_EPS. With the floor-based
-  // grid and bounding-box normalization, the grid should work correctly,
-  // but this pass catches any remaining edge cases.
+  // Optional verification pass (debug mode only): re-derives, from the
+  // positions alone, the property weldCoincidentVertices promises — every
+  // vertex within WELD_EPS of its group's representative. It should now never
+  // fire; it stays as the runtime check on a geometry the unit tests do not
+  // have (test group [U] in scripts/test_client_logic.mjs owns the synthetic
+  // cases).
   if (debugMode) {
     const WELD_EPS_SQ = WELD_EPS * WELD_EPS;
     const groupReps = new Map();

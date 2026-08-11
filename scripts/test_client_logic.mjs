@@ -1395,6 +1395,240 @@ console.log('\n[T] Heatmap display color space — model color == legend color')
   }
 }
 
+// ── Test group U: vertex weld grouping (issue #292) ─────────────────────────
+// The weld decides which vertices share one stress value, so a group that is
+// wider than the tolerance averages stress across geometry that is genuinely
+// apart. The old grid grouped by cell OCCUPANCY — first occupied cell in the
+// 27-cell neighborhood wins, no distance test, and the borrowed group written
+// back under the vertex's own key — which welded up to ~7x WELD_EPS, chained
+// transitively, and depended on vertex order. Only ?debugWeld=true observed
+// any of that. These tests pin the properties instead.
+console.log('\n[U] Vertex weld grouping — distance-tested, no chaining, order-independent (#292)');
+{
+  const src = html.match(/function weldCoincidentVertices\(posArr, nVerts, weldEps\) \{[\s\S]*?\n\}\n/);
+  if (!src) throw new Error('Could not extract weldCoincidentVertices');
+  const mod = { exports: {} };
+  new Function('module', 'exports', src[0] + '\nmodule.exports = { weldCoincidentVertices };')(mod, mod.exports);
+  const { weldCoincidentVertices } = mod.exports;
+
+  const EPS = 0.01;   // the client's WELD_EPS
+
+  // The pre-fix algorithm, kept here (and only here) so the guards below show
+  // these tests are a real constraint rather than a restatement of the code.
+  function weldByOccupancy(posArr, nVerts, weldEps) {
+    const cell = weldEps * 2;
+    const weldGroup = new Int32Array(nVerts).fill(-1);
+    const weldMap = new Map();
+    let nGroups = 0;
+    let xMin = Infinity, yMin = Infinity, zMin = Infinity;
+    for (let i = 0; i < nVerts; i++) {
+      xMin = Math.min(xMin, posArr[i*3]);
+      yMin = Math.min(yMin, posArr[i*3+1]);
+      zMin = Math.min(zMin, posArr[i*3+2]);
+    }
+    for (let i = 0; i < nVerts; i++) {
+      const ci = Math.floor((posArr[i*3] - xMin) / cell);
+      const cj = Math.floor((posArr[i*3+1] - yMin) / cell);
+      const ck = Math.floor((posArr[i*3+2] - zMin) / cell);
+      let found = -1;
+      outer: for (let di = -1; di <= 1; di++)
+        for (let dj = -1; dj <= 1; dj++)
+          for (let dk = -1; dk <= 1; dk++) {
+            const e = weldMap.get(`${ci+di},${cj+dj},${ck+dk}`);
+            if (e !== undefined) { found = e; break outer; }
+          }
+      if (found === -1) found = nGroups++;
+      weldMap.set(`${ci},${cj},${ck}`, found);
+      weldGroup[i] = found;
+    }
+    return { weldGroup, nGroups };
+  }
+
+  /** Max distance of any member from its group's representative (first member). */
+  function widestFromRep(posArr, weldGroup) {
+    const rep = new Map();
+    for (let i = 0; i < weldGroup.length; i++) if (!rep.has(weldGroup[i])) rep.set(weldGroup[i], i);
+    let worst = 0;
+    for (let i = 0; i < weldGroup.length; i++) {
+      const r = rep.get(weldGroup[i]);
+      worst = Math.max(worst, Math.hypot(
+        posArr[i*3] - posArr[r*3], posArr[i*3+1] - posArr[r*3+1], posArr[i*3+2] - posArr[r*3+2]));
+    }
+    return worst;
+  }
+
+  /** Partition as a canonical string, independent of group numbering. */
+  function partitionKey(weldGroup, order) {
+    const byGroup = new Map();
+    for (let k = 0; k < weldGroup.length; k++) {
+      const original = order ? order[k] : k;
+      const g = weldGroup[k];
+      if (!byGroup.has(g)) byGroup.set(g, []);
+      byGroup.get(g).push(original);
+    }
+    return Array.from(byGroup.values())
+      .map(v => v.sort((a, b) => a - b).join(','))
+      .sort()
+      .join('|');
+  }
+
+  // Deterministic shuffle (mulberry32) so a failure is reproducible.
+  function shuffled(posArr, nVerts, seed) {
+    const order = Array.from({ length: nVerts }, (_, i) => i);
+    let s = seed >>> 0;
+    const rnd = () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+    for (let i = nVerts - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+    const out = new Float32Array(nVerts * 3);
+    for (let k = 0; k < nVerts; k++) {
+      out[k*3] = posArr[order[k]*3]; out[k*3+1] = posArr[order[k]*3+1]; out[k*3+2] = posArr[order[k]*3+2];
+    }
+    return { pos: out, order };
+  }
+
+  // ── The invariant CLAUDE.md already states: coincident vertices weld ──────
+  {
+    // 8 distinct corners, each duplicated 3x (as unindexed STL triangles do),
+    // in interleaved order so welding cannot be an accident of adjacency.
+    const corners = [[0,0,0],[10,0,0],[0,10,0],[10,10,0],[0,0,10],[10,0,10],[0,10,10],[10,10,10]];
+    const pts = [];
+    for (let d = 0; d < 3; d++) for (const c of corners) pts.push(c);
+    const pos = new Float32Array(pts.flat());
+    const { weldGroup, nGroups } = weldCoincidentVertices(pos, pts.length, EPS);
+    test('exactly coincident vertices weld into one group per location',
+      nGroups === 8, `got ${nGroups} groups for 8 distinct locations`);
+    test('each welded group holds all 3 duplicates of its corner',
+      [...new Set(weldGroup)].every(g => weldGroup.filter(x => x === g).length === 3));
+    test('every vertex is assigned a valid group id',
+      Array.from(weldGroup).every(g => Number.isInteger(g) && g >= 0 && g < nGroups));
+  }
+
+  // ── Float imprecision inside the tolerance still welds (that is the point) ─
+  {
+    const pos = new Float32Array([0, 0, 0,  0.004, 0, 0,  0, 0.004, 0,  -0.003, 0.002, 0.001]);
+    const { nGroups } = weldCoincidentVertices(pos, 4, EPS);
+    test('near-coincident vertices (STL float noise, < WELD_EPS) still weld',
+      nGroups === 1, `got ${nGroups} groups`);
+  }
+
+  // ── (1) Welds past the tolerance: the 27-cell-neighborhood corner case ────
+  {
+    // Two vertices one cell apart on every axis (cell = 2*EPS = 0.02 mm), so
+    // the occupancy scan sees the neighbor — but they are 0.069 mm apart,
+    // ~6.9x WELD_EPS.
+    const a = 0.0001, b = 0.0399;
+    const pos = new Float32Array([a, a, a,  b, b, b]);
+    const d = Math.hypot(b - a, b - a, b - a);
+    test('fixture is inside the 27-cell neighborhood but ~6.9x WELD_EPS apart',
+      d > 6.8 * EPS && d < 7 * EPS, `d=${d.toFixed(4)} mm`);
+    test('regression guard: occupancy grid welded that pair into one group',
+      weldByOccupancy(pos, 2, EPS).nGroups === 1);
+    test('vertices beyond WELD_EPS are not welded, even in an adjacent cell',
+      weldCoincidentVertices(pos, 2, EPS).nGroups === 2);
+  }
+
+  // ── (2) Groups chain transitively ────────────────────────────────────────
+  {
+    // 40 vertices at 0.015 mm spacing — each beyond WELD_EPS of its neighbor,
+    // but every cell in the run is occupied, which is all the old scan asked.
+    const n = 40, step = 0.015;
+    const pos = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) pos[i*3] = i * step;
+    test('regression guard: occupancy grid chained the whole 0.585 mm run into one group',
+      weldByOccupancy(pos, n, EPS).nGroups === 1);
+    const { weldGroup, nGroups } = weldCoincidentVertices(pos, n, EPS);
+    test('a run of occupied cells does not chain — each spaced vertex stays its own group',
+      nGroups === n, `got ${nGroups} groups for ${n} vertices ${step} mm apart`);
+    test('no group is wider than WELD_EPS from its representative',
+      widestFromRep(pos, weldGroup) <= EPS + 1e-9, `widest=${widestFromRep(pos, weldGroup)}`);
+  }
+
+  // ── (3) Vertex-order dependence ──────────────────────────────────────────
+  {
+    // Clusters of coincident-ish vertices, each well inside WELD_EPS, and far
+    // enough apart that the correct partition is unambiguous.
+    const centers = [[0,0,0],[0.5,0,0],[0,0.5,0],[-0.35,-0.42,0.7],[1.25,-0.8,0.33]];
+    const jitter = [[0,0,0],[0.003,0,0],[0,-0.002,0.001],[0.001,0.002,-0.003]];
+    const pts = [];
+    for (const c of centers) for (const j of jitter) pts.push([c[0]+j[0], c[1]+j[1], c[2]+j[2]]);
+    const pos = new Float32Array(pts.flat());
+    const nV = pts.length;
+    const base = weldCoincidentVertices(pos, nV, EPS);
+    test('clustered fixture welds to one group per cluster',
+      base.nGroups === centers.length, `got ${base.nGroups}, expected ${centers.length}`);
+
+    const baseKey = partitionKey(base.weldGroup, null);
+    let mismatches = 0;
+    for (let seed = 1; seed <= 25; seed++) {
+      const { pos: sp, order } = shuffled(pos, nV, seed);
+      if (partitionKey(weldCoincidentVertices(sp, nV, EPS).weldGroup, order) !== baseKey) mismatches++;
+    }
+    test('the partition is independent of vertex order (25 shuffles)',
+      mismatches === 0, `${mismatches}/25 permutations produced a different partition`);
+
+    // Same geometry translated into the negative octant: floor-based indexing
+    // with bounding-box normalization must not care where the part sits.
+    const neg = new Float32Array(nV * 3);
+    for (let i = 0; i < nV * 3; i++) neg[i] = pos[i] - 12.5;
+    test('a part centered in the negative octant welds identically',
+      partitionKey(weldCoincidentVertices(neg, nV, EPS).weldGroup, null) === baseKey);
+  }
+
+  // ── The property, swept over a mesh-like point cloud ─────────────────────
+  {
+    // Sliver-mesh-like: dense random points at ~WELD_CELL scale, where the old
+    // grid chained hardest. smooth-concentration.test.ts already produces
+    // meshes with normalized Jacobians ~0.006, so this spacing is reachable.
+    let s = 12345;
+    const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
+    const nV = 3000;
+    const pos = new Float32Array(nV * 3);
+    for (let i = 0; i < nV; i++) {
+      pos[i*3] = (rnd() - 0.5) * 0.4; pos[i*3+1] = (rnd() - 0.5) * 0.4; pos[i*3+2] = (rnd() - 0.5) * 0.4;
+    }
+    const { weldGroup, nGroups } = weldCoincidentVertices(pos, nV, EPS);
+    test('dense sliver-scale cloud: no vertex exceeds WELD_EPS from its group rep',
+      widestFromRep(pos, weldGroup) <= EPS + 1e-9, `widest=${widestFromRep(pos, weldGroup).toFixed(5)} mm`);
+    test('dense sliver-scale cloud: every group id is in range and used',
+      new Set(weldGroup).size === nGroups && Math.max(...weldGroup) === nGroups - 1);
+    const occ = weldByOccupancy(pos, nV, EPS);
+    test('regression guard: occupancy grid blew past the tolerance on the same cloud',
+      widestFromRep(pos, occ.weldGroup) > 5 * EPS,
+      `widest=${widestFromRep(pos, occ.weldGroup).toFixed(5)} mm`);
+
+    // No two representatives are within WELD_EPS of each other — the second
+    // would have joined the first instead of starting a group. This is what
+    // makes "distance 0 wins outright" a safe early exit in the own-cell-first
+    // scan: a vertex can be coincident with at most one representative.
+    const reps = [];
+    const seen = new Set();
+    for (let i = 0; i < nV; i++) {
+      if (seen.has(weldGroup[i])) continue;
+      seen.add(weldGroup[i]);
+      reps.push([pos[i*3], pos[i*3+1], pos[i*3+2]]);
+    }
+    let closest = Infinity;
+    for (let a = 0; a < reps.length; a++) {
+      for (let b = a + 1; b < reps.length; b++) {
+        closest = Math.min(closest, Math.hypot(
+          reps[a][0]-reps[b][0], reps[a][1]-reps[b][1], reps[a][2]-reps[b][2]));
+      }
+    }
+    test('no two group representatives are within WELD_EPS of each other',
+      closest > EPS, `closest pair=${closest.toFixed(5)} mm across ${reps.length} groups`);
+  }
+
+  // ── The heatmap path actually uses it ────────────────────────────────────
+  {
+    const fn = html.match(/function computeSmoothedStressColors\(vertexStress, maxValOverride, minValOverride, filter\) \{[\s\S]*?\n\}\n/);
+    test('computeSmoothedStressColors extracted', !!fn);
+    test('computeSmoothedStressColors welds via weldCoincidentVertices',
+      /weldCoincidentVertices\(posArr, nVerts, WELD_EPS\)/.test(fn[0]));
+    test('computeSmoothedStressColors no longer runs its own occupancy scan',
+      !/weldMap/.test(fn[0]) && !/outer:/.test(fn[0]));
+  }
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 
