@@ -124,6 +124,31 @@ describe("assembleContactPatchLoad — the patch is on the placed surface (#305)
     expect(r.centreSnapMm).toBeLessThan(r.radiusMm);
   });
 
+  it("makes loadPatchRadiusMm load-bearing for a push, not inert", () => {
+    // The other half of what the old rule broke: with the whole load on one
+    // fallback triangle, the requested radius changed NOTHING. Measured on the
+    // #305 bar, a 6 mm radius against a 2.75 mm default both returned the same
+    // single triangle. A radius the caller passes is the one number this model
+    // actually wants (docs/load-distribution-default.md), so it has to move the
+    // patch.
+    const { mesh, faces } = cube(12);
+    const centre: [number, number, number] = [5, 5, L];
+    const small = assembleContactPatchLoad(mesh, faces, [0, 0, -1], [0, 0, -100], centre, 1.5);
+    const large = assembleContactPatchLoad(mesh, faces, [0, 0, -1], [0, 0, -100], centre, 4);
+
+    expect(small.radiusMm).toBe(1.5);
+    expect(large.radiusMm).toBe(4);
+    expect(large.loadedTriangles).toBeGreaterThan(small.loadedTriangles * 2);
+    // Same resultant either way — a different distribution, not a different load.
+    expect(resultant(mesh, small.forces).z).toBeCloseTo(-100, 9);
+    expect(resultant(mesh, large.forces).z).toBeCloseTo(-100, 9);
+    // The wider patch really is wider on the part, not just in bookkeeping.
+    const spread = (f: Float64Array) => Math.max(
+      ...loadedNodes(mesh, f).map(nd => Math.hypot(nd.x - centre[0], nd.y - centre[1])),
+    );
+    expect(spread(large.forces)).toBeGreaterThan(spread(small.forces) * 1.5);
+  });
+
   it("push and pull at the same point are the same patch with opposite sign", () => {
     // Whether the load is contact or a bolted pad in tension is the sign of the
     // force, not a property of the surface — so the SELECTION must not change.
