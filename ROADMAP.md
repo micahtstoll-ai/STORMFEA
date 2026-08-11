@@ -95,6 +95,8 @@
 - [x] Convergence badge (✓ converged / upgraded / ✓ skipped / unavailable)
 - [x] Manual convergence study with Richardson extrapolation
 - [x] Convergence cache — manual study reuses auto-check data
+- [x] Per-location mesh sensitivity (#294) — the study's two solves differenced
+      per display vertex, painted as the Δ_M view mode
 
 ### Singularity Detection
 - [x] Detects peak stress at geometric singularities (sharp corners)
@@ -585,6 +587,128 @@ paths now run a runtime midside self-check instead of trusting the binary (#167)
       One-sided, so a consumer gating on it errs toward declaring a mesh
       under-resolved — which is the direction this gate wants
 
+### Gauss-point SPR sampling for C3D10 (issue #258 — shipped)
+- [x] `sprSmoothedStress6` now fits the full quadratic basis to the four
+      superconvergent Gauss points of every patch element (`buildGaussSamples`,
+      `perElem = 4`) instead of one centroid sample per element. The centroid
+      path (`buildCentroidSamples`) stays for C3D4, where a constant element
+      stress makes the centroid the correct single sample, and is bit-identical
+      to the pre-change implementation
+- [x] The defect was patch RANK, not within-element averaging — the original
+      diagnosis in the handoff doc was wrong and says so. A C3D10 patch at a
+      convex model corner can hold fewer centroid points than a 3-D fit has
+      unknowns, so those patches fell back to plain averaging, and averaging over
+      a one-sided patch is biased by O(h·|∇σ|) even when the FE solution is
+      EXACT. Four samples per element turn a 2-element corner patch into an
+      8-point cloud that genuinely spans 3-D
+- [x] Measured on a manufactured field a C3D10 mesh reproduces to ~1e-13, η fell
+      from 1.46% / 0.53% / 0.26% at 4³/6³/8³ to round-off (~3e-13 / 5e-13 /
+      7e-13) — an error estimate that tracks the CG solution error rather than
+      merely shrinking with h. Locked by solver_validation [33.2]; the
+      effectivity index is anchored on a CUBIC manufactured solution, because a
+      quadratic one is reproduced exactly by C3D10 and cannot measure θ
+- [x] The display path was released into the same recovery under #258, so the
+      heatmap and the per-node utilization field are now projections of the ONE
+      recovered tensor via `vonMisesFromTensor6`. Recovering von Mises directly
+      would sit at or ABOVE the von Mises of the recovered tensor (Jensen — it is
+      convex) and bias the displayed peak upward
+- [x] Full record, including the corrected diagnosis and the measured cost, in
+      `docs/spr-gauss-point-handoff.md`
+
+### Symmetry-preserving meshing (issue #296 — shipped)
+- [x] An unstructured tet mesh of a mirror-symmetric part is not itself
+      mirror-symmetric, so the recovered field carried an asymmetry the geometry
+      does not have — measured on a symmetric cantilever, only 128 of 384 element
+      centroids had a mirror partner at all, and SPR nodal asymmetry ran 1.83% /
+      0.88% / 0.52% rms while the DISPLACEMENT field stayed symmetric to 0.001%.
+      Mesh symmetry is a property of the geometry and independent of the load case
+- [x] Detection (`detectSymmetryPlanes`, `server/solver/symmetry.ts`) verifies
+      mesh-INDEPENDENTLY: each mirrored sample point is measured against the
+      surface as a geometric object via `pointTriangleDistance`, never against
+      mesh entities — the condition being detected is precisely a symmetric part
+      with an asymmetric mesh, so an entity-matching test would reject every real
+      case. 0.6 s at 28k elements for a symmetric part, 5 ms for an asymmetric one
+      (short-circuits on the first violating sample). Both tolerances
+      (`SYMMETRY_DEFAULT_TOL_REL`, `SYMMETRY_DEDUP_ANGLE_DEG`) are confidence-LOW
+- [x] Meshing (`mirrorTetMesh`, `server/solver/mirrorMesh.ts`, PR #307): measured
+      0.07% → 99.85% element-centroid pairing end to end through TetGen, and on a
+      controlled comparison where mesh connectivity is the only variable, SPR
+      nodal von Mises mirror asymmetry 3.909% → **0.0000%**. Seam nodes are
+      SNAPPED onto the plane before mirroring, so a node's image is bit-identical
+      to itself and maps back to the same index — the exactness the weld needed
+- [x] The load had to be fixed before any of it was visible (issue #305): the
+      DEFAULT `contact_patch` distribution chose its surface from the load
+      DIRECTION, so a push landed on the far face as a one-triangle point load —
+      5.04% asymmetry on a mesh with 100% centroid pairing. A symmetric mesh alone
+      did not deliver a symmetric picture for force-loaded parts; it does now
+- [x] `runLinearStaticWithK` already anticipated mirrored input — the assemblers
+      auto-orient via `Math.abs(sixV)`/`Math.abs(detJ)`, and the mesh-quality gate
+      keys on shape rather than Jacobian SIGN, so a mirror-oriented but
+      well-shaped mesh solves correctly and passes the gate
+- [x] Scope limits, both real: it applies only where the geometry HAS a symmetry
+      plane, and it does NOT reduce the mesh-to-mesh artifact of #294 — mirroring
+      gives you symmetric pockets rather than random ones. It is OPT-IN
+      (`analysis.symmetryMesh`) and costs an extra mesh, since detection needs a
+      mesh to run on
+- [x] Two follow-ups stay open as their own issues: **#309** (surface
+      `summary.symmetryMesh` in the client and decide whether to flip it on by
+      default) and **#308** (a contact patch placed on a sharp EDGE is 3x less
+      mesh-stable than one on a flat face)
+
+### Per-location mesh sensitivity (issue #294 — shipped)
+- [x] **Re-measured first, and the measurement changed the deliverable.** #294's
+      figures (p95 7.90% / max 16.05% of peak between two meshes of the same
+      part) were taken at 3,072 elements, before #295 gave a tier an element
+      budget and a through-thickness floor. Density was the only lever the issue
+      identified, so the numbers were re-taken on the same fixture at the shipped
+      tiers (`server/tests/measure294.ts`): **p95 1.45% / max 1.83% at standard**
+      and p95 2.15% / max 14.61% at coarse, falling monotonically with density.
+      Refinement was the lever and #295 pulled it
+- [x] **What did not move is the mechanism.** Spearman between a mesh's own
+      `errorEstimate` and the actual mesh-to-mesh disagreement at the same
+      location: 0.061 / -0.066 / -0.164, against 0.015 originally. Not one is
+      predictive. eta differences the RECOVERED field against the RAW element
+      field, so an artifact carried by both cancels — this is mechanism, not a
+      defect in the estimator, which remains valid for the global energy-norm
+      error it was built for
+- [x] **The coarse tier is where the tail still lives** — p95 12.18% / max 18.40%
+      at a larger mesh perturbation, reproducing the original figures. So the
+      defect is density-dependent rather than gone, and it is largest exactly
+      where a user picks "coarse" to get a fast answer
+- [x] **The fix is disclosure, and it was already being paid for.** Recovery-side
+      fixes stay ruled out (#294 prototyped three), and smoothing is barred — the
+      model's colors ARE the reading. The only thing that measures this is
+      solving twice and differencing, which the MESH CONVERGENCE STUDY already
+      did before reducing each mesh to a p99. `meshSensitivityField` keeps the
+      spatial information and `installMeshSensitivity` publishes it as the Δ_M
+      view mode plus a study-report block; the C3D4 auto fine-mesh check feeds it
+      at no extra cost
+- [x] **Exact, not interpolated.** Every analyse response paints the SAME display
+      mesh (`server/analysis.ts` maps its nodal field onto `req.positions`
+      whatever the analysis density), so index v is the same point in space in
+      both payloads and the comparison is an array difference. This is why the
+      feature costs one subtraction rather than a spatial re-projection
+- [x] **Null means unmeasured and never renders as zero.** One mesh cannot measure
+      its own mesh-dependence, so with a single solve the mode does not appear —
+      the same rule `headlineSpread` follows (#256). The clear happens before any
+      early return, so a declined install cannot leave the previous pair's colors
+      on screen under a new run's label
+- [x] The C3D10 badge claimed "Mesh-independent within 5% tolerance" on a path
+      that returns BEFORE any second mesh is solved — a measurement that had not
+      been taken. It now states the element property that is known and points at
+      the study
+- [x] The measurement's own cap is recorded rather than tuned away: at a 25% node
+      displacement the FINE tier stops being measurable, because both seeds tried
+      put an element under the solver's 0.02 normalized-Jacobian floor and the
+      mesh-quality gate refused the solve. A perturbation that makes a sliver
+      makes a mesh the tool would never show anyone
+- [x] Adjacent fix surfaced by adding a mode whose unit is a percentage: the
+      legend's label text existed twice and had drifted both ways — the paint path
+      printed unconverted MPa under an imperial label, and the unit toggle ran the
+      stress conversion over EVERY mode, relabelling eta, the utilizations and
+      wall/core as stress. One `legendValueText` now serves the paint path, the
+      unit toggle and the hover readout
+
 ---
 
 ## IN PROGRESS / NEXT
@@ -672,73 +796,6 @@ the solver-accuracy campaign; adaptive mesh refinement (#149) shipped in PR #246
   measures and corrects the residual per-run, so a wrong seed costs a re-mesh
   rather than correctness — but a second and third geometry would say whether 13
   is a constant or a coincidence
-- **Gauss-point SPR sampling for C3D10** (`docs/spr-gauss-point-handoff.md`) —
-  `recoverElementStress` evaluates C3D10 stress at all four Gauss points and then
-  AVERAGES them into one value per element, so the recovered field `σ*` is built
-  from a single sample per element while the estimator compares it against `σ_h`
-  recomputed per Gauss point. The two sides of `η` are sampled asymmetrically, so
-  the estimate carries an O(h) floor unrelated to the true error: on a
-  manufactured quadratic field that C3D10 solves EXACTLY (‖u_h − u_exact‖ ~1e-13)
-  it still reports 1.46% / 0.53% / 0.26% at 4³/6³/8³, making the estimator not
-  asymptotically exact on C3D10. Conservative (it over-reports), and ~3× smaller
-  since the rank-deficient-patch fix, so this is an accuracy limit rather than a
-  defect — but the adaptive loop's default target is 3%, so at the coarse tier up
-  to half the target can be artifact. The handoff covers the fix (keep the
-  per-point stresses, raise the recovery basis to the element's own quadratic
-  order, re-measure whether midside interpolation is still needed) and the one
-  trap that matters: group 30's manufactured solution is quadratic, which C3D10
-  reproduces exactly, so it CANNOT anchor a C3D10 effectivity index — that needs
-  a cubic-or-higher exact solution
-- **Symmetry-preserving meshing** (issue #296) — an unstructured tet mesh of a mirror-symmetric
-  part is not itself mirror-symmetric, so the recovered stress field carries an
-  asymmetry the geometry does not have. Measured on a symmetric cantilever
-  fixture: only 128 of 384 element centroids had a mirror partner at all, and the
-  SPR nodal field's mirror asymmetry ran 1.83% / 0.88% / 0.52% rms across
-  384/3,072/10,368 elements while the DISPLACEMENT field stayed symmetric to
-  0.001%. Mesh symmetry is a property of the geometry and independent of the load
-  case: detect the symmetry plane, mesh the fundamental domain, mirror and weld,
-  and then any asymmetry left in a result is real rather than injected.
-  `runLinearStaticWithK` already anticipates mirrored input — the assemblers
-  auto-orient via `Math.abs(sixV)`/`Math.abs(detJ)`, and the mesh-quality gate
-  deliberately keys on shape rather than Jacobian SIGN so "a MIRROR-oriented but
-  well shaped mesh solves correctly and must pass the gate". Scope limit: only
-  applies where the geometry actually HAS a symmetry plane, and it does not
-  reduce the mesh-to-mesh artifact below.
-  DETECTION HAS LANDED (`server/solver/symmetry.ts`, `detectSymmetryPlanes`).
-  It verifies mesh-INDEPENDENTLY — each mirrored sample point is measured
-  against the surface as a geometric object via `pointTriangleDistance`, never
-  against mesh entities, because the condition being detected is precisely a
-  symmetric part with an asymmetric mesh and an entity-matching test would
-  reject every real case. Candidates are the three coordinate axes plus the
-  principal axes of the area-weighted surface covariance. Cost is 0.6 s at
-  28k elements for a fully symmetric part and 5 ms for an asymmetric one, which
-  short-circuits on the first violating sample. Both tolerances
-  (`SYMMETRY_DEFAULT_TOL_REL`, `SYMMETRY_DEDUP_ANGLE_DEG`) are confidence-LOW:
-  argued from STL chord error and from measured eigenvector spread, not tuned
-  against a corpus of real parts.
-  CLIPPING AND CAPPING HAS ALSO LANDED (issue #300 — see the shipped section
-  above). The snap tolerance the weld must share is now one exported
-  definition, `surfaceSnapTolerance` in `server/solver/clip.ts`, which
-  `weldToleranceForDiag` delegates to rather than repeating the literal.
-  THE MESHING HALF HAS LANDED TOO (`mirrorTetMesh`, `server/solver/mirrorMesh.js`,
-  PR #307), so #296 itself is done: measured 0.07% -> 99.85% element-centroid
-  pairing end to end through TetGen, and on a controlled comparison where mesh
-  connectivity is the only variable, SPR nodal von Mises mirror asymmetry
-  3.909% -> 0.0000%. Seam nodes are SNAPPED onto the plane before mirroring, so
-  a node's image is bit-identical to itself and maps back to the same index —
-  the exactness the weld needed. It is OPT-IN (`analysis.symmetryMesh`), it
-  costs an extra mesh (detection needs a mesh to run on), and
-  `summary.symmetryMesh` is reported on the API but not yet surfaced in the
-  client.
-  AND THE LOAD HAD TO BE FIXED BEFORE ANY OF IT WAS VISIBLE (issue #305): the
-  DEFAULT `contact_patch` distribution chose its surface from the load
-  direction, so a push landed on the far face of the part as a one-triangle
-  point load — 5.04% asymmetry on a mesh with 100% centroid pairing. A
-  symmetric mesh alone therefore did NOT deliver a symmetric picture for
-  force-loaded parts; it does now, measured 0.0000% on the default path.
-  Two follow-ups, both open: #309 (surface `summary.symmetryMesh` in the client
-  and decide whether to flip it on by default) and #308 (a contact patch placed
-  on a sharp EDGE is 3x less mesh-stable than one on a flat face)
 - **Anisotropic (honeycomb) DFA extension** — the shipped core yield criterion
   is the isotropic-foam form. Extending pressure sensitivity per-axis would
   match the per-axis stiffness and strength laws the core already uses;
