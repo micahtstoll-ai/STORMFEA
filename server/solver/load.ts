@@ -21,7 +21,8 @@
 
 import type { PointForce, TetMesh } from "./types.js";
 import { computeGeometry, c3d10ShapeFunctions, buildB_c3d10, C3D10_GAUSS } from "./element.js";
-import { buildEdgeMidsideMap } from "./adjacency.js";
+import { buildEdgeMidsideMap, buildSurfaceTriangleAdjacency } from "./adjacency.js";
+import { pointTriangleDistance } from "./distance.js";
 
 /**
  * Assemble the force vector for a list of point forces.
@@ -613,22 +614,49 @@ export const CONTACT_PATCH_RADIUS_FRACTION = 0.10;
  * governing peak moved onto exactly that run-off edge and kept growing at
  * h^-0.23. A patch that tapers in EVERY surface direction has no such edge.
  *
+ * ── The patch acts on the surface the point was placed on (issue #305) ───────
+ *
+ * The eligible surface is the one CONTAINING the application point — the patch
+ * is grown by EDGE ADJACENCY from the triangle nearest the centre, admitting
+ * neighbours while they are inside the radius. `direction` selects nothing.
+ *
+ * It used to select windward triangles (n·d > 0), and that is wrong for the
+ * load this mode is named after. A contact PUSHES: at the surface it presses
+ * on, the force points INTO the material, so n·d < 0 there. The windward test
+ * therefore made the surface under the user's arrow ineligible on every
+ * compressive load and left only the far side of the part, a full thickness
+ * away — outside the radius, so the taper selected nothing and the
+ * "patch fell between the triangles" fallback below put the ENTIRE force on one
+ * arbitrarily-chosen triangle of the opposite face. Measured on the #296 bar,
+ * 120 N in -z placed on the top face: 1 triangle, on z = 0, chosen by index
+ * among tied candidates — which is where #305's 5.04% mirror asymmetry came
+ * from, and why it survived on a mesh with 100% centroid pairing.
+ *
+ * Both signs are legitimate and neither changes the patch: a nodal force set is
+ * one either way, and whether it is contact or a bolted pad in tension is the
+ * sign of `force`, not a property of the surface. What must not happen is the
+ * patch reaching THROUGH the part onto the far face — a 3-D ball centred on a
+ * thin part's top face trivially does, and the load would then act on a surface
+ * it never touched. Edge adjacency is what stops it: the far face is not
+ * edge-connected to the near one except around the part's rim, so it is
+ * excluded exactly when the rim is further away than the patch radius, and
+ * included exactly when the contact really does wrap an edge. A normal-based
+ * test (same-side-as-the-anchor, or a signed plane offset) needs a tolerance
+ * that cannot be right for both a thin plate and a tight bore; adjacency needs
+ * none. Distance within the patch is still Euclidean, not geodesic — on a
+ * contact-sized patch that difference is second-order.
+ *
  * Two guards worth knowing about:
  *
- *   • Only WINDWARD triangles (n·d > 0) are eligible, the same test
- *     `selectPressureRegion('facing')` uses. Without it a 3-D ball centred on
- *     a thin part's top face also catches the bottom face a few mm below, and
- *     the load would push on a surface it cannot bear against.
- *   • The centre is SNAPPED to the nearest windward triangle when it does not
- *     land on one — a raycast hit carries float error, and a caller may send a
- *     point that is off the surface entirely. The snap distance is returned so
- *     the caller can say so out loud. A silent zero-load solve is the failure
- *     mode issue #157 was about; this never returns one for a non-degenerate
- *     input.
- *
- * Distance is Euclidean, not geodesic. On a patch small enough to be a contact
- * area the difference is second-order, and a geodesic would need surface
- * adjacency this does not otherwise require.
+ *   • The centre is SNAPPED to the nearest triangle when it does not land on
+ *     one — a raycast hit carries float error, and a caller may send a point
+ *     that is off the surface entirely. The snap distance is returned so the
+ *     caller can say so out loud. A silent zero-load solve is the failure mode
+ *     issue #157 was about; this never returns one for a non-degenerate input.
+ *   • When the patch falls between the triangles (a radius below the local mesh
+ *     size), the nearest triangle carries the load — together with every
+ *     triangle TIED with it, so a symmetric part loaded on its symmetry plane
+ *     stays symmetric instead of resolving the tie by triangle index.
  *
  * @param mesh      tet mesh
  * @param faces     surface triangles as corner-node triples
@@ -649,18 +677,20 @@ export function assembleContactPatchLoad(
   const [dx, dy, dz] = direction;
   const dl = Math.hypot(dx, dy, dz);
   const empty = { forces: new Float64Array(nodes.length), radiusMm: 0, loadedTriangles: 0, centreSnapMm: 0 };
+  // A zero direction is a degenerate force spec, not a load: reject it here
+  // rather than assembling a patch for a force with no line of action. The
+  // direction plays no part in choosing the patch (see the header) — `force`
+  // already carries it, and its sign is what makes the patch contact or tension.
   if (!(dl > 0)) return empty;
-  const ux = dx/dl, uy = dy/dl, uz = dz/dl;
 
   const triCount = Math.floor(faces.length / 3);
   if (triCount === 0) return empty;
   if (!centre.every(v => Number.isFinite(v))) return empty;
 
-  // Windward triangles, with centroid and area cached — every step below needs
-  // all three and the surface is walked three times otherwise.
+  // Triangle centroids and areas, cached — every step below needs both and the
+  // surface is walked several times otherwise.
   const cx = new Float64Array(triCount), cy = new Float64Array(triCount), cz = new Float64Array(triCount);
   const area = new Float64Array(triCount);
-  const windward = new Uint8Array(triCount);
   let mnX = Infinity, mnY = Infinity, mnZ = Infinity;
   let mxX = -Infinity, mxY = -Infinity, mxZ = -Infinity;
   for (let n = 0; n < mesh.nodeCount; n++) {
@@ -678,9 +708,7 @@ export function assembleContactPatchLoad(
     const vx1 = bx-ax, vy1 = by-ay, vz1 = bz-az;
     const vx2 = ccx-ax, vy2 = ccy-ay, vz2 = ccz-az;
     const nx = vy1*vz2 - vz1*vy2, ny = vz1*vx2 - vx1*vz2, nz = vx1*vy2 - vy1*vx2;
-    const mag = Math.hypot(nx, ny, nz);
-    area[t] = 0.5 * mag;
-    windward[t] = (mag > 0 && (nx*ux + ny*uy + nz*uz) / mag > 1e-9) ? 1 : 0;
+    area[t] = 0.5 * Math.hypot(nx, ny, nz);
   }
 
   const diag = Math.sqrt((mxX-mnX)**2 + (mxY-mnY)**2 + (mxZ-mnZ)**2);
@@ -690,34 +718,76 @@ export function assembleContactPatchLoad(
   if (!(radius > 0)) radius = medianTriEdgeLength(nodes, faces);
   if (!(radius > 0)) return empty;
 
-  // Snap the centre onto the windward surface. A raycast hit is already there
-  // to within float error, so this is normally a no-op; it matters when the
-  // caller sends a point that is off the surface or on the lee side.
-  let bestTri = -1, bestD2 = Infinity;
+  // Snap the centre onto the surface. A raycast hit is already there to within
+  // float error, so this is normally a no-op; it matters when the caller sends
+  // a point that is off the surface entirely.
+  //
+  // POINT-TO-TRIANGLE, not point-to-centroid: a centroid distance is an alias
+  // for the mesh's element size, so a point sitting exactly on a coarse face
+  // reports itself half an element off the surface (measured 2.24 mm on the
+  // #305 bar, against a 2.75 mm patch radius) — and `analysis.ts` warns the
+  // user when this number exceeds the radius. Same aliasing the two-region
+  // distance field had to avoid (CLAUDE.md, two-region invariant 4).
+  const dTri = new Float64Array(triCount);
+  let bestTri = -1, bestD = Infinity;
   for (let t = 0; t < triCount; t++) {
-    if (!windward[t]) continue;
-    const d2 = (cx[t]!-centre[0])**2 + (cy[t]!-centre[1])**2 + (cz[t]!-centre[2])**2;
-    if (d2 < bestD2) { bestD2 = d2; bestTri = t; }
+    if (!(area[t]! > 0)) { dTri[t] = Infinity; continue; }
+    const a = faces[t*3] ?? 0, b = faces[t*3+1] ?? 0, c = faces[t*3+2] ?? 0;
+    const d = pointTriangleDistance(
+      centre[0], centre[1], centre[2],
+      nodes[a*3] ?? 0, nodes[a*3+1] ?? 0, nodes[a*3+2] ?? 0,
+      nodes[b*3] ?? 0, nodes[b*3+1] ?? 0, nodes[b*3+2] ?? 0,
+      nodes[c*3] ?? 0, nodes[c*3+1] ?? 0, nodes[c*3+2] ?? 0,
+    );
+    dTri[t] = d;
+    if (d < bestD) { bestD = d; bestTri = t; }
   }
-  if (bestTri < 0) return empty;   // no windward surface at all for this direction
+  if (bestTri < 0) return empty;   // no non-degenerate surface triangle at all
 
-  // Taper about the requested point, not the snapped one — snapping exists to
-  // guarantee a non-empty patch, not to move the load the user placed.
+  // Grow the patch from the seed by EDGE ADJACENCY, admitting a neighbour while
+  // it is inside the radius (issue #305). The reached set is the connected
+  // component of the disc that contains the seed, so it is independent of the
+  // traversal order and therefore of triangle numbering — the property a
+  // mirror-symmetric part needs. Taper about the REQUESTED point, not the
+  // snapped one: snapping exists to guarantee a non-empty patch, not to move
+  // the load the user placed.
   const weights = new Float64Array(triCount);
   let loadedTriangles = 0, areaWeighted = 0;
-  for (let t = 0; t < triCount; t++) {
-    if (!windward[t]) continue;
-    const d = Math.hypot(cx[t]!-centre[0], cy[t]!-centre[1], cz[t]!-centre[2]);
-    const w = raisedCosineTaper(d / radius);
-    if (w > 0 && area[t]! > 0) { weights[t] = w; loadedTriangles++; areaWeighted += w * area[t]!; }
+  const dOf = (t: number): number =>
+    Math.hypot(cx[t]!-centre[0], cy[t]!-centre[1], cz[t]!-centre[2]);
+  if (dOf(bestTri) < radius) {
+    const { ptr, list } = buildSurfaceTriangleAdjacency(faces, mesh.nodeCount);
+    const seen = new Uint8Array(triCount);
+    const stack: number[] = [bestTri];
+    seen[bestTri] = 1;
+    while (stack.length > 0) {
+      const t = stack.pop()!;
+      const w = raisedCosineTaper(dOf(t) / radius);
+      if (w > 0 && area[t]! > 0) { weights[t] = w; loadedTriangles++; areaWeighted += w * area[t]!; }
+      for (let k = ptr[t] ?? 0; k < (ptr[t+1] ?? 0); k++) {
+        const u = list[k] ?? 0;
+        if (seen[u]) continue;
+        if (!(area[u]! > 0) || !(dOf(u) < radius)) continue;
+        seen[u] = 1;
+        stack.push(u);
+      }
+    }
   }
   // The patch fell between the triangles (radius smaller than the local mesh,
-  // or the centre off the surface). Load the nearest windward triangle rather
-  // than returning an unloaded model presented as a normal result.
+  // or the centre off the surface). Load the nearest triangle rather than
+  // returning an unloaded model presented as a normal result — TOGETHER WITH
+  // every triangle tied with it, because resolving a tie by index is how a
+  // symmetric part acquired an asymmetric load in #305.
   if (!(areaWeighted > 0)) {
-    weights[bestTri] = 1;
-    loadedTriangles = 1;
-    areaWeighted = area[bestTri] ?? 0;
+    const tie = bestD * (1 + 1e-12) + 1e-12;
+    loadedTriangles = 0;
+    areaWeighted = 0;
+    for (let t = 0; t < triCount; t++) {
+      if (!(area[t]! > 0) || (dTri[t] ?? Infinity) > tie) continue;
+      weights[t] = 1;
+      loadedTriangles++;
+      areaWeighted += area[t]!;
+    }
     if (!(areaWeighted > 0)) return empty;
   }
 
@@ -749,5 +819,5 @@ export function assembleContactPatchLoad(
     f[n*3+2] = fz * share;
   }
 
-  return { forces: f, radiusMm: radius, loadedTriangles, centreSnapMm: Math.sqrt(bestD2) };
+  return { forces: f, radiusMm: radius, loadedTriangles, centreSnapMm: bestD };
 }
