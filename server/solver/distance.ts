@@ -27,6 +27,199 @@
 import type { TetMesh } from "./types.js";
 
 /**
+ * Cells one boundary triangle may be replicated into before the grid is judged
+ * too fine to be worth it (issue #298).
+ *
+ * The grid's cell size comes from `dMax`, and every triangle is inserted into
+ * every cell its AABB spans. So a `dMax` far below element scale makes a single
+ * triangle span millions of cells and the bucket Map grows until V8 throws
+ * `RangeError: Map maximum size exceeded` — an out-of-memory-shaped crash rather
+ * than a stated rejection. Nothing in either function's signature says `dMax`
+ * must be on the order of the element size, so that constraint was invisible
+ * from the call sites; the budget below makes the functions total for any input
+ * instead of relying on callers to know it.
+ *
+ * Coarsening is the right response rather than rejection because the grid is an
+ * ACCELERATION STRUCTURE, not part of the answer: every distance is computed by
+ * `pointTriangleClosestVector` over whatever candidates a query collects. A
+ * larger cell only widens that candidate set, and while `cell >= dMax` holds the
+ * one-ring query still sees every triangle within the search radius — so not one
+ * returned number changes, only how many triangles were examined to get it.
+ *
+ * 64 is a limit on WASTE, not just on memory. Cells finer than a triangle buy no
+ * selectivity: a query cell still yields every triangle overlapping it, so
+ * subdividing below triangle scale only copies the same triangle into more
+ * buckets. At the intended `dMax` (at least one element edge — both production
+ * callers pass `max(band) + maxCornerEdge`, and a boundary triangle's AABB
+ * extent cannot exceed its longest edge) a triangle spans at most 2 cells per
+ * axis, i.e. 8. The factor of 8 headroom over that is what keeps this guard off
+ * every mesh the meshers actually emit.
+ */
+const MAX_CELLS_PER_TRIANGLE = 64;
+
+/**
+ * Absolute backstop on total insertions, independent of triangle count, so the
+ * bucket Map cannot approach V8's ~2^24-entry ceiling however many triangles
+ * arrive. It becomes the smaller of the two budget terms past ~31 000 triangles,
+ * but at the 8-cells-per-triangle a legitimate `dMax` actually costs it does not
+ * force any COARSENING until ~250 000 boundary triangles — an order of magnitude
+ * beyond the largest mesh tier this tool emits.
+ */
+const GRID_INSERTION_BUDGET = 2_000_000;
+
+/**
+ * Cell edge for the triangle-bucket grid: `max(dMax, 1e-6)`, doubled while the
+ * insertions it implies exceed
+ * `min(GRID_INSERTION_BUDGET, MAX_CELLS_PER_TRIANGLE * triCount)` (issue #298).
+ *
+ * Exported because the load-bearing property is a NEGATIVE one that no result
+ * can show: on a production-shaped input this must return `dMax` UNCHANGED, so
+ * the guard costs analyses nothing. Tightening the budget would quietly coarsen
+ * every real analysis — slower, still correct, and invisible to every other
+ * assertion in the suite. `distance-grid-budget.test.ts` pins it.
+ *
+ * The returned cell is never below `max(dMax, 1e-6)`, which is what lets callers
+ * rely on a 27-cell one-ring query being complete.
+ */
+export function chooseGridCellSize(
+  nodes: Float64Array,
+  nodeCount: number,
+  surfaceFaces: Int32Array,
+  triCount: number,
+  dMax: number,
+): number {
+  let xMin = Infinity, yMin = Infinity, zMin = Infinity;
+  let xMax = -Infinity, yMax = -Infinity, zMax = -Infinity;
+  for (let n = 0; n < nodeCount; n++) {
+    const x = nodes[n * 3] ?? 0, y = nodes[n * 3 + 1] ?? 0, z = nodes[n * 3 + 2] ?? 0;
+    if (x < xMin) xMin = x; if (x > xMax) xMax = x;
+    if (y < yMin) yMin = y; if (y > yMax) yMax = y;
+    if (z < zMin) zMin = z; if (z > zMax) zMax = z;
+  }
+
+  const budget = Math.min(GRID_INSERTION_BUDGET, MAX_CELLS_PER_TRIANGLE * triCount);
+
+  /**
+   * Insertions the given cell size implies, abandoned as soon as it is over
+   * budget — in the pathological case the very first triangle settles it, so
+   * the guard costs O(1) exactly when it matters and one pass over the
+   * triangles when it does not.
+   */
+  const insertionsFor = (cell: number, gW: number, gH: number, gD: number): number => {
+    const idx = (v: number, min: number, g: number) =>
+      Math.min(g - 1, Math.max(0, Math.floor((v - min) / cell)));
+    let total = 0;
+    for (let t = 0; t < triCount; t++) {
+      const na = surfaceFaces[t * 3] ?? 0, nb = surfaceFaces[t * 3 + 1] ?? 0, nc = surfaceFaces[t * 3 + 2] ?? 0;
+      const ax = nodes[na * 3] ?? 0, ay = nodes[na * 3 + 1] ?? 0, az = nodes[na * 3 + 2] ?? 0;
+      const bx = nodes[nb * 3] ?? 0, by = nodes[nb * 3 + 1] ?? 0, bz = nodes[nb * 3 + 2] ?? 0;
+      const cx = nodes[nc * 3] ?? 0, cy = nodes[nc * 3 + 1] ?? 0, cz = nodes[nc * 3 + 2] ?? 0;
+      const si = idx(Math.max(ax, bx, cx), xMin, gW) - idx(Math.min(ax, bx, cx), xMin, gW) + 1;
+      const sj = idx(Math.max(ay, by, cy), yMin, gH) - idx(Math.min(ay, by, cy), yMin, gH) + 1;
+      const sk = idx(Math.max(az, bz, cz), zMin, gD) - idx(Math.min(az, bz, cz), zMin, gD) + 1;
+      total += si * sj * sk;
+      if (total > budget) return total;
+    }
+    return total;
+  };
+
+  let cell = Math.max(dMax, 1e-6);
+  for (;;) {
+    const gW = Math.max(1, Math.ceil((xMax - xMin) / cell) + 1);
+    const gH = Math.max(1, Math.ceil((yMax - yMin) / cell) + 1);
+    const gD = Math.max(1, Math.ceil((zMax - zMin) / cell) + 1);
+    // A single cell is as coarse as the grid gets: there is nothing left to
+    // trade, and the insertion count is already down to one per triangle.
+    if (gW === 1 && gH === 1 && gD === 1) return cell;
+    if (insertionsFor(cell, gW, gH, gD) <= budget) return cell;
+    cell *= 2;
+  }
+}
+
+/** Triangle-bucketed spatial grid, plus the cell indexing it was built with. */
+interface TriangleBucketGrid {
+  /** Cell edge, mm. Always >= dMax — see `buildTriangleBucketGrid`. */
+  readonly cell: number;
+  readonly gW: number;
+  readonly gH: number;
+  readonly gD: number;
+  readonly ci: (x: number) => number;
+  readonly cj: (y: number) => number;
+  readonly ck: (z: number) => number;
+  readonly key: (i: number, j: number, k: number) => number;
+  /** Cell key → indices of the triangles whose AABB overlaps that cell. */
+  readonly grid: Map<number, number[]>;
+}
+
+/**
+ * Bucket every boundary triangle into the cells its AABB overlaps, so a query
+ * only has to visit the cells within its search radius. Same keying scheme as
+ * the nearest-node grids in `analysis.ts` (floor-based, bounding-box
+ * normalized).
+ *
+ * Cell edge is `max(dMax, 1e-6)`, then doubled while the implied insertion count
+ * exceeds `min(GRID_INSERTION_BUDGET, MAX_CELLS_PER_TRIANGLE * triCount)`
+ * (issue #298). The cell is only ever RAISED, so `cell >= dMax` holds
+ * unconditionally — which is exactly what every caller's 27-cell one-ring query
+ * relies on for completeness. Doubling terminates because a grid of one cell
+ * costs one insertion per triangle, which no budget below the triangle count can
+ * be asked to beat.
+ */
+function buildTriangleBucketGrid(
+  nodes: Float64Array,
+  nodeCount: number,
+  surfaceFaces: Int32Array,
+  triCount: number,
+  dMax: number,
+): TriangleBucketGrid {
+  let xMin = Infinity, yMin = Infinity, zMin = Infinity;
+  let xMax = -Infinity, yMax = -Infinity, zMax = -Infinity;
+  for (let n = 0; n < nodeCount; n++) {
+    const x = nodes[n * 3] ?? 0, y = nodes[n * 3 + 1] ?? 0, z = nodes[n * 3 + 2] ?? 0;
+    if (x < xMin) xMin = x; if (x > xMax) xMax = x;
+    if (y < yMin) yMin = y; if (y > yMax) yMax = y;
+    if (z < zMin) zMin = z; if (z > zMax) zMax = z;
+  }
+
+  // chooseGridCellSize re-derives these bounds rather than taking them as an
+  // argument, so the cell size has exactly one definition (a test calls it
+  // directly — see its docblock). The duplicated pass is O(nodeCount) of float
+  // compares against a per-node triangle query; keep the single definition.
+  const cell = chooseGridCellSize(nodes, nodeCount, surfaceFaces, triCount, dMax);
+  const gW = Math.max(1, Math.ceil((xMax - xMin) / cell) + 1);
+  const gH = Math.max(1, Math.ceil((yMax - yMin) / cell) + 1);
+  const gD = Math.max(1, Math.ceil((zMax - zMin) / cell) + 1);
+
+  const ci = (x: number) => Math.min(gW - 1, Math.max(0, Math.floor((x - xMin) / cell)));
+  const cj = (y: number) => Math.min(gH - 1, Math.max(0, Math.floor((y - yMin) / cell)));
+  const ck = (z: number) => Math.min(gD - 1, Math.max(0, Math.floor((z - zMin) / cell)));
+  const key = (i: number, j: number, k: number) => (i * gH + j) * gD + k;
+
+  const grid = new Map<number, number[]>();
+  for (let t = 0; t < triCount; t++) {
+    const na = surfaceFaces[t * 3] ?? 0, nb = surfaceFaces[t * 3 + 1] ?? 0, nc = surfaceFaces[t * 3 + 2] ?? 0;
+    const ax = nodes[na * 3] ?? 0, ay = nodes[na * 3 + 1] ?? 0, az = nodes[na * 3 + 2] ?? 0;
+    const bx = nodes[nb * 3] ?? 0, by = nodes[nb * 3 + 1] ?? 0, bz = nodes[nb * 3 + 2] ?? 0;
+    const cx = nodes[nc * 3] ?? 0, cy = nodes[nc * 3 + 1] ?? 0, cz = nodes[nc * 3 + 2] ?? 0;
+    const i0 = ci(Math.min(ax, bx, cx)), i1 = ci(Math.max(ax, bx, cx));
+    const j0 = cj(Math.min(ay, by, cy)), j1 = cj(Math.max(ay, by, cy));
+    const k0 = ck(Math.min(az, bz, cz)), k1 = ck(Math.max(az, bz, cz));
+    for (let i = i0; i <= i1; i++) {
+      for (let j = j0; j <= j1; j++) {
+        for (let k = k0; k <= k1; k++) {
+          const kk = key(i, j, k);
+          const bucket = grid.get(kk);
+          if (bucket) bucket.push(t);
+          else grid.set(kk, [t]);
+        }
+      }
+    }
+  }
+
+  return { cell, gW, gH, gD, ci, cj, ck, key, grid };
+}
+
+/**
  * Closest point on triangle (a, b, c) to point p, as the vector (p − q)
  * FROM the closest point q TO p (i.e. pointing from the surface toward p).
  * Ericson's closest-point-on-triangle: classifies p against the triangle's
@@ -122,9 +315,15 @@ export function pointTriangleDistance(
  * @param mesh          Tet mesh (C3D4 or C3D10; midside nodes are skipped).
  * @param surfaceFaces  Boundary triangle corner-node index triples into
  *                      mesh.nodes (from TetGen/Gmsh/extractSurfaceFaces).
- * @param dMax          Clamp distance: nodes farther than this from the
- *                      surface report exactly dMax ("deep core"). Keeps the
- *                      grid search O(1) per node.
+ * @param dMax          Clamp distance AND search radius: nodes farther than
+ *                      this from the surface report exactly dMax ("deep
+ *                      core"). It also sizes the spatial grid, so it is
+ *                      EXPECTED to be on the order of the element size — that
+ *                      is what keeps the search O(1) per node. Both production
+ *                      callers pass `max(band) + maxCornerEdge(mesh)`, always
+ *                      at least one element edge. A far smaller value is
+ *                      answered correctly but progressively more slowly, never
+ *                      by a crash (issue #298).
  * @returns             Float64Array of length nodeCount. Nodes referenced by
  *                      surfaceFaces are exactly 0; skipped (midside) nodes
  *                      and deep-core nodes report dMax.
@@ -190,50 +389,11 @@ export function computeNodeSurfaceDistancesAndNormals(
     }
   }
 
-  // ── Triangle-bucketed spatial grid ──────────────────────────────────────
-  // Same keying scheme as the nearest-node grids in analysis.ts; triangles
-  // are inserted into every cell their AABB overlaps so a query only needs
-  // cells within the search radius.
-  let xMin = Infinity, yMin = Infinity, zMin = Infinity;
-  let xMax = -Infinity, yMax = -Infinity, zMax = -Infinity;
-  for (let n = 0; n < nodeCount; n++) {
-    const x = nodes[n * 3] ?? 0, y = nodes[n * 3 + 1] ?? 0, z = nodes[n * 3 + 2] ?? 0;
-    if (x < xMin) xMin = x; if (x > xMax) xMax = x;
-    if (y < yMin) yMin = y; if (y > yMax) yMax = y;
-    if (z < zMin) zMin = z; if (z > zMax) zMax = z;
-  }
-  const CELL = Math.max(dMax, 1e-6);
-  const gW = Math.max(1, Math.ceil((xMax - xMin) / CELL) + 1);
-  const gH = Math.max(1, Math.ceil((yMax - yMin) / CELL) + 1);
-  const gD = Math.max(1, Math.ceil((zMax - zMin) / CELL) + 1);
-  const ci = (x: number) => Math.min(gW - 1, Math.max(0, Math.floor((x - xMin) / CELL)));
-  const cj = (y: number) => Math.min(gH - 1, Math.max(0, Math.floor((y - yMin) / CELL)));
-  const ck = (z: number) => Math.min(gD - 1, Math.max(0, Math.floor((z - zMin) / CELL)));
-  const key = (i: number, j: number, k: number) => (i * gH + j) * gD + k;
-
-  const grid = new Map<number, number[]>();
-  for (let t = 0; t < triCount; t++) {
-    const na = surfaceFaces[t * 3] ?? 0, nb = surfaceFaces[t * 3 + 1] ?? 0, nc = surfaceFaces[t * 3 + 2] ?? 0;
-    const ax = nodes[na * 3] ?? 0, ay = nodes[na * 3 + 1] ?? 0, az = nodes[na * 3 + 2] ?? 0;
-    const bx = nodes[nb * 3] ?? 0, by = nodes[nb * 3 + 1] ?? 0, bz = nodes[nb * 3 + 2] ?? 0;
-    const cx = nodes[nc * 3] ?? 0, cy = nodes[nc * 3 + 1] ?? 0, cz = nodes[nc * 3 + 2] ?? 0;
-    const i0 = ci(Math.min(ax, bx, cx)), i1 = ci(Math.max(ax, bx, cx));
-    const j0 = cj(Math.min(ay, by, cy)), j1 = cj(Math.max(ay, by, cy));
-    const k0 = ck(Math.min(az, bz, cz)), k1 = ck(Math.max(az, bz, cz));
-    for (let i = i0; i <= i1; i++) {
-      for (let j = j0; j <= j1; j++) {
-        for (let k = k0; k <= k1; k++) {
-          const kk = key(i, j, k);
-          const bucket = grid.get(kk);
-          if (bucket) bucket.push(t);
-          else grid.set(kk, [t]);
-        }
-      }
-    }
-  }
+  const { gW, gH, gD, ci, cj, ck, key, grid } =
+    buildTriangleBucketGrid(nodes, nodeCount, surfaceFaces, triCount, dMax);
 
   // ── Per-node query ──────────────────────────────────────────────────────
-  // Cell size = dMax, so any triangle within dMax of the node lies in the
+  // Cell size >= dMax, so any triangle within dMax of the node lies in the
   // node's cell or one of its 26 neighbors. One ring suffices; anything
   // farther is clamped to dMax anyway.
   for (let n = 0; n < nodeCount; n++) {
@@ -303,6 +463,8 @@ export function computeNodeSurfaceDistancesAndNormals(
  *                      the longest element edge so band-straddling elements
  *                      keep un-clamped corners (the caller passes
  *                      max(band) + maxCornerEdge). Deep-core nodes report dMax.
+ *                      It also sizes the spatial grid; see the note on
+ *                      `computeNodeSurfaceDistances`'s `dMax` (issue #298).
  * @returns             Float64Array of length nodeCount: φ per corner node
  *                      (negative inside a band); midside / deep-core nodes dMax.
  */
@@ -333,48 +495,12 @@ export function computeNodeBandPenetration(
     }
   }
 
-  // ── Triangle-bucketed spatial grid (same keying as above) ────────────────
-  let xMin = Infinity, yMin = Infinity, zMin = Infinity;
-  let xMax = -Infinity, yMax = -Infinity, zMax = -Infinity;
-  for (let n = 0; n < nodeCount; n++) {
-    const x = nodes[n * 3] ?? 0, y = nodes[n * 3 + 1] ?? 0, z = nodes[n * 3 + 2] ?? 0;
-    if (x < xMin) xMin = x; if (x > xMax) xMax = x;
-    if (y < yMin) yMin = y; if (y > yMax) yMax = y;
-    if (z < zMin) zMin = z; if (z > zMax) zMax = z;
-  }
-  const CELL = Math.max(dMax, 1e-6);
-  const gW = Math.max(1, Math.ceil((xMax - xMin) / CELL) + 1);
-  const gH = Math.max(1, Math.ceil((yMax - yMin) / CELL) + 1);
-  const gD = Math.max(1, Math.ceil((zMax - zMin) / CELL) + 1);
-  const ci = (x: number) => Math.min(gW - 1, Math.max(0, Math.floor((x - xMin) / CELL)));
-  const cj = (y: number) => Math.min(gH - 1, Math.max(0, Math.floor((y - yMin) / CELL)));
-  const ck = (z: number) => Math.min(gD - 1, Math.max(0, Math.floor((z - zMin) / CELL)));
-  const key = (i: number, j: number, k: number) => (i * gH + j) * gD + k;
-
-  const grid = new Map<number, number[]>();
-  for (let t = 0; t < triCount; t++) {
-    const na = surfaceFaces[t * 3] ?? 0, nb = surfaceFaces[t * 3 + 1] ?? 0, nc = surfaceFaces[t * 3 + 2] ?? 0;
-    const ax = nodes[na * 3] ?? 0, ay = nodes[na * 3 + 1] ?? 0, az = nodes[na * 3 + 2] ?? 0;
-    const bx = nodes[nb * 3] ?? 0, by = nodes[nb * 3 + 1] ?? 0, bz = nodes[nb * 3 + 2] ?? 0;
-    const cx = nodes[nc * 3] ?? 0, cy = nodes[nc * 3 + 1] ?? 0, cz = nodes[nc * 3 + 2] ?? 0;
-    const i0 = ci(Math.min(ax, bx, cx)), i1 = ci(Math.max(ax, bx, cx));
-    const j0 = cj(Math.min(ay, by, cy)), j1 = cj(Math.max(ay, by, cy));
-    const k0 = ck(Math.min(az, bz, cz)), k1 = ck(Math.max(az, bz, cz));
-    for (let i = i0; i <= i1; i++) {
-      for (let j = j0; j <= j1; j++) {
-        for (let k = k0; k <= k1; k++) {
-          const kk = key(i, j, k);
-          const bucket = grid.get(kk);
-          if (bucket) bucket.push(t);
-          else grid.set(kk, [t]);
-        }
-      }
-    }
-  }
+  const { gW, gH, gD, ci, cj, ck, key, grid } =
+    buildTriangleBucketGrid(nodes, nodeCount, surfaceFaces, triCount, dMax);
 
   // ── Per-node query ───────────────────────────────────────────────────────
   // Any triangle whose band reaches the node has distance < band ≤ max(band) <
-  // dMax = CELL, so it lies in the node's cell or a neighbour — one ring is
+  // dMax ≤ CELL, so it lies in the node's cell or a neighbour — one ring is
   // sufficient for the sign of φ. Triangles farther than dMax give a large
   // positive penetration and cannot lower a negative min.
   for (let n = 0; n < nodeCount; n++) {
