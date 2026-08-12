@@ -222,6 +222,27 @@ describe("clipSurfaceAtPlane — closure and volume", () => {
     expect(r.capFaceCount).toBe(0);
     expect(r.closure.closed).toBe(false);   // nothing is not a closed solid
   });
+
+  it("rejects an inward-wound input by name, before capping it wrong (issue #306)", () => {
+    // A consistently inward-wound closed surface passes checkSurfaceClosure on
+    // its own — the only thing distinguishing it is the SIGN of signedVolumeOf.
+    // Left undetected, the clip caps the wrong side and the RESULT fails
+    // closure with "inconsistent edges", pointing a reader at the cap
+    // triangulation instead of at the input's winding.
+    const outward = boxSurface(0, 0, 0, 10, 10, 10);
+    const inward: SurfaceMesh = {
+      positions: outward.positions,
+      faces: Int32Array.from(
+        Array.from({ length: outward.faces.length / 3 }, (_, t) =>
+          [outward.faces[t * 3 + 2]!, outward.faces[t * 3 + 1]!, outward.faces[t * 3]!],
+        ).flat(),
+      ),
+    };
+    expect(checkSurfaceClosure(inward).closed).toBe(true);
+    expect(signedVolumeOf(inward)).toBeLessThan(0);
+    expect(() => clipSurfaceAtPlane(inward, { normal: [1, 0, 0], origin: [5, 0, 0] }))
+      .toThrow(/inward/i);
+  });
 });
 
 describe("clipSurfaceAtPlane — on-plane and coplanar input", () => {
