@@ -230,6 +230,32 @@ that the patch lands on the correct face it is doing MORE of the work than it
 was — a wrong-face point load did not depend on it at all. The guidance above
 stands, more strongly: pass `loadPatchRadiusMm`.
 
+## Record status (audited 2026-08-12)
+
+Both decisions in this document — the default, and the surface the patch acts
+on — are what ships. Verified by symbol: `DEFAULT_LOAD_DISTRIBUTION` is
+`'contact_patch'` and `CONTACT_PATCH_RADIUS_FRACTION` is `0.10`;
+`assembleContactPatchLoad` (`server/solver/load.ts`) rejects only a zero
+`direction` and otherwise grows the patch from the nearest triangle by
+`buildSurfaceTriangleAdjacency` (`server/solver/adjacency.ts`); `centreSnapMm`
+is computed with `pointTriangleDistance`; and the singularity cause is
+`"load-edge"` in `server/analysis.ts` and `server/report.ts`. The four locking
+test files are present: `load-distribution-default.test.ts`,
+`contact-patch-position.test.ts`, `contact-patch-surface.test.ts` and
+`tapered-load-patch.test.ts`.
+
+**What this change did to the older records, which is worth knowing here as
+well as there.** The Ø5-bore tube is the fixture two earlier landed-decision
+documents measured on, through `adaptive-benchmark.test.ts`, whose force names
+no `loadDistribution` and so takes whatever the default is. Both were written
+before 2026-08-05, so their tube figures are legacy-uniform measurements:
+`docs/bc-singularity-exclusion.md` (the exclusion-vs-none table, the
+`maxElementGrowth` sweep, the `bcSingularityErrorFraction` tables) and
+`docs/spr-gauss-point-handoff.md` ("Effect on the adaptive loop"). Both now
+carry that flag, with their numbers left as measured. The delta this document
+already records — SF 12.80 → 1.75 → 1.33 at 20,291 elements — is the size of the
+gap those readers need.
+
 ## What is still open
 
 - **The default radius has no calibration behind it.** Parts with known contact

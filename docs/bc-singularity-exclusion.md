@@ -8,6 +8,12 @@ Follow-up to `docs/spr-gauss-point-handoff.md`. That work removed the ZZ
 estimator's artifact floor; this addresses what was left, which turned out not
 to be an estimator problem at all.
 
+**Read [Two later changes moved the load under this
+fixture](#two-later-changes-moved-the-load-under-this-fixture-audited-2026-08-12)
+before quoting any Ø5-bore-tube number below.** The mechanism, the design and
+the #259 decision all still ship; the tube's absolute figures were taken before
+the default load distribution changed twice under them.
+
 ---
 
 ## The finding that prompted it
@@ -282,3 +288,71 @@ DIAGNOSIS and the loop must never target it. `maskedErrorFraction` documents
 that, and the choice of (a) means no filtered figure is ever compared against
 `targetGlobalError` — the trap this issue names first stays structurally
 impossible rather than merely avoided.
+
+---
+
+## Two later changes moved the load under this fixture (audited 2026-08-12)
+
+Everything this document decided still ships, and every symbol it names is
+still there under that name: `bcDiscontinuityMask`, `BC_SINGULARITY_DILATE_HOPS`
+(still 1) and `maskedErrorFraction` in `server/solver/adaptiveMesh.ts`,
+`buildSizeField`'s `excludeNodes`, `smoothSizeFieldGradation`,
+`_captureInternals`, and `bcSingularityErrorFraction` computed on the ordinary
+single solve in `runAnalysis`. The #259 advice ladder is live at exactly the
+thresholds recorded above — `bcDominant` at 50%, `bcNotable` at 33%, silent
+below — in `client/index.html` and `server/report.ts`. The locking tests are
+present: "refuses to guess without a surface mask" in `adaptive-mesh.test.ts`,
+and the non-monotonicity assertion in `adaptive-fixture-cross.test.ts`, which
+names this document in its failure message.
+
+What is NOT still true is the load these measurements were taken under, and it
+changed twice after 2026-08-04:
+
+| when | change | effect on this fixture |
+|---|---|---|
+| 2026-08-05, `dc45d93` (#271) | `DEFAULT_LOAD_DISTRIBUTION` became `contact_patch` | 50 N stops being smeared over the extreme-face band and becomes a tapered disc at the application point |
+| 2026-08-11, `9bb804c` (#305) | the patch acts on the surface the point was placed on, grown by edge adjacency | the point `(6, 0, 5)` is on the outer top rim, so the patch now wraps onto the top annulus the old rule excluded |
+
+`adaptive-benchmark.test.ts` builds this tube with
+`forces: [{ magnitude: 50, direction: [1, 0, 0], position: [R, 0, H] }]` and
+names no `loadDistribution`, so it takes the default and therefore took both
+changes. `docs/load-distribution-default.md` measured what that did on this
+exact fixture and mesh ladder: SF 12.80 → 1.75 → 1.33 and peak 3.908 → 28.642 →
+37.473 MPa at 20,291 elements.
+
+**So the Ø5-bore-tube numbers in this document are legacy-load measurements and
+are not expected to reproduce today.** That covers the exclusion-vs-no-exclusion
+table (min SF 8.99 / 5.58, peak 5.56 / 8.49 MPa, error 11.14% / 10.23%), the
+`maxElementGrowth` sweep, the error decomposition (10.23% = 4.99% + 8.93%), the
+`bcSingularityErrorFraction` density table (40.6 / 33.1 / 27.7%), and the
+non-adaptive tier table (75.7% / 48.0%, including its cross-check against #149's
+`initialGlobalError` of 0.1937). They are left exactly as measured — they are
+the record of what the feature bought at the time, and re-deriving them would
+destroy that record. Anyone who needs today's figures must re-run, and should
+add a row rather than overwrite one.
+
+What is unaffected, and why it matters that this is a short list:
+
+- **The cross-plate table (41.1 / 48.9 / 48.2%).** That fixture loads with
+  `pressures: [{ magnitude: 0.5, direction: [1, 0, 0], region: "face" }]` and
+  `forces: []`, so no force ever routes through load distribution. The
+  correction it carries — that the fraction's DIRECTION across densities is
+  fixture-specific — stands on its own measurement.
+- **The mesh tiers themselves.** #295 added a through-thickness floor, but on
+  this tube (bbox 12 x 12 x 5 mm) the count budget is finer than the floor at
+  every tier, so the floor never binds and the tier meshes are unchanged. The
+  drift here is the load, not the mesh.
+- **Every structural claim.** That a rigid-clamp rim is a BC idealization
+  singularity and not geometry; that the exclusion is SOFT because
+  `smoothSizeFieldGradation` runs after the mask; that a 2-D BC patch in a 3-D
+  volume graph needs the surface restriction or the whole patch gets masked;
+  that an excluded band still counted in the reported total puts a floor under
+  that total; and that peak stress on a bolt-constrained adaptive run is not a
+  converged quantity. None of those depend on the load model.
+
+The last point is worth reading twice against the new numbers rather than
+treated as spent. The 44% non-monotone peak-stress swing measured here across
+three defensible meshes was the argument that a safety factor off such a part is
+±40%; #305's own measurement then found a 15.7% spread across three rungs on the
+same part for an unrelated reason (a patch spanning a sharp edge, tracked as
+#308). Two independent routes to the same warning.

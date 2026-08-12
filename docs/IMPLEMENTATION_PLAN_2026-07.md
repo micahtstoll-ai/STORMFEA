@@ -1,5 +1,39 @@
 # STORMFEA Implementation Plan — July 2026 Audit
 
+> **HISTORICAL RECORD — not a live plan. Last substantively edited 2026-07-10;
+> header added 2026-08-12.**
+>
+> This is the plan as it was written from the July 8 audit, kept unchanged as
+> the record of how that work was sequenced and why. Do not pick work from it.
+>
+> - **The live plan is `ROADMAP.md`**, which carries the current NEXT list, the
+>   DEFERRED decisions and the shipped history. It has superseded this document
+>   entirely — everything below has landed. Spot-checked at the time this header
+>   was written, by symbol rather than by issue-tracker state: Phase 0's
+>   meshers-in-CI (`.github/actions/setup` installs TetGen and Gmsh), Phase 1's
+>   #96 SPR/ZZ work, #97 (`verdict-hill-sf.test.ts`), #105
+>   (`hole-constraint.test.ts`), #99 (`modal-mass-density.test.ts`), Phase 2's
+>   #104 (`buildNodeElementLists`, `server/solver/adjacency.ts`) and #98
+>   (`assembly-pool.ts` / `assembly-worker.ts`, with `test-parallel-assembly.ts`
+>   as its own CI shard), Phase 3's #107 (`client/vendor/`) and #109 (the
+>   `text/event-stream` path in `server/index.ts`), and Phase 4's #102
+>   (`orthotropic-compliance.test.ts`) and #101 part 2 (`bond-rotation.test.ts`,
+>   `upright-swap.test.ts`).
+> - **Where the decisions since then are recorded:** the landed-decision
+>   writeups named in `CLAUDE.md` — `docs/layer-model-audit.md`,
+>   `docs/bc-singularity-exclusion.md`, `docs/load-distribution-default.md`,
+>   `docs/mesh-sizing.md`, `docs/display-field-mesh-sensitivity.md`,
+>   `docs/spr-gauss-point-handoff.md` — plus `docs/METHODOLOGY.md`,
+>   `docs/ARCHITECTURE.md` and `docs/INVARIANTS.md` for the current state of the
+>   system rather than the July one.
+> - **How this plan was produced and executed** is Entry 6 of
+>   `docs/AI_ORCHESTRATION.md`, and the pattern it exemplifies ("audit → issues
+>   → phased plan → small PRs") is described at the top of that file.
+>
+> Nothing below this line has been altered. Numbers, phase ordering and issue
+> references are as of 2026-07-10 and several are stale by design — that is what
+> makes them a record.
+
 Companion to `docs/REPO_ANALYSIS_2026-07.md`. This plan sequences the issues
 filed from the July 8 repo audit (#96–#111) plus the pre-existing physics
 issues (#63–#65) into phases ordered by risk-reduction per unit effort, with
