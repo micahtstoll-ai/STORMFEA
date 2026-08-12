@@ -86,7 +86,7 @@ exactly-representable-field floor.
 
 ## What changed
 
-1. **`buildGaussSamples`** (`stress.ts:735`) — evaluates σ = C·B·u at all four
+1. **`buildGaussSamples`** (`server/solver/stress.ts`) — evaluates σ = C·B·u at all four
    C3D10 Gauss points and keeps them, with each point's physical position from
    the isoparametric map, and |detJ|·w. `recoverElementStress` is untouched:
    `elemStress6` is still the four-point average, because the criterion, safety
@@ -430,6 +430,60 @@ recovery, and the picture and the error estimate are the same array. Bit-identit
 against an independent recovery is asserted with `toBe`, and the "no error
 estimate → no field" fallback is asserted too, so the `??` branch is not dead
 code by accident.
+
+## Record status (audited 2026-08-12)
+
+The RESOLVED heading is still correct, and this is a closed handoff rather than
+an open one: nothing here is waiting on a decision, and the display-path scope
+it originally held back was released by #258 and has shipped.
+
+Verified against `main`, by symbol: `buildGaussSamples`, `buildCentroidSamples`,
+`buildSprPatchFit`, `solveSprValueAtNode`, `sprSmoothedStress6`,
+`interpolateMidsideFromCorners`, `vonMisesFromTensor6` and
+`SPR_MAX_AMPLIFICATION_QUADRATIC` (still 60) are all in
+`server/solver/stress.ts` under those names. `SolverResult.nodeStress6` still
+carries σ\* out of the solver, and `runAnalysis` still reads it and projects,
+falling back to a fresh `sprSmoothedStress6(mesh, elemStress6, buildGaussSamples(...))`
+only when it is absent. The scalar `sprSmoothedStress` survives with exactly one
+production call site — the branch taken when a result carries neither a nodal
+nor an element tensor — which is what CLAUDE.md means by "no longer reached on
+any path the pipeline produces". Both locking test files are present
+(`spr-gauss-sampling.test.ts`, `spr-scalar-projection.test.ts`), as is
+`spr-midside-recovery.test.ts`.
+
+One correction of form, not of content: the "What changed" list cited
+`buildGaussSamples` by line number, which had already drifted (735 → 746). It
+now cites the file, per CLAUDE.md's symbols-not-line-numbers rule.
+
+**Which of these measurements can still be reproduced.** The manufactured-solution
+work — the exactness floor, the effectivity tables, the rank-deficiency counts,
+the midside amplification figures — drives the solver directly and never touches
+load distribution or meshing policy, so it is unaffected by anything since. The
+same is true of the cost tables (structured box, recovery and estimator stages
+only) and of the #258 display-path measurements.
+
+The exception is the section **"Effect on the adaptive loop"**. That table
+(22.80% → 19.37% tier error, 12.57% → 11.14% final, 5 → 4 solves, 82,685 →
+80,866 elements) is the Ø5-bore tube from `adaptive-benchmark.test.ts`, whose
+force names no `loadDistribution` and therefore took the two later changes to
+the default: `contact_patch` as the default (#271, 2026-08-05) and then the
+patch acting on the surface the point was placed on (#305, 2026-08-11). On this
+fixture those moved SF 12.80 → 1.75 → 1.33 and peak 3.908 → 28.642 → 37.473 MPa
+at 20,291 elements (`docs/load-distribution-default.md`). The numbers here are
+left exactly as measured and are not expected to reproduce today;
+`docs/bc-singularity-exclusion.md` carries the same flag for its own tube
+tables. The conclusion they support — that `targetGlobalError` is not the
+binding constraint on this part, because `stalled` and `max-iterations` are — is
+a statement about the BC idealization and does not rest on the load model.
+
+The uniform-refinement region study in the same section deliberately replaced
+both boundary conditions with whole-surface versions (clamp on the entire bore,
+consistent traction over the entire outer wall) precisely so no patch edge
+entered the measurement. Its finding — the clamped boundary and its edge growing
+from 52% to 75% of the error energy while the interior collapses, against a
+pure-geometry rim flat at ~0.3% — is about the clamp and does not depend on how
+a point force is spread. The exact percentages would still need a re-run to
+quote as current.
 
 ## Locks
 

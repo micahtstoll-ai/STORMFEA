@@ -186,6 +186,27 @@ tables, not smaller.
   material. The mechanism is not geometry-specific, but the AMPLITUDES in the
   table above are.
 
+## Record status (audited 2026-08-12)
+
+Re-checked against `main`: the decision above is what ships, and every number in
+the tables still reproduces from the fixture as it is configured. `measure294.ts`
+carries the tier divisions the tables report (21x8x4 = 4,032 / 32x13x4 = 9,984 /
+50x20x6 = 36,000), `JITTER_AMP` defaults to 0.15 with `JITTER_SEED` 0x5f2b, and
+the probe grid is 18 x 12 = 216 points on the top surface with the `x < 2T` clamp
+band excluded. `meshSensitivityField`, `installMeshSensitivity`,
+`MODE_META.meshsens`, `OVERFLOW_MODES`, `runConvergenceStudy` and
+`convDatumFromPayload` are all present in `client/index.html` under those names,
+and test group `[V]` is present in `scripts/test_client_logic.mjs`.
+
+One property worth stating explicitly, because the sibling landed-decision
+documents do not share it: this fixture drives the solver directly
+(`generateBoxMeshC3D10` → `runLinearStatic` with explicit `PointForce` nodal
+loads) and never calls `runAnalysis`. So the load-model changes of #271 and #305
+— which moved the default distribution and then the surface it acts on, and which
+DID move the tube-fixture numbers quoted in
+`docs/bc-singularity-exclusion.md` and `docs/spr-gauss-point-handoff.md` — do not
+touch anything measured here.
+
 ## Symbols
 
 Search by symbol, not line number:

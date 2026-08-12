@@ -192,6 +192,67 @@ Locked by `in-plane-anisotropy.test.ts`.
 
 ---
 
+## Follow-ups since the audit (audited 2026-08-12)
+
+All seven fixes were re-checked against `main` by symbol and all seven still
+ship. `fdmDualCriterionSF` and `fdmInterfaceUtilization` are in
+`server/solver/stress.ts` with the Macaulay bracket on ⟨σzz⟩₊ and the
+Mohr–Coulomb friction credit in compression (A3); `interlaminarShearOf` still
+derives `yieldZ/√3` wherever `yieldZShear` is absent (A2's anchor, A5's
+fallback); `materialStrengthMultiplier` is still orientation-free and
+`effectiveStrengthMultiplier` still exists only as the scalar estimator (A4);
+`interfaceCalibrationState` (`server/analysis.ts`) is still the shared
+calibration gate locked by `coupon-recommendations.test.ts` (A5);
+`server/solver/bond.ts` still normalizes to `BOND_REFERENCE`
+(60 mm/s, bed 60 °C, ambient 25 °C, with nozzle and fan per-material) so the
+reference condition is exactly 1.0 (A6); and the cross-bead check is still an
+opt-in separate `min` on the bulk term only (A7). Three things have moved
+around them.
+
+**The bulk term is no longer literally von Mises in one case, and A1/A2 survive
+it.** `fdmDualCriterionSF` gained a `dfaAlpha` parameter (issue #171): with
+α > 0 the bulk equivalent stress is the Deshpande–Fleck–Ashby foam criterion
+σ̂² = (σ_vm² + α²σ_m²)/(1 + (α/3)²) instead of σ_vm, so a homogenized infill
+core can yield hydrostatically. A reader checking A1's resolution against the
+code today will find that, and should know why neither A1 nor A2 is reopened:
+
+- **A1 (azimuth invariance).** σ_vm and σ_m are both invariants of the stress
+  tensor, so σ̂ is invariant under ANY rotation, not merely rotation about the
+  weak axis. The property A1 exists to protect is strengthened rather than
+  weakened, and the interface term — the one whose azimuth invariance the
+  quadratic Hill form could not deliver — is untouched by DFA.
+- **A2 (cannot silently report SF = 999).** σ̂ is a square root of a
+  non-negative quantity, so it is still a norm-like measure that cannot go
+  negative and be clamped to zero. The `(1 + (α/3)²)` normalization also keeps
+  the uniaxial yield at `yieldXY` for any α, so DFA never disturbs the in-plane
+  coupon anchor.
+
+α is 0 for every non-core element and on every flag-off path — the branch is
+skipped entirely rather than round-tripping through `sqrt(vm²)` — so the audit's
+"bulk von Mises" description above is exact wherever it was exact when written.
+The α values themselves are confidence-LOW and disclosed on
+`summary.materialModel` as `dfaAlpha` / `yieldCriterion`.
+
+**A7's literature default has a name.** The 0.85 cross-bead ratio is
+`CROSS_BEAD_RATIO_LITERATURE` (`server/analysis.ts`), still applied only to a
+DECLARED `unidirectionalRaster` and still overridden by a measured
+`CalibrationProfile.crossBeadRatio`.
+
+**A4's `mul = 1.0` convention is now the default path, not an opt-in one.**
+Issue #297 made `analysis.twoRegion` default TRUE, so the shell and the core's
+solid base building at full strength — the convention the coupon calibration
+back-calculates — is what an ordinary run does. Nothing in A4 changes; what
+changes is how often it is exercised. Note also that the "Verified-unchanged"
+reference below to CLAUDE.md's two-region invariants **#1–#8** is the list as it
+stood at audit time; #297 APPENDED a ninth (the split is only visible on a
+section cut). The blend structure that item points at is still untouched, and
+`yieldZShear` is still a required per-bin array following the same pattern.
+
+The "Result shift (disclosed)" figures under A4 are left exactly as measured.
+They are deltas against the pre-A4 code on the then-default single-material
+path; the default path has since changed underneath them, so they are a record
+of what that fix moved and not a prediction of what a run reports today.
+
 ## Verified-unchanged items
 
 - **Bond rotation** (`rotateC6`, `rotationAligningZTo`): exact, validated in

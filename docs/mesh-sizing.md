@@ -134,6 +134,50 @@ least the layers it asks for. It errs toward a finer mesh, never a coarser one.
 - It does not settle `VOLUME_CAP_SCALE` (13, calibrated on one geometry,
   confidence-LOW) — see `ROADMAP.md`.
 
+## Follow-ups since this landed (audited 2026-08-12)
+
+Everything above still ships as described: `MESH_TARGET_ELEMENTS` is
+4,000 / 12,000 / 40,000, `MIN_ELEMENTS_THROUGH_THICKNESS` is 4,
+`MESH_MAX_BUDGET_OVERSHOOT` is 4, `GMSH_TIER_ABSOLUTE.fine` is still
+`0.2 / 2.0 / 30` as an upper bound, and both `tetSizingForTier` and
+`gmshSizingForTier` still take the finest of the count budget, the absolute cap
+(Gmsh only) and the through-thickness floor. Two things happened downstream of
+it that a reader of this document needs to know.
+
+**The floor became a correctness GATE, not only a sizing target (issue #297,
+2026-08-10).** The two-region material model is now ON by default, and
+`runAnalysis` degrades it to the uniform path — reporting
+`summary.materialModel.degraded` — when the mesh that came back resolves fewer
+than `MIN_ELEMENTS_THROUGH_THICKNESS` elements across the thinnest section. The
+justification is the sandwich-stiffening sweep in "Why the floor is 4" above,
+one consequence further on: at one element through thickness the model returns
+essentially the homogenized answer *while reporting itself active*. An explicit
+`twoRegion: true` does not override the gate, and the gate reads
+`meshResolution` — the measured readout, for the reason "Why the readout is
+measured, not predicted" gives. So the measurement behind this constant now
+decides whether a material model runs at all, not merely how fine the mesh is.
+Locked by `server/tests/unit/two-region-default.test.ts`.
+
+**The readout is one-sided, and deliberately so.** Documented at
+`MeshResolutionReport` rather than here when it was found:
+`elementsThroughThickness` is back-figured from the mean element VOLUME, so it
+reports mean element SIZE across the thin direction and not a layer count. The
+two agree for what this pipeline emits (TetGen runs `-q1.4`, bounding the
+radius-edge ratio) and diverge for a deliberately anisotropic mesh — a
+structured mesh of 2 x 2 x 0.75 mm cells through a 6 mm plate has eight nominal
+layers and reads 3.7. The divergence only ever reads LOW, so a consumer gating
+on the figure errs toward calling a mesh under-resolved, which is the direction
+the #297 gate wants.
+
+**These tier densities are the regime #294's re-measurement was taken in
+(2026-08-11).** `server/tests/measure294.ts` sizes its plate fixture to land on
+each tier's budget with `nz >= 4` so the mesh clears this floor — 4,032 /
+9,984 / 36,000 elements — precisely because measuring below the floor would
+measure a mesh the tool no longer emits. See
+`docs/display-field-mesh-sensitivity.md`; that document's tables are the
+current statement of what refinement buys, and this document is what moved the
+lever.
+
 ## Symbols
 
 Search by symbol, not line number:
