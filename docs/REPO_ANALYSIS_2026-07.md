@@ -1,5 +1,36 @@
 # STORMFEA Repository Analysis — July 2026
 
+> **HISTORICAL RECORD — a dated snapshot, not a description of the repository
+> today. Measurements below are from 2026-07-08/10; header added 2026-08-12.**
+>
+> Kept unchanged as the evidence base for the findings F1–F7 and the proposals
+> in §4–§7. Every number in it — suite counts, wall times, endpoint responses,
+> the C3D10 permutation table — is a measurement of the tree as it stood that
+> week and is expected NOT to reproduce now. That is the point of it; do not
+> update the figures, and do not read it as a current status page.
+>
+> - **The critical findings are fixed.** F1's permutation is the one this
+>   document derived: `C3D10_REORDER` in `server/tetgen.ts` is now
+>   `[0, 1, 2, 3, 6, 7, 9, 5, 8, 4]`, and the CI gap that hid it is closed
+>   (`.github/actions/setup` installs TetGen and Gmsh; the `solver` shard runs
+>   the #66 midnode gate). F2's O(V x nodes x elements) mapping went to
+>   `buildNodeElementLists` (`server/solver/adjacency.ts`). F7's CDN dependency
+>   is vendored under `client/vendor/`.
+> - **The suite counts in §1.1 are three orders of the project ago.** They are
+>   now CI-asserted against the suite as it actually ran
+>   (`scripts/check-doc-test-counts.mjs`), so the current figures live on the
+>   surfaces that guard checks — `README.md`, `CONTRIBUTING.md` — and not here.
+> - **For the current system:** `docs/ARCHITECTURE.md` (module map and request
+>   lifecycle), `docs/METHODOLOGY.md` (the physics), `docs/API.md` (the route
+>   surface, drift-guarded), `docs/INVARIANTS.md` (what must not change), and
+>   the landed-decision writeups named in `CLAUDE.md` for the deliberate
+>   behaviour changes since. `ROADMAP.md` is the live plan.
+> - **The companion plan** is `docs/IMPLEMENTATION_PLAN_2026-07.md`, also
+>   historical; the session that produced both is Entry 6 of
+>   `docs/AI_ORCHESTRATION.md`.
+>
+> Nothing below this line has been altered.
+
 Full-repo audit: every automated test executed, every HTTP endpoint exercised live
 (including real TetGen 1.5.0 and Gmsh 4.12.1 meshing), the solver CPU-profiled,
 and an independent physics verification of the C3D10 element path. Findings are
