@@ -312,6 +312,15 @@ export function checkSurfaceClosure(surface: SurfaceMesh): ClosureReport {
  *                 `openEdges` on the result rather than silently capped.
  * @param plane    Cutting plane. The normal need not be unit length.
  * @param opts     See `ClipOptions`.
+ * @throws if the input is a closed surface wound INWARD (negative
+ *         `signedVolumeOf`) — see issue #306. A consistently inward-wound
+ *         surface passes `checkSurfaceClosure` on its own, so the cap would
+ *         otherwise be emitted on the wrong side and the RESULT would fail
+ *         closure with "inconsistent edges", a diagnostic that points at the
+ *         cap triangulation rather than at the input's winding. Caught here
+ *         instead, against the one signal that already distinguishes the two
+ *         cases. Does not fire on a surface with MIXED winding — that already
+ *         fails its own `checkSurfaceClosure`, correctly, before this runs.
  */
 export function clipSurfaceAtPlane(
   surface: SurfaceMesh,
@@ -322,6 +331,15 @@ export function clipSurfaceAtPlane(
   const srcFaces = surface.faces;
   const srcTriCount = Math.floor(srcFaces.length / 3);
   const srcVertCount = Math.floor(srcPos.length / 3);
+
+  const inputVolume = signedVolumeOf(surface);
+  if (inputVolume < 0) {
+    throw new Error(
+      "clipSurfaceAtPlane: input surface is wound INWARD (signed volume "
+      + `${inputVolume.toExponential(3)} < 0). The clip requires an `
+      + "outward-oriented surface — flip its triangle winding before calling.",
+    );
+  }
 
   const nLen = Math.hypot(plane.normal[0], plane.normal[1], plane.normal[2]);
   if (!(nLen > 0)) throw new Error("clipSurfaceAtPlane: plane normal has zero length");
