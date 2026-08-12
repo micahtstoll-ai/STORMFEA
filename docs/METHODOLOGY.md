@@ -184,7 +184,14 @@ strength multiplier, which keeps driving `yieldXY` on its own curve.
 
 ### 2.4 The two-region model (walls vs infill) — the DEFAULT path
 
-`analysis.twoRegion` **defaults to TRUE** as of issue #297. Infill is one of the
+`analysis.twoRegion` **defaults to TRUE** as of issue #297 — *in the library*.
+Note this default does NOT currently reach HTTP callers: the analyse handler
+builds its settings with `twoRegion: body.analysis?.twoRegion === true`
+(`server/index.ts`), turning an absent flag into an explicit `false`, so
+`runAnalysis`'s `?? true` never fires over the wire. Through `POST /api/analyse`
+the model is opt-in until that is fixed; see the `twoRegion` note in
+`docs/API.md`. Everything below describes the model itself and is unaffected by
+which side of that discrepancy invoked it. Infill is one of the
 defining variables of an FDM part, and the single-material model above represents
 it as a scalar knockdown with no spatial structure at all — a user could not tell
 a 2-wall part from a 5-wall one except as a different number. Passing

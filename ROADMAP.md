@@ -51,8 +51,10 @@
 - [x] Wall count bonus (+10% per additional wall)
 - [x] Layer height factor (Farashi & Vafaee 2022 meta-analysis, n=131)
 - [x] All constants cited in Sources tab with confidence levels
-- [x] Two-region material model (**default since #297**; pass
-      `twoRegion: false` for the legacy single-material path) — dense perimeter walls vs homogenized
+- [x] Two-region material model (**default since #297 in the library**; pass
+      `twoRegion: false` for the legacy single-material path. Still opt-in over
+      HTTP — the analyse handler coerces an absent flag to `false`, so the
+      default never reaches `POST /api/analyse` callers; needs fixing) — dense perimeter walls vs homogenized
       infill core, classified geometrically per element (exact surface-distance
       field + marching-tet volume fractions, 9 Voigt-blended bins) instead of a
       single averaged material; stiffness, strength, mass, self-weight, and

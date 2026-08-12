@@ -398,7 +398,11 @@ Search by symbol, not line number — these move:
 > implementing symbol and locking test — check there first when a change
 > might touch one of these.
 
-The two-region model (`analysis.twoRegion`, DEFAULT TRUE since issue #297 —
+The two-region model (`analysis.twoRegion`, DEFAULT TRUE since issue #297 in
+the LIBRARY only — the analyse handler coerces an absent flag to explicit
+`false` via `twoRegion: body.analysis?.twoRegion === true`, so the default
+never reaches HTTP callers and the model is opt-in over the wire; treat that
+as a defect to fix, not a contract to preserve —
 pass `false` for the legacy single-material path) classifies elements into dense
 perimeter walls vs homogenized infill core (`server/twoRegion.ts`,
 `server/solver/distance.ts`, `server/solver/wallfrac.ts`, consumed via
@@ -458,7 +462,7 @@ perimeter walls vs homogenized infill core (`server/twoRegion.ts`,
 8. **Core homogenization anchors** — the core is the SOLID material times
    Gibson-Ashby scale factors (`server/solver/lattice.ts`); at ρ=1 those
    factors are exactly 1.0 so the core reproduces the solid bit-for-bit
-   (the `materialsEqual` collapse depends on it — never re-derive the ρ=1
+   (the `materialsEqualFor` collapse depends on it — never re-derive the ρ=1
    material through a parallel formula chain). Scales are floored at
    1e-3×solid (0% infill must build a positive-definite C, not crash), and
    orientation must never enter core STIFFNESS — only the weakAxis
@@ -517,8 +521,10 @@ the bead-penetration bond model (`server/solver/bond.ts`) replaced the Hill
    reintroduce the yieldZ = τ/0.58 conversion except as the flagged
    no-Z-coupon fallback (audit A5).
 6. **Bond model is RELATIVE and anchored** — multipliers are exactly 1.0 at
-   the reference process condition (per-material nozzle ref, 60 mm/s, fan
-   100%, bed 60 °C) evaluated at the SAME layer height, so: no process block
+   the reference process condition (per-material nozzle ref, 60 mm/s,
+   per-material fan ref `fanRefPct` — 100 for PLA/PETG but 0 for ABS and 50
+   for TPU since issue #184, so "fan 100%" is NOT the anchor for every
+   material — bed 60 °C) evaluated at the SAME layer height, so: no process block
    → bit-identical legacy path; the layer-height slope stays owned by
    `layerHeightFactor`; calibration ratios stay multiplicative. Constants are
    confidence-LOW, regression-locked (`bond.test.ts`), overridable via
