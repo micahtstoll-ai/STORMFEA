@@ -215,9 +215,21 @@ Two honest readings, and both belong here:
   where the traction acts across the corner, and it is not something the patch
   rule can smooth away: it is what a distributed load at a rim does.
 
-Tracked as **#308** — the options are a geodesic taper (which would actually
+Tracked as **#308** — the options were a geodesic taper (which would actually
 restore the spread), flagging an edge-spanning patch on the existing
 reliability banner, or deciding this is simply what a load at a corner does.
+Resolved with the second: `assembleContactPatchLoad` now reports
+`maxLoadedNormalAngleDeg` (largest angle between adjacent loaded triangles'
+normals), and `runAnalysis` (`server/analysis.ts`) turns that into
+`loadPatchSharpEdgeWarning` on the result whenever it reaches
+`CONTACT_PATCH_SHARP_EDGE_DEG` (45°) — shown as its own reliability banner
+client-side ("Load placed on a sharp edge") rather than folded into the
+`load-edge` singularity cause, because the peak here sits inside the patch,
+not at its rim, so the existing rim-distance test does not reliably find it.
+The geodesic taper (option 1) was set aside: it is the only option that would
+restore the spread itself, but it changes weights on every curved surface,
+not just edges, and needs its own before/after measurement this fix does not
+attempt. Locked by `contact-patch-sharp-edge.test.ts`.
 
 Neither number is evidence about which idealization is closer to a real
 contact. What can be said is that the previous behaviour was not an
@@ -239,9 +251,12 @@ on — are what ships. Verified by symbol: `DEFAULT_LOAD_DISTRIBUTION` is
 `direction` and otherwise grows the patch from the nearest triangle by
 `buildSurfaceTriangleAdjacency` (`server/solver/adjacency.ts`); `centreSnapMm`
 is computed with `pointTriangleDistance`; and the singularity cause is
-`"load-edge"` in `server/analysis.ts` and `server/report.ts`. The four locking
-test files are present: `load-distribution-default.test.ts`,
-`contact-patch-position.test.ts`, `contact-patch-surface.test.ts` and
+`"load-edge"` in `server/analysis.ts` and `server/report.ts`. `#308`'s
+sharp-edge-span disclosure is a separate signal, `maxLoadedNormalAngleDeg` /
+`CONTACT_PATCH_SHARP_EDGE_DEG` in `server/solver/load.ts`, surfaced as
+`loadPatchSharpEdgeWarning`. The five locking test files are present:
+`load-distribution-default.test.ts`, `contact-patch-position.test.ts`,
+`contact-patch-surface.test.ts`, `contact-patch-sharp-edge.test.ts` and
 `tapered-load-patch.test.ts`.
 
 **What this change did to the older records, which is worth knowing here as

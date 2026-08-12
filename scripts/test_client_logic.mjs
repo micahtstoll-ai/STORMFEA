@@ -1879,7 +1879,7 @@ console.log('\n[X] Reliability banners — one helper, DESIGN.md type/radius sca
   const chain = html.match(/let reliabilityBanner = '';[\s\S]*?\n  const \{ bucklingGoverns/);
   if (!chain) throw new Error('Could not extract the reliabilityBanner chain');
   const appends = chain[0].match(/reliabilityBanner \+=/g) || [];
-  test('all six banners are still wired up', appends.length === 6, `found ${appends.length}`);
+  test('all seven banners are still wired up', appends.length === 7, `found ${appends.length}`);
   test('every append calls the helper',
     (chain[0].match(/reliabilityBanner \+= reliabilityBannerHTML\(/g) || []).length === appends.length);
   test('no call site hand-rolls banner markup',

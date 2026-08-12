@@ -7033,6 +7033,15 @@ function showResults(s) {
     reliabilityBanner += reliabilityBannerHTML(headline, mr.warning,
       `${mr.achievedElements.toLocaleString()} ELEMENTS · ${mr.targetElements.toLocaleString()} TARGET (${mr.tier.toUpperCase()}) · ${mr.elementsThroughThickness.toFixed(1)} THROUGH THINNEST SECTION`);
   }
+  // Issue #308: a contact_patch load placed on a sharp geometric edge is
+  // measurably less mesh-stable than one on a flat face — the direction is
+  // conservative (finer mesh -> lower SF), so this is a confidence caveat,
+  // not a wrong-answer flag, and belongs beside the other reliability notes
+  // rather than only in the server console log.
+  if (s.loadPatchSharpEdgeWarning) {
+    reliabilityBanner += reliabilityBannerHTML(
+      'Load placed on a sharp edge', s.loadPatchSharpEdgeWarning.replace(/\n/g, '<br>'));
+  }
 
   // Issue #204: estimatedFailForce is a LINEAR first-yield extrapolation
   // (totalAppliedForce × SF, server/analysis.ts) — onset of yield under an

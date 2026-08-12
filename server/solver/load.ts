@@ -597,6 +597,16 @@ export function assembleTaperedFaceLoad(
 export const CONTACT_PATCH_RADIUS_FRACTION = 0.10;
 
 /**
+ * Angle (degrees) between adjacent loaded triangles' normals above which a
+ * contact patch is reported as spanning a sharp edge (issue #308) rather than
+ * wrapping smooth curvature. A geometric threshold, not a physical constant —
+ * see the "Sharp-edge span" note in `assembleContactPatchLoad` for what it is
+ * checking and why 45 sits between ordinary mesh-curvature drift and a real
+ * corner. Tuned by, and locked by, `contact-patch-sharp-edge.test.ts`.
+ */
+export const CONTACT_PATCH_SHARP_EDGE_DEG = 45;
+
+/**
  * Assemble consistent nodal forces for a point load spread over a contact patch
  * CENTRED AT THE APPLICATION POINT — the mode that makes `ForceSpec.position`
  * load-bearing (issue #271).
@@ -672,11 +682,21 @@ export function assembleContactPatchLoad(
   force:     readonly [number, number, number],
   centre:    readonly [number, number, number],
   radiusMm?: number,
-): { forces: Float64Array; radiusMm: number; loadedTriangles: number; centreSnapMm: number } {
+): {
+  forces: Float64Array; radiusMm: number; loadedTriangles: number; centreSnapMm: number;
+  /** Largest angle (degrees) between the unit normals of any two adjacent
+   *  LOADED triangles — see the "Sharp-edge span" note below for what this is
+   *  for. 0 when the patch is a single triangle or every loaded pair is
+   *  (near-)coplanar. */
+  maxLoadedNormalAngleDeg: number;
+} {
   const nodes = mesh.nodes;
   const [dx, dy, dz] = direction;
   const dl = Math.hypot(dx, dy, dz);
-  const empty = { forces: new Float64Array(nodes.length), radiusMm: 0, loadedTriangles: 0, centreSnapMm: 0 };
+  const empty = {
+    forces: new Float64Array(nodes.length), radiusMm: 0, loadedTriangles: 0, centreSnapMm: 0,
+    maxLoadedNormalAngleDeg: 0,
+  };
   // A zero direction is a degenerate force spec, not a load: reject it here
   // rather than assembling a patch for a force with no line of action. The
   // direction plays no part in choosing the patch (see the header) — `force`
@@ -687,10 +707,15 @@ export function assembleContactPatchLoad(
   if (triCount === 0) return empty;
   if (!centre.every(v => Number.isFinite(v))) return empty;
 
-  // Triangle centroids and areas, cached — every step below needs both and the
-  // surface is walked several times otherwise.
+  // Triangle centroids, areas and unit normals, cached — every step below
+  // needs them and the surface is walked several times otherwise. The unit
+  // normal feeds the sharp-edge check (issue #308): it is otherwise unused
+  // here (the patch admits triangles by adjacency, not by normal — see the
+  // header note on the windward-test bug this replaced), so it costs nothing
+  // extra to keep alongside area.
   const cx = new Float64Array(triCount), cy = new Float64Array(triCount), cz = new Float64Array(triCount);
   const area = new Float64Array(triCount);
+  const nrmX = new Float64Array(triCount), nrmY = new Float64Array(triCount), nrmZ = new Float64Array(triCount);
   let mnX = Infinity, mnY = Infinity, mnZ = Infinity;
   let mxX = -Infinity, mxY = -Infinity, mxZ = -Infinity;
   for (let n = 0; n < mesh.nodeCount; n++) {
@@ -708,7 +733,9 @@ export function assembleContactPatchLoad(
     const vx1 = bx-ax, vy1 = by-ay, vz1 = bz-az;
     const vx2 = ccx-ax, vy2 = ccy-ay, vz2 = ccz-az;
     const nx = vy1*vz2 - vz1*vy2, ny = vz1*vx2 - vx1*vz2, nz = vx1*vy2 - vy1*vx2;
-    area[t] = 0.5 * Math.hypot(nx, ny, nz);
+    const mag = Math.hypot(nx, ny, nz);
+    area[t] = 0.5 * mag;
+    if (mag > 0) { nrmX[t] = nx / mag; nrmY[t] = ny / mag; nrmZ[t] = nz / mag; }
   }
 
   const diag = Math.sqrt((mxX-mnX)**2 + (mxY-mnY)**2 + (mxZ-mnZ)**2);
@@ -755,8 +782,13 @@ export function assembleContactPatchLoad(
   let loadedTriangles = 0, areaWeighted = 0;
   const dOf = (t: number): number =>
     Math.hypot(cx[t]!-centre[0], cy[t]!-centre[1], cz[t]!-centre[2]);
+  // Built unconditionally: the growth BFS below needs it when the patch spans
+  // more than one triangle, and the sharp-edge scan after it needs it either
+  // way (issue #308) — including on the tied-fallback path, where the loaded
+  // set is chosen by distance rather than by this adjacency but may still
+  // straddle an edge.
+  const { ptr, list } = buildSurfaceTriangleAdjacency(faces, mesh.nodeCount);
   if (dOf(bestTri) < radius) {
-    const { ptr, list } = buildSurfaceTriangleAdjacency(faces, mesh.nodeCount);
     const seen = new Uint8Array(triCount);
     const stack: number[] = [bestTri];
     seen[bestTri] = 1;
@@ -791,6 +823,45 @@ export function assembleContactPatchLoad(
     if (!(areaWeighted > 0)) return empty;
   }
 
+  // ── Sharp-edge span (issue #308) ────────────────────────────────────────
+  // A contact placed on a sharp geometric edge is a legitimate patch — the
+  // adjacency growth above is what lets it wrap onto both faces the edge
+  // joins at all — but the wrap does not TAPER across the corner the way it
+  // does within one smooth face: Euclidean distance in the growth test above
+  // undercounts the true (geodesic, surface) distance across a dihedral, so a
+  // triangle just past the corner is admitted at close to full weight instead
+  // of the reduced weight a flat patch would give a point that far around.
+  // Measured on the Ø5-bore tube fixture (docs/load-distribution-default.md):
+  // the governing peak sits 0.4-0.7mm inside such a patch and does not
+  // converge over a 4x mesh range, against a peak on a flat patch that settles
+  // to within 4.6% over the same range. That is a confidence problem, not a
+  // wrong-answer problem (the direction is conservative), so this reports it
+  // rather than reshaping the patch — see the issue for why a geodesic taper
+  // was set aside for now.
+  //
+  // The angle between adjacent LOADED triangles' unit normals is the cheapest
+  // available signal: two coplanar (or smoothly curved) neighbours differ by
+  // a few degrees at most on any mesh fine enough to resolve the part, while
+  // a genuine sharp edge — the 90 degree rim this issue was measured on — is
+  // a step change. `CONTACT_PATCH_SHARP_EDGE_DEG` sits well below 90 deg so a
+  // corner is flagged before it is razor-sharp, and well above ordinary
+  // curvature-driven normal drift between neighbouring triangles on a curved
+  // surface at typical mesh density; it is a geometric threshold, not a
+  // physical constant, so it carries no literature citation and is tuned by
+  // its locking test rather than calibration data.
+  let maxLoadedNormalAngleDeg = 0;
+  for (let t = 0; t < triCount; t++) {
+    if (!(weights[t]! > 0)) continue;
+    for (let k = ptr[t] ?? 0; k < (ptr[t+1] ?? 0); k++) {
+      const u = list[k] ?? 0;
+      if (u <= t) continue;   // count each shared edge once
+      if (!(weights[u]! > 0)) continue;
+      const dot = nrmX[t]! * nrmX[u]! + nrmY[t]! * nrmY[u]! + nrmZ[t]! * nrmZ[u]!;
+      const angle = Math.acos(Math.min(1, Math.max(-1, dot))) * (180 / Math.PI);
+      if (angle > maxLoadedNormalAngleDeg) maxLoadedNormalAngleDeg = angle;
+    }
+  }
+
   const f = new Float64Array(nodes.length);
   const edgeMid = buildEdgeMidsideMap(mesh);   // null for C3D4
   const N = mesh.nodeCount;
@@ -819,5 +890,8 @@ export function assembleContactPatchLoad(
     f[n*3+2] = fz * share;
   }
 
-  return { forces: f, radiusMm: radius, loadedTriangles, centreSnapMm: bestD };
+  return {
+    forces: f, radiusMm: radius, loadedTriangles, centreSnapMm: bestD,
+    maxLoadedNormalAngleDeg: +maxLoadedNormalAngleDeg.toFixed(2),
+  };
 }

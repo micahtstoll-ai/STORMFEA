@@ -22,7 +22,7 @@ import { runLinearBuckling }              from "./solver/buckling.js";
 import { assembleK, assembleKsigma, buildSparsityPattern } from "./solver/assembly.js";
 import { buildNodeElementAdjacency }       from "./solver/adjacency.js";
 import { applyDirichletBC }    from "./solver/boundary.js";
-import { assembleForceVector, assembleBodyForce, assembleSurfaceTraction, assembleSurfaceTractionNormal, selectPressureRegion, assembleTaperedFaceLoad, assembleContactPatchLoad } from "./solver/load.js";
+import { assembleForceVector, assembleBodyForce, assembleSurfaceTraction, assembleSurfaceTractionNormal, selectPressureRegion, assembleTaperedFaceLoad, assembleContactPatchLoad, CONTACT_PATCH_SHARP_EDGE_DEG } from "./solver/load.js";
 import type { ModalAnalysisResult }        from "./solver/types.js";
 import {
   buildLaminateCMatrix,
@@ -3602,6 +3602,15 @@ export interface AnalysisResult {
    */
   unitsWarning:           string | null;
   /**
+   * Non-null when at least one `contact_patch` load's patch wraps a sharp
+   * geometric edge — the peak stress inside such a patch does not converge
+   * with mesh refinement the way one on a flat face does (issue #308,
+   * `docs/load-distribution-default.md`). One message per affected force,
+   * newline-joined; null when no force used `contact_patch` or none of them
+   * spanned an edge past `CONTACT_PATCH_SHARP_EDGE_DEG`.
+   */
+  loadPatchSharpEdgeWarning: string | null;
+  /**
    * Non-null when the C3D10 midside-ordering guard rejected this mesher's output
    * twice and the analysis continued on LINEAR elements with the geometry intact
    * (issue #265). Distinct from `meshFallback`, which means the geometry itself
@@ -5636,6 +5645,14 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   const solverForces: { nodeIndex: number; forceN: [number,number,number] }[] = [];
   // Track peak nodal force per force spec for bearing stress calculation
   const peakNodalForcesPerForce = new Map<number, number>();
+  // Issue #308: one note per `contact_patch` force whose patch wraps a sharp
+  // geometric edge (`maxLoadedNormalAngleDeg` above `CONTACT_PATCH_SHARP_EDGE_DEG`).
+  // That peak does not converge with mesh refinement the way a flat-face patch
+  // does — see `assembleContactPatchLoad`'s "Sharp-edge span" note — and until
+  // now nothing in the result said the load point was why. Collected rather
+  // than reported per-force because `loadPatchSharpEdgeWarning` is one string
+  // for the whole run, matching `unitsWarning`'s shape.
+  const loadPatchSharpEdgeNotes: string[] = [];
 
   for (let forceIdx = 0; forceIdx < req.forces.length; forceIdx++) {
     const f = req.forces[forceIdx]!;
@@ -5688,6 +5705,28 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
           `(${f.position.join(",")}) radius=${patch.radiusMm.toFixed(3)}mm over ` +
           `${patch.loadedTriangles} triangles, ${applied} loaded nodes, ` +
           `|resultant|=${Math.hypot(resX, resY, resZ).toFixed(4)}N${snapNote}`);
+        // Issue #308: the patch wraps a sharp edge, so its peak is measurably
+        // less mesh-stable than one on a flat face (docs/load-distribution-default.md,
+        // "What it costs on the benchmark fixture, and why"). Direction is
+        // always the same as the wording below regardless of which sign of
+        // force this is — a bolted pad in tension over a corner is just as
+        // singular as a push, since both are the same patch geometry.
+        if (patch.maxLoadedNormalAngleDeg >= CONTACT_PATCH_SHARP_EDGE_DEG) {
+          console.warn(`[analysis] force ${f.magnitude}N at (${f.position.join(",")}): contact patch ` +
+            `spans a ${patch.maxLoadedNormalAngleDeg.toFixed(0)} deg edge — peak stress inside this ` +
+            `patch will not converge with mesh refinement the way a flat-face patch does.`);
+          loadPatchSharpEdgeNotes.push(
+            `The load at (${f.position.map(v => v.toFixed(2)).join(", ")}) is applied over a contact ` +
+            `patch that wraps a ${patch.maxLoadedNormalAngleDeg.toFixed(0)}° geometric edge. A load ` +
+            `placed on a sharp edge is real (a contact at an edge really does bear on both faces it ` +
+            `joins), but the peak stress inside such a patch does not settle down with mesh refinement ` +
+            `the way one on a flat face does — the safety factor here will keep moving as the mesh is ` +
+            `refined. The direction is conservative (a finer mesh reports a LOWER safety factor here, ` +
+            `not a higher one), so this is a confidence problem rather than a wrong-answer problem. If ` +
+            `this load matters to your decision, consider moving the application point off the edge or ` +
+            `passing a larger loadPatchRadiusMm.`,
+          );
+        }
         continue;
       }
       console.warn(
@@ -7706,6 +7745,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     converged:          result.converged,
     meshFallback,
     unitsWarning,
+    loadPatchSharpEdgeWarning: loadPatchSharpEdgeNotes.length ? loadPatchSharpEdgeNotes.join("\n") : null,
     meshOrderDowngrade,
     meshResolution,
     symmetryMesh,
