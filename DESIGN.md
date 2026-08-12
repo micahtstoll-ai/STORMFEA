@@ -43,18 +43,22 @@ proportional face changes width as it changes value, so a live readout jitters
 and columns of figures stop aligning. Anything that updates during a solve is
 data.
 
-### Type scale (4 sizes only)
+### Type scale (5 sizes)
 
 ```css
 --text-xs:   9px;   /* data labels, secondary hints, metadata */
---text-sm:  11px;   /* primary UI text, form labels, button copy */
+--text-sm:  10px;   /* data values, legend labels, dense secondary copy */
+--text-md:  11px;   /* primary UI text, form labels, button copy */
 --text-base: 13px;  /* body, descriptions */
 --text-lg:  16px;   /* major headings, display values */
 ```
 
-Do not use 7, 8, 8.5, 10, 10.5, 12, 14, 18, 22, 32 or 36px. If something looks
-too large at 11px, it should probably be 9px. Use the token, not the literal:
-`font-size: var(--text-sm)`, never `font-size: 11px`.
+Do not use 7, 8, 8.5, 10.5, 12, 14, 18, 22, 32 or 36px. **10px is reserved
+for numeric data and secondary UI that sits awkwardly between 9px and 11px**—
+convergence-study blocks, legend value labels, and dense copy tables use it
+consistently. If something looks too large at 11px, it should probably be 9px.
+Use the token, not the literal: `font-size: var(--text-sm)`, never
+`font-size: 10px`.
 
 The one deliberate exception is the landing/splash screen, which is a full-bleed
 brand moment rather than instrument-panel chrome and carries its own `--sf-*`
