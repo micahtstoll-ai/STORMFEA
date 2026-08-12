@@ -258,7 +258,11 @@ enforcing consistency — it relies on people (and agents) following
 `DESIGN.md` by hand. Before any visual change:
 - **Three fonts, fixed roles** — Rajdhani (headings), Outfit (UI copy), DM
   Mono (data/numbers/code). Never mix roles; never introduce a fourth font.
-- **Four type sizes only** — 9 / 11 / 13 / 16px. No 10, 12, or 14px.
+- **Five type sizes** — 9 / 10 / 11 / 13 / 16px. No 12, 14, 18, 22, 32, or
+  36px. The 10px size is reserved for data values and legend labels (places
+  where 9px is too small and 11px is too large for secondary numeric copy).
+  Issue #312 resolved: the code revealed that the four-size scale was
+  under-constrained; 10px fills a real gap.
 - **Three colors, two dimensions** — the gold accent, the four-step
   base/text scales, and three semantic colors (`--warn` amber, `--danger`
   rust red, `--success` = gold, never green). Never purple, cyan, blue,
@@ -274,10 +278,7 @@ enforcing consistency — it relies on people (and agents) following
   asserts no call site hand-rolls the markup. Its background is still a hex
   literal rather than a token, which fails contrast in light theme and in
   print — tracked in #320, not fixed by #303.
-- The rest of the file is not yet compliant, and two open issues say so rather
-  than leaving it to be re-derived: #312 (10px is the file's most-used size by
-  a wide margin, against a documented four-size scale — so whether the scale
-  or the code is wrong is still undecided) and #319 (the 12px/14px and
+- The rest of the file is not yet compliant: #319 (the 12px/14px and
   6px-radius sites outside the banners). Do not treat a nearby block as
   evidence of the house style.
 - This is a summary; read `DESIGN.md` in full before a UI-touching PR.
