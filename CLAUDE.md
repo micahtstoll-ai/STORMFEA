@@ -264,6 +264,22 @@ enforcing consistency — it relies on people (and agents) following
   rust red, `--success` = gold, never green). Never purple, cyan, blue,
   green, or a gradient.
 - **Four spacing values** — 6 / 12 / 20 / 32px, used consistently.
+- **A repeated block gets a helper, not a seventh copy** (issue #303). The
+  results reliability banners were six literal copies of one inline-styled
+  block, and five of them drifted to a 12px headline and a 6px radius while
+  the sixth complied — the copies are what made the drift invisible. They now
+  render through `reliabilityBannerHTML` (`client/index.html`), which owns the
+  sizes and the radius; add a banner by calling it. Locked by test group [X]
+  in `scripts/test_client_logic.mjs`, which pins the emitted treatment AND
+  asserts no call site hand-rolls the markup. Its background is still a hex
+  literal rather than a token, which fails contrast in light theme and in
+  print — tracked in #320, not fixed by #303.
+- The rest of the file is not yet compliant, and two open issues say so rather
+  than leaving it to be re-derived: #312 (10px is the file's most-used size by
+  a wide margin, against a documented four-size scale — so whether the scale
+  or the code is wrong is still undecided) and #319 (the 12px/14px and
+  6px-radius sites outside the banners). Do not treat a nearby block as
+  evidence of the house style.
 - This is a summary; read `DESIGN.md` in full before a UI-touching PR.
 
 ## Heatmap Rendering — Common Pitfalls & Lessons Learned
