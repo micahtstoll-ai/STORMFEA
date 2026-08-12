@@ -259,6 +259,7 @@
   --warn:         #D6862E;
   --warn-faint:   #D6862E18;
   --warn-glow:    #D6862E55;
+  --warn-banner-bg: #3a1a00;
   --danger:       #C2452F;
   --danger-faint: #C2452F1c;
   --viewer-bg:  #070604;
@@ -280,6 +281,7 @@
   --accent-dim: rgba(201,162,39,0.08);
   --success:    var(--gold);
   --warn:       #BD7016;
+  --warn-banner-bg: #FBF4EA;
   --danger:     #B23A28;
   --viewer-bg:  #eceae4;
   --shadow:     0 2px 12px rgba(0,0,0,.08);
@@ -624,7 +626,7 @@ h1, h2, h3 { font-weight: inherit; font-size: inherit; margin: 0; }
   [data-theme="dark"] { --bg-base:#fff; --bg-panel:#fff; --bg-card:var(--bg-card);
     --text-hi:#000; --text-mid:var(--text-hi); --text-lo:var(--text-mid); --text-label:var(--text-lo);
     --border:var(--border-mid); --border-mid:var(--text-lo); --gold:var(--gold-dim); --success:var(--gold-dim);
-    --warn:#9a5512; --danger:#9e2f1f; }
+    --warn:#9a5512; --danger:#9e2f1f; --warn-banner-bg:#fff; }
   * { transition: none !important; }
 }
 .print-page-header { display: none; }
@@ -6864,7 +6866,7 @@ function renderValidationCoverage(vc) {
   }).join('');
 
   const comboHTML = vc.comboGaps.length ? `
-    <div style="margin-top:8px;padding:8px 10px;background:#3a1a00;border:1px solid var(--warn);border-radius:4px">
+    <div style="margin-top:8px;padding:8px 10px;background:var(--warn-banner-bg);border:1px solid var(--warn);border-radius:4px">
       <div style="font-size:10px;font-weight:600;color:var(--warn);margin-bottom:4px">Known combination gaps</div>
       ${vc.comboGaps.map(g => `<div style="font-size:9px;color:var(--text-mid);line-height:1.5;margin-bottom:4px">${g.note}</div>`).join('')}
     </div>` : '';
@@ -6902,7 +6904,7 @@ function reliabilityBannerHTML(headline, bodyHTML, dataLine) {
   const data = dataLine
     ? `\n      <div style="font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo);margin-top:var(--sp-1);letter-spacing:.08em">${dataLine}</div>`
     : '';
-  return `<div style="padding:var(--sp-2) 14px;background:#3a1a00;border:2px solid var(--warn);border-radius:4px;margin-bottom:var(--sp-2)">
+  return `<div style="padding:var(--sp-2) 14px;background:var(--warn-banner-bg);border:2px solid var(--warn);border-radius:4px;margin-bottom:var(--sp-2)">
       <div style="font-size:var(--text-base);font-weight:600;color:var(--warn);margin-bottom:4px">${icon} ${headline}</div>
       <div style="font-size:var(--text-sm);color:var(--text-mid);line-height:1.5">${bodyHTML}</div>${data}
     </div>`;

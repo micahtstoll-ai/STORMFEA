@@ -275,9 +275,16 @@ enforcing consistency — it relies on people (and agents) following
   render through `reliabilityBannerHTML` (`client/index.html`), which owns the
   sizes and the radius; add a banner by calling it. Locked by test group [X]
   in `scripts/test_client_logic.mjs`, which pins the emitted treatment AND
-  asserts no call site hand-rolls the markup. Its background is still a hex
-  literal rather than a token, which fails contrast in light theme and in
-  print — tracked in #320, not fixed by #303.
+  asserts no call site hand-rolls the markup. Its background was a hex
+  literal (`#3a1a00`) rather than a token, which failed contrast in light
+  theme and in print (issue #320, not fixed by #303 since that fix was
+  type-scale/radius, not color). Fixed via the `--warn-banner-bg` token
+  (defined per-theme and for print, next to `--warn`), same value as the old
+  literal in dark theme so that theme is unchanged; `renderValidationCoverage`'s
+  "Known combination gaps" block shared the same literal and got the same fix
+  in the same pass. `--warn`'s own light-theme luminance caps headline
+  contrast at ~3.8:1 regardless of background — a pre-existing limitation of
+  that shared token, not something #320 introduced or was scoped to fix.
 - The rest of the file is not yet compliant: #319 (the 12px/14px and
   6px-radius sites outside the banners). Do not treat a nearby block as
   evidence of the house style.

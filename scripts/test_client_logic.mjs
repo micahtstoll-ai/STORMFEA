@@ -1836,7 +1836,7 @@ console.log('\n[W] Legend value text — unit conversion applies to stress modes
 // radius scale (6px card) while the sixth complied. Copies are what let that
 // happen, so this group pins BOTH halves of the fix: the helper emits the
 // compliant treatment, and no call site is allowed to hand-roll a banner again.
-console.log('\n[X] Reliability banners — one helper, DESIGN.md type/radius scale (#303)');
+console.log('\n[X] Reliability banners — one helper, DESIGN.md type/radius/color (#303, #320)');
 {
   const src = html.match(/function reliabilityBannerHTML\(headline, bodyHTML, dataLine\) \{[\s\S]*?\n\}\n/);
   if (!src) throw new Error('Could not extract reliabilityBannerHTML');
@@ -1867,6 +1867,24 @@ console.log('\n[X] Reliability banners — one helper, DESIGN.md type/radius sca
   test('the helper carries no off-scale font-size or radius literal',
     !/font-size:(?:7|8|10|12|14|18|22)px/.test(src[0]) &&
     !/border-radius:(?:1|3|5|6|8|20)px/.test(src[0]), src[0]);
+
+  // #320: the banner background was a hardcoded #3a1a00, so it never
+  // responded to [data-theme="light"] or @media print. It must be a token.
+  test('the helper carries no raw hex/rgb() background literal',
+    !/background:#[0-9a-fA-F]{3,8}/.test(src[0]) && !/background:rgb\(/.test(src[0]), src[0]);
+  test('the helper background is the --warn-banner-bg token',
+    /background:var\(--warn-banner-bg\)/.test(src[0]), src[0]);
+  test('--warn-banner-bg is defined for dark theme, light theme, and print',
+    /--warn-banner-bg:\s*#3a1a00/.test(html) &&
+    /\[data-theme="light"\][\s\S]*?--warn-banner-bg:\s*#[0-9a-fA-F]{3,8}/.test(html) &&
+    /--warn:#9a5512;[^}]*--warn-banner-bg:\s*#fff/.test(html));
+
+  // The "Known combination gaps" block (renderValidationCoverage) shared the
+  // same #3a1a00 literal for the same reason — fixed in the same pass (#320).
+  test('renderValidationCoverage combo-gap block also uses the token, not the hex literal',
+    !html.includes('background:#3a1a00') &&
+    /Known combination gaps/.test(html) &&
+    /background:var\(--warn-banner-bg\);border:1px solid var\(--warn\)/.test(html));
 
   // The tokens the helper names must still BE the documented scale — a token
   // reference is only compliant while the token holds its DESIGN.md value.
