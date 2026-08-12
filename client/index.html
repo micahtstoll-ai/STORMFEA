@@ -955,7 +955,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       width:260px;background:var(--bg-panel);border:1px solid var(--border);
       border-radius:4px;box-shadow:0 8px 24px rgba(0,0,0,.4);padding:14px 16px">
 
-  <div style="font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:700;letter-spacing:.10em;color:var(--gold);margin-bottom:12px">SETTINGS</div>
+  <div style="font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;letter-spacing:.10em;color:var(--gold);margin-bottom:12px">SETTINGS</div>
 
   <!-- Accent colour -->
   <!-- Heatmap colormap -->
@@ -1845,7 +1845,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         </select>
         <div id="orient-derived-display"
           style="background:var(--bg-input);border:1px solid var(--border-mid);
-                 border-radius:4px;padding:7px 10px;font-size:12px;color:var(--text-mid);
+                 border-radius:4px;padding:7px 10px;font-size:11px;color:var(--text-mid);
                  display:flex;align-items:center;justify-content:space-between">
           <span id="orient-derived-label">Set bed face and add forces to derive</span>
           <span id="orient-derived-badge" style="font-size:10px;font-family:'DM Mono',monospace;
@@ -5252,7 +5252,7 @@ function showWelcome(force) {
     <div style="max-width:440px;background:var(--bg-card);border:1px solid var(--gold);border-radius:8px;padding:28px 26px;box-shadow:0 16px 50px rgba(0,0,0,.6)">
       <div style="font-size:10px;letter-spacing:2px;color:var(--gold);text-transform:uppercase;margin-bottom:10px">Nordic Storm · FTC 5962</div>
       <div style="font-size:22px;color:var(--text-hi);font-weight:600;margin-bottom:6px">Welcome to STORMFEA</div>
-      <div style="font-size:12px;color:var(--text-mid);line-height:1.55;margin-bottom:16px">
+      <div style="font-size:13px;color:var(--text-mid);line-height:1.55;margin-bottom:16px">
         A finite-element stress tool for FDM 3D-printed FTC parts. Upload a part, set its print orientation, add bolts and forces, then solve.
       </div>
       <div style="font-size:11px;color:var(--text-mid);line-height:1.5;background:var(--bg-input);border:1px solid var(--border);border-left:2px solid var(--gold);border-radius:4px;padding:10px 12px;margin-bottom:18px">
@@ -5261,7 +5261,7 @@ function showWelcome(force) {
       <label style="display:flex;align-items:center;gap:7px;font-size:10px;color:var(--text-lo);margin-bottom:16px;cursor:pointer">
         <input type="checkbox" id="ob-dontshow" checked style="accent-color:var(--gold)"> Don't show this again
       </label>
-      <button id="ob-start" style="width:100%;padding:10px;background:var(--gold);color:#1a1712;border:none;border-radius:5px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">Get started</button>
+      <button id="ob-start" style="width:100%;padding:10px;background:var(--gold);color:#1a1712;border:none;border-radius:5px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit">Get started</button>
     </div>`;
   document.body.appendChild(ov);
   ov.querySelector('#ob-start').onclick = () => {
@@ -5278,7 +5278,7 @@ function showOnce(key, opts = {}) {
   const pop = document.createElement('div');
   pop.className = 'ob-coach';
   pop.dataset.key = key;
-  pop.style.cssText = 'position:fixed;z-index:9998;max-width:260px;background:var(--bg-card);border:1px solid var(--gold);border-radius:6px;padding:13px 14px;box-shadow:0 10px 30px rgba(0,0,0,.5);font-family:inherit';
+  pop.style.cssText = 'position:fixed;z-index:9998;max-width:260px;background:var(--bg-card);border:1px solid var(--gold);border-radius:4px;padding:13px 14px;box-shadow:0 10px 30px rgba(0,0,0,.5);font-family:inherit';
   pop.innerHTML = `
     <div style="font-size:11px;color:var(--gold);font-weight:600;margin-bottom:5px">${title}</div>
     <div style="font-size:10.5px;color:var(--text-mid);line-height:1.5;margin-bottom:11px">${body}</div>
@@ -5305,7 +5305,7 @@ function initHelpButton() {
   b.id = 'ob-help';
   b.title = 'Replay the intro & tips';
   b.textContent = '?';
-  b.style.cssText = 'position:fixed;bottom:14px;right:14px;z-index:9000;width:30px;height:30px;border-radius:50%;background:var(--bg-card);border:1px solid var(--gold);color:var(--gold);font-size:14px;cursor:pointer;font-family:inherit;box-shadow:0 4px 14px rgba(0,0,0,.4)';
+  b.style.cssText = 'position:fixed;bottom:14px;right:14px;z-index:9000;width:30px;height:30px;border-radius:50%;background:var(--bg-card);border:1px solid var(--gold);color:var(--gold);font-size:13px;cursor:pointer;font-family:inherit;box-shadow:0 4px 14px rgba(0,0,0,.4)';
   b.onclick = () => { obReset(); document.querySelectorAll('.ob-coach').forEach(e => e.remove()); showWelcome(true); };
   document.body.appendChild(b);
 }
@@ -6484,7 +6484,7 @@ async function runAnalysis() {
           <svg width="12" height="13" viewBox="0 0 9 10" style="vertical-align:-2px;margin-right:6px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg>
           ${friendlyErr}
         </div>
-        <div style="font-size:12px;color:var(--text-mid);line-height:1.7;margin-bottom:12px">${friendlyFix}</div>
+        <div style="font-size:11px;color:var(--text-mid);line-height:1.7;margin-bottom:12px">${friendlyFix}</div>
         <details style="font-size:10px;color:var(--text-lo)">
           <summary style="cursor:pointer;margin-bottom:4px">Technical detail</summary>
           <code style="font-family:'DM Mono',monospace;font-size:10px;color:var(--text-lo);line-height:1.5;display:block;white-space:pre-wrap;word-break:break-all">${errMsg.slice(0,400)}</code>
@@ -7065,14 +7065,14 @@ function showResults(s) {
   // 1.5–2.0 renders as a distinct non-green "Acceptable" tier.
   const govTier = sfVerdictTier(govSF);
   if (!s.safetyFactorAvailable || govTier === null) {
-    actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--border);border-radius:6px;margin-bottom:16px">
+    actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--border);border-radius:4px;margin-bottom:16px">
       <div style="font-size:13px;font-weight:600;color:var(--text-lo);margin-bottom:4px">Safety factor unavailable</div>
       <div style="font-size:11px;color:var(--text-lo)">Not enough material data to compute a safety factor for this configuration.</div>
     </div>`;
   } else if (govTier === 'fail') {
     const failN = U.forceStr(displayFailForceN);
     const modeStr = bucklingGoverns ? 'buckling' : (govMode ? govMode.mode.toLowerCase() : 'bulk yield');
-    actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--text-hi)66;border-radius:6px;margin-bottom:16px">
+    actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--text-hi)66;border-radius:4px;margin-bottom:16px">
       <div style="font-size:13px;font-weight:600;color:var(--text-hi);margin-bottom:6px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Estimated failure load: ${failN}</div>
       <div style="font-size:11px;color:var(--text-hi);margin-bottom:2px">Governed by ${modeStr}</div>
       ${failForceCaveat}
@@ -7081,7 +7081,7 @@ function showResults(s) {
       </div>` : ''}
     </div>`;
   } else if (govTier === 'marginal') {
-    actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--gold-glow);border-radius:6px;margin-bottom:16px">
+    actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--gold-glow);border-radius:4px;margin-bottom:16px">
       <div style="font-size:13px;font-weight:600;color:var(--warn);margin-bottom:6px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Marginal — SF ${govSF.toFixed(2)}×</div>
       <div style="font-size:11px;color:var(--gold-dim);margin-bottom:10px">${s.verdict}</div>
       ${bestRec ? `<div style="font-size:11px;color:var(--text-mid);border-top:1px solid var(--border);padding-top:8px;margin-top:4px">
@@ -7092,7 +7092,7 @@ function showResults(s) {
     // 1.5–2.0×: real positive margin, but below the recommended 2× design
     // minimum. Styled distinctly from both "Marginal" (no gold-faint fill)
     // and "Safe" (warn-colored text, no checkmark) so it never reads as green.
-    actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--gold-glow);border-radius:6px;margin-bottom:16px">
+    actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--gold-glow);border-radius:4px;margin-bottom:16px">
       <div style="font-size:13px;font-weight:600;color:var(--warn);margin-bottom:6px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Acceptable — below recommended 2× margin</div>
       <div style="font-size:11px;color:var(--gold-dim);margin-bottom:10px">SF ${govSF.toFixed(2)}× — ${s.verdict}</div>
       ${bestRec ? `<div style="font-size:11px;color:var(--text-mid);border-top:1px solid var(--border);padding-top:8px;margin-top:4px">
@@ -7100,7 +7100,7 @@ function showResults(s) {
       </div>` : ''}
     </div>`;
   } else {
-    actionHTML = `<div style="padding:14px 16px;background:var(--gold-faint);border:2px solid var(--gold-glow);border-radius:6px;margin-bottom:16px">
+    actionHTML = `<div style="padding:14px 16px;background:var(--gold-faint);border:2px solid var(--gold-glow);border-radius:4px;margin-bottom:16px">
       <div style="font-size:13px;font-weight:600;color:var(--success);margin-bottom:4px"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> Safe — SF ${govSF.toFixed(2)}×</div>
       <div style="font-size:11px;color:var(--gold-dim)">${s.verdict}</div>
     </div>`;
@@ -14447,7 +14447,7 @@ function pickDemoArchetype() {
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(3px);z-index:9999;display:flex;align-items:center;justify-content:center;font-family:inherit';
 
     overlay.innerHTML = `
-      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:24px 28px;max-width:480px;width:90%">
+      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:4px;padding:24px 28px;max-width:480px;width:90%">
         <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
           <div style="font-family:'Rajdhani',sans-serif;font-size:16px;font-weight:700;letter-spacing:.08em;color:var(--gold)">JUDGE DEMO</div>
           <button id="demo-picker-cancel" style="background:none;border:none;color:var(--text-lo);cursor:pointer;font-size:16px;line-height:1;padding:0;font-family:inherit">×</button>
@@ -14461,7 +14461,7 @@ function pickDemoArchetype() {
       const btn = document.createElement('button');
       btn.style.cssText = 'width:100%;background:var(--bg-base);border:1px solid var(--border);border-radius:4px;padding:12px 14px;cursor:pointer;text-align:left;font-family:inherit;transition:border-color .12s';
       btn.innerHTML = `
-        <div style="font-size:12px;font-weight:600;color:var(--text-hi);margin-bottom:3px">${a.label}</div>
+        <div style="font-size:11px;font-weight:600;color:var(--text-hi);margin-bottom:3px">${a.label}</div>
         <div style="font-size:10px;color:var(--text-lo);line-height:1.5">${a.desc}</div>`;
       btn.onmouseenter = () => btn.style.borderColor = 'var(--gold)';
       btn.onmouseleave = () => btn.style.borderColor = 'var(--border)';
@@ -14534,7 +14534,7 @@ function showDemoStep() {
   demoOverlayEl.style.cssText = `
     position:absolute;bottom:16px;left:50%;transform:translateX(-50%);
     width:min(440px,calc(100% - 32px));background:var(--bg-card);
-    border:1px solid var(--gold-glow);border-radius:6px;
+    border:1px solid var(--gold-glow);border-radius:4px;
     padding:16px 18px;z-index:70;
     box-shadow:0 4px 32px rgba(0,0,0,0.8);
   `;
@@ -14552,7 +14552,7 @@ function showDemoStep() {
       <div style="font-family:'Outfit',system-ui,sans-serif;font-size:11px;font-weight:700;color:var(--gold);letter-spacing:.04em">
         JUDGE DEMO · ${demoStepIdx+1}/${DEMO_STEPS.length}
       </div>
-      <button onclick="endDemoMode()" aria-label="End demo mode" style="background:none;border:none;color:var(--text-lo);cursor:pointer;font-size:14px;padding:0 4px"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg></button>
+      <button onclick="endDemoMode()" aria-label="End demo mode" style="background:none;border:none;color:var(--text-lo);cursor:pointer;font-size:11px;padding:0 4px"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg></button>
     </div>
     <div style="font-size:10px;font-weight:600;color:var(--text-hi);margin-bottom:7px">${stepTitle}</div>
     <div style="font-size:11px;color:var(--text-mid);line-height:1.7;margin-bottom:12px">${stepText}</div>
@@ -15121,7 +15121,7 @@ fetch('/api/health').catch(() => {
   onclick="if(event.target===this)closeShortcuts()"
   style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.72);backdrop-filter:blur(3px);
          z-index:9998;align-items:center;justify-content:center;font-family:'Outfit',system-ui,sans-serif">
-  <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:6px;
+  <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:4px;
                padding:24px 28px;max-width:540px;width:90%;max-height:80vh;overflow-y:auto">
     <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:18px">
       <h2 style="font-family:'Rajdhani',sans-serif;font-size:16px;font-weight:700;
