@@ -193,7 +193,7 @@ enforced throughout the invariant sections below:
   known load** — not just that the code runs without throwing.
 
 ## Frontend Design System
-`client/index.html` is a single ~14,800-line file with no CSS framework
+`client/index.html` is a single ~15,150-line file with no CSS framework
 enforcing consistency — it relies on people (and agents) following
 `DESIGN.md` by hand. Before any visual change:
 - **Three fonts, fixed roles** — Rajdhani (headings), Outfit (UI copy), DM

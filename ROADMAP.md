@@ -8,14 +8,21 @@
 ### Core Solver
 - [x] C3D4 linear tetrahedral FEM, PCG solver with diagonal preconditioning
 - [x] Transversely isotropic (orthotropic) constitutive matrix — 5 independent constants
-- [x] Hill (1948) anisotropic yield criterion — single quadratic form in all six stress components, F/G/H/L/M/N coefficients derived from the two measured yield strengths; collapses exactly to von Mises in the isotropic limit (verified by the validation suite)
+- [x] Hill (1948) anisotropic yield criterion — single quadratic form in all six stress components, F/G/H/L/M/N coefficients derived from the two measured yield strengths; collapses exactly to von Mises in the isotropic limit (verified by the validation suite).
+      **Superseded as the shipped criterion** by the FDM dual criterion
+      (`fdmDualCriterionSF`) after the layer-model audit — a quadratic Hill form
+      cannot satisfy in-plane isotropy, uniaxial yield Y, in-plane shear Y/√3 and
+      through-thickness Z ≠ Y simultaneously (defect A1,
+      `docs/layer-model-audit.md`). `hill-legacy` remains callable via
+      `AnalysisSettings.criterion` and is still the upright-no-bed scalar-swap
+      fallback
 - [x] Superconvergent Patch Recovery (SPR) stress smoothing — Zienkiewicz & Zhu 1992
 - [x] Patch test validated (σ_zz = 1.000000 MPa exactly)
 - [x] Cantilever test within 2% of Euler-Bernoulli theory
 - [x] Isotropic limit test — zero difference when E_z = E_xy
 - [x] Positive definiteness check on C matrix before every solve
 - [x] C3D10 second-order (10-node quadratic) tetrahedral elements — quadratic shape functions, B matrix, and assembly; 4-point Gauss integration with Gauss-point stress recovery. Reduces shear locking and resolves stress concentrations more accurately
-- [x] Automated validation suite (`server/tests/solver_validation.ts`) — 180 tests
+- [x] Automated validation suite (`server/tests/solver_validation.ts`)
       across 32 groups: patch test, cantilever linearity, orthotropic
       isotropic-limit, SPR smoothing (incl. boundary-patch conditioning), C3D10
       element properties and quadrature, the FDM/Hill criteria, energy-norm ZZ
@@ -35,11 +42,17 @@
 - [x] Orthotropic ratios from literature (E_z/E_xy=0.65, yieldZ/yieldXY=0.58)
 - [x] Linear infill strength curve (monotonic — better supported than peak curve)
 - [x] 9 infill pattern multipliers (conservative, confidence-labeled)
-- [x] Orientation multipliers (0.55 flat, 0.90 upright) — well-supported
+- [x] Orientation multipliers (0.55 flat, 0.90 upright) — **removed from the
+      material path** by audit defect A4: orientation is the criterion's job via
+      `weakAxis`, and baking it into a material scalar double-counted the same
+      anisotropy the yieldZ/yieldXY ratio already carries. The only orientation
+      scalar left in the material path is `angledNoBedFallbackMul` (0.75), used
+      where no directional model exists
 - [x] Wall count bonus (+10% per additional wall)
 - [x] Layer height factor (Farashi & Vafaee 2022 meta-analysis, n=131)
 - [x] All constants cited in Sources tab with confidence levels
-- [x] Two-region material model (opt-in) — dense perimeter walls vs homogenized
+- [x] Two-region material model (**default since #297**; pass
+      `twoRegion: false` for the legacy single-material path) — dense perimeter walls vs homogenized
       infill core, classified geometrically per element (exact surface-distance
       field + marching-tet volume fractions, 9 Voigt-blended bins) instead of a
       single averaged material; stiffness, strength, mass, self-weight, and
