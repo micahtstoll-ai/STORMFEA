@@ -6887,6 +6887,27 @@ function renderValidationCoverage(vc) {
     </details>`;
 }
 
+// Reliability banner markup — ONE definition, six call sites (issue #303).
+// The five original banners were six literal copies of the same inline-styled
+// block, which is how five of them drifted to a 12px headline and a 6px radius
+// while the sixth (added by PR #302) followed DESIGN.md at 13px/4px. The sizes
+// and the radius live here now: DESIGN.md's type scale is 9/11/13/16 and its
+// radius scale is 0/2/4px, so a banner headline is --text-base, body copy is
+// --text-sm, a data line is DM Mono --text-xs at .08em, and a card is 4px.
+// `bodyHTML` and `dataLine` are interpolated as HTML, not text — the mesh
+// fallback copy carries a <b>, and server-supplied strings (unitsWarning,
+// rigidBodyMode.message, meshResolution.warning) were already trusted this way.
+function reliabilityBannerHTML(headline, bodyHTML, dataLine) {
+  const icon = `<svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg>`;
+  const data = dataLine
+    ? `\n      <div style="font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo);margin-top:var(--sp-1);letter-spacing:.08em">${dataLine}</div>`
+    : '';
+  return `<div style="padding:var(--sp-2) 14px;background:#3a1a00;border:2px solid var(--warn);border-radius:4px;margin-bottom:var(--sp-2)">
+      <div style="font-size:var(--text-base);font-weight:600;color:var(--warn);margin-bottom:4px">${icon} ${headline}</div>
+      <div style="font-size:var(--text-sm);color:var(--text-mid);line-height:1.5">${bodyHTML}</div>${data}
+    </div>`;
+}
+
 function showResults(s) {
   updateStickyResults(s);
   document.getElementById('results-placeholder').style.display = 'none';
@@ -6963,46 +6984,38 @@ function showResults(s) {
   // never stand alone without the caveat.
   let reliabilityBanner = '';
   if (s.unitsWarning) {
-    reliabilityBanner += `<div style="padding:12px 14px;background:#3a1a00;border:2px solid var(--warn);border-radius:6px;margin-bottom:12px">
-      <div style="font-size:12px;font-weight:600;color:var(--warn);margin-bottom:4px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Check your units</div>
-      <div style="font-size:11px;color:var(--text-mid);line-height:1.5">${s.unitsWarning}</div>
-    </div>`;
+    reliabilityBanner += reliabilityBannerHTML('Check your units', s.unitsWarning);
   }
   if (s.meshFallback) {
-    reliabilityBanner += `<div style="padding:12px 14px;background:#3a1a00;border:2px solid var(--warn);border-radius:6px;margin-bottom:12px">
-      <div style="font-size:12px;font-weight:600;color:var(--warn);margin-bottom:4px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Approximate result — mesh fallback</div>
-      <div style="font-size:11px;color:var(--text-mid);line-height:1.5">STL meshing failed, so the part was analysed as a solid bounding box. Holes, fillets, and stress concentrations are <b>not modelled</b> — the true peak stress is higher than shown. Re-export the STL (check for non-manifold edges or self-intersections) and re-run before trusting this number.</div>
-    </div>`;
+    reliabilityBanner += reliabilityBannerHTML(
+      'Approximate result — mesh fallback',
+      'STL meshing failed, so the part was analysed as a solid bounding box. Holes, fillets, and stress concentrations are <b>not modelled</b> — the true peak stress is higher than shown. Re-export the STL (check for non-manifold edges or self-intersections) and re-run before trusting this number.');
   }
   if (s.converged === false) {
     const rbm = s.rigidBodyMode;
     const convergenceDetail = (rbm && rbm.detected)
       ? rbm.message
       : 'The linear solve did not reach its tolerance, so the stress field — and every number derived from it — is unreliable in either direction. Try a finer mesh or verify that the constraints fully restrain the part.';
-    reliabilityBanner += `<div style="padding:12px 14px;background:#3a1a00;border:2px solid var(--warn);border-radius:6px;margin-bottom:12px">
-      <div style="font-size:12px;font-weight:600;color:var(--warn);margin-bottom:4px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Solver did not converge${rbm && rbm.detected ? ' — under-constrained rotation' : ''}</div>
-      <div style="font-size:11px;color:var(--text-mid);line-height:1.5">${convergenceDetail}</div>
-    </div>`;
+    reliabilityBanner += reliabilityBannerHTML(
+      `Solver did not converge${rbm && rbm.detected ? ' — under-constrained rotation' : ''}`,
+      convergenceDetail);
   }
   // Edge case: a poorly-conditioned solve (near-singular stiffness matrix)
   // can occasionally limp to a numerically-converged answer that's still
   // physically meaningless. If the rigid-body check fired, surface it even
   // when converged===true, since the converged-false branch above won't run.
   if (s.converged !== false && s.rigidBodyMode?.detected) {
-    reliabilityBanner += `<div style="padding:12px 14px;background:#3a1a00;border:2px solid var(--warn);border-radius:6px;margin-bottom:12px">
-      <div style="font-size:12px;font-weight:600;color:var(--warn);margin-bottom:4px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Under-constrained rotation detected</div>
-      <div style="font-size:11px;color:var(--text-mid);line-height:1.5">${s.rigidBodyMode.message}</div>
-    </div>`;
+    reliabilityBanner += reliabilityBannerHTML(
+      'Under-constrained rotation detected', s.rigidBodyMode.message);
   }
   // C3D4 linear tetrahedra carry a documented ~55% bending-stress
   // underprediction (shear locking, docs/METHODOLOGY.md) — never let a
   // C3D4 result (green "Safe" or otherwise) appear without this caveat
   // adjacent to it (issue #189). C3D10 (the default) gets no banner.
   if (s.nodesPerElem === 4) {
-    reliabilityBanner += `<div style="padding:12px 14px;background:#3a1a00;border:2px solid var(--warn);border-radius:6px;margin-bottom:12px">
-      <div style="font-size:12px;font-weight:600;color:var(--warn);margin-bottom:4px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Computed with C3D4 linear elements</div>
-      <div style="font-size:11px;color:var(--text-mid);line-height:1.5">Linear tetrahedra underpredict bending stress by up to ~55% due to shear locking — the safety factor shown may be more optimistic than the true value for bending-loaded geometry. Re-run with C3D10 (MATERIAL tab → Element order) before trusting this margin.</div>
-    </div>`;
+    reliabilityBanner += reliabilityBannerHTML(
+      'Computed with C3D4 linear elements',
+      'Linear tetrahedra underpredict bending stress by up to ~55% due to shear locking — the safety factor shown may be more optimistic than the true value for bending-loaded geometry. Re-run with C3D10 (MATERIAL tab → Element order) before trusting this margin.');
   }
   // Mesh resolution shortfall (issue #295). The tier promises an element count
   // AND a floor of elements across the thinnest section; a count budget alone
@@ -7017,15 +7030,8 @@ function showResults(s) {
     const headline = mr.belowThroughThicknessFloor
       ? 'Thin section is under-resolved'
       : 'Mesh is coarser than the selected quality';
-    // Sizes/radius per DESIGN.md (13px body heading, 4px card radius, 9px DM
-    // Mono data label at .08em). The five banners above predate that scale and
-    // still carry 12px headings and a 6px radius; they are not swept here
-    // because this is an issue-#295 change, not a design pass.
-    reliabilityBanner += `<div style="padding:12px 14px;background:#3a1a00;border:2px solid var(--warn);border-radius:4px;margin-bottom:12px">
-      <div style="font-size:13px;font-weight:600;color:var(--warn);margin-bottom:4px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> ${headline}</div>
-      <div style="font-size:11px;color:var(--text-mid);line-height:1.5">${mr.warning}</div>
-      <div style="font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);margin-top:6px;letter-spacing:.08em">${mr.achievedElements.toLocaleString()} ELEMENTS · ${mr.targetElements.toLocaleString()} TARGET (${mr.tier.toUpperCase()}) · ${mr.elementsThroughThickness.toFixed(1)} THROUGH THINNEST SECTION</div>
-    </div>`;
+    reliabilityBanner += reliabilityBannerHTML(headline, mr.warning,
+      `${mr.achievedElements.toLocaleString()} ELEMENTS · ${mr.targetElements.toLocaleString()} TARGET (${mr.tier.toUpperCase()}) · ${mr.elementsThroughThickness.toFixed(1)} THROUGH THINNEST SECTION`);
   }
 
   // Issue #204: estimatedFailForce is a LINEAR first-yield extrapolation

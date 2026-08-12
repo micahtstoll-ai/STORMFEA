@@ -1830,6 +1830,62 @@ console.log('\n[W] Legend value text — unit conversion applies to stress modes
     units && !/U\.stressLabel\(\)/.test(units[0]));
 }
 
+// ── Test group X: reliability banner treatment ───────────────────────────────
+// Issue #303. The banners were six literal copies of one inline-styled block,
+// and five of them had drifted off DESIGN.md's type scale (12px headline) and
+// radius scale (6px card) while the sixth complied. Copies are what let that
+// happen, so this group pins BOTH halves of the fix: the helper emits the
+// compliant treatment, and no call site is allowed to hand-roll a banner again.
+console.log('\n[X] Reliability banners — one helper, DESIGN.md type/radius scale (#303)');
+{
+  const src = html.match(/function reliabilityBannerHTML\(headline, bodyHTML, dataLine\) \{[\s\S]*?\n\}\n/);
+  if (!src) throw new Error('Could not extract reliabilityBannerHTML');
+  const mod = { exports: {} };
+  new Function('module', 'exports',
+    src[0] + '\nmodule.exports = { reliabilityBannerHTML };')(mod, mod.exports);
+  const { reliabilityBannerHTML } = mod.exports;
+
+  const plain = reliabilityBannerHTML('Check your units', 'Body copy.');
+  const withData = reliabilityBannerHTML('Thin section is under-resolved', 'Body copy.',
+    '1,000 ELEMENTS · 4,000 TARGET (STANDARD) · 2.1 THROUGH THINNEST SECTION');
+
+  test('headline is the 13px step (--text-base)',
+    /font-size:var\(--text-base\);font-weight:600/.test(plain), plain);
+  test('body copy is the 11px step (--text-sm)',
+    /font-size:var\(--text-sm\);color:var\(--text-mid\)/.test(plain), plain);
+  test('card radius is 4px, the DESIGN.md card value',
+    /border-radius:4px/.test(plain) && !/border-radius:6px/.test(plain), plain);
+  test('data line is DM Mono at the 9px step with .08em tracking',
+    /font-family:'DM Mono',monospace;font-size:var\(--text-xs\)[^"]*letter-spacing:\.08em/.test(withData),
+    withData);
+  // A banner with nothing to report must not render an empty data row — same
+  // rule the mesh-sensitivity mode follows (group [V]): unmeasured is absent.
+  test('no data line is emitted when none is supplied',
+    !/DM Mono/.test(plain), plain);
+  test('both headline and body are interpolated verbatim (HTML, not escaped)',
+    reliabilityBannerHTML('H', 'a <b>bold</b> word').includes('a <b>bold</b> word'));
+  test('the helper carries no off-scale font-size or radius literal',
+    !/font-size:(?:7|8|10|12|14|18|22)px/.test(src[0]) &&
+    !/border-radius:(?:1|3|5|6|8|20)px/.test(src[0]), src[0]);
+
+  // The tokens the helper names must still BE the documented scale — a token
+  // reference is only compliant while the token holds its DESIGN.md value.
+  const root = html.match(/--text-xs:\s*9px;[\s\S]*?--text-lg:\s*16px;/);
+  test('the type-scale tokens still read 9 / 11 / 13 / 16px',
+    !!root && /--text-sm:\s*11px;/.test(root[0]) && /--text-base:\s*13px;/.test(root[0]), root && root[0]);
+
+  // The anti-drift half: every append in showResults' chain goes through the
+  // helper, so a seventh banner cannot be a seventh copy.
+  const chain = html.match(/let reliabilityBanner = '';[\s\S]*?\n  const \{ bucklingGoverns/);
+  if (!chain) throw new Error('Could not extract the reliabilityBanner chain');
+  const appends = chain[0].match(/reliabilityBanner \+=/g) || [];
+  test('all six banners are still wired up', appends.length === 6, `found ${appends.length}`);
+  test('every append calls the helper',
+    (chain[0].match(/reliabilityBanner \+= reliabilityBannerHTML\(/g) || []).length === appends.length);
+  test('no call site hand-rolls banner markup',
+    !/font-size:/.test(chain[0]) && !/border-radius:/.test(chain[0]), chain[0]);
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 
