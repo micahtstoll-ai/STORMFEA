@@ -35,12 +35,23 @@ function test(name, condition, detail) {
 }
 
 function extractFunction(src, signature, nextFunctionName) {
-  const re = new RegExp(
-    `function ${signature}\\s*\\{[\\s\\S]*?\\n\\}\\n\\nfunction ${nextFunctionName}`
-  );
-  const m = src.match(re);
-  if (!m) throw new Error(`Could not extract function matching: ${signature}`);
-  return m[0].replace(new RegExp(`\\n\\nfunction ${nextFunctionName}$`), '');
+  // Find function start
+  const fnStart = new RegExp(`function ${signature}\\s*\\{`);
+  const startMatch = src.match(fnStart);
+  if (!startMatch) throw new Error(`Could not extract function matching: ${signature}`);
+
+  const startIdx = startMatch.index;
+
+  // Find matching closing brace by counting braces
+  let braceCount = 1;
+  let idx = startIdx + startMatch[0].length;
+  while (idx < src.length && braceCount > 0) {
+    if (src[idx] === '{') braceCount++;
+    else if (src[idx] === '}') braceCount--;
+    idx++;
+  }
+
+  return src.substring(startIdx, idx);
 }
 
 // Minimal THREE.js mock — just enough surface area for buildGeometryFromPositions
@@ -77,7 +88,7 @@ global.THREE = { BufferGeometry: MockBufferGeometry, BufferAttribute: MockBuffer
 // ── Test group A: buildGeometryFromPositions ─────────────────────────────────
 console.log('\n[A] buildGeometryFromPositions — centering, scale, normals');
 {
-  const fnCode = extractFunction(html, 'buildGeometryFromPositions\\(positions\\)', 'makeStressMaterial');
+  const fnCode = extractFunction(html, 'buildGeometryFromPositions\\(positions\\)');
   const mod = { exports: {} };
   new Function('module', 'exports', fnCode + '\nmodule.exports = { buildGeometryFromPositions };')(mod, mod.exports);
   const { buildGeometryFromPositions } = mod.exports;
