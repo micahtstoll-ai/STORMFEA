@@ -77,7 +77,7 @@ global.THREE = { BufferGeometry: MockBufferGeometry, BufferAttribute: MockBuffer
 // ── Test group A: buildGeometryFromPositions ─────────────────────────────────
 console.log('\n[A] buildGeometryFromPositions — centering, scale, normals');
 {
-  const fnCode = extractFunction(html, 'buildGeometryFromPositions\\(positions\\)', 'loadMeshFromPositions');
+  const fnCode = extractFunction(html, 'buildGeometryFromPositions\\(positions\\)', 'makeStressMaterial');
   const mod = { exports: {} };
   new Function('module', 'exports', fnCode + '\nmodule.exports = { buildGeometryFromPositions };')(mod, mod.exports);
   const { buildGeometryFromPositions } = mod.exports;
