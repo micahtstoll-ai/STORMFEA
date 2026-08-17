@@ -1897,20 +1897,61 @@ console.log('\n[X] Reliability banners — one helper, DESIGN.md type/radius/col
   const chain = html.match(/let reliabilityBanner = '';[\s\S]*?\n  const \{ bucklingGoverns/);
   if (!chain) throw new Error('Could not extract the reliabilityBanner chain');
   const appends = chain[0].match(/reliabilityBanner \+=/g) || [];
-  test('all seven banners are still wired up', appends.length === 7, `found ${appends.length}`);
+  test('all eight banners are still wired up', appends.length === 8, `found ${appends.length}`);
   test('every append calls the helper',
     (chain[0].match(/reliabilityBanner \+= reliabilityBannerHTML\(/g) || []).length === appends.length);
   test('no call site hand-rolls banner markup',
     !/font-size:/.test(chain[0]) && !/border-radius:/.test(chain[0]), chain[0]);
 }
 
-// ── Test group Y: force placement — offset point + placement badge ──────────
+// Symmetry-preserving meshing surfacing (issue #296, wired to the client by
+// #309). The server feature shipped opt-in with no control and no readout;
+// this group pins the three halves of the wiring so a future edit cannot quietly
+// unhook any of them: the request carries the flag, the degraded case warns, and
+// the applied case is reported (as good news, not a warning).
+console.log('\n[Y] Symmetry-preserving mesh — control, request, and readout (#296, #309)');
+{
+  // 1. The opt-in control exists in the analysis panel.
+  test('an unchecked symmetry-mesh toggle exists',
+    /id="symmetry-mesh-toggle"/.test(html) &&
+    !/id="symmetry-mesh-toggle"[^>]*\schecked/.test(html));
+
+  // 2. The request builder reads the toggle into analysis.symmetryMesh. The
+  //    server pays an extra mesh only on a true value, so a stale reference here
+  //    would silently make the whole feature unreachable again (the #309 defect).
+  const req = html.match(/symmetryMesh:\s*!!\(document\.getElementById\('symmetry-mesh-toggle'\)\?\.checked\)/);
+  test('the analyse request wires symmetryMesh from the toggle', !!req, 'request field missing');
+
+  // 3. The degraded case (opted in, could not apply) warns; the applied case
+  //    does NOT (it is reported in the mesh info line instead). Extract the
+  //    symmetry branch from the banner chain and check both conditions.
+  const chain = html.match(/let reliabilityBanner = '';[\s\S]*?\n  const \{ bucklingGoverns/);
+  if (!chain) throw new Error('Could not extract the reliabilityBanner chain');
+  test('the degraded banner is gated on applied === false, not merely presence',
+    /s\.symmetryMesh && s\.symmetryMesh\.applied === false/.test(chain[0]), chain[0]);
+  test('the applied (good-news) case does NOT push a warning banner',
+    !/symmetryMesh\.applied === true/.test(chain[0]) &&
+    !/symmetryMesh\.applied\)/.test(chain[0]), chain[0]);
+
+  // 4. The applied case is reported in the mesh info line (positive, inline).
+  test('the mesh info line reports a mirrored mesh when applied',
+    /s\.symmetryMesh && s\.symmetryMesh\.applied \?[^\n]*symmetry-preserving/.test(html), html.slice(0, 0));
+
+  // 5. Null (never opted in) must surface nothing at all — no banner, no line.
+  //    Both the banner and the info line short-circuit on a falsy s.symmetryMesh,
+  //    so neither can render for a default (opt-out) analysis.
+  test('both surfaces short-circuit on a null symmetryMesh',
+    /s\.symmetryMesh && s\.symmetryMesh\.applied === false/.test(chain[0]) &&
+    /s\.symmetryMesh && s\.symmetryMesh\.applied \?/.test(html));
+}
+
+// ── Test group Z: force placement — offset point + placement badge ──────────
 // Point forces may carry a global-frame offset added to the clicked point and
 // clamped to the part bounding box (mirrors the server's effectiveForcePosition
 // exactly, so the preview arrow lands where the load will). The list badge and
 // the offset validation are pure enough to pin here; the 3D click/snap plumbing
 // still needs a real browser.
-console.log('\n[Y] Force placement — offset clamping, validation, list badge');
+console.log('\n[Z] Force placement — offset clamping, validation, list badge');
 {
   // Brace-matched extraction: grab `function NAME(...) { ... }` whole.
   const grab = (name) => {
@@ -1991,8 +2032,7 @@ console.log('\n[Y] Force placement — offset clamping, validation, list badge')
     els['fp-add-btn'].disabled === false);
   S.pendingForce = { position: [5, 5, 10], selectionMode: 'face' };
   test('validation is a no-op for non-point selection',
-    validateForceOffset() === true);
-}
+    validateForceOffset() === true);}
 
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);

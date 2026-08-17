@@ -269,6 +269,7 @@ const ANALYSE_SPEC: Spec = {
     "useCLT?":          "boolean",
     "beadProps?":       "object",
     "twoRegion?":       "boolean",
+    "symmetryMesh?":    "boolean",
     "criterion?":       "fdm-interface|hill-legacy",
     "includeVolumeField?": "boolean",
     "adaptiveRefinement?": "boolean",
@@ -352,6 +353,12 @@ app.post("/api/analyse", async (req, res) => {
       useCLT:          body.analysis?.useCLT === true,
       ...(body.analysis?.beadProps ? { beadProps: body.analysis.beadProps } : {}),
       twoRegion:       body.analysis?.twoRegion === true,
+      // Opt-in symmetry-preserving meshing (issue #296, surfaced by #309).
+      // Strict `=== true` like the other opt-in flags: absent means the
+      // ordinary mesh, and the extra detect-plus-half mesh is only paid when
+      // the caller asks. `runAnalysis` degrades and reports via
+      // `summary.symmetryMesh` wherever it cannot apply.
+      symmetryMesh:    body.analysis?.symmetryMesh === true,
       includeVolumeField: body.analysis?.includeVolumeField === true,
       adaptiveRefinement: body.analysis?.adaptiveRefinement === true,
     };
@@ -422,6 +429,10 @@ app.post("/api/analyse", async (req, res) => {
         converged:            result.converged,
         meshFallback:         result.meshFallback,
         unitsWarning:         result.unitsWarning,
+        // Symmetry-preserving meshing report (issue #296, surfaced by #309).
+        // Null unless the caller opted in; when opted in, `applied` says
+        // whether the mesh was mirrored and `reason` says why not.
+        symmetryMesh:         result.symmetryMesh,
         materialModel:        result.materialModel,
         solverMs:             result.solverMs,
         nodeCount:            result.nodeCount,
