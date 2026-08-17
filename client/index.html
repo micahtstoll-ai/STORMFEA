@@ -1527,7 +1527,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <div style="margin-bottom:24px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
           <div style="font-size:11px;letter-spacing:.04em;color:var(--gold)88"><svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> STEP 2 — APPLY FORCE</div>
-          <button class="btn" id="place-force-btn" onclick="openForcePopupDirect()" style="color:var(--gold)88;border-color:var(--gold)33">+ Place Force</button>
+          <button class="btn" id="place-force-btn" onclick="openForceEditorDirect()" style="color:var(--gold)88;border-color:var(--gold)33">+ Place Force</button>
         </div>
         <div style="font-size:11px;color:var(--text-lo);margin-bottom:8px">Click <svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> FORCE in the toolbar, then click anywhere on the 3D model.</div>
 
@@ -5133,7 +5133,7 @@ function handleClick(e) {
 
   } else if (S.mode === 'force') {
     // Store the application point in STL/model-frame mm — the same frame the
-    // preset path (openForcePopupDirect), session save, and buildAnalyseBody
+    // preset path (openForceEditorDirect), session save, and buildAnalyseBody
     // all use. Prefer the magnet-snapped feature under the cursor; otherwise the
     // raw surface hit (hit.localPos is mesh-local mm, so add the offset).
     const stl = S._forceSnap ? S._forceSnap.stlPos
@@ -5411,7 +5411,7 @@ function addBoltMarker(bolt) {
 }
 
 // ─── Force popup ──────────────────────────────────────────────────────────────
-function openForcePopupDirect() {
+function openForceEditorDirect() {
   // Place a force without a 3D click — apply at the top-centre of the part.
   let pos = [0, 0, 0];
   if (S.fileData && S.fileData.bounds) {
@@ -12272,8 +12272,8 @@ function applyLoadCase(caseId) {
   document.getElementById('fp-face').value = face;
   setDirFromFace(face);
 
-  // Open the popup
-  openForcePopupDirect();
+  // Open the docked editor
+  openForceEditorDirect();
 
   // Show load case note
   document.getElementById('fp-dir-display').textContent =
