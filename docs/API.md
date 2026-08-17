@@ -285,6 +285,7 @@ dropped even when `ANALYSE_SPEC` accepts it.
 | `useCLT` | boolean | `false` (strict `=== true`) |
 | `beadProps` | object | forwarded only when present; interior unvalidated |
 | `twoRegion` | boolean | **`false` over HTTP** — see below |
+| `symmetryMesh` | boolean | `false` (strict `=== true`) — opt-in symmetry-preserving meshing (issue #296, wired to HTTP by #309) |
 | `includeVolumeField` | boolean | `false` (strict `=== true`) |
 | `adaptiveRefinement` | boolean | `false` (strict `=== true`) |
 
@@ -296,8 +297,10 @@ upright-no-bed scalar-swap fallback, which stays `hill-legacy`.
 
 **Not reachable over HTTP at all** — present on `AnalysisSettings` in
 `server/analysis.ts`, absent from both `ANALYSE_SPEC` and the handler's object:
-`symmetryMesh` (issue #296), `wallBond`, `inPlaneAnisotropy`. In-process callers
-(the test suite) can set them; HTTP callers cannot.
+`wallBond`, `inPlaneAnisotropy`. In-process callers (the test suite) can set
+them; HTTP callers cannot. (`symmetryMesh` was in this list until issue #309
+added it to `ANALYSE_SPEC` and the handler object above; it is now opt-in over
+the wire.)
 
 ##### `twoRegion` — the default differs between the library and the wire
 
@@ -392,7 +395,9 @@ inside `summary`.
 (nullable) · `safetyFactorHigh` (nullable) · `estimatedFailForce` (N, 1 dp) ·
 `bulkFailForceN` (N, 1 dp) · `surfaceTriangleCount` · `yielding` (bool) ·
 `verdict` (string) · `cgIterations` · `converged` (bool) · `meshFallback`
-(bool) · `unitsWarning` (nullable string) · `materialModel` · `solverMs` ·
+(bool) · `unitsWarning` (nullable string) · `symmetryMesh` (nullable; the
+issue-#296 report, non-null only when `analysis.symmetryMesh` was requested) ·
+`materialModel` · `solverMs` ·
 `nodeCount` · `elementCount` · `nodesPerElem` (4 or 10) · `recommendations`
 (string[]) · `failureModes` · `holeClassifications` · `calibrationId` ·
 `singularity` (nullable) · `rigidBodyMode` · `topologySuggestions` ·
@@ -459,10 +464,9 @@ ANALYSIS mesh, not the display mesh, and is indexed by analysis node index
 
 #### Fields that exist in `AnalysisResult` but never reach the wire
 
-`buildPayload` is an explicit object literal, not a spread of `result`. Seven
+`buildPayload` is an explicit object literal, not a spread of `result`. Six
 fields of `AnalysisResult` (`server/analysis.ts`) are therefore computed and
-then dropped, and **no HTTP caller has ever received them** — the names have
-never appeared in `server/index.ts` at any commit:
+then dropped, and **no HTTP caller has ever received them**:
 
 | Field | What it would have carried |
 |---|---|
@@ -470,16 +474,20 @@ never appeared in `server/index.ts` at any commit:
 | `meshResolution` | achieved-vs-target mesh report (issue #295) |
 | `meshOrderDowngrade` | C3D10 → C3D4 downgrade report (issue #265) |
 | `sfBandComposition` | which uncertainty terms formed the bulk SF band (#172/#173) |
-| `symmetryMesh` | mirrored-fundamental-domain report (issue #296) |
 | `bucklingResult` | linear buckling result, incl. BLF |
 | `vertexBucklingModeB64` | buckling mode shape |
 
 Do not code against them. They are listed rather than omitted because
-`client/index.html` reads five of them (`s.meshResolution`,
+`client/index.html` reads four of them (`s.meshResolution`,
 `s.safetyFactorAvailable`, `dataStd.bucklingResult`,
 `dataStd.vertexBucklingModeB64`) and the corresponding UI is consequently inert
 — which makes their absence a live defect worth knowing about, not a design
 choice to document as intentional.
+
+`symmetryMesh` (mirrored-fundamental-domain report, issue #296) was in this list
+until issue #309 added it to `buildPayload`'s summary and wired the client
+readout — the one field so far lifted out of this defect rather than merely
+documented. The rest remain to be surfaced the same way.
 
 #### Governing vs bulk safety factor
 

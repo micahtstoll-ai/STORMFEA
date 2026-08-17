@@ -665,10 +665,17 @@ paths now run a runtime midside self-check instead of trusting the binary (#167)
       gives you symmetric pockets rather than random ones. It is OPT-IN
       (`analysis.symmetryMesh`) and costs an extra mesh, since detection needs a
       mesh to run on
-- [x] Two follow-ups stay open as their own issues: **#309** (surface
-      `summary.symmetryMesh` in the client and decide whether to flip it on by
-      default) and **#308** (a contact patch placed on a sharp EDGE is 3x less
-      mesh-stable than one on a flat face)
+- [x] Surfaced in the client (**#309**): the flag is now reachable over HTTP
+      (`ANALYSE_SPEC` + the analyse handler forwarded it, resolving one row of the
+      documented `buildPayload` drop list in `docs/API.md`), driven by an opt-in
+      "Symmetry-preserving mesh" toggle in the ANALYSIS panel, and `summary.symmetryMesh`
+      reaches the results panel: the applied case reads as good news on the mesh
+      info line, the degraded case (opted in, no plane) as a reliability banner.
+      The **decision** was to stay OPT-IN rather than flip the default: the extra
+      detect-plus-half mesh is a real cost on every symmetric part for a benefit
+      only symmetric parts see, so the cost stays where the user asked for it
+- [x] One follow-up stays open as its own issue: **#308** (a contact patch
+      placed on a sharp EDGE is 3x less mesh-stable than one on a flat face)
 
 ### Per-location mesh sensitivity (issue #294 — shipped)
 - [x] **Re-measured first, and the measurement changed the deliverable.** #294's
