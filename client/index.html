@@ -1937,6 +1937,27 @@ body:not(.has-results) #btn-stress { display: none !important; }
         </div>
       </div>
 
+      <!-- Symmetry-preserving meshing (issue #296, surfaced by #309). Opt-in:
+           an unstructured tet mesh of a symmetric part is not itself symmetric,
+           so the recovered field carries an asymmetry the geometry does not
+           have. Detection needs a mesh to run on, so turning this on meshes the
+           part once to detect and once more for the half — a real extra mesh,
+           paid only when asked. Degrades to the ordinary mesh (and says why) on
+           parts with no symmetry plane. -->
+      <div style="margin-bottom:16px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="symmetry-mesh-toggle" style="width:auto;margin:0" onchange="markSessionDirty()">
+          <span>Symmetry-preserving mesh</span>
+        </label>
+        <div style="font-size:10px;color:var(--text-lo);margin-top:4px;line-height:1.6">
+          For a part with a mirror plane, meshes one half and mirrors it, so the
+          heatmap stops showing an asymmetry the geometry does not have. Costs an
+          extra mesh (the part is meshed once to find the plane, then again for
+          the half); parts with no symmetry plane fall back to the ordinary mesh.
+          Leave off unless your part is symmetric and the picture looks lopsided.
+        </div>
+      </div>
+
       <!-- Material model toggles — moved here from CALIBRATE so all analysis
            controls live together. Element IDs preserved for session save/restore. -->
       <div style="margin-bottom:14px;padding-top:14px;border-top:1px solid var(--border)">
@@ -7044,6 +7065,17 @@ function showResults(s) {
     reliabilityBanner += reliabilityBannerHTML(
       'Load placed on a sharp edge', s.loadPatchSharpEdgeWarning.replace(/\n/g, '<br>'));
   }
+  // Issue #296/#309: symmetry-preserving meshing is opt-in, so summary.symmetryMesh
+  // is null unless the user asked for it. When they DID ask and it could not
+  // apply (no plane, a clip that did not close, a mesher failure on the half),
+  // the request silently had no effect and the heatmap may still be lopsided —
+  // that belongs beside the other confidence caveats. The applied case is good
+  // news and is reported in the mesh info line below, not as a warning banner.
+  if (s.symmetryMesh && s.symmetryMesh.applied === false) {
+    reliabilityBanner += reliabilityBannerHTML(
+      'Symmetry-preserving mesh not applied',
+      `You requested a symmetry-preserving mesh, but it could not be applied to this part, so the ordinary mesh was used and the heatmap may show a small asymmetry the geometry does not have. Reason: ${s.symmetryMesh.reason || 'unknown'}.`);
+  }
 
   // Issue #204: estimatedFailForce is a LINEAR first-yield extrapolation
   // (totalAppliedForce × SF, server/analysis.ts) — onset of yield under an
@@ -7190,7 +7222,7 @@ function showResults(s) {
       ${s.materialModel && s.materialModel.bond ? `Bond model: interlayer strength <b style="color:${s.materialModel.bond.relStrength < 1 ? 'var(--warn)' : 'var(--text-hi)'}">×${s.materialModel.bond.relStrength.toFixed(2)}</b> · stiffness ×${s.materialModel.bond.relStiffness.toFixed(2)} vs typical settings (interface ${s.materialModel.bond.interfaceTempC.toFixed(0)}°C, substrate ${s.materialModel.bond.substrateTempC.toFixed(0)}°C, τ<sub>cool</sub> ${s.materialModel.bond.coolTimeConstS.toFixed(1)}s)${s.materialModel.bond.clamped ? ' <span style="color:var(--warn)">clamped</span>' : ''} · <span style="color:${s.materialModel.bond.confidence === 'medium' ? 'var(--warn)' : 'var(--danger)'};font-size:10px">${s.materialModel.bond.confidence.toUpperCase()} confidence</span><br>` : ''}
       ${s.materialModel && s.materialModel.wallBond ? `Wall-to-wall bond: allowable <b style="color:var(--text-hi)">${s.materialModel.wallBond.yieldWallMPa.toFixed(2)} MPa</b> tension / ${s.materialModel.wallBond.yieldWallShearMPa.toFixed(2)} MPa shear (×${s.materialModel.wallBond.relStrength.toFixed(2)} vs interlayer baseline, est. perimeter ${s.materialModel.wallBond.perimeterLengthMm.toFixed(0)} mm${s.materialModel.wallBond.perimeterFallback ? ' <span style="color:var(--warn)">fallback</span>' : ''}) · <span style="color:var(--danger);font-size:10px">LOW confidence — no bead-to-bead coupon data</span><br>` : ''}
       ${s.sfCriterion ? `Criterion: <b style="color:var(--text-hi)">${s.sfCriterion === 'fdm-interface' ? 'FDM dual (bulk + interlayer interface)' : s.sfCriterion === 'hill' ? 'Hill 1948 (legacy path)' : 'von Mises'}</b><br>` : ''}
-      Mesh: <b style="color:var(--text-hi)">${s.nodeCount.toLocaleString()} nodes</b> · <b style="color:var(--text-hi)">${s.elementCount.toLocaleString()} elements</b> · ${s.nodesPerElem === 4 ? '<span style="color:var(--warn)">C3D4 linear tet</span>' : 'C3D10 quadratic tet'}<br>
+      Mesh: <b style="color:var(--text-hi)">${s.nodeCount.toLocaleString()} nodes</b> · <b style="color:var(--text-hi)">${s.elementCount.toLocaleString()} elements</b> · ${s.nodesPerElem === 4 ? '<span style="color:var(--warn)">C3D4 linear tet</span>' : 'C3D10 quadratic tet'}${s.symmetryMesh && s.symmetryMesh.applied ? ` · <b style="color:var(--text-hi)">symmetry-preserving</b> (mirrored about plane, ${(s.symmetryMesh.seamNodeCount ?? 0).toLocaleString()} seam nodes)` : ''}<br>
       Solver: ${s.cgIterations} CG iterations · ${s.solverMs}ms · converged=${s.converged ? 'yes' : '<span style="color:var(--warn)">no</span>'}
       ${s.governingDirection != null ? `<br>Governing direction: <b style="color:var(--text-hi)">${s.governingDirection === 'xy' ? 'XY in-plane' : 'Z inter-layer'}</b> · U<sub>XY</sub>=${(s.peakUtilXY??0).toFixed(3)} · U<sub>Z</sub>=${(s.peakUtilZ??0).toFixed(3)} ${s.governingDirection === 'xy' ? '<span style="color:var(--text-lo);font-size:10px">→ increase infill to resist</span>' : '<span style="color:var(--text-lo);font-size:10px">→ reorient or add perimeters</span>'}` : ''}
     </div>
@@ -9954,6 +9986,10 @@ function buildAnalyseBody(quality, opts) {
       computeBuckling: !!(opts && opts.buckling),
       useCLT:          !!(document.getElementById('clt-toggle')?.checked),
       twoRegion:       !!(document.getElementById('two-region-toggle')?.checked),
+      // Opt-in symmetry-preserving meshing (issue #296, surfaced by #309). The
+      // server pays an extra mesh only when this is true; it degrades and
+      // reports via summary.symmetryMesh where no plane exists.
+      symmetryMesh:    !!(document.getElementById('symmetry-mesh-toggle')?.checked),
       wallBond:        !!(document.getElementById('two-region-toggle')?.checked && document.getElementById('wall-bond-toggle')?.checked),
       // Interior-stress volumetric payload for the section-view cut face
       // (#190) — opt-in because it's a materially larger response than a
