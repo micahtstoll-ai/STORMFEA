@@ -1722,6 +1722,60 @@ export interface ForceSpec {
    * diagonal, which is the weakest number in that mode.
    */
   loadPatchRadiusMm?: number;
+  /**
+   * Selection topology the UI used to place this force. Records how the caller
+   * chose the application point so it can be replayed on edit. Absent → 'point'.
+   *   'point' — a single clicked point; `offset` (below) may nudge it.
+   *   'face'  — an entire face; the UI resolves it to the face centroid and
+   *             writes that into `position` before sending, so the server sees
+   *             an ordinary point.
+   *   'edge'  — a shared edge between two faces; the UI resolves it to the edge
+   *             midpoint and writes that into `position`.
+   * The server does not re-derive the centroid/midpoint — this field is
+   * metadata that travels with the force for UI replay and reporting. Only the
+   * 'point' case reads `offset`.
+   */
+  selectionMode?: 'point' | 'face' | 'edge';
+  /**
+   * Offset applied to `position` before load assembly, in STL file space (mm),
+   * as a global [dx, dy, dz] displacement (NOT surface-relative). Read ONLY
+   * when `selectionMode` is 'point' (or absent) AND the effective distribution
+   * is 'contact_patch' — the only mode that honours `position` at all (issue
+   * #271). Under any legacy distribution it is ignored with a warning, since
+   * those modes select nodes from `direction` alone.
+   *
+   * The effective application point (`position + offset`) is clamped to the
+   * part's bounding box before assembly, so an offset can reposition the load
+   * anywhere on/in the part but never drive it arbitrarily far into space. An
+   * absent offset (or [0,0,0]) is bit-identical to the pre-offset path.
+   */
+  offset?: [number, number, number];
+}
+
+/**
+ * The point a force's load is actually assembled at: `position` displaced by
+ * `offset` (a global STL-frame nudge) and clamped to the part bounding box.
+ *
+ * Only 'point' selection (or an absent `selectionMode`) reads the offset —
+ * 'face'/'edge' resolved `position` to the centroid/edge-midpoint UI-side, so
+ * an offset there would double-count. Returns `position` unchanged when no
+ * offset applies (absent, all-zero, or non-point mode), which keeps the
+ * pre-offset load path bit-identical. Callers still gate on the distribution
+ * mode: only 'contact_patch' honours the application point at all (issue #271).
+ */
+export function effectiveForcePosition(
+  position: [number, number, number],
+  offset: [number, number, number] | undefined,
+  selectionMode: 'point' | 'face' | 'edge' | undefined,
+  bounds: { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number },
+): [number, number, number] {
+  if ((selectionMode ?? 'point') !== 'point') return position;
+  if (!offset || (offset[0] === 0 && offset[1] === 0 && offset[2] === 0)) return position;
+  return [
+    Math.max(bounds.minX, Math.min(bounds.maxX, position[0] + offset[0])),
+    Math.max(bounds.minY, Math.min(bounds.maxY, position[1] + offset[1])),
+    Math.max(bounds.minZ, Math.min(bounds.maxZ, position[2] + offset[2])),
+  ];
 }
 
 /**
@@ -5675,11 +5729,32 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     // old absent-field cascade exactly, including the near-hole linear taper.
     const mode = f.loadDistribution ?? DEFAULT_LOAD_DISTRIBUTION;
 
+    // ── Point offset (global STL-frame nudge) ───────────────────────────────
+    // The effective application point is `position` nudged by `offset` and
+    // clamped to the bounding box (effectiveForcePosition). Only 'point'
+    // selection reads the offset, and only 'contact_patch' honours the point at
+    // all (issue #271) — under any legacy distribution the offset is inert, so
+    // warn rather than silently drop it. Absent/[0,0,0] offset ⇒ effectivePos
+    // is bit-identical to f.position, so the pre-offset path is unchanged.
+    const effectivePos = effectiveForcePosition(f.position, f.offset, f.selectionMode, req.bounds);
+    const offsetActive =
+      !!f.offset &&
+      (f.offset[0] !== 0 || f.offset[1] !== 0 || f.offset[2] !== 0) &&
+      (f.selectionMode ?? 'point') === 'point';
+    if (offsetActive && mode !== 'contact_patch') {
+      console.warn(
+        `[analysis] force ${f.magnitude}N carries an offset ` +
+        `(${f.offset!.join(",")}) but loadDistribution='${mode}' ignores the ` +
+        `application point entirely — the offset has no effect. Use ` +
+        `'contact_patch' (the default) for a position-dependent load.`,
+      );
+    }
+
     if (mode === 'contact_patch') {
       if (surfaceFaces) {
         const patch = assembleContactPatchLoad(
           mesh, surfaceFaces, [dx/len, dy/len, dz/len], [fx, fy, fz],
-          f.position, f.loadPatchRadiusMm,
+          effectivePos, f.loadPatchRadiusMm,
         );
         let applied = 0, resX = 0, resY = 0, resZ = 0;
         for (let n = 0; n < mesh.nodeCount; n++) {
@@ -5702,7 +5777,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
             `instead. Check where the force was placed.`
           : ` (application point ${patch.centreSnapMm.toFixed(3)}mm from the surface)`;
         console.log(`[analysis] force ${f.magnitude}N in (${dx},${dy},${dz}): contact patch at ` +
-          `(${f.position.join(",")}) radius=${patch.radiusMm.toFixed(3)}mm over ` +
+          `(${effectivePos.join(",")}) radius=${patch.radiusMm.toFixed(3)}mm over ` +
           `${patch.loadedTriangles} triangles, ${applied} loaded nodes, ` +
           `|resultant|=${Math.hypot(resX, resY, resZ).toFixed(4)}N${snapNote}`);
         // Issue #308: the patch wraps a sharp edge, so its peak is measurably
@@ -5712,11 +5787,11 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
         // force this is — a bolted pad in tension over a corner is just as
         // singular as a push, since both are the same patch geometry.
         if (patch.maxLoadedNormalAngleDeg >= CONTACT_PATCH_SHARP_EDGE_DEG) {
-          console.warn(`[analysis] force ${f.magnitude}N at (${f.position.join(",")}): contact patch ` +
+          console.warn(`[analysis] force ${f.magnitude}N at (${effectivePos.join(",")}): contact patch ` +
             `spans a ${patch.maxLoadedNormalAngleDeg.toFixed(0)} deg edge — peak stress inside this ` +
             `patch will not converge with mesh refinement the way a flat-face patch does.`);
           loadPatchSharpEdgeNotes.push(
-            `The load at (${f.position.map(v => v.toFixed(2)).join(", ")}) is applied over a contact ` +
+            `The load at (${effectivePos.map(v => v.toFixed(2)).join(", ")}) is applied over a contact ` +
             `patch that wraps a ${patch.maxLoadedNormalAngleDeg.toFixed(0)}° geometric edge. A load ` +
             `placed on a sharp edge is real (a contact at an edge really does bear on both faces it ` +
             `joins), but the peak stress inside such a patch does not settle down with mesh refinement ` +
