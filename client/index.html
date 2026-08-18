@@ -7693,8 +7693,8 @@ function showResults(s) {
         Based on your geometry and load. Estimated fail force assumes same stress field.
       </div>
       ${s.recommendations.map(r => {
-        const sfColor = r.estimatedSF >= 2 ? 'var(--gold)' : r.estimatedSF >= 1 ? 'var(--gold)' : 'var(--text-hi)';
-        const changeColor = r.vsCurrentPct > 0 ? 'var(--gold)' : 'var(--text-hi)';
+        const sfColor = r.estimatedSF >= 2 ? 'var(--gold)' : r.estimatedSF >= 1 ? 'var(--warn)' : 'var(--danger)';
+        const changeColor = r.vsCurrentPct > 0 ? 'var(--gold)' : r.vsCurrentPct < -5 ? 'var(--danger)' : 'var(--text-hi)';
         const roundedPct = Math.round(r.vsCurrentPct / 5) * 5;
         const changeStr = roundedPct > 0 ? `+${roundedPct}%` : `${roundedPct}%`;
         return `<div style="display:flex;align-items:center;gap:8px;padding:7px 10px;background:${r.highlight?'var(--gold-faint)':'var(--bg-card)'};border:1px solid ${r.highlight?'var(--gold-glow)':'var(--border)'};border-radius:3px;margin-bottom:5px">
@@ -9512,33 +9512,60 @@ function showOrientComparison(results) {
   if (!el || !content) return;
 
   const currentOrient = document.getElementById('s-orient').value;
-  const baseVM        = results.maxVonMisesMPa;
-  const baseYield     = results.effectiveYieldMPa;
 
-  // Get current multiplier from the orient dropdown
+  // Use the governing SF as the base — this is what the user sees as the
+  // headline number, so comparisons that scale from it stay internally
+  // consistent. The old approach divided effectiveYieldMPa by mulForOrient
+  // to "un-apply" an orientation factor that was never applied post-A4 fix.
+  const governingSF = (results.safetyFactor != null && results.safetyFactor > 0)
+    ? results.safetyFactor
+    : results.effectiveYieldMPa / (results.maxVonMisesMPa || 0.001);
+
+  // Relative orientation strength scalars — used only as a ratio to estimate
+  // how the governing SF would shift with a different print orientation.
+  // These are the legacy quick-estimator values from orientationMultiplier();
+  // the full FEM criterion is the truth, not these numbers.
   const mulForOrient = o => o === 'flat' ? 0.55 : o === 'upright' ? 0.90 : 0.75;
   const currentMul   = mulForOrient(currentOrient);
 
   const orientations = [
-    { id:'flat',    name:'Flat (layers in XY)',         mul:0.55, note:'weakest — inter-layer pull' },
-    { id:'angled',  name:'Angled (~45°)',                mul:0.75, note:'intermediate' },
-    { id:'upright', name:'Upright (layers face load)',  mul:0.90, note:'strongest — in-layer load' },
+    { id:'flat',    name:'Flat (layers in XY)',        mul:0.55, note:'weakest — inter-layer pull' },
+    { id:'angled',  name:'Angled (~45°)',               mul:0.75, note:'intermediate' },
+    { id:'upright', name:'Upright (layers face load)', mul:0.90, note:'strongest — in-layer load' },
   ];
 
-  let html = '<div style="font-size:10px;color:var(--text-lo);margin-bottom:8px">How SF would change if you reprinted at each orientation. Stress field assumed same.</div>';
+  // Find the best alternative (highest estimated SF among non-current options)
+  const bestAltId = orientations
+    .filter(o => o.id !== currentOrient)
+    .sort((a, b) => b.mul - a.mul)[0]?.id;
+
+  const isDelam = results.governingMode &&
+    (results.governingMode.includes('Interlayer') || results.governingMode.includes('delamination'));
+
+  let headerNote = 'How SF would change if you reprinted at each orientation. Stress field assumed same.';
+  if (isDelam && currentOrient === 'flat') {
+    headerNote += ' Governing failure is interlayer — orientation is the highest-leverage fix.';
+  }
+
+  let html = `<div style="font-size:10px;color:var(--text-lo);margin-bottom:8px;line-height:1.5">${headerNote}</div>`;
   for (const o of orientations) {
-    const adjYield  = baseYield / currentMul * o.mul;
-    const adjSF     = adjYield / (baseVM || 0.001);
+    const adjSF     = governingSF * o.mul / currentMul;
     const isCurrent = o.id === currentOrient;
-    const sfColor   = adjSF >= 2 ? 'var(--gold)' : adjSF >= 1 ? 'var(--gold)' : 'var(--text-hi)';
+    const isBest    = !isCurrent && o.id === bestAltId;
+    const sfColor   = adjSF >= 2 ? 'var(--gold)' : adjSF >= 1 ? 'var(--warn)' : 'var(--danger)';
     const bg        = isCurrent ? 'var(--gold-faint)' : 'var(--bg-card)';
-    const border    = isCurrent ? '1px solid var(--gold-glow)' : '1px solid var(--border)';
+    const border    = isCurrent ? '1px solid var(--gold-glow)' : isBest ? '1px solid var(--border-mid)' : '1px solid var(--border)';
+    const nameColor = isCurrent ? 'var(--bg-base)' : isBest ? 'var(--text-hi)' : 'var(--text-mid)';
+    const suffix    = isCurrent
+      ? ' <svg width="8" height="9" viewBox="0 0 8 9" style="vertical-align:-1px" fill="currentColor"><polygon points="6,1.5 1,4.5 6,7.5"/></svg> current'
+      : isBest ? ' <svg width="8" height="9" viewBox="0 0 8 9" style="vertical-align:-1px;color:var(--gold)" fill="currentColor"><polygon points="2,1.5 7,4.5 2,7.5"/></svg> recommended'
+      : '';
     html += `<div style="padding:7px 10px;background:${bg};border:${border};border-radius:3px;margin-bottom:4px">
       <div style="display:flex;justify-content:space-between;align-items:center">
-        <span style="font-size:11px;color:${isCurrent?'var(--bg-base)':'var(--text-mid)'}">${o.name}${isCurrent?' <svg width="8" height="9" viewBox="0 0 8 9" style="vertical-align:-1px" fill="currentColor"><polygon points="6,1.5 1,4.5 6,7.5"/></svg> current':''}</span>
-        <span style="font-size:11px;font-weight:500;color:${sfColor}">SF ${adjSF.toFixed(2)}×</span>
+        <span style="font-size:11px;color:${nameColor}">${o.name}${suffix}</span>
+        <span style="font-size:11px;font-weight:500;color:${sfColor}">${isCurrent ? 'SF ' + governingSF.toFixed(2) + '×' : '~SF ' + adjSF.toFixed(2) + '×'}</span>
       </div>
-      <div style="font-size:10px;color:var(--text-lo);margin-top:2px">${o.note} · ${(o.mul*100).toFixed(0)}% effective strength</div>
+      <div style="font-size:10px;color:var(--text-lo);margin-top:2px">${o.note}</div>
     </div>`;
   }
   content.innerHTML = html;

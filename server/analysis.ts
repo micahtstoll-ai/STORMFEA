@@ -7334,9 +7334,13 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   );
 
   // Candidate configurations to evaluate
-  // Include layer height variation — 0.1mm is stronger than 0.2mm in Z direction
   const currentLH = req.print.layerHeightMm ?? 0.2;
-  const altLH     = currentLH > 0.15 ? 0.1 : 0.2;  // suggest finer if currently coarse
+  // Only suggest finer layers if the current height is coarse enough that
+  // thinner layers would meaningfully improve Z-bond strength.
+  const finerLH = currentLH > 0.15 ? 0.1 : null;
+
+  const isInterlayerGoverning = governingModeName.includes('Interlayer')
+    || governingModeName.includes('delamination');
 
   const candidates: Array<{ infill:number; pattern:string; orient:string; walls:number; lh:number; label:string }> = [
     { infill:20,  pattern:'gyroid',  orient:'flat',    walls:req.print.wallCount, lh:currentLH, label:'20% gyroid, flat' },
@@ -7347,14 +7351,25 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     { infill:60,  pattern:'gyroid',  orient:'upright', walls:req.print.wallCount, lh:currentLH, label:'60% gyroid, upright' },
     { infill:100, pattern:'grid',    orient:'flat',    walls:req.print.wallCount, lh:currentLH, label:'100% grid, flat (solid)' },
     { infill:40,  pattern:'honeycomb',orient:'flat',   walls:req.print.wallCount, lh:currentLH, label:'40% honeycomb, flat' },
-    // Layer height variation — finer layers = stronger Z bonds
-    { infill:req.print.infillPct, pattern:req.print.pattern??'grid', orient:req.print.orientation,
-      walls:req.print.wallCount, lh:altLH,
-      label:`${req.print.infillPct}% ${req.print.pattern??'grid'}, ${req.print.orientation}, ${altLH}mm layers` },
     // More walls at current settings
     { infill:req.print.infillPct, pattern:req.print.pattern??'grid', orient:req.print.orientation,
       walls:Math.min(8, req.print.wallCount + 2), lh:currentLH,
       label:`${req.print.infillPct}% ${req.print.pattern??'grid'}, +2 walls` },
+    // Finer layers only when they would actually improve Z-bond strength
+    ...(finerLH ? [{ infill:req.print.infillPct, pattern:req.print.pattern??'grid', orient:req.print.orientation,
+      walls:req.print.wallCount, lh:finerLH,
+      label:`${req.print.infillPct}% ${req.print.pattern??'grid'}, ${req.print.orientation}, 0.1mm layers` }] : []),
+    // When interlayer failure governs, add orientation-specific candidates that
+    // target the root cause: moving the load in-plane eliminates the Z-tension
+    // demand that the bond is weakest at.
+    ...(isInterlayerGoverning && req.print.orientation !== 'upright' ? [
+      { infill:req.print.infillPct, pattern:req.print.pattern??'grid', orient:'upright',
+        walls:req.print.wallCount, lh:currentLH,
+        label:`${req.print.infillPct}% ${req.print.pattern??'grid'}, upright (fix delamination)` },
+      { infill:req.print.infillPct, pattern:req.print.pattern??'grid', orient:'upright',
+        walls:Math.min(8, req.print.wallCount + 2), lh:currentLH,
+        label:`${req.print.infillPct}% ${req.print.pattern??'grid'}, upright, +2 walls` },
+    ] : []),
   ];
 
   const recommendations: PrintRecommendation[] = candidates
