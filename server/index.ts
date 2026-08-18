@@ -238,6 +238,10 @@ const ANALYSE_SPEC: Spec = {
     // omitted → part-relative defaults.
     "loadPatchDepthMm?": "number",
     "loadPatchRadiusMm?": "number",
+    // Placement metadata: how the UI chose the point, and a global-frame nudge
+    // added to `position` (point mode + contact_patch only, clamped to bbox).
+    "selectionMode?": "point|face|edge",
+    "offset?": "vec3",
   }],
   print: {
     materialId: "string", infillPct: "number", wallCount: "number",

@@ -1945,6 +1945,95 @@ console.log('\n[Y] Symmetry-preserving mesh — control, request, and readout (#
     /s\.symmetryMesh && s\.symmetryMesh\.applied \?/.test(html));
 }
 
+// ── Test group Z: force placement — offset point + placement badge ──────────
+// Point forces may carry a global-frame offset added to the clicked point and
+// clamped to the part bounding box (mirrors the server's effectiveForcePosition
+// exactly, so the preview arrow lands where the load will). The list badge and
+// the offset validation are pure enough to pin here; the 3D click/snap plumbing
+// still needs a real browser.
+console.log('\n[Z] Force placement — offset clamping, validation, list badge');
+{
+  // Brace-matched extraction: grab `function NAME(...) { ... }` whole.
+  const grab = (name) => {
+    const start = html.indexOf('function ' + name + '(');
+    if (start < 0) throw new Error('Could not find function ' + name);
+    let i = html.indexOf('{', start), depth = 0;
+    for (; i < html.length; i++) {
+      const ch = html[i];
+      if (ch === '{') depth++;
+      else if (ch === '}') { depth--; if (depth === 0) { i++; break; } }
+    }
+    return html.slice(start, i);
+  };
+
+  const src = [
+    grab('effectiveForcePoint'),
+    grab('forcePlacementBadge'),
+    grab('getForceOffsetFromInputs'),
+    grab('validateForceOffset'),
+  ].join('\n\n');
+
+  // Mutable DOM/state the functions read. Element stubs carry value + style;
+  // getElementById returns undefined for ids we don't model (e.g. fp-add-btn),
+  // which the functions already guard with optional chaining.
+  const els = {};
+  const mkEl = (v) => ({ value: String(v), style: {} });
+  global.document = { getElementById: (id) => els[id] };
+  global.S = { fileData: { bounds: { minX: 0, maxX: 10, minY: 0, maxY: 10, minZ: 0, maxZ: 10 } }, pendingForce: null };
+
+  const mod = { exports: {} };
+  new Function('module', 'exports', src +
+    '\nmodule.exports = { effectiveForcePoint, forcePlacementBadge, getForceOffsetFromInputs, validateForceOffset };'
+  )(mod, mod.exports);
+  const { effectiveForcePoint, forcePlacementBadge, getForceOffsetFromInputs, validateForceOffset } = mod.exports;
+
+  // effectiveForcePoint — matches the server helper's behaviour.
+  test('offset is added to the clicked point in point mode',
+    JSON.stringify(effectiveForcePoint([2, 5, 5], 'point', [3, -1, 0])) === JSON.stringify([5, 4, 5]));
+  test('offset point is clamped to the bounding box',
+    JSON.stringify(effectiveForcePoint([2, 5, 5], 'point', [100, -100, 0])) === JSON.stringify([10, 0, 5]));
+  test('a zero offset returns the point unchanged',
+    JSON.stringify(effectiveForcePoint([2, 5, 5], 'point', [0, 0, 0])) === JSON.stringify([2, 5, 5]));
+  test('offset is ignored for face selection',
+    JSON.stringify(effectiveForcePoint([2, 5, 5], 'face', [3, 0, 0])) === JSON.stringify([2, 5, 5]));
+  test('offset is ignored for edge selection',
+    JSON.stringify(effectiveForcePoint([2, 5, 5], 'edge', [3, 0, 0])) === JSON.stringify([2, 5, 5]));
+  test('absent selectionMode is treated as point',
+    JSON.stringify(effectiveForcePoint([2, 5, 5], undefined, [1, 0, 0])) === JSON.stringify([3, 5, 5]));
+
+  // forcePlacementBadge — compact list descriptor.
+  test('badge is empty for a plain point force',
+    forcePlacementBadge({ selectionMode: 'point' }) === '');
+  test('badge names face selection',
+    /face/.test(forcePlacementBadge({ selectionMode: 'face' })));
+  test('badge names edge selection',
+    /edge/.test(forcePlacementBadge({ selectionMode: 'edge' })));
+  test('badge shows the offset vector for an offset point',
+    /off \[3\.0, 0\.0, -2\.0\]/.test(forcePlacementBadge({ selectionMode: 'point', offset: [3, 0, -2] })));
+
+  // getForceOffsetFromInputs — reads the three number fields, 0 on blank/NaN.
+  els['fp-offset-x'] = mkEl(2.5); els['fp-offset-y'] = mkEl(''); els['fp-offset-z'] = mkEl(-1);
+  test('offset inputs parse, blank reads as 0',
+    JSON.stringify(getForceOffsetFromInputs()) === JSON.stringify([2.5, 0, -1]));
+
+  // validateForceOffset — in-box passes and clears warning; out-of-box warns.
+  els['fp-offset-warning'] = { style: { display: 'none' }, textContent: '' };
+  els['fp-add-btn'] = { disabled: false };
+  S.pendingForce = { position: [5, 5, 10], selectionMode: 'point' };
+  els['fp-offset-x'] = mkEl(2); els['fp-offset-y'] = mkEl(0); els['fp-offset-z'] = mkEl(0);
+  const okIn = validateForceOffset();
+  test('in-box offset validates true and hides the warning',
+    okIn === true && els['fp-offset-warning'].style.display === 'none');
+  els['fp-offset-x'] = mkEl(20);   // 5 + 20 = 25 > maxX (10)
+  const okOut = validateForceOffset();
+  test('out-of-box offset validates false and shows the warning',
+    okOut === false && els['fp-offset-warning'].style.display === 'block');
+  test('validation never blocks Add Force (clamp is recoverable)',
+    els['fp-add-btn'].disabled === false);
+  S.pendingForce = { position: [5, 5, 10], selectionMode: 'face' };
+  test('validation is a no-op for non-point selection',
+    validateForceOffset() === true);}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 

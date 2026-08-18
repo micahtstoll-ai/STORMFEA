@@ -1527,7 +1527,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <div style="margin-bottom:24px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
           <div style="font-size:11px;letter-spacing:.04em;color:var(--gold)88"><svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> STEP 2 — APPLY FORCE</div>
-          <button class="btn" id="place-force-btn" onclick="openForcePopupDirect()" style="color:var(--gold)88;border-color:var(--gold)33">+ Place Force</button>
+          <button class="btn" id="place-force-btn" onclick="openForceEditorDirect()" style="color:var(--gold)88;border-color:var(--gold)33">+ Place Force</button>
         </div>
         <div style="font-size:11px;color:var(--text-lo);margin-bottom:8px">Click <svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> FORCE in the toolbar, then click anywhere on the 3D model.</div>
 
@@ -1560,6 +1560,25 @@ body:not(.has-results) #btn-stress { display: none !important; }
                 <option value="150|top">Full robot on one mount (150N)</option>
               </optgroup>
             </select>
+          </div>
+          <label style="font-size:11px">Placement</label>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:6px">
+            <button type="button" class="btn sel-mode-btn active" data-selmode="point" onclick="setForceSelectionMode('point')" title="Apply at the clicked point (optionally nudged by an offset)">Point</button>
+            <button type="button" class="btn sel-mode-btn" data-selmode="face" onclick="setForceSelectionMode('face')" title="Snap to the centre of the face under the cursor">Face</button>
+            <button type="button" class="btn sel-mode-btn" data-selmode="edge" onclick="setForceSelectionMode('edge')" title="Snap to the edge under the cursor">Edge</button>
+          </div>
+          <div id="fp-selmode-hint" style="font-size:9px;color:var(--text-lo);margin-bottom:8px">Click the model — the load is applied where you place it, over a contact patch.</div>
+          <!-- Offset section — only meaningful for POINT placement. Global STL-frame
+               nudge added to the clicked point before the load is assembled. -->
+          <div id="force-offset-section" style="margin-bottom:10px">
+            <label style="font-size:11px">Offset (global X, Y, Z · mm)</label>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-top:4px">
+              <input id="fp-offset-x" type="number" value="0" step="0.5" style="font-size:11px" aria-label="Offset X (mm)" oninput="onForceOffsetInput()">
+              <input id="fp-offset-y" type="number" value="0" step="0.5" style="font-size:11px" aria-label="Offset Y (mm)" oninput="onForceOffsetInput()">
+              <input id="fp-offset-z" type="number" value="0" step="0.5" style="font-size:11px" aria-label="Offset Z (mm)" oninput="onForceOffsetInput()">
+            </div>
+            <div style="font-size:9px;color:var(--text-lo);margin-top:4px">Nudges the clicked point in global coordinates. Clamped to the part's bounding box.</div>
+            <div id="fp-offset-warning" style="display:none;font-size:9px;color:var(--warn);margin-top:4px"></div>
           </div>
           <label for="fp-mag" style="font-size:11px">Magnitude (<span id="fp-unit-label">N</span>)</label>
           <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
@@ -1599,7 +1618,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
             <div style="font-size:9px;color:var(--text-lo);margin-top:4px">Contact patch (default): applies the load <em>where you placed the arrow</em>, over a patch that fades to zero at its edge. Tapered band: spreads it across the whole face toward the load direction, fading at the edges — use when the load really is carried by the whole face. Cosine: concentrated at a bolt bearing point, realistic for bolt pull-through. Uniform (legacy): the pre-2026 behaviour — the whole face, with a hard edge that makes peak stress mesh-dependent. The legacy options ignore where you placed the arrow and use only its direction.</div>
           </div>
           <div style="display:flex;gap:6px">
-            <button class="btn primary" style="flex:1" onclick="confirmForce()">Add Force</button>
+            <button class="btn primary" id="fp-add-btn" style="flex:1" onclick="confirmForce()">Add Force</button>
             <button class="btn" onclick="cancelForce()" aria-label="Cancel force placement"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg></button>
           </div>
         </div>
@@ -5135,13 +5154,23 @@ function handleClick(e) {
 
   } else if (S.mode === 'force') {
     // Store the application point in STL/model-frame mm — the same frame the
-    // preset path (openForcePopupDirect), session save, and buildAnalyseBody
+    // preset path (openForceEditorDirect), session save, and buildAnalyseBody
     // all use. Prefer the magnet-snapped feature under the cursor; otherwise the
     // raw surface hit (hit.localPos is mesh-local mm, so add the offset).
     const stl = S._forceSnap ? S._forceSnap.stlPos
                              : meshLocalToStl(hit.localPos.x, hit.localPos.y, hit.localPos.z);
-    S.pendingForce = { position: stl, localPos: hit.localPos };
+    // Infer placement mode from what the magnet snapped to, so a click on a
+    // face centre records 'face' and a click on an edge records 'edge'. A raw
+    // surface hit (or vertex/triangle-centre snap) is a 'point', which is the
+    // only mode that carries an offset.
+    const snapKind = S._forceSnap?.kind;
+    const selMode = snapKind === 'face center' ? 'face'
+                  : snapKind === 'edge'        ? 'edge'
+                  : 'point';
+    S.pendingForce = { position: stl, localPos: hit.localPos, selectionMode: selMode, offset: [0, 0, 0] };
     clearForceSnapMarker();
+    resetForceOffsetInputs();
+    setForceSelectionMode(selMode);
     showForcePreview();
     openForceEditor();   // docked in the LOADS panel — viewer stays unobstructed
   }
@@ -5403,19 +5432,31 @@ function addBoltMarker(bolt) {
 }
 
 // ─── Force popup ──────────────────────────────────────────────────────────────
-function openForcePopupDirect() {
+function openForceEditorDirect() {
   // Place a force without a 3D click — apply at the top-centre of the part.
   let pos = [0, 0, 0];
   if (S.fileData && S.fileData.bounds) {
     const b = S.fileData.bounds;
     pos = [(b.minX+b.maxX)/2, (b.minY+b.maxY)/2, b.maxZ];
   }
-  S.pendingForce = { position: pos };
+  S.pendingForce = { position: pos, selectionMode: 'point', offset: [0, 0, 0] };
   document.getElementById('fp-face').value = 'top';
   document.getElementById('fp-custom-dir').style.display = 'none';
+  resetForceOffsetInputs();
+  setForceSelectionMode('point');
   setDir(0, 0, 1);   // default bed +Z (up from the bed)
   showForcePreview();
   openForceEditor();
+}
+
+// Zero the three offset inputs and clear any stale warning styling.
+function resetForceOffsetInputs() {
+  ['fp-offset-x','fp-offset-y','fp-offset-z'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.value = 0; el.style.borderColor = ''; }
+  });
+  const w = document.getElementById('fp-offset-warning');
+  if (w) w.style.display = 'none';
 }
 
 // Show the docked force editor in the LOADS panel (viewer stays visible).
@@ -5510,8 +5551,11 @@ function showForcePreview() {
 
   // pendingForce.position is STL/model-frame mm. Attach the preview to mesh3d
   // in mesh-local coords so it coincides exactly with the confirmed arrow
-  // (addForceArrow) and tracks the part's orientation.
-  const [lx, ly, lz] = stlToMeshLocal(...S.pendingForce.position);
+  // (addForceArrow) and tracks the part's orientation. In point mode the arrow
+  // sits at the offset-adjusted, bbox-clamped point — where the load lands.
+  const _effPt = effectiveForcePoint(
+    S.pendingForce.position, S.pendingForce.selectionMode, S.pendingForce.offset);
+  const [lx, ly, lz] = stlToMeshLocal(..._effPt);
   const pos = new THREE.Vector3(lx, ly, lz);
   const dir = new THREE.Vector3(...S.pendingDir).normalize();
   const scale = mesh3d.userData.scale || 1;
@@ -5556,12 +5600,106 @@ function updateForcePreview() {
   _forcePreviewArrow.setDirection(dir);
 }
 function cancelForce() { S.pendingForce = null; clearForcePreview(); closeForceEditor(); }
+// ── Force placement mode (point / face / edge) ────────────────────────────────
+// 'point' is the clicked point plus an optional global offset. 'face'/'edge'
+// lean on the existing magnet snap (handleForceSnapHover) which already offers
+// face-centre and edge snapping via S.faceGroups; in those modes the offset is
+// inert and hidden. The chosen mode travels with the force (selectionMode) so it
+// can be replayed on edit and the server can report it.
+function setForceSelectionMode(mode) {
+  if (!S.pendingForce) return;
+  S.pendingForce.selectionMode = mode;
+  document.querySelectorAll('.sel-mode-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.selmode === mode));
+  const offSec = document.getElementById('force-offset-section');
+  if (offSec) offSec.style.display = mode === 'point' ? 'block' : 'none';
+  const hint = document.getElementById('fp-selmode-hint');
+  if (hint) hint.textContent = mode === 'face'
+    ? 'Hover a face and click — the load snaps to the face centre.'
+    : mode === 'edge'
+      ? 'Hover an edge and click — the load snaps to the edge.'
+      : 'Click the model — the load is applied where you place it, over a contact patch.';
+  if (mode === 'point') validateForceOffset();
+}
+
+// Read the three offset inputs into a [dx,dy,dz] array (0 when blank/NaN).
+function getForceOffsetFromInputs() {
+  const rd = id => { const v = parseFloat(document.getElementById(id)?.value); return Number.isFinite(v) ? v : 0; };
+  return [rd('fp-offset-x'), rd('fp-offset-y'), rd('fp-offset-z')];
+}
+
+// Validate that clicked-point + offset lands inside the part bounding box.
+// Returns true when valid; paints a warning and disables Add Force otherwise.
+// Only enforced in 'point' mode (the only mode that reads offset).
+function validateForceOffset() {
+  const warnEl = document.getElementById('fp-offset-warning');
+  const addBtn = document.getElementById('fp-add-btn');
+  const clearWarn = () => {
+    if (warnEl) warnEl.style.display = 'none';
+    ['fp-offset-x','fp-offset-y','fp-offset-z'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.style.borderColor = '';
+    });
+    if (addBtn) addBtn.disabled = false;
+  };
+  if (!S.pendingForce || (S.pendingForce.selectionMode ?? 'point') !== 'point') { clearWarn(); return true; }
+  const b = S.fileData?.bounds;
+  const pos = S.pendingForce.position;
+  if (!b || !Array.isArray(pos)) { clearWarn(); return true; }
+  const [ox, oy, oz] = getForceOffsetFromInputs();
+  const fx = pos[0] + ox, fy = pos[1] + oy, fz = pos[2] + oz;
+  const eps = 1e-6;
+  const inBox = fx >= b.minX - eps && fx <= b.maxX + eps &&
+                fy >= b.minY - eps && fy <= b.maxY + eps &&
+                fz >= b.minZ - eps && fz <= b.maxZ + eps;
+  if (!inBox) {
+    if (warnEl) {
+      warnEl.textContent = 'Offset moves the point outside the part bounding box — it will be clamped to the box.';
+      warnEl.style.display = 'block';
+    }
+    ['fp-offset-x','fp-offset-y','fp-offset-z'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.style.borderColor = 'var(--warn)';
+    });
+    // A clamp is recoverable (the server snaps to the box), so warn but don't block.
+    if (addBtn) addBtn.disabled = false;
+    return false;
+  }
+  clearWarn();
+  return true;
+}
+
+// Called on every offset input edit — revalidate and move the preview arrow.
+// Rebuild (not just re-aim) the arrow so it sits at the offset point.
+function onForceOffsetInput() {
+  if (S.pendingForce) S.pendingForce.offset = getForceOffsetFromInputs();
+  validateForceOffset();
+  showForcePreview();
+}
+
+// The effective application point actually loaded: clicked point + offset
+// (point mode only), clamped to the bounding box — mirrors the server so the
+// preview arrow shows where the load really lands.
+function effectiveForcePoint(pos, selectionMode, offset) {
+  if ((selectionMode ?? 'point') !== 'point' || !offset) return pos;
+  if (offset[0] === 0 && offset[1] === 0 && offset[2] === 0) return pos;
+  const b = S.fileData?.bounds;
+  const p = [pos[0] + offset[0], pos[1] + offset[1], pos[2] + offset[2]];
+  if (!b) return p;
+  return [
+    Math.max(b.minX, Math.min(b.maxX, p[0])),
+    Math.max(b.minY, Math.min(b.maxY, p[1])),
+    Math.max(b.minZ, Math.min(b.maxZ, p[2])),
+  ];
+}
+
 function confirmForce() {
   clearForcePreview();
   dispatchStateChange();
   if (!S.pendingForce) return;
   const mag = +document.getElementById('fp-mag').value || 500;
   const dist = document.getElementById('fp-bearing-dist').value || 'uniform';
+  const selMode = S.pendingForce.selectionMode ?? 'point';
+  const offset = selMode === 'point' ? getForceOffsetFromInputs() : [0, 0, 0];
+  const hasOffset = offset[0] !== 0 || offset[1] !== 0 || offset[2] !== 0;
 
   // If editing an existing force, replace it
   if (S.pendingForce.editIndex !== undefined) {
@@ -5571,6 +5709,8 @@ function confirmForce() {
       magnitude: mag,
       label:     S.forces[S.pendingForce.editIndex].label,
       loadDistribution: dist,
+      selectionMode: selMode,
+      ...(hasOffset ? { offset } : {}),
     };
   } else {
     const force = {
@@ -5579,6 +5719,8 @@ function confirmForce() {
       magnitude: mag,
       label:     `F${S.forces.length + 1}`,
       loadDistribution: dist,
+      selectionMode: selMode,
+      ...(hasOffset ? { offset } : {}),
     };
     pushUndoSnapshot();
     S.forces.push(force);
@@ -5700,6 +5842,19 @@ function updateBoltList() {
   `).join('');
 }
 
+// Compact placement descriptor for a force list row: the selection mode, and
+// the offset vector when a point force carries one. Empty for a plain point.
+function forcePlacementBadge(f) {
+  const mode = f.selectionMode ?? 'point';
+  if (mode === 'face') return ' · <span style="color:var(--text-lo)">face</span>';
+  if (mode === 'edge') return ' · <span style="color:var(--text-lo)">edge</span>';
+  if (f.offset && (f.offset[0] || f.offset[1] || f.offset[2])) {
+    const s = f.offset.map(v => (+v).toFixed(1)).join(', ');
+    return ` · <span style="color:var(--text-lo)">off [${s}]</span>`;
+  }
+  return '';
+}
+
 function updateForceList() {
   const el = document.getElementById('force-list');
   document.getElementById('badge-forces').innerHTML = `<svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> ${S.forces.length} force${S.forces.length!==1?'s':''}`;
@@ -5729,7 +5884,7 @@ function updateForceList() {
   el.innerHTML = resultantHtml + S.forces.map((f,i) => `
     <div class="card" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--gold-faint);border:1px solid var(--gold)18;border-radius:3px;margin-bottom:6px">
       <div style="width:8px;height:8px;border-radius:50%;background:var(--gold);flex-shrink:0"></div>
-      <div style="flex:1;font-size:10px;color:var(--gold)aa">${f.label} · ${U.forceStr(f.magnitude)} · ${dirLabel(f.direction)}${f._replaceRecommended ? ' <span style="color:var(--warn,#e0a030)">re-place recommended</span>' : ''}</div>
+      <div style="flex:1;font-size:10px;color:var(--gold)aa">${f.label} · ${U.forceStr(f.magnitude)} · ${dirLabel(f.direction)}${forcePlacementBadge(f)}${f._replaceRecommended ? ' <span style="color:var(--warn,#e0a030)">re-place recommended</span>' : ''}</div>
       <button class="btn" style="padding:2px 8px;font-size:11px" onclick="editForce(${i})" aria-label="Edit force"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 2 L8 3.5 L3.5 8 L1.5 8.5 L2 6.5 Z"/><line x1="5.5" y1="3" x2="7" y2="4.5"/></svg></button>
       <button class="btn" style="padding:2px 8px;font-size:11px" onclick="removeForce(${i})" aria-label="Remove force"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg></button>
     </div>
@@ -5833,8 +5988,14 @@ function toggleBoltFromList(holeId) {
 function editForce(i) {
   const f = S.forces[i];
   if (!f) return;
-  S.pendingForce = { position: f.position, editIndex: i };
+  const selMode = f.selectionMode ?? 'point';
+  const offset = f.offset ?? [0, 0, 0];
+  S.pendingForce = { position: f.position, editIndex: i, selectionMode: selMode, offset: offset.slice() };
   S.pendingDir   = f.direction.slice();  // stored model-frame direction
+  // Restore offset inputs and placement mode before showing the editor.
+  const setOff = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  setOff('fp-offset-x', offset[0]); setOff('fp-offset-y', offset[1]); setOff('fp-offset-z', offset[2]);
+  setForceSelectionMode(selMode);
   // Recover the bed-frame pick from the stored model-frame direction so the
   // editor shows and highlights the direction the way the user set it.
   const bedVec = mesh3d ? modelDirToBed(new THREE.Vector3(...f.direction)) : new THREE.Vector3(...f.direction);
@@ -5896,6 +6057,8 @@ function _cloneConstraints() {
       magnitude: f.magnitude,
       label:     f.label,
       loadDistribution: f.loadDistribution,
+      ...(f.selectionMode ? { selectionMode: f.selectionMode } : {}),
+      ...(f.offset ? { offset: [...f.offset] } : {}),
     })),
   };
 }
@@ -9935,6 +10098,8 @@ function buildAnalyseBody(quality, opts) {
       direction:f.direction,
       position:f.position,
       ...(f.loadDistribution ? { loadDistribution: f.loadDistribution } : {}),
+      ...(f.selectionMode ? { selectionMode: f.selectionMode } : {}),
+      ...(f.offset && (f.offset[0] || f.offset[1] || f.offset[2]) ? { offset: f.offset } : {}),
     })),
     // Print settings — the physical part (material + slicer parameters).
     print: {
@@ -12143,8 +12308,8 @@ function applyLoadCase(caseId) {
   document.getElementById('fp-face').value = face;
   setDirFromFace(face);
 
-  // Open the popup
-  openForcePopupDirect();
+  // Open the docked editor
+  openForceEditorDirect();
 
   // Show load case note
   document.getElementById('fp-dir-display').textContent =
@@ -12308,6 +12473,9 @@ async function saveSession() {
       direction:  f.direction,
       position:   f.position,
       label:      f.label,
+      ...(f.loadDistribution ? { loadDistribution: f.loadDistribution } : {}),
+      ...(f.selectionMode ? { selectionMode: f.selectionMode } : {}),
+      ...(f.offset ? { offset: f.offset } : {}),
     })),
     print: {
       materialId:    document.getElementById('s-material')?.value,
