@@ -3552,7 +3552,7 @@ function refreshUnitsDisplay() {
   // Force list
   updateForceList();
   // Results panel — re-render if results exist
-  if (S.results) showResults(S.results);
+  if (S.results && S.results.summary) showResults(S.results.summary);
   // File info dimensions
   if (S.fileData && S.fileData.dimensions) updateFileInfo();
 }
@@ -8324,6 +8324,14 @@ function switchTab(name) {
   }
   // Pause deflection/mode animation when the viewer isn't the focus.
   if (name !== 'results' && S.deformAnimating) { _stopDeformAnim(); _syncDeformUI(); }
+  // The convergence graph canvas draws at its layout size, which is 0 while
+  // 'tab-results' is display:none — if the analysis finished on another tab,
+  // the canvas was never actually painted. Re-render on arrival so it isn't
+  // permanently blank.
+  const resultsSummary = S.results && S.results.summary;
+  if (name === 'results' && resultsSummary && resultsSummary.residualCheckpoints && resultsSummary.residualCheckpoints.length > 0) {
+    setTimeout(() => renderConvergenceGraph(resultsSummary.residualCheckpoints), 0);
+  }
 }
 
 // ─── Overlay helpers ──────────────────────────────────────────────────────────
