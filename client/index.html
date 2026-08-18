@@ -5082,7 +5082,20 @@ function handleStressHover(e) {
 
   const panel = document.getElementById('stress-readout');
   const panelText = document.getElementById('stress-readout-text');
-  if (panel && panelText) { panel.style.display = 'block'; panelText.textContent = text; }
+  if (panel && panelText) {
+    // Anchor below the toolbar's actual bottom edge rather than a fixed
+    // top offset: the toolbar wraps to a second row once enough mode buttons
+    // are shown (DEFORM/SECTION after a solve), and a hard-coded top made the
+    // readout land on top of that wrapped row. Both share the viewer's
+    // offset parent, so offsetTop + offsetHeight gives the toolbar's bottom in
+    // the same coordinate space.
+    const toolbar = document.getElementById('toolbar');
+    if (toolbar && toolbar.offsetParent) {
+      panel.style.top = (toolbar.offsetTop + toolbar.offsetHeight + 8) + 'px';
+    }
+    panel.style.display = 'block';
+    panelText.textContent = text;
+  }
 
   const tip = document.getElementById('stress-tooltip');
   const tipText = document.getElementById('stress-tooltip-text');
