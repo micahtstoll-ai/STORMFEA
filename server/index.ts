@@ -353,7 +353,7 @@ app.post("/api/analyse", async (req, res) => {
       useCLT:          body.analysis?.useCLT === true,
       ...(body.analysis?.beadProps ? { beadProps: body.analysis.beadProps } : {}),
       ...(body.analysis?.criterion ? { criterion: body.analysis.criterion } : {}),
-      twoRegion:       body.analysis?.twoRegion === true,
+      twoRegion:       body.analysis?.twoRegion !== false,
       // Opt-in symmetry-preserving meshing (issue #296, surfaced by #309).
       // Strict `=== true` like the other opt-in flags: absent means the
       // ordinary mesh, and the extra detect-plus-half mesh is only paid when
