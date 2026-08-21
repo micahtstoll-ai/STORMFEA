@@ -1609,13 +1609,17 @@ body:not(.has-results) #btn-stress { display: none !important; }
           <div id="fp-dir-display" style="font-size:11px;color:var(--text-label);margin-bottom:10px">Direction: +Z · bed frame (Z↑)</div>
           <div style="margin-bottom:10px">
             <label for="fp-bearing-dist" style="font-size:11px">Load distribution</label>
-            <select id="fp-bearing-dist" style="width:100%;font-size:11px;margin-top:4px">
-              <option value="contact_patch">Contact patch at this point (default)</option>
-              <option value="tapered_patch">Tapered band (whole face)</option>
-              <option value="cosine_bearing">Cosine (bearing point)</option>
-              <option value="uniform">Uniform across face (legacy)</option>
+            <select id="fp-bearing-dist" style="width:100%;font-size:11px;margin-top:4px" onchange="updateLoadDistributionHint()">
+              <option value="contact_patch">At the point I clicked (recommended)</option>
+              <option value="tapered_patch">Spread across the whole face</option>
+              <option value="cosine_bearing">Concentrated, like a bolt or pin</option>
+              <option value="uniform">Evenly across the whole face (legacy)</option>
             </select>
-            <div style="font-size:9px;color:var(--text-lo);margin-top:4px">Contact patch (default): applies the load <em>where you placed the arrow</em>, over a patch that fades to zero at its edge. Tapered band: spreads it across the whole face toward the load direction, fading at the edges — use when the load really is carried by the whole face. Cosine: concentrated at a bolt bearing point, realistic for bolt pull-through. Uniform (legacy): the pre-2026 behaviour — the whole face, with a hard edge that makes peak stress mesh-dependent. The legacy options ignore where you placed the arrow and use only its direction.</div>
+            <div id="fp-dist-hint" style="font-size:9px;color:var(--text-lo);margin-top:4px">Best for most loads — a finger, foot, pad, or point contact pressing at the spot you picked.</div>
+            <details style="font-size:9px;color:var(--text-lo);margin-top:6px">
+              <summary style="cursor:pointer">How load distribution works</summary>
+              <div style="margin-top:4px">Contact patch (default): applies the load <em>where you placed the arrow</em>, over a patch that fades to zero at its edge. Tapered band: spreads it across the whole face toward the load direction, fading at the edges — use when the load really is carried by the whole face. Cosine: concentrated at a bolt bearing point, realistic for bolt pull-through. Uniform (legacy): the pre-2026 behaviour — the whole face, with a hard edge that makes peak stress mesh-dependent. The legacy options ignore where you placed the arrow and use only its direction.</div>
+            </details>
           </div>
           <div style="display:flex;gap:6px">
             <button class="btn primary" id="fp-add-btn" style="flex:1" onclick="confirmForce()">Add Force</button>
@@ -5635,6 +5639,21 @@ function setForceSelectionMode(mode) {
   if (mode === 'point') validateForceOffset();
 }
 
+// One-line, plain-language gloss for the current Load distribution choice —
+// lets the user pick without first reading the "How load distribution works"
+// disclosure below the select (that text stays as the full explanation).
+const LOAD_DIST_HINTS = {
+  contact_patch: 'Best for most loads — a finger, foot, pad, or point contact pressing at the spot you picked.',
+  tapered_patch: 'Best when the load is genuinely carried by the entire face, not one spot.',
+  cosine_bearing: 'Best for a bolt or pin bearing against a hole — heaviest in the middle, lighter at the edges.',
+  uniform: 'Older method: spreads the load evenly with a hard edge. Ignores where you clicked.',
+};
+function updateLoadDistributionHint() {
+  const sel = document.getElementById('fp-bearing-dist');
+  const hint = document.getElementById('fp-dist-hint');
+  if (sel && hint) hint.textContent = LOAD_DIST_HINTS[sel.value] || LOAD_DIST_HINTS.contact_patch;
+}
+
 // Read the three offset inputs into a [dx,dy,dz] array (0 when blank/NaN).
 function getForceOffsetFromInputs() {
   const rd = id => { const v = parseFloat(document.getElementById(id)?.value); return Number.isFinite(v) ? v : 0; };
@@ -6016,6 +6035,7 @@ function editForce(i) {
   S.pendingDirBed = bedRounded;
   document.getElementById('fp-mag').value = f.magnitude;
   document.getElementById('fp-bearing-dist').value = f.loadDistribution || 'contact_patch';
+  updateLoadDistributionHint();
   document.getElementById('fp-dir-display').textContent =
     'Direction: ' + bedDirLabel(f.direction) + ' · bed frame (Z↑)';
   // Highlight the active direction button (buttons are labelled in bed frame)
