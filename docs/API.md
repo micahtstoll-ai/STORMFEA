@@ -357,6 +357,17 @@ a single solve — see [Adaptive refinement](#adaptive-refinement).
    so a mid-solve failure arrives as an `error` EVENT, not a status code; only
    pre-solve rejections (`400`/`503`) come back as an ordinary JSON error.
 
+**Timeouts are events, not silence (issue #347).** A stream ending with neither
+a `result` nor an `error` event means one thing only: the client closed the
+connection (Cancel, or the tab going away). The server's own hang guard sends
+`error` with `{ error, hint, timedOut: true, timeoutMs }` and THEN ends the
+stream, so a caller can tell a timeout from its own cancel — `timedOut` is the
+flag to key on. The guard covers the whole pipeline (meshing, assembly, solve,
+recovery, mapping) and defaults to the CG solver's own wall-clock deadline plus
+a 5-minute margin, i.e. 900 000 ms; set `STORMFEA_ANALYSE_TIMEOUT_MS`
+(milliseconds) before starting the server to override it. The same budget
+bounds the blocking JSON mode, which reports a timeout as a `500` envelope.
+
 **Response payload.** Top level:
 
 ```json

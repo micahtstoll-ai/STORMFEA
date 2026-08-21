@@ -25,6 +25,7 @@ import { MATERIALS, layerHeightFactor, literatureYieldZRatio } from "./analysis.
 import type { ForceSpec, PrintSettings, AnalysisSettings, AnalysisResult } from "./analysis.js";
 import { expect as expectShape, ValidationError } from "./validate.js";
 import type { Spec } from "./validate.js";
+import { analyseTimeoutMs, createAnalyseStreamGuard } from "./analyse_stream.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app    = express();
@@ -373,7 +374,10 @@ app.post("/api/analyse", async (req, res) => {
     console.log(`[analyse] fileType=${body.fileType} bolts=[${body.boltHoleIds}] forces=${body.forces.length} mesh=${analysis.meshQuality}`);
 
     // ── Assemble runAnalysis arguments (shared by both response modes) ──────────
-    const ANALYSE_TIMEOUT_MS = 120_000;
+    // Hang guard for the whole pipeline. Reconciled with the CG solver's own
+    // wall-clock backstop in issue #347 — see server/analyse_stream.ts for why
+    // it is derived from CG_DEADLINE_DEFAULT_MS instead of being a flat number.
+    const ANALYSE_TIMEOUT_MS = analyseTimeoutMs();
     const runArgs = {
       positions,
       stepBuffer,
@@ -533,45 +537,47 @@ app.post("/api/analyse", async (req, res) => {
       res.setHeader("X-Accel-Buffering", "no");   // disable proxy buffering
       res.flushHeaders?.();
 
-      const ac = new AbortController();
-      let aborted = false;
-      const abort = (why: string): void => {
-        if (aborted) return;
-        aborted = true;
-        ac.abort();
-        console.log(`[analyse:sse] ${why} — aborting solve`);
-      };
-      // Detect a real client disconnect via the RESPONSE 'close' event, not
-      // req 'close': in Node 18+ the request stream emits 'close' as soon as its
-      // body has been fully consumed (which express.json already did), which
-      // would fire a false abort immediately. res 'close' only fires when the
-      // connection actually goes away; if that happens before we res.end(), the
-      // client is gone (tab closed / Cancel) and we abort the solve.
-      res.on("close", () => { if (!res.writableEnded) abort("client disconnected"); });
-      const timeoutId = setTimeout(
-        () => abort(`timed out after ${ANALYSE_TIMEOUT_MS / 1000}s`),
-        ANALYSE_TIMEOUT_MS,
-      );
-
       const sse = (event: string, data: unknown): void => {
         if (res.writableEnded) return;
         res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
       };
 
+      // Abort bookkeeping (issue #347): a hang-guard timeout and a client
+      // disconnect are different events and must look different on the wire —
+      // the timeout sends a `timedOut`-tagged error event, the disconnect stays
+      // silent. See server/analyse_stream.ts.
+      const guard = createAnalyseStreamGuard({
+        sse,
+        end:       () => { if (!res.writableEnded) res.end(); },
+        timeoutMs: ANALYSE_TIMEOUT_MS,
+      });
+      // Detect a real client disconnect via the RESPONSE 'close' event, not
+      // req 'close': in Node 18+ the request stream emits 'close' as soon as its
+      // body has been fully consumed (which express.json already did), which
+      // would fire a false abort immediately. res 'close' only fires when the
+      // connection actually goes away; if that happens before we res.end(), the
+      // client is gone (tab closed / Cancel) and we abort the solve. The
+      // writableEnded check also keeps the timeout path — which ends the stream
+      // itself — from being reclassified as a disconnect.
+      res.on("close", () => { if (!res.writableEnded) guard.clientGone(); });
+
       try {
         const result = await runSolve({
           ...runArgs,
-          signal:  ac.signal,
+          signal:  guard.signal,
           onPhase: (ev) => sse("phase", ev),
         });
-        clearTimeout(timeoutId);
+        guard.settle();
         console.log(`[analyse:sse] done in ${result.solverMs}ms: maxVM=${result.maxVonMisesMPa.toFixed(2)}MPa converged=${result.converged}`);
         sse("result", buildPayload(result));
         if (!res.writableEnded) res.end();
       } catch (err) {
-        clearTimeout(timeoutId);
-        if (aborted || err instanceof AnalysisAbortError || (err as { name?: string })?.name === "AnalysisAbortError") {
-          console.log("[analyse:sse] solve aborted before completion — no result sent");
+        guard.settle();
+        const abortedBy = guard.abortedBy();
+        if (abortedBy !== null || err instanceof AnalysisAbortError || (err as { name?: string })?.name === "AnalysisAbortError") {
+          console.log(abortedBy === "timeout"
+            ? "[analyse:sse] solve abandoned after timeout — error event already sent"
+            : "[analyse:sse] solve aborted before completion — no result sent");
           if (!res.writableEnded) res.end();
           return;
         }
@@ -587,9 +593,11 @@ app.post("/api/analyse", async (req, res) => {
     // ── Blocking JSON mode (default; backward compatible) ───────────────────────
     // runAnalysis is synchronous/CPU-bound for the PCG solve, so Promise.race
     // cannot interrupt it mid-loop. The real hang-prevention is the 5 000-
-    // iteration cap in cg.ts; this timeout catches the async parts (TetGen/Gmsh
-    // subprocess calls, file I/O) so a stalled binary yields an error response
-    // instead of an open connection.
+    // iteration cap and the wall-clock deadline in cg.ts; this timeout catches
+    // the async parts (TetGen/Gmsh subprocess calls, file I/O) so a stalled
+    // binary yields an error response instead of an open connection. It shares
+    // ANALYSE_TIMEOUT_MS with the SSE path, so it too now sits above the CG
+    // deadline rather than preempting it (issue #347).
     const timeoutPromise = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error(
         `Solver timed out after ${ANALYSE_TIMEOUT_MS / 1000}s. ` +
