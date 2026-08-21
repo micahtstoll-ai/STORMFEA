@@ -3129,14 +3129,36 @@ document.addEventListener('mouseup', e => {
   mouse.down = false;
   if (wasClick && e.button === 0 && e.target.closest('#viewer')) handleClick(e);
 });
+// Wheel-driven zoom delta (issue #343). A trackpad/touchpad pinch gesture is
+// delivered to the browser as a synthetic 'wheel' event with ctrlKey: true --
+// the standard cross-browser convention (Chrome, Firefox, Safari) for "this
+// is a pinch, not a scroll", regardless of host OS. Pinch deltaY comes from
+// the browser's own gesture-to-wheel synthesis and runs on a different scale
+// than a real mouse-wheel notch or two-finger scroll, so it gets its own
+// multiplier rather than reusing the scroll-wheel constant (0.005). 0.02 (4x
+// the scroll constant) is chosen to land in a comparable perceived-zoom-speed
+// ballpark to plain scroll-wheel zoom, since a pinch gesture typically reports
+// a smaller deltaY per unit of intended zoom than a wheel notch does. This is
+// a UX tuning value with no physical derivation -- it is isolated here so it
+// can be retuned in one place against real trackpad feedback without touching
+// the event-handling logic around it.
+function zoomWheelDelta(deltaY, ctrlKey) {
+  return deltaY * (ctrlKey ? 0.02 : 0.005);
+}
 document.getElementById('viewer').addEventListener('wheel', e => {
+  // Pinch (ctrlKey) must not also trigger the browser's native page-zoom --
+  // preventDefault requires a non-passive listener, which is why this
+  // listener is no longer { passive: true }. Plain scroll-wheel zoom below is
+  // untouched: no preventDefault, so its default (no-op) browser behavior is
+  // unchanged from before this fix.
+  if (e.ctrlKey) e.preventDefault();
   // Clamp zoom so camera can never reach the mesh surface
   // partSize is in scene units (mesh longest dim ≈ 1.6). Min = 60% keeps camera outside.
   const zoomMin = S._partSize ? S._partSize * 0.6 : 0.5;
   const zoomMax = S._partSize ? S._partSize * 8.0 : 20;
-  zoom = Math.max(zoomMin, Math.min(zoomMax, zoom + e.deltaY * 0.005));
+  zoom = Math.max(zoomMin, Math.min(zoomMax, zoom + zoomWheelDelta(e.deltaY, e.ctrlKey)));
   updateCamera();
-}, { passive: true });
+}, { passive: false });
 
 document.getElementById('viewer').addEventListener('mouseleave', () => {
   clearStressHover();

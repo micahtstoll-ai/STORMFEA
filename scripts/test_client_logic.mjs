@@ -2034,6 +2034,51 @@ console.log('\n[Z] Force placement — offset clamping, validation, list badge')
   test('validation is a no-op for non-point selection',
     validateForceOffset() === true);}
 
+console.log('\n[AA] zoomWheelDelta — pinch (ctrlKey) vs plain scroll-wheel zoom (#343)');
+{
+  // Brace-matched extraction (same technique as group [Z]): grab the whole
+  // `function zoomWheelDelta(...) { ... }` body regardless of what follows it.
+  const start = html.indexOf('function zoomWheelDelta(');
+  if (start < 0) throw new Error('Could not find function zoomWheelDelta');
+  let i = html.indexOf('{', start), depth = 0;
+  for (; i < html.length; i++) {
+    const ch = html[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') { depth--; if (depth === 0) { i++; break; } }
+  }
+  const src = html.slice(start, i);
+
+  const mod = { exports: {} };
+  new Function('module', 'exports', src + '\nmodule.exports = { zoomWheelDelta };')(mod, mod.exports);
+  const { zoomWheelDelta } = mod.exports;
+
+  // Plain scroll wheel (no ctrlKey) must reproduce the pre-#343 constant
+  // exactly -- issue #343 requires the scroll path stay byte-for-byte the
+  // same, since the user confirmed scroll-wheel zoom already works well.
+  test('plain wheel uses the 0.005 scroll constant',
+    zoomWheelDelta(100, false) === 0.5);
+  test('plain wheel with ctrlKey absent (undefined) also uses 0.005',
+    zoomWheelDelta(-40, undefined) === -0.2);
+
+  // Pinch (ctrlKey: true) must use a distinct, larger multiplier -- not the
+  // flat 0.005 reused for scroll -- since pinch deltaY is on a different
+  // scale (root cause of the reported inconsistent-speed symptom).
+  test('ctrlKey wheel (pinch) uses a different constant than plain wheel',
+    zoomWheelDelta(100, true) !== zoomWheelDelta(100, false));
+  test('ctrlKey wheel (pinch) uses the 0.02 constant',
+    zoomWheelDelta(100, true) === 2);
+  test('pinch sensitivity is a positive multiple of scroll sensitivity (comparable speed, not silent or inverted)',
+    zoomWheelDelta(100, true) / zoomWheelDelta(100, false) === 4);
+
+  // Sign is preserved either way -- zooming out (positive deltaY convention
+  // used elsewhere in this handler) vs zooming in behaves the same for both
+  // gesture types, just scaled.
+  test('sign of deltaY is preserved for plain wheel',
+    zoomWheelDelta(-50, false) < 0);
+  test('sign of deltaY is preserved for pinch',
+    zoomWheelDelta(-50, true) < 0);
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 
