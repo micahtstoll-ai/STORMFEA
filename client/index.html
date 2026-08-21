@@ -1011,6 +1011,26 @@ body:not(.has-results) #btn-stress { display: none !important; }
     <div style="font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo);margin-top:5px;line-height:1.5">Linked: both halves rotate together.</div>
   </div>
 
+  <!-- Bed dimensions -->
+  <div style="border-top:1px solid var(--border);padding-top:10px;padding-bottom:10px">
+    <div style="font-family:'Outfit',sans-serif;font-size:var(--text-sm);color:var(--text-label);letter-spacing:.06em;margin-bottom:6px">BED DIMENSIONS</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
+      <label style="display:flex;flex-direction:column;gap:2px;font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo)">X
+        <input type="number" id="bed-dim-x" min="1" step="1" value="256" onchange="setBedDimension('x', this.value)"
+          style="width:100%;background:var(--bg-base);border:1px solid var(--border);border-radius:2px;color:var(--text-hi);font-family:'DM Mono',monospace;font-size:var(--text-sm);padding:3px 4px">
+      </label>
+      <label style="display:flex;flex-direction:column;gap:2px;font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo)">Y
+        <input type="number" id="bed-dim-y" min="1" step="1" value="256" onchange="setBedDimension('y', this.value)"
+          style="width:100%;background:var(--bg-base);border:1px solid var(--border);border-radius:2px;color:var(--text-hi);font-family:'DM Mono',monospace;font-size:var(--text-sm);padding:3px 4px">
+      </label>
+      <label style="display:flex;flex-direction:column;gap:2px;font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo)">Z
+        <input type="number" id="bed-dim-z" min="1" step="1" value="256" onchange="setBedDimension('z', this.value)"
+          style="width:100%;background:var(--bg-base);border:1px solid var(--border);border-radius:2px;color:var(--text-hi);font-family:'DM Mono',monospace;font-size:var(--text-sm);padding:3px 4px">
+      </label>
+    </div>
+    <div style="font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo);margin-top:5px;line-height:1.5">Build volume in mm, e.g. 256 for common FDM printers. Outlines the print bed in the viewer; the outline turns red if the part exceeds it.</div>
+  </div>
+
   <!-- Methodology PDF -->
   <div style="border-top:1px solid var(--border);padding-top:10px">
     <button class="btn" onclick="window.open('/api/methodology','_blank');togglePrefsPanel()"
@@ -3364,6 +3384,26 @@ function updateLegendSwatches() {
 (function() {
   S.colormap = localStorage.getItem('sf-colormap') || 'viridis';
 })();
+
+// ─── Print-bed dimensions (build volume) ─────────────────────────────────────
+// User-configured preference only — not sent to the solver. X/Y are the bed
+// footprint (mm), Z is build height (mm). Default 256x256x256 matches common
+// FDM printers (e.g. Bambu X1, Prusa XL). Drawn to true scale by
+// updateBedFootprint() using mesh3d.userData.scale (see loadMeshFromPositions).
+(function() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem('sf-bed-dimensions')); } catch (e) {}
+  const valid = saved && ['x','y','z'].every(k => isFinite(saved[k]) && saved[k] > 0);
+  S.bedDimensions = valid ? saved : { x: 256, y: 256, z: 256 };
+})();
+
+function setBedDimension(axis, value) {
+  const v = parseFloat(value);
+  if (!isFinite(v) || v <= 0) return;
+  S.bedDimensions = Object.assign({}, S.bedDimensions, { [axis]: v });
+  localStorage.setItem('sf-bed-dimensions', JSON.stringify(S.bedDimensions));
+  updateBedFootprint();
+}
 // ─── Unit system ──────────────────────────────────────────────────────────────
 // S.units: 'si' | 'imperial'
 // All internal values stay in SI (N, mm, MPa). These helpers convert for display only.
@@ -9339,7 +9379,49 @@ function showBedPlane() {
   S.bedMesh.visible = document.documentElement.getAttribute('data-theme') === 'dark';
   scene.add(S.bedMesh);
 
+  updateBedFootprint();
   showLayerLines();
+}
+
+// ─── Print-bed footprint outline (user-configured build volume) ─────────────
+// Independent of the permanent GRID_SIZE grid (scene-normalized, not real mm)
+// and of the part-proportional shadow plane above: this draws the ACTUAL
+// configured bed footprint (S.bedDimensions.x by .y, mm) to true scale using
+// mesh3d.userData.scale, the real-mm-to-scene-units factor set at load time.
+// Turns from amber to danger-red if the part's world-space X/Z extent exceeds it.
+function updateBedFootprint() {
+  if (scene._bedFootprint) {
+    scene.remove(scene._bedFootprint);
+    scene._bedFootprint.geometry.dispose();
+    scene._bedFootprint.material.dispose();
+    scene._bedFootprint = null;
+  }
+  if (!mesh3d || !mesh3d.userData.scale) return;
+
+  const dims = S.bedDimensions;
+  const sx = dims.x * mesh3d.userData.scale;
+  const sz = dims.y * mesh3d.userData.scale;
+  const hx = sx / 2, hz = sz / 2;
+
+  const pts = [
+    -hx, 0, -hz,   hx, 0, -hz,
+     hx, 0, -hz,   hx, 0,  hz,
+     hx, 0,  hz,  -hx, 0,  hz,
+    -hx, 0,  hz,  -hx, 0, -hz,
+  ];
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+
+  mesh3d.updateWorldMatrix(true, false);
+  const box = new THREE.Box3().setFromObject(mesh3d);
+  const fits = (box.max.x - box.min.x) <= sx + 1e-6 && (box.max.z - box.min.z) <= sz + 1e-6;
+
+  const mat = new THREE.LineBasicMaterial({ color: fits ? 0xD6862E : 0xC2452F });
+  const footprint = new THREE.LineSegments(geo, mat);
+  footprint.position.y = 0.001;
+  footprint.renderOrder = 2;
+  scene.add(footprint);
+  scene._bedFootprint = footprint;
 }
 
 // ─── Compute orientation multiplier ──────────────────────────────────────────
@@ -10303,6 +10385,10 @@ function togglePrefsPanel() {
     const ib = document.getElementById('split-rot-independent');
     if (lb) lb.classList.toggle('active', _splitLinkedRotation);
     if (ib) ib.classList.toggle('active', !_splitLinkedRotation);
+    ['x','y','z'].forEach(axis => {
+      const el = document.getElementById('bed-dim-' + axis);
+      if (el) el.value = S.bedDimensions[axis];
+    });
   }
 }
 
