@@ -786,8 +786,12 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <div class="sf-card-label">SOURCES</div>
     </button>
 
-    <!-- 6: PREFERENCES — fully wired -->
-    <button class="sf-nav-card" onclick="dismissLandingScreen(); togglePrefsPanel();"
+    <!-- 6: PREFERENCES — fully wired. Deliberately does NOT dismiss the landing
+         screen (unlike the other cards): preferences are a settings overlay,
+         not a workflow destination, so opening them should not drop the user
+         into the setup/solver tab. See togglePrefsPanel() for the landing-aware
+         z-index and the click-outside handler's exemption for this button. -->
+    <button id="prefs-btn-landing" class="sf-nav-card" onclick="togglePrefsPanel()"
       style="display:flex;align-items:center;gap:14px;
              padding:12px 18px;
              cursor:pointer;text-align:left;width:100%;
@@ -807,6 +811,104 @@ body:not(.has-results) #btn-stress { display: none !important; }
   </div>
 
   </div><!-- end content layer -->
+</div>
+<!-- Preferences panel — shown/hidden by gear icon in header -->
+<div id="prefs-panel" style="display:none;position:fixed;top:56px;right:12px;z-index:9999;
+      width:260px;background:var(--bg-panel);border:1px solid var(--border);
+      border-radius:4px;box-shadow:0 8px 24px rgba(0,0,0,.4);padding:14px 16px">
+
+  <div style="font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;letter-spacing:.10em;color:var(--gold);margin-bottom:12px">SETTINGS</div>
+
+  <!-- Accent colour -->
+  <!-- Heatmap colormap -->
+  <div style="border-top:1px solid var(--border);padding-top:10px;padding-bottom:10px">
+    <div style="font-family:'Outfit',sans-serif;font-size:var(--text-sm);color:var(--text-label);letter-spacing:.06em;margin-bottom:6px">HEATMAP</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0">
+      <button class="btn" id="cmap-btn-viridis" onclick="setColormap('viridis')"
+        style="font-size:var(--text-xs);padding:5px 4px;display:flex;flex-direction:column;align-items:center;gap:4px;border-radius:0">
+        <div style="width:100%;height:8px;border-radius:0;background:linear-gradient(90deg,rgb(68,1,84),rgb(49,104,142),rgb(33,145,140),rgb(94,201,98),rgb(253,231,37))"></div>
+        Viridis
+      </button>
+      <button class="btn" id="cmap-btn-plasma" onclick="setColormap('plasma')"
+        style="font-size:var(--text-xs);padding:5px 4px;display:flex;flex-direction:column;align-items:center;gap:4px;border-radius:0;margin-left:-1px">
+        <div style="width:100%;height:8px;border-radius:0;background:linear-gradient(90deg,rgb(13,8,135),rgb(126,3,168),rgb(204,38,127),rgb(248,118,46),rgb(240,249,33))"></div>
+        Plasma
+      </button>
+      <button class="btn" id="cmap-btn-rainbow" onclick="setColormap('rainbow')"
+        style="font-size:var(--text-xs);padding:5px 4px;display:flex;flex-direction:column;align-items:center;gap:4px;border-radius:0;margin-left:-1px">
+        <div style="width:100%;height:8px;border-radius:0;background:linear-gradient(90deg,rgb(20,51,217),rgb(0,191,217),rgb(26,209,51),rgb(255,209,0),rgb(255,26,13))"></div>
+        Rainbow
+      </button>
+    </div>
+    <div style="font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo);margin-top:5px;line-height:1.5">Viridis and Plasma are colorblind-safe.</div>
+  </div>
+
+  <!-- Units -->
+  <div style="border-top:1px solid var(--border);padding-top:10px;padding-bottom:10px">
+    <div style="font-family:'Outfit',sans-serif;font-size:var(--text-sm);color:var(--text-label);letter-spacing:.06em;margin-bottom:6px">UNITS</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
+      <button class="btn" id="units-btn-si" onclick="setUnits('si')" style="font-size:var(--text-sm);border-radius:0">
+        SI <span style="color:var(--text-lo)">N · mm</span>
+      </button>
+      <button class="btn" id="units-btn-imperial" onclick="setUnits('imperial')" style="font-size:var(--text-sm);border-radius:0;margin-left:-1px">
+        Imperial <span style="color:var(--text-lo)">lbf</span>
+      </button>
+    </div>
+    <div style="font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo);margin-top:5px;line-height:1.5">Display only — solver runs in SI.</div>
+  </div>
+
+  <!-- Split comparison rotation -->
+  <div style="border-top:1px solid var(--border);padding-top:10px;padding-bottom:10px">
+    <div style="font-family:'Outfit',sans-serif;font-size:var(--text-sm);color:var(--text-label);letter-spacing:.06em;margin-bottom:6px">SPLIT VIEW</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
+      <button class="btn" id="split-rot-linked" onclick="setSplitRotation(true)" style="font-size:var(--text-sm);border-radius:0">
+        Linked
+      </button>
+      <button class="btn" id="split-rot-independent" onclick="setSplitRotation(false)" style="font-size:var(--text-sm);border-radius:0;margin-left:-1px">
+        Independent
+      </button>
+    </div>
+    <div style="font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo);margin-top:5px;line-height:1.5">Linked: both halves rotate together.</div>
+  </div>
+
+  <!-- Bed dimensions -->
+  <div style="border-top:1px solid var(--border);padding-top:10px;padding-bottom:10px">
+    <div style="font-family:'Outfit',sans-serif;font-size:var(--text-sm);color:var(--text-label);letter-spacing:.06em;margin-bottom:6px">BED DIMENSIONS</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
+      <label style="display:flex;flex-direction:column;gap:2px;font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo)">X
+        <input type="number" id="bed-dim-x" min="1" step="1" value="256" oninput="setBedDimension('x', this.value)"
+          style="width:100%;background:var(--bg-base);border:1px solid var(--border);border-radius:2px;color:var(--text-hi);font-family:'DM Mono',monospace;font-size:var(--text-sm);padding:3px 4px">
+      </label>
+      <label style="display:flex;flex-direction:column;gap:2px;font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo)">Y
+        <input type="number" id="bed-dim-y" min="1" step="1" value="256" oninput="setBedDimension('y', this.value)"
+          style="width:100%;background:var(--bg-base);border:1px solid var(--border);border-radius:2px;color:var(--text-hi);font-family:'DM Mono',monospace;font-size:var(--text-sm);padding:3px 4px">
+      </label>
+      <label style="display:flex;flex-direction:column;gap:2px;font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo)">Z
+        <input type="number" id="bed-dim-z" min="1" step="1" value="256" oninput="setBedDimension('z', this.value)"
+          style="width:100%;background:var(--bg-base);border:1px solid var(--border);border-radius:2px;color:var(--text-hi);font-family:'DM Mono',monospace;font-size:var(--text-sm);padding:3px 4px">
+      </label>
+    </div>
+    <div style="font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo);margin-top:5px;line-height:1.5">Build volume in mm, e.g. 256 for common FDM printers. Outlines the print bed in the viewer; the outline turns red if the part exceeds it.</div>
+  </div>
+
+  <!-- Methodology PDF -->
+  <div style="border-top:1px solid var(--border);padding-top:10px">
+    <button class="btn" onclick="window.open('/api/methodology','_blank');togglePrefsPanel()"
+      style="width:100%;padding:7px;font-size:var(--text-sm);text-align:left;display:flex;align-items:center;gap:7px;border-radius:0">
+      <svg width="11" height="13" viewBox="0 0 12 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+        <rect x="1" y="1" width="10" height="12" rx="1.5"/>
+        <line x1="3.5" y1="4.5" x2="8.5" y2="4.5"/>
+        <line x1="3.5" y1="7" x2="8.5" y2="7"/>
+        <line x1="3.5" y1="9.5" x2="6.5" y2="9.5"/>
+      </svg>
+      Engineering Notebook PDF
+      <svg width="8" height="8" viewBox="0 0 9 9" style="margin-left:auto;flex-shrink:0" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><line x1="1" y1="8" x2="8" y2="1"/><polyline points="4,1 8,1 8,5"/></svg>
+    </button>
+  </div>
+  <!-- Cross-reference -->
+  <div style="border-top:1px solid var(--border);padding-top:8px;font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);text-align:center;line-height:1.6">
+    Audio feedback settings are in the PREFS tab · print &amp; solver settings in the MATERIAL tab.
+  </div>
 </div>
 
 <!-- APP SHELL — hidden until landing screen is dismissed -->
@@ -951,105 +1053,6 @@ body:not(.has-results) #btn-stress { display: none !important; }
     </div>
   </div>
 </header>
-
-<!-- Preferences panel — shown/hidden by gear icon in header -->
-<div id="prefs-panel" style="display:none;position:fixed;top:56px;right:12px;z-index:200;
-      width:260px;background:var(--bg-panel);border:1px solid var(--border);
-      border-radius:4px;box-shadow:0 8px 24px rgba(0,0,0,.4);padding:14px 16px">
-
-  <div style="font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;letter-spacing:.10em;color:var(--gold);margin-bottom:12px">SETTINGS</div>
-
-  <!-- Accent colour -->
-  <!-- Heatmap colormap -->
-  <div style="border-top:1px solid var(--border);padding-top:10px;padding-bottom:10px">
-    <div style="font-family:'Outfit',sans-serif;font-size:var(--text-sm);color:var(--text-label);letter-spacing:.06em;margin-bottom:6px">HEATMAP</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0">
-      <button class="btn" id="cmap-btn-viridis" onclick="setColormap('viridis')"
-        style="font-size:var(--text-xs);padding:5px 4px;display:flex;flex-direction:column;align-items:center;gap:4px;border-radius:0">
-        <div style="width:100%;height:8px;border-radius:0;background:linear-gradient(90deg,rgb(68,1,84),rgb(49,104,142),rgb(33,145,140),rgb(94,201,98),rgb(253,231,37))"></div>
-        Viridis
-      </button>
-      <button class="btn" id="cmap-btn-plasma" onclick="setColormap('plasma')"
-        style="font-size:var(--text-xs);padding:5px 4px;display:flex;flex-direction:column;align-items:center;gap:4px;border-radius:0;margin-left:-1px">
-        <div style="width:100%;height:8px;border-radius:0;background:linear-gradient(90deg,rgb(13,8,135),rgb(126,3,168),rgb(204,38,127),rgb(248,118,46),rgb(240,249,33))"></div>
-        Plasma
-      </button>
-      <button class="btn" id="cmap-btn-rainbow" onclick="setColormap('rainbow')"
-        style="font-size:var(--text-xs);padding:5px 4px;display:flex;flex-direction:column;align-items:center;gap:4px;border-radius:0;margin-left:-1px">
-        <div style="width:100%;height:8px;border-radius:0;background:linear-gradient(90deg,rgb(20,51,217),rgb(0,191,217),rgb(26,209,51),rgb(255,209,0),rgb(255,26,13))"></div>
-        Rainbow
-      </button>
-    </div>
-    <div style="font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo);margin-top:5px;line-height:1.5">Viridis and Plasma are colorblind-safe.</div>
-  </div>
-
-  <!-- Units -->
-  <div style="border-top:1px solid var(--border);padding-top:10px;padding-bottom:10px">
-    <div style="font-family:'Outfit',sans-serif;font-size:var(--text-sm);color:var(--text-label);letter-spacing:.06em;margin-bottom:6px">UNITS</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
-      <button class="btn" id="units-btn-si" onclick="setUnits('si')" style="font-size:var(--text-sm);border-radius:0">
-        SI <span style="color:var(--text-lo)">N · mm</span>
-      </button>
-      <button class="btn" id="units-btn-imperial" onclick="setUnits('imperial')" style="font-size:var(--text-sm);border-radius:0;margin-left:-1px">
-        Imperial <span style="color:var(--text-lo)">lbf</span>
-      </button>
-    </div>
-    <div style="font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo);margin-top:5px;line-height:1.5">Display only — solver runs in SI.</div>
-  </div>
-
-  <!-- Split comparison rotation -->
-  <div style="border-top:1px solid var(--border);padding-top:10px;padding-bottom:10px">
-    <div style="font-family:'Outfit',sans-serif;font-size:var(--text-sm);color:var(--text-label);letter-spacing:.06em;margin-bottom:6px">SPLIT VIEW</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
-      <button class="btn" id="split-rot-linked" onclick="setSplitRotation(true)" style="font-size:var(--text-sm);border-radius:0">
-        Linked
-      </button>
-      <button class="btn" id="split-rot-independent" onclick="setSplitRotation(false)" style="font-size:var(--text-sm);border-radius:0;margin-left:-1px">
-        Independent
-      </button>
-    </div>
-    <div style="font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo);margin-top:5px;line-height:1.5">Linked: both halves rotate together.</div>
-  </div>
-
-  <!-- Bed dimensions -->
-  <div style="border-top:1px solid var(--border);padding-top:10px;padding-bottom:10px">
-    <div style="font-family:'Outfit',sans-serif;font-size:var(--text-sm);color:var(--text-label);letter-spacing:.06em;margin-bottom:6px">BED DIMENSIONS</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
-      <label style="display:flex;flex-direction:column;gap:2px;font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo)">X
-        <input type="number" id="bed-dim-x" min="1" step="1" value="256" onchange="setBedDimension('x', this.value)"
-          style="width:100%;background:var(--bg-base);border:1px solid var(--border);border-radius:2px;color:var(--text-hi);font-family:'DM Mono',monospace;font-size:var(--text-sm);padding:3px 4px">
-      </label>
-      <label style="display:flex;flex-direction:column;gap:2px;font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo)">Y
-        <input type="number" id="bed-dim-y" min="1" step="1" value="256" onchange="setBedDimension('y', this.value)"
-          style="width:100%;background:var(--bg-base);border:1px solid var(--border);border-radius:2px;color:var(--text-hi);font-family:'DM Mono',monospace;font-size:var(--text-sm);padding:3px 4px">
-      </label>
-      <label style="display:flex;flex-direction:column;gap:2px;font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo)">Z
-        <input type="number" id="bed-dim-z" min="1" step="1" value="256" onchange="setBedDimension('z', this.value)"
-          style="width:100%;background:var(--bg-base);border:1px solid var(--border);border-radius:2px;color:var(--text-hi);font-family:'DM Mono',monospace;font-size:var(--text-sm);padding:3px 4px">
-      </label>
-    </div>
-    <div style="font-family:'DM Mono',monospace;font-size:var(--text-xs);color:var(--text-lo);margin-top:5px;line-height:1.5">Build volume in mm, e.g. 256 for common FDM printers. Outlines the print bed in the viewer; the outline turns red if the part exceeds it.</div>
-  </div>
-
-  <!-- Methodology PDF -->
-  <div style="border-top:1px solid var(--border);padding-top:10px">
-    <button class="btn" onclick="window.open('/api/methodology','_blank');togglePrefsPanel()"
-      style="width:100%;padding:7px;font-size:var(--text-sm);text-align:left;display:flex;align-items:center;gap:7px;border-radius:0">
-      <svg width="11" height="13" viewBox="0 0 12 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
-        <rect x="1" y="1" width="10" height="12" rx="1.5"/>
-        <line x1="3.5" y1="4.5" x2="8.5" y2="4.5"/>
-        <line x1="3.5" y1="7" x2="8.5" y2="7"/>
-        <line x1="3.5" y1="9.5" x2="6.5" y2="9.5"/>
-      </svg>
-      Engineering Notebook PDF
-      <svg width="8" height="8" viewBox="0 0 9 9" style="margin-left:auto;flex-shrink:0" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><line x1="1" y1="8" x2="8" y2="1"/><polyline points="4,1 8,1 8,5"/></svg>
-    </button>
-  </div>
-  <!-- Cross-reference -->
-  <div style="border-top:1px solid var(--border);padding-top:8px;font-family:'DM Mono',monospace;font-size:9px;color:var(--text-lo);text-align:center;line-height:1.6">
-    Audio feedback settings are in the PREFS tab · print &amp; solver settings in the MATERIAL tab.
-  </div>
-</div>
 
 <!-- WORKFLOW PROGRESS BAR -->
 <div id="workflow-progress-strip" style="display:none;height:3px;background:var(--border);position:relative;flex-shrink:0">
@@ -9383,25 +9386,62 @@ function showBedPlane() {
   showLayerLines();
 }
 
-// ─── Print-bed footprint outline (user-configured build volume) ─────────────
+// ─── Print-bed footprint (user-configured build volume) ─────────────────────
 // Independent of the permanent GRID_SIZE grid (scene-normalized, not real mm)
-// and of the part-proportional shadow plane above: this draws the ACTUAL
-// configured bed footprint (S.bedDimensions.x by .y, mm) to true scale using
-// mesh3d.userData.scale, the real-mm-to-scene-units factor set at load time.
-// Turns from amber to danger-red if the part's world-space X/Z extent exceeds it.
+// and of the part-proportional shadow plane above: this draws the configured
+// bed footprint (S.bedDimensions.x by .y, mm) on the permanent build-plate
+// grid, so a preference change is visible immediately — including before any
+// part is loaded, which is when someone opening this from the landing screen
+// will see it. Once a part exists, it's drawn to TRUE scale using
+// mesh3d.userData.scale (the real-mm-to-scene-units factor set at load time),
+// and turns from amber to danger-red if the part's world-space X/Z extent
+// exceeds it. With no part loaded there is no such factor to be true to, so
+// it falls back to framing the bed itself the same way loadMeshFromPositions
+// frames a part (longest edge fills 1.6 scene units).
+//
+// Drawn as a translucent fill PLUS a crisp outline, not the outline alone: a
+// thin amber/gold line is easy to mistake for the permanent grid's own
+// gold lines, especially at the many camera angles where the bed edges land
+// close to a grid line. The fill reads as a distinct tinted region regardless
+// of that coincidence, which is what makes a dimension change visible.
 function updateBedFootprint() {
+  if (!scene) return;
   if (scene._bedFootprint) {
     scene.remove(scene._bedFootprint);
-    scene._bedFootprint.geometry.dispose();
-    scene._bedFootprint.material.dispose();
+    scene._bedFootprint.traverse(o => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) o.material.dispose();
+    });
     scene._bedFootprint = null;
   }
-  if (!mesh3d || !mesh3d.userData.scale) return;
 
-  const dims = S.bedDimensions;
-  const sx = dims.x * mesh3d.userData.scale;
-  const sz = dims.y * mesh3d.userData.scale;
+  const dims  = S.bedDimensions;
+  const scale = (mesh3d && mesh3d.userData.scale)
+    ? mesh3d.userData.scale
+    : 1.6 / Math.max(dims.x, dims.y, dims.z, 1);
+  const sx = dims.x * scale;
+  const sz = dims.y * scale;
   const hx = sx / 2, hz = sz / 2;
+
+  let fits = true;
+  if (mesh3d) {
+    mesh3d.updateWorldMatrix(true, false);
+    const box = new THREE.Box3().setFromObject(mesh3d);
+    fits = (box.max.x - box.min.x) <= sx + 1e-6 && (box.max.z - box.min.z) <= sz + 1e-6;
+  }
+  const color = fits ? 0xD6862E : 0xC2452F;
+
+  const group = new THREE.Group();
+
+  const fillGeo = new THREE.PlaneGeometry(sx, sz);
+  const fillMat = new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity: 0.14, side: THREE.DoubleSide, depthWrite: false,
+  });
+  const fill = new THREE.Mesh(fillGeo, fillMat);
+  fill.rotation.x = -Math.PI / 2; // PlaneGeometry faces +Z, rotate to face +Y
+  fill.position.y = 0.0005;
+  fill.renderOrder = 1;
+  group.add(fill);
 
   const pts = [
     -hx, 0, -hz,   hx, 0, -hz,
@@ -9409,19 +9449,15 @@ function updateBedFootprint() {
      hx, 0,  hz,  -hx, 0,  hz,
     -hx, 0,  hz,  -hx, 0, -hz,
   ];
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  const lineGeo = new THREE.BufferGeometry();
+  lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  const outline = new THREE.LineSegments(lineGeo, new THREE.LineBasicMaterial({ color }));
+  outline.position.y = 0.0015;
+  outline.renderOrder = 2;
+  group.add(outline);
 
-  mesh3d.updateWorldMatrix(true, false);
-  const box = new THREE.Box3().setFromObject(mesh3d);
-  const fits = (box.max.x - box.min.x) <= sx + 1e-6 && (box.max.z - box.min.z) <= sz + 1e-6;
-
-  const mat = new THREE.LineBasicMaterial({ color: fits ? 0xD6862E : 0xC2452F });
-  const footprint = new THREE.LineSegments(geo, mat);
-  footprint.position.y = 0.001;
-  footprint.renderOrder = 2;
-  scene.add(footprint);
-  scene._bedFootprint = footprint;
+  scene.add(group);
+  scene._bedFootprint = group;
 }
 
 // ─── Compute orientation multiplier ──────────────────────────────────────────
@@ -10392,12 +10428,17 @@ function togglePrefsPanel() {
   }
 }
 
-// Close the prefs panel when clicking outside it
+// Close the prefs panel when clicking outside it. Two buttons open it — the
+// header gear (hidden behind the landing screen while it's active) and the
+// landing screen's own PREFERENCES card — so both are exempted here, or a
+// click on either toggle button would open the panel and then immediately
+// have this same bubbled click close it again.
 document.addEventListener('click', e => {
-  const panel = document.getElementById('prefs-panel');
-  const btn   = document.getElementById('prefs-btn');
+  const panel       = document.getElementById('prefs-panel');
+  const btn         = document.getElementById('prefs-btn');
+  const landingBtn  = document.getElementById('prefs-btn-landing');
   if (!panel || panel.style.display === 'none') return;
-  if (panel.contains(e.target) || (btn && btn.contains(e.target))) return;
+  if (panel.contains(e.target) || (btn && btn.contains(e.target)) || (landingBtn && landingBtn.contains(e.target))) return;
   panel.style.display = 'none';
   if (btn) { btn.style.borderColor = 'var(--border)'; btn.style.color = 'var(--text-mid)'; }
 });
@@ -15344,6 +15385,7 @@ function _showGcodeImportToast(imported, params) {
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 initThree();
+updateBedFootprint(); // show the configured bed footprint before any part is loaded
 
 // Start session persistence after Three.js init
 setTimeout(initSessionPersistence, 100);
