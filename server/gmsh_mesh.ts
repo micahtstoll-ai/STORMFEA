@@ -664,10 +664,19 @@ export async function meshStepWithGmsh(
     clMax?:         number;  // max element size (mm), default 3.0
     clCurv?:        number;  // curvature samples per 2π, default 20
     elementOrder?:  1 | 2;  // 1 = C3D4 linear, 2 = C3D10 quadratic (default)
+    /**
+     * Optional abort signal (issue #345), threaded down from the request-level
+     * signal in analysis.ts. Forwarded to execFile's own `signal` option below,
+     * so a fired signal sends SIGTERM to the running Gmsh child immediately —
+     * e.g. on user Cancel — instead of leaving it to run untouched for up to
+     * the 120s timeout below. Undefined for every call site with no
+     * request-level signal (tests, other callers); purely additive.
+     */
+    signal?:        AbortSignal;
   } = {}
 ): Promise<GmshMeshResult> {
 
-  const { clMin = 0.3, clMax = 3.0, clCurv = 20, elementOrder = 2 } = options;
+  const { clMin = 0.3, clMax = 3.0, clCurv = 20, elementOrder = 2, signal } = options;
 
   const tmpBase = path.join(tmpdir(), `sf_${Date.now()}`);
   const stepPath = `${tmpBase}.step`;
@@ -695,7 +704,7 @@ export async function meshStepWithGmsh(
   }
 
   try {
-    await execFileAsync(GMSH_BIN, args, { timeout: 120_000, maxBuffer: 50*1024*1024 });
+    await execFileAsync(GMSH_BIN, args, { timeout: 120_000, maxBuffer: 50*1024*1024, signal });
   } catch (err) {
     throw new Error(`Gmsh failed: ${err}`);
   }

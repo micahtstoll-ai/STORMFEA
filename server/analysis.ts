@@ -5161,6 +5161,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
     }
     gmshResult = await meshStepWithGmsh(req.stepBuffer, {
       clMin: sizing.clMin, clMax: sizing.clMax, clCurv: sizing.clCurv, elementOrder,
+      signal: req.signal,
     });
     mesh = gmshResult.mesh;
     surfaceFaces = gmshResult.surfaceTriangles;
@@ -5207,7 +5208,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       }
       const tetResult = await meshWithGuardRetry(
         tetOrder,
-        order => meshWithTetGen(req.positions, req.triangleCount, order, tetMaxVol),
+        order => meshWithTetGen(req.positions, req.triangleCount, order, tetMaxVol, req.signal),
         d => { meshOrderDowngrade = d; },
       );
       mesh          = tetResult.mesh;
@@ -5259,7 +5260,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
               halfSoup[t * 3 + 1] = halfPositions[v * 3 + 1] ?? 0;
               halfSoup[t * 3 + 2] = halfPositions[v * 3 + 2] ?? 0;
             }
-            const halfResult = await meshWithTetGen(halfSoup, halfTriCount, tetOrder, tetMaxVol);
+            const halfResult = await meshWithTetGen(halfSoup, halfTriCount, tetOrder, tetMaxVol, req.signal);
             const mirroredResult = mirrorTetMesh(halfResult.mesh, plane);
 
             mesh         = mirroredResult.mesh;
@@ -8117,7 +8118,7 @@ export async function runAdaptiveAnalysis(
       const predicted = predictRefinedElementCount(curMesh, field);
       let candidate;
       try {
-        candidate = await meshWithTetGenSizing(req.positions, req.triangleCount, curMesh, field, order);
+        candidate = await meshWithTetGenSizing(req.positions, req.triangleCount, curMesh, field, order, req.signal);
       } catch (err) {
         console.warn("[analysis] adaptive re-mesh failed, keeping best-so-far:", err);
         attemptStop = "remesh-failed";
