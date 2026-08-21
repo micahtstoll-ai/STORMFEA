@@ -5412,7 +5412,7 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
   // Default TRUE (issue #297) — `?? true`, so an explicit `false` still selects
   // the legacy single-material path bit-identically (invariant 1) and only an
   // ABSENT flag changes meaning. Every guard below can still degrade it back.
-  const twoRegionRequested = req.analysis.twoRegion ?? true;
+  twoRegion: body.analysis?.twoRegion !== false
   if (twoRegionRequested) {
     const degrade = (why: string): void => {
       console.warn(`[analysis] two-region requested but degraded to uniform: ${why}`);
