@@ -407,7 +407,7 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the ful
 2. Make changes. If you touch the solver, material model or failure-mode logic, **bring a citation** and tag any new constant HIGH / MEDIUM / LOW. The 65% stiffness and 58% yield ratios are not adjustable to taste.
 3. Every new failure mode needs a unit test asserting the correct SF at a known load.
 4. If you touch the frontend, read [DESIGN.md](DESIGN.md) first.
-5. Run `npm run test` — everything must pass: 1105 vitest unit tests across 104 files, 187 solver validation tests in `solver_validation.ts`, the parallel-assembly equivalence suite, and 288 client logic checks (a few vitest tests self-skip where the TetGen/Gmsh binaries are absent, so the raw totals show a handful of skips). The run finishes with five drift guards; if one fails, the doc it names is stale, not the guard.
+5. Run `npm run test` — everything must pass: 1116 vitest unit tests across 105 files, 187 solver validation tests in `solver_validation.ts`, the parallel-assembly equivalence suite, and 296 client logic checks (a few vitest tests self-skip where the TetGen/Gmsh binaries are absent, so the raw totals show a handful of skips). The run finishes with five drift guards; if one fails, the doc it names is stale, not the guard.
 6. Open a pull request using the provided template, and link the issue with `Fixes #N`.
 
 CI splits the same suite across five concurrent jobs (`unit-light`, `unit-heavy`, `solver`, `client`, `doc-counts`) because the suite is CPU-bound on real FE solves. Look at `unit-light` first when CI goes red.
