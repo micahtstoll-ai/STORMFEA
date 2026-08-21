@@ -40,3 +40,7 @@ Thumbs.db
 *.log
 .vscode/
 .idea/
+
+# Claude Code agent worktrees — temporary isolated checkouts for background
+# subagents, never part of the deliverable
+.claude/
