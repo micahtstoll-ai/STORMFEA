@@ -459,6 +459,15 @@ export async function meshWithTetGen(
    * without assuming millimetres (issue #168).
    */
   maxVolume:     number = 10,
+  /**
+   * Optional abort signal (issue #345), threaded down from the request-level
+   * signal in analysis.ts. When it fires, the running TetGen child is sent
+   * SIGTERM immediately instead of being left to finish (or hit its own 120s
+   * timeout) after the caller has already stopped caring. Undefined for every
+   * call site with no request-level signal (tests, other callers) — this is
+   * purely additive.
+   */
+  signal?:       AbortSignal,
 ): Promise<TetGenResult> {
 
   // ── 0. Known-missing fast path ────────────────────────────────────────────
@@ -513,7 +522,7 @@ export async function meshWithTetGen(
 
   let meshed = false;
   for (const switches of switchSets) {
-    const outcome = await tryTetGen(offPath, switches);
+    const outcome = await tryTetGen(offPath, switches, signal);
     if (outcome === "ok") {
       console.log(`[tetgen] succeeded with switches: ${switches.join(" ")}`);
       meshed = true;
@@ -672,13 +681,23 @@ export async function probeTetGen(): Promise<{ found: boolean; path: string }> {
 
 // ─── Helper: try TetGen with given switches ───────────────────────────────────
 // "missing" = the binary itself could not be spawned (ENOENT); "fail" = it ran
-// but rejected the geometry/switches. The distinction matters: only "fail" is
-// worth retrying with more permissive switches.
-async function tryTetGen(offPath: string, switches: string[]): Promise<"ok" | "fail" | "missing"> {
+// but rejected the geometry/switches (or was aborted — see `signal` below). The
+// distinction matters: only "fail" is worth retrying with more permissive
+// switches.
+//
+// `signal` (issue #345): forwarded to execFile's own `signal` option, which
+// makes Node send SIGTERM to the TetGen child the moment the caller's
+// AbortSignal fires — e.g. the user clicking Cancel — instead of leaving it
+// running untouched for up to the 120s timeout below. That timeout stays as a
+// backstop for the no-cancel case; `signal` is an ADDITIONAL, independent way
+// for the child to be killed early. Optional so every existing call site
+// without a request-level abort signal (tests, other code paths) is unaffected.
+async function tryTetGen(offPath: string, switches: string[], signal?: AbortSignal): Promise<"ok" | "fail" | "missing"> {
   try {
     await execFileAsync(TETGEN_BIN, [...switches, offPath], {
       timeout: 120_000,
       maxBuffer: 10 * 1024 * 1024,
+      signal,
     });
     return "ok";
   } catch (err: unknown) {
@@ -774,6 +793,8 @@ export async function meshWithTetGenSizing(
   backgroundMesh: TetMesh,
   sizeField:     SizeField,
   elementOrder:  1 | 2 = 2,
+  /** Optional abort signal (issue #345) — see meshWithTetGen's parameter. */
+  signal?:       AbortSignal,
 ): Promise<TetGenResult> {
   if (tetgenKnownMissing) throw new TetGenNotFoundError(TETGEN_BIN);
   if (sizeField.targetSize.length !== backgroundMesh.nodeCount) {
@@ -826,7 +847,7 @@ export async function meshWithTetGenSizing(
 
   let meshed = false;
   for (const switches of switchSets) {
-    const outcome = await tryTetGen(inElePath, switches);
+    const outcome = await tryTetGen(inElePath, switches, signal);
     if (outcome === "ok") {
       console.log(`[tetgen] adaptive re-mesh succeeded with switches: ${switches.join(" ")}`);
       meshed = true;
