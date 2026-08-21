@@ -2800,7 +2800,19 @@ async function analyzeStreaming(body, { onPhase } = {}) {
     throw e;
   }
 
-  if (errored) throw new Error(errored.error + (errored.hint ? ' — ' + errored.hint : ''));
+  if (errored) {
+    const err = new Error(errored.error + (errored.hint ? ' — ' + errored.hint : ''));
+    // Issue #347: a server-side hang-guard timeout arrives as an error event
+    // tagged timedOut. Carry the tag onto the Error so the handler below can
+    // tell it apart from every other server error — and, above all, from the
+    // cancel case on the next line, which is what it used to be reported as.
+    if (errored.timedOut) { err.timedOut = true; err.timeoutMs = errored.timeoutMs || null; }
+    throw err;
+  }
+  // A stream that ends with NO result and NO error event means the server
+  // stopped without explaining itself, which only happens when the connection
+  // was closed from this side (Cancel, or the tab going away). A timeout is no
+  // longer in this bucket — it sends the error event above.
   if (!result) { const err = new Error('Analysis cancelled'); err.cancelled = true; throw err; }
   return result;
 }
@@ -6700,7 +6712,15 @@ async function runAnalysis() {
     // Actionable error messages — each gives a specific fix, not just a label
     let friendlyErr, friendlyFix;
 
-    if (errMsg.startsWith('Invalid request')) {
+    if ((e && e.timedOut) || errMsg.includes('timed out')) {
+      // Issue #347: the server's hang guard stopped the solve. This is NOT a
+      // cancel — the user never touched Cancel — so it must not read like one.
+      const _secs = (e && e.timeoutMs) ? Math.round(e.timeoutMs / 1000) : null;
+      friendlyErr = _secs ? `Analysis timed out after ${_secs}s` : 'Analysis timed out';
+      friendlyFix = 'The server stopped the solve before it finished — you did not cancel it. Try a coarser mesh in the MATERIAL tab → Mesh quality, or reduce the part size. If large solves on this machine legitimately need longer, raise the server limit with the <code>STORMFEA_ANALYSE_TIMEOUT_MS</code> environment variable (milliseconds) and restart the server.';
+      document.getElementById('analyse-status').textContent = friendlyErr;
+      showSessionToast(friendlyErr);
+    } else if (errMsg.startsWith('Invalid request')) {
       // 400 from the server-side shape checker: the request never reached the
       // solver. The message already names the offending field and a hint.
       friendlyErr = 'Request rejected before solving';
