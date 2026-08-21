@@ -2034,6 +2034,92 @@ console.log('\n[Z] Force placement — offset clamping, validation, list badge')
   test('validation is a no-op for non-point selection',
     validateForceOffset() === true);}
 
+// ── Test group AA: analyzeStreaming — timeout is not a cancel (#347) ────────
+// A stream that ends with no `result` and no `error` event means the socket was
+// closed from this side, i.e. the user cancelled. A server-side hang-guard
+// timeout used to look EXACTLY like that on the wire, so a solve nobody
+// cancelled was reported as "Analysis cancelled". The server now sends an
+// `error` event tagged `timedOut`; these tests pin that the tag survives onto
+// the thrown Error and never collapses back into the cancel bucket.
+console.log('\n[AA] analyzeStreaming — a server timeout is distinguishable from a cancel (#347)');
+{
+  const start = html.indexOf('async function analyzeStreaming(');
+  if (start < 0) throw new Error('Could not find analyzeStreaming');
+  // Start brace-matching at the BODY brace, not the destructured `{ onPhase }`
+  // in the parameter list.
+  let i = html.indexOf(') {', start) + 2, depth = 0;
+  for (; i < html.length; i++) {
+    const ch = html[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') { depth--; if (depth === 0) { i++; break; } }
+  }
+  const fnSrc = html.slice(start, i);
+
+  // Minimal ambient surface analyzeStreaming touches: the module-scope abort
+  // handle and the pre-stream error-envelope formatter (exercised elsewhere).
+  const preamble = `let _analyseAbort = null;
+function formatErrorEnvelope(txt) { return txt; }
+`;
+  const mod = { exports: {} };
+  new Function('module', 'exports', 'fetch', 'TextDecoder', 'AbortController',
+    preamble + fnSrc + '\nmodule.exports = { analyzeStreaming };'
+  )(mod, mod.exports, (...a) => global.fetch(...a), TextDecoder, AbortController);
+  const { analyzeStreaming } = mod.exports;
+
+  // Fake an SSE response body from a list of [event, dataObject] pairs.
+  const enc = new TextEncoder();
+  const streamOf = (frames) => {
+    const chunks = frames.map(([ev, data]) =>
+      enc.encode(`event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`));
+    let n = 0;
+    return {
+      ok: true,
+      body: { getReader: () => ({
+        read: async () => (n < chunks.length
+          ? { value: chunks[n++], done: false }
+          : { value: undefined, done: true }),
+      }) },
+    };
+  };
+  const runWith = async (frames) => {
+    global.fetch = async () => streamOf(frames);
+    try { return { value: await analyzeStreaming({}), err: null }; }
+    catch (err) { return { value: null, err }; }
+  };
+
+  const timedOut = await runWith([
+    ['phase', { phase: 'solve' }],
+    ['error', { error: 'Analysis timed out after 900s — the server stopped the solve.',
+                hint: 'Try a coarser mesh quality.', timedOut: true, timeoutMs: 900000 }],
+  ]);
+  test('a timedOut error event throws, and is NOT flagged as a cancel',
+    timedOut.err instanceof Error && timedOut.err.timedOut === true && !timedOut.err.cancelled);
+  test('the timeout error keeps the server message and hint',
+    /timed out after 900s/.test(timedOut.err.message) && /coarser mesh/.test(timedOut.err.message));
+  test('the timeout error carries the budget for the UI to name',
+    timedOut.err.timeoutMs === 900000);
+
+  const cancelled = await runWith([['phase', { phase: 'solve' }]]);
+  test('a stream that just ends is still reported as a cancel',
+    cancelled.err instanceof Error && cancelled.err.cancelled === true && !cancelled.err.timedOut);
+
+  const plainErr = await runWith([['error', { error: 'Mesh generation failed' }]]);
+  test('an ordinary error event is neither a cancel nor a timeout',
+    plainErr.err instanceof Error && !plainErr.err.cancelled && !plainErr.err.timedOut);
+
+  const okRun = await runWith([['result', { summary: { maxVonMisesMPa: 12.5 } }]]);
+  test('a result event still resolves with the payload',
+    okRun.err === null && okRun.value.summary.maxVonMisesMPa === 12.5);
+
+  // The handler side of the same distinction: the analyse catch chain must test
+  // for the timeout BEFORE its generic "Analysis failed" fallback, and must not
+  // route it through the cancel branch.
+  test('the analyse error handler has a dedicated timeout branch',
+    /if\s*\(\(e && e\.timedOut\)\s*\|\|\s*errMsg\.includes\('timed out'\)\)/.test(html));
+  test('the cancel branch still keys on .cancelled only',
+    /if\s*\(e && e\.cancelled\)\s*\{/.test(html));
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 
