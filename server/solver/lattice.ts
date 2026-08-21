@@ -173,9 +173,18 @@ export const LATTICE_PARAMS: Record<PatternFamily, LatticeFamilyParams> = {
   },
 };
 
-/** Family lookup with a conservative default for unknown pattern ids. */
+/**
+ * Family lookup for unknown pattern ids falls back to grid's family, matching
+ * every other per-pattern default in the codebase (PATTERN_MULTIPLIERS[pattern]
+ * ?? 1.0 — grid's own multiplier; PATTERN_PLY_ANGLES[pattern] ??
+ * PATTERN_PLY_ANGLES["grid"] in analysis.ts) rather than an independently
+ * chosen value. Derived from PATTERN_FAMILY.grid instead of hardcoded so the
+ * fallback tracks grid's family automatically if it's ever reclassified;
+ * "grid" is a compile-time-known key, same non-null convention as
+ * MATERIALS[id] ?? MATERIALS["pla"]! elsewhere in analysis.ts.
+ */
 export function patternFamilyOf(pattern: string): PatternFamily {
-  return PATTERN_FAMILY[pattern] ?? "walls25d";
+  return PATTERN_FAMILY[pattern] ?? PATTERN_FAMILY["grid"]!;
 }
 
 // ─── Floors ──────────────────────────────────────────────────────────────────

@@ -15,6 +15,9 @@
  */
 
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
+import path from "path";
 import {
   LATTICE_PARAMS,
   LATTICE_STIFFNESS_FLOOR,
@@ -45,6 +48,17 @@ import type { OrthotropicMaterial } from "../../solver/types.js";
 
 const ALL_PATTERNS = Object.keys(PATTERN_FAMILY);
 const STRUCTURAL = ALL_PATTERNS.filter(p => patternFamilyOf(p) !== "sparse");
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const CLIENT_HTML_PATH = path.join(__dirname, "../../../client/index.html");
+
+/** Every value= the client's infill-pattern <select> can emit (client/index.html). */
+function clientPatternOptionIds(): string[] {
+  const html = readFileSync(CLIENT_HTML_PATH, "utf8");
+  const select = html.match(/<select id="s-pattern"[\s\S]*?<\/select>/);
+  if (!select) throw new Error("core-lattice.test.ts: could not find <select id=\"s-pattern\"> in client/index.html — id renamed?");
+  return [...select[0].matchAll(/<option value="([^"]+)"/g)].map(m => m[1]!);
+}
 
 /** The production core builder, defaulted to the plain (non-CLT) path. */
 function makeCore(
@@ -157,9 +171,28 @@ describe("law structure", () => {
     expect(latticeStrengthFraction("grid", 0.5, 1.0)).toBeCloseTo(0.5, 12);
   });
 
-  it("unknown pattern ids fall back to the walls25d family", () => {
+  it("unknown pattern ids fall back to grid's family, not an independent default", () => {
+    // Locks the fallback to grid itself (not a hardcoded "walls25d" literal
+    // that only coincidentally matches it today) — this fails if grid is ever
+    // reclassified into a different family without updating patternFamilyOf.
+    expect(patternFamilyOf("mystery-pattern")).toBe(patternFamilyOf("grid"));
     expect(patternFamilyOf("mystery-pattern")).toBe("walls25d");
     expect(latticeStiffnessScale("mystery-pattern", 0.2)).toBeCloseTo(0.0368, 6);
+  });
+
+  it("every client pattern option has its own PATTERN_FAMILY/PATTERN_MULTIPLIERS entry (issue: silent grid fallback)", () => {
+    // The real risk patternFamilyOf's fallback exists for: a pattern id added
+    // to the client's #s-pattern <select> without a matching PATTERN_FAMILY /
+    // PATTERN_MULTIPLIERS entry would compile and run fine, but every request
+    // using it would silently degrade to grid's family and multiplier with no
+    // error anywhere. Fails CI the moment the two drift apart instead of
+    // failing silently in production.
+    const clientIds = clientPatternOptionIds();
+    expect(clientIds.length).toBeGreaterThan(0);
+    for (const id of clientIds) {
+      expect(Object.prototype.hasOwnProperty.call(PATTERN_FAMILY, id)).toBe(true);
+      expect(Object.prototype.hasOwnProperty.call(PATTERN_MULTIPLIERS, id)).toBe(true);
+    }
   });
 });
 
