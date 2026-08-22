@@ -13,13 +13,16 @@
  * separately, and to different tolerances, because they get there by different
  * routes.
  *
- * SCOPE LIMIT, stated rather than implied: every fixture here places C3D10
- * midside nodes at the straight midpoint of their corner pair, so a boundary
- * midside always lies exactly in the plane of the boundary triangles that
- * contain it. A mesher that projects midside nodes onto a CURVED CAD surface
- * (Gmsh `-order 2` does) would place them off the flat chord by the sagitta,
- * and their distance would be genuinely non-zero rather than float noise.
- * That case needs a Gmsh binary and is NOT covered here.
+ * SCOPE, stated rather than implied: every fixture here places C3D10 midside
+ * nodes at the straight midpoint of their corner pair, so a boundary midside
+ * always lies exactly in the plane of the boundary triangles that contain it,
+ * and its distance is float noise (~1.8e-15) rather than geometry. The one
+ * case that produces a genuinely non-zero boundary-midside distance — a mesher
+ * that projects midside nodes onto a CURVED CAD surface, off the flat chord by
+ * the sagitta R·(1 − cos(π/n)) — needs a real Gmsh `-order 2` mesh and lives in
+ * `distance-curved-midside.test.ts` (issue #316). It measures ~48 microns on a
+ * 5 mm bore and locks that the offset is real but immaterial to the wall/core
+ * classification; this file stays deliberately on chord-placement fixtures.
  */
 
 import { describe, it, expect } from "vitest";
