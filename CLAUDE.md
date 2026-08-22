@@ -532,7 +532,14 @@ perimeter walls vs homogenized infill core (`server/twoRegion.ts`,
 5. **Anchor endpoints, report divergence, never renormalize** — 100% infill and
    all-shell parts must collapse to the uniform path; interior divergence from
    `effectiveStrengthMultiplier` is surfaced in `summary.materialModel`, not
-   hidden.
+   hidden. Since issue #340 both the lumped single-material multiplier
+   (`materialStrengthMultiplier` → `lumpedStrengthScale`) and the two-region core
+   share ONE Gibson-Ashby strength law (`latticeStrengthFraction`), so the
+   reported divergence is now purely the WALL-FRACTION estimate — geometric shell
+   `Vf` vs the `wallCreditFraction` (+0.10/wall) heuristic,
+   `implied − global = (Vf − wallCredit)·(1 − s(ρ))` — not a difference of infill
+   laws. Do not reintroduce an independent infill-strength curve on either path
+   (the strength-side analog of the #176 stiffness rule).
 6. **The average material carries the scalars** — `SolverInput.material` is the
    volume-weighted blend when the field is active; whole-part consumers (ZZ
    error estimate, analytic hole checks) read it, per-element consumers read

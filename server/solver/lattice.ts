@@ -472,6 +472,55 @@ export function latticeStrengthFraction(
 }
 
 /**
+ * Unified LUMPED in-plane STRENGTH knockdown for the single-material paths
+ * (issue #340): the strength-side mirror of `lumpedInPlaneStiffnessScale`. A
+ * Voigt (iso-strain) volume average of solid perimeter walls (strength
+ * fraction 1.0) and a Gibson-Ashby infill core (strength fraction
+ * `latticeStrengthFraction`),
+ *
+ *     strengthKnockdown = wallCredit + (1 − wallCredit) · s_GA(ρ)
+ *
+ * i.e. the lumped limit of the two-region model's yield blend
+ * yield_eff = Vf·yield_solid + (1−Vf)·yield_solid·s(ρ). It replaces the
+ * disowned `0.30 + 0.70ρ` linear curve (`infillStrengthCurve`, deleted) that
+ * `lumpedInPlaneStiffnessScale`'s own docstring already named as one of the
+ * "three inconsistent laws … that swung a 20% part 2–5× across toggles" — the
+ * #176 stiffness fix left the strength side on that curve. Routing
+ * `materialStrengthMultiplier` through THIS law makes the single-material
+ * estimator use the SAME Gibson & Ashby (1997) power law the two-region core
+ * already uses (`latticeStrengthFractions`), so no toggle can show two
+ * disagreeing infill-strength numbers for one part.
+ *
+ * The pattern multiplier is folded into `s_GA` (it credits only the infill
+ * lattice, never the solid perimeter walls) — so, unlike the old
+ * `materialStrengthMultiplier`, the pattern factor is NOT re-applied to the
+ * whole section here. That old form over-credited the pattern to the walls and,
+ * for a pattern with `patternMul > 1` (e.g. gyroid), returned MORE than solid
+ * strength at 100% infill; this form is bounded by the solid.
+ *
+ * Anchor (invariant #8): for STRUCTURAL patterns `s_GA(1) = 1` exactly, so
+ * strengthKnockdown(ρ=1) = wallCredit + (1−wallCredit) = 1 EXACTLY regardless
+ * of wall credit — 100% infill reproduces the solid on every path. Sub-unity
+ * patterns (lines/concentric/lightning, patternMul < 1) anchor at
+ * min(1, wallCredit + (1−wallCredit)·patternMul) < 1: the solid walls lift them
+ * partway, but the weaker lattice still penalises the core, exactly as the
+ * two-region model does (it does NOT collapse to uniform for those patterns —
+ * see `latticeStrengthFractions`). Floored implicitly by `s_GA`'s own
+ * `LATTICE_STRENGTH_FLOOR` and the wall credit. Confidence LOW (inherits the
+ * Gibson-Ashby exponent band); regression-locked in `core-lattice.test.ts`.
+ */
+export function lumpedStrengthScale(
+  pattern: string,
+  rho: number,
+  wallCredit: number,
+  overrideExp?: number | null,
+): number {
+  const s = latticeStrengthFraction(pattern, rho, overrideExp);
+  const w = Math.min(1, Math.max(0, wallCredit));
+  return Math.min(1, w + (1 - w) * s);
+}
+
+/**
  * Multiplicative SF-band excursion from the Gibson-Ashby STRENGTH-EXPONENT
  * uncertainty (issue #173). Returns { low, high } — the ratio of the core
  * strength fraction s(ρ) = min(1, patternMul·ρ^m) evaluated at the exponent

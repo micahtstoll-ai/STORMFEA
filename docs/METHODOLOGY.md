@@ -180,7 +180,32 @@ Pattern enters stiffness only through the Gibson-Ashby family exponent (pattern
 *strength* multipliers stay a strength concept and are no longer folded into
 stiffness). At 100% infill `g_GA(1) = 1` exactly, so `knockdown = 1` and every
 path reproduces the solid — the anchor. Density knockdown is decoupled from the
-strength multiplier, which keeps driving `yieldXY` on its own curve.
+strength multiplier: stiffness and strength are separate physical quantities, but
+they now share the SAME lumped *form*.
+
+The single-material **strength** multiplier (`materialStrengthMultiplier`,
+`server/analysis.ts`, scaling `yieldXY`) is the strength-side mirror of the same
+Voigt average (issue #340):
+
+```
+strengthKnockdown(ρ) = wallCredit + (1 − wallCredit)·s_GA(ρ)
+```
+
+(`lumpedStrengthScale`, `server/solver/lattice.ts`), where
+`s_GA(ρ) = min(1, patternMul·ρ^m)` is the Gibson & Ashby (1997) cellular-solid
+strength law (`latticeStrengthFraction`) the two-region core (§2.4) already used.
+This replaced a disowned `0.30 + 0.70ρ` linear curve (`infillStrengthCurve`) that
+had no checkable citation and disagreed with the two-region default — so a part's
+infill-strength number no longer depends on which toggle produced it. For
+structural patterns `s_GA(1) = 1`, so `strengthKnockdown(1) = 1` exactly (the same
+anchor); sub-unity patterns (lines/concentric/lightning, `patternMul < 1`) anchor
+below solid, matching the two-region core. The pattern multiplier credits only the
+infill lattice, never the solid walls, and — unlike the old curve — a
+`patternMul > 1` pattern can no longer exceed solid strength at 100% infill. The
+client's live settings preview (`client/index.html`) mirrors this law
+identically, so the estimate shown before a solve uses the same infill-strength
+physics the solver does. Orientation stays out of the solved multiplier (audit
+A4); it survives only in the scalar what-if estimator (`effectiveStrengthMultiplier`).
 
 ### 2.4 The two-region model (walls vs infill) — the DEFAULT path
 
