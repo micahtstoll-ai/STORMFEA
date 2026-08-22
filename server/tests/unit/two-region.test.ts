@@ -335,14 +335,19 @@ describe("adaptive log-spaced binning at high contrast (issue #178)", () => {
   });
 });
 
-describe("anchor policy: implied average vs legacy global multiplier", () => {
-  // The endpoints agree by construction; the interior DIVERGES in two ways,
-  // both deliberate (report, never renormalize):
-  //  1. The Gibson-Ashby strength law credits low-ρ infill less than the
-  //     legacy linear curve (s(0.2) = 0.2^1.5 ≈ 0.089 vs linear 0.20), so
-  //     implied < global wherever the core matters.
-  //  2. The legacy model's geometry-blind +0.10-per-wall bonus under-credits
-  //     wall-dominated thin sections, so implied > global there.
+describe("anchor policy: implied average vs lumped global multiplier", () => {
+  // The endpoints agree by construction; the interior still DIVERGES, but the
+  // reason changed with issue #340. Both the two-region core and the lumped
+  // global multiplier (`materialStrengthMultiplier`) now use the SAME
+  // Gibson-Ashby lattice strength law (`latticeStrengthFraction`), so the old
+  // core-LAW half of the divergence (GA vs the disowned 0.30+0.70ρ linear
+  // curve) is gone. What remains is purely the WALL-FRACTION estimate:
+  //
+  //   implied − global = (Vf − wallCredit)·(1 − s(ρ))
+  //
+  // the geometric shell fraction Vf vs the geometry-blind +0.10-per-wall
+  // heuristic (`wallCreditFraction`). This mirrors what #176 left on the
+  // stiffness side. It is still reported, never renormalized (invariant #5).
   const INFILL = 20, WALLS = 2, PATTERN = "grid", ORIENT = "flat";
   const LINE_W = 0.45;
   const T_WALL = WALLS * LINE_W; // 0.9mm
@@ -350,6 +355,7 @@ describe("anchor policy: implied average vs legacy global multiplier", () => {
   async function impliedFor(bx: number, by: number, bz: number, nx: number, ny: number, nz: number) {
     const { materialStrengthMultiplier, coreStrengthMultiplier } =
       await import("../../analysis.js");
+    const { wallCreditFraction } = await import("../../solver/lattice.js");
     const m = generateBoxMeshC3D4(0, 0, 0, bx, by, bz, nx, ny, nz);
     const f = extractSurfaceFaces(m);
     const tr = buildTwoRegionField(m, f, SHELL, CORE, T_WALL);
@@ -359,28 +365,31 @@ describe("anchor policy: implied average vs legacy global multiplier", () => {
     const coreLattice = coreStrengthMultiplier(INFILL, PATTERN);
     const implied = Vf + (1 - Vf) * coreLattice;
     const global = materialStrengthMultiplier(INFILL, WALLS, PATTERN);
-    return { Vf, implied, global };
+    const wc = wallCreditFraction(WALLS);
+    return { Vf, implied, global, coreLattice, wc };
   }
 
-  it("chunky coupon section (20×6): implied BELOW global but within 25% (GA law credits low-ρ infill less)", async () => {
-    // Derivation at 20% grid, Vf ≈ 0.38: s(0.2) = 0.2^1.5 ≈ 0.089, so
-    // implied ≈ 0.38 + 0.62·0.089 ≈ 0.44 vs global 0.54 → ~17% below.
-    // (The legacy 0.55 orientation factor multiplied BOTH sides, so the
-    // relative gap is unchanged by its removal — audit A4.)
-    // Under the legacy linear core (s = 0.20) this was ~11%; the widening is
-    // the power law's statement, not drift to be renormalized away.
-    const { Vf, implied, global } = await impliedFor(60, 20, 6, 30, 10, 3);
+  it("chunky coupon section (20×6): the divergence is EXACTLY (Vf − wallCredit)·(1 − s)", async () => {
+    // At 20% grid, s(0.2) = 0.2^1.5 ≈ 0.0894; wallCredit(2) = 0.20 → global ≈
+    // 0.20 + 0.80·0.0894 = 0.2716. Vf ≈ 0.38 > 0.20, so the geometry finds MORE
+    // wall than the +0.10/wall heuristic and implied > global. Both use the same
+    // GA core law now, so the gap is precisely the wall-fraction mismatch (no
+    // min-clamp here: global ≈ 0.27 < 1). Reported, not renormalized.
+    const { Vf, implied, global, coreLattice, wc } = await impliedFor(60, 20, 6, 30, 10, 3);
     expect(Vf).toBeGreaterThan(0.2);
     expect(Vf).toBeLessThan(0.6);
-    expect(implied).toBeLessThan(global);
-    expect(Math.abs(implied - global) / global).toBeLessThan(0.25);
+    expect(Vf).toBeGreaterThan(wc);                 // geometry out-credits the heuristic
+    expect(implied).toBeGreaterThan(global);
+    expect(implied - global).toBeCloseTo((Vf - wc) * (1 - coreLattice), 12);
   });
 
-  it("wall-dominated thin coupon (10×4): implied EXCEEDS global (legacy under-credits walls)", async () => {
-    // Vf ≈ 0.57 dominates: implied ≈ 0.57 + 0.43·0.089 ≈ 0.61 vs
-    // global 0.54 — the wall effect outweighs the GA infill knockdown.
-    const { Vf, implied, global } = await impliedFor(50, 10, 4, 25, 5, 2);
+  it("wall-dominated thin coupon (10×4): larger Vf widens the same wall-fraction gap", async () => {
+    // Vf ≈ 0.57 dominates: implied ≈ 0.57 + 0.43·0.0894 ≈ 0.61 vs global ≈
+    // 0.2716. The gap is the same mechanism, just larger because Vf − wallCredit
+    // is larger — not a second, opposite effect as it was before #340.
+    const { Vf, implied, global, coreLattice, wc } = await impliedFor(50, 10, 4, 25, 5, 2);
     expect(Vf).toBeGreaterThan(0.45); // walls are ~half the section
-    expect(implied).toBeGreaterThan(global * 1.05);
+    expect(implied).toBeGreaterThan(global);
+    expect(implied - global).toBeCloseTo((Vf - wc) * (1 - coreLattice), 12);
   });
 });
