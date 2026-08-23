@@ -31,6 +31,7 @@ import {
   latticeStrengthFractions,
   latticeStrengthExpExcursion,
   lumpedInPlaneStiffnessScale,
+  lumpedStrengthScale,
   wallCreditFraction,
   patternFamilyOf,
 } from "../../solver/lattice.js";
@@ -41,6 +42,7 @@ import { generateBoxMeshC3D4, extractSurfaceFaces } from "../../solver/meshgen.j
 import {
   buildCoreMaterial,
   buildOrthotropicMaterial,
+  materialStrengthMultiplier,
   orientationMultiplier,
   type CalibrationProfile,
 } from "../../analysis.js";
@@ -595,6 +597,104 @@ describe("unified in-plane density knockdown (issue #176)", () => {
       expect(rCLT).toBeCloseTo(k, 6);
       expect(Math.abs(rNon - rCLT) / rNon).toBeLessThan(0.01);
     }
+  });
+});
+
+// ─── Issue #340: ONE infill-STRENGTH law across all paths ────────────────────
+// The strength-side mirror of #176. `materialStrengthMultiplier` used to be the
+// disowned 0.30+0.70ρ linear curve (`infillStrengthCurve`, deleted); it now
+// routes through `lumpedStrengthScale`, the Gibson-Ashby volume average the
+// two-region core already used. These lock the unified law's VALUES at known
+// infill points (CONTRIBUTING.md: every calibration constant needs a test
+// asserting the value) and, critically, that the change does NOT move the
+// #149/#261 acceptance-gate settings.
+describe("unified infill-STRENGTH knockdown (issue #340)", () => {
+  const PAT = "grid";
+  const wc1 = wallCreditFraction(1);
+
+  // Strength anchors to min(1, patternMul), so only patterns with patternMul ≥ 1
+  // reach EXACTLY 1.0 at ρ=1 (unlike stiffness, whose per-family prefactor is 1.0
+  // for every structural family). lines/concentric (patternMul < 1) are covered
+  // by the sub-unity anchor test below.
+  const UNIT_ANCHOR = STRUCTURAL.filter(p => (PATTERN_MULTIPLIERS[p] ?? 1) >= 1);
+
+  it("100% infill strength knockdown is EXACTLY 1.0 (solid anchor) for every patternMul>=1 pattern & wall count", () => {
+    for (const p of UNIT_ANCHOR) {
+      for (const walls of [0, 1, 3, 5]) {
+        // s_GA(1) = 1 when patternMul ≥ 1 ⇒ wallCredit + (1−wallCredit)·1 = 1.
+        expect(lumpedStrengthScale(p, 1, wallCreditFraction(walls))).toBe(1.0);
+      }
+    }
+    expect(UNIT_ANCHOR).toContain("grid");   // guard: the filter kept real patterns
+    expect(UNIT_ANCHOR).toContain("gyroid");
+  });
+
+  it("sub-unity patterns anchor BELOW 1.0 at 100% infill (walls lift, weak lattice still penalises)", () => {
+    // lines patternMul 0.92: s_GA(1) = 0.92, so the core never reaches solid —
+    // matching latticeStrengthFractions (materialsEqual does NOT fire for these).
+    expect(lumpedStrengthScale("lines", 1, wallCreditFraction(1))).toBeCloseTo(0.10 + 0.90 * 0.92, 12);
+    expect(lumpedStrengthScale("lines", 1, wallCreditFraction(20))).toBeCloseTo(0.90 + 0.10 * 0.92, 12);
+    expect(lumpedStrengthScale("lines", 1, wallCreditFraction(1))).toBeLessThan(1.0);
+  });
+
+  it("equals the wall-credit + Gibson-Ashby volume average at known infill points", () => {
+    // grid at 20%: s_GA = 1.0·0.2^1.5 = 0.0894427; wallCredit(1) = 0.10 ⇒
+    // 0.10 + 0.90·0.0894427 = 0.1804985.
+    expect(latticeStrengthFraction("grid", 0.2)).toBeCloseTo(0.0894427, 6);
+    expect(lumpedStrengthScale("grid", 0.2, wc1)).toBeCloseTo(0.1804985, 6);
+    // gyroid at 30% (tpms3d m=1.25, patternMul 1.08; taper ~0 at ρ=0.3):
+    // s ≈ 1.08·0.3^1.25 = 0.2527; wallCredit(2)=0.20 ⇒ 0.20 + 0.80·0.2527 = 0.4022.
+    expect(lumpedStrengthScale("gyroid", 0.3, wallCreditFraction(2)))
+      .toBeCloseTo(0.20 + 0.80 * latticeStrengthFraction("gyroid", 0.3), 12);
+  });
+
+  it("materialStrengthMultiplier routes through lumpedStrengthScale (one law, no separate pattern re-multiply)", () => {
+    for (const p of ["grid", "gyroid", "lines", "lightning"]) {
+      for (const [infill, walls] of [[20, 3], [50, 1], [0, 2], [100, 4]] as const) {
+        expect(materialStrengthMultiplier(infill, walls, p))
+          .toBe(lumpedStrengthScale(p, infill / 100, wallCreditFraction(walls)));
+      }
+    }
+  });
+
+  it("is bit-identical to the pre-#340 law (1.0) at the #149/#261 acceptance-gate settings (100% grid)", () => {
+    // The heavy acceptance gates solve at infillPct 100, wallCount 3, grid — where
+    // BOTH the old min(1, (0.30+0.70)+0.20)·1.0 and the new lumpedStrengthScale
+    // are exactly 1.0. So unifying the law moves no pinned acceptance-gate number.
+    expect(materialStrengthMultiplier(100, 3, "grid")).toBe(1.0);
+  });
+
+  it("credits low-ρ infill LESS than the disowned 0.30+0.70ρ linear curve (the power-law statement)", () => {
+    for (const rho of [0.2, 0.5]) {
+      const knockdown = lumpedStrengthScale(PAT, rho, wc1);
+      const legacyLinear = Math.min(1, (0.30 + 0.70 * rho) + 0);  // grid, 1 wall, patternMul 1.0
+      expect(knockdown).toBeLessThan(legacyLinear);
+      expect(knockdown).toBeGreaterThan(latticeStrengthFraction(PAT, rho)); // walls credited
+    }
+  });
+
+  it("is monotonic in infill and in wall credit", () => {
+    let prev = -1;
+    for (const rho of [0, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0]) {
+      const v = lumpedStrengthScale(PAT, rho, wc1);
+      expect(v).toBeGreaterThanOrEqual(prev);
+      prev = v;
+    }
+    let prevW = -1;
+    for (const walls of [0, 1, 2, 4, 8]) {
+      const v = lumpedStrengthScale(PAT, 0.2, wallCreditFraction(walls));
+      expect(v).toBeGreaterThanOrEqual(prevW);
+      prevW = v;
+    }
+  });
+
+  it("a calibration strength exponent overrides the family exponent uniformly", () => {
+    // Override m to 1.5 for gyroid (family default 1.25) — the lattice fraction,
+    // and therefore the lumped scale, must follow the override.
+    const overridden = lumpedStrengthScale("gyroid", 0.3, wc1, 1.5);
+    expect(overridden).toBeCloseTo(
+      wc1 + (1 - wc1) * latticeStrengthFraction("gyroid", 0.3, 1.5), 12);
+    expect(overridden).not.toBeCloseTo(lumpedStrengthScale("gyroid", 0.3, wc1), 6);
   });
 });
 

@@ -6379,19 +6379,56 @@ function parseGcodeParams(lines) {
 const BASE_YIELD = { pla:50, petg:45, abs:40, asa:40, tpu:15, pa12:48 };
 const BASE_E     = { pla:3500, petg:2100, abs:2300, asa:2100, tpu:200, pa12:1700 };
 
-// Infill strength curve — linear model based on published data
-// More infill = more strength, monotonically. 100% is not weaker than 60%.
-function infillStrengthCurve(pct) {
-  return 0.30 + (pct / 100) * 0.70;
-}
-
 // Pattern multipliers — conservative estimates, literature is inconsistent
 // Treat as rough guidance only. Orientation matters far more than pattern.
+// Mirror of PATTERN_MULTIPLIERS in server/solver/lattice.ts.
 const PATTERN_MUL = {
   grid:1.00, lines:0.92, gyroid:1.08, cubic:1.05,
   honeycomb:1.03, trihexagon:1.04, lightning:0.50,
   concentric:0.88, adaptive:1.04
 };
+
+// Infill strength law — the Gibson & Ashby (1997) cellular-solid power law,
+// mirroring server/solver/lattice.ts (latticeStrengthFraction / lumpedStrengthScale
+// / wallCreditFraction). This replaced the disowned 0.30+0.70ρ linear curve
+// (issue #340) so the preview and the SOLVED result use ONE infill-strength law.
+// PATTERN_STRENGTH_EXP is the in-plane exponent m_xy per pattern family
+// (walls25d bending-dominated 1.5; tpms3d stretch-dominated 1.25; sparse 1.5);
+// unknown patterns fall back to grid's, as the server does.
+const PATTERN_STRENGTH_EXP = {
+  grid:1.5, lines:1.5, honeycomb:1.5, trihexagon:1.5, concentric:1.5,
+  gyroid:1.25, cubic:1.25, adaptive:1.25,
+  lightning:1.5,
+};
+const STRENGTH_TAPER_K = 10;       // issue #183 above-reference taper
+const LATTICE_STRENGTH_FLOOR = 1e-3;
+
+// s(ρ) for a WALL-FREE lattice: min(1, patternMul·ρ^m), with the #183 taper
+// fading a >1 pattern benefit to exactly 1 at ρ=1. Matches latticeStrengthFraction.
+function latticeStrengthFraction(pattern, rho) {
+  const patternMul = PATTERN_MUL[pattern] || 1.0;
+  const m = PATTERN_STRENGTH_EXP[pattern] ?? PATTERN_STRENGTH_EXP.grid;
+  const r = Math.min(1, Math.max(0, rho));
+  const base = Math.pow(r, m);
+  const scaled = patternMul > 1
+    ? base * (1 + (patternMul - 1) * (1 - Math.pow(r, STRENGTH_TAPER_K)))
+    : patternMul * base;
+  return Math.max(LATTICE_STRENGTH_FLOOR, Math.min(1, scaled));
+}
+
+// Geometry-free perimeter-wall fraction proxy: min(0.9, 0.10·wallCount).
+// Matches wallCreditFraction in server/solver/lattice.ts.
+function wallCreditFraction(walls) {
+  return Math.min(0.9, Math.max(0, walls) * 0.10);
+}
+
+// Lumped single-material strength knockdown: a Voigt volume average of solid
+// walls (fraction 1.0) and the Gibson-Ashby infill core. Matches lumpedStrengthScale.
+function lumpedStrengthScale(pattern, rho, wallCredit) {
+  const s = latticeStrengthFraction(pattern, rho);
+  const w = Math.min(1, Math.max(0, wallCredit));
+  return Math.min(1, w + (1 - w) * s);
+}
 const PATTERN_CONFIDENCE = {
   grid:'well-studied baseline',
   lines:'known weakest — unidirectional',
@@ -6428,12 +6465,12 @@ function layerHeightFactor(lh) {
 }
 
 function calcEffectiveMul(infill, walls, pattern, orient) {
-  const infillMul  = infillStrengthCurve(infill);
-  const wallBonus  = (walls - 1) * 0.10;
-  const combined   = Math.min(1.0, infillMul + wallBonus);
-  const patternMul = PATTERN_MUL[pattern] || 1.0;
+  // Mirror of server effectiveStrengthMultiplier = materialStrengthMultiplier ×
+  // orientationMultiplier. The pattern is folded INTO the lumped strength scale
+  // (it credits only the infill lattice), so it is NOT multiplied again here.
+  const strengthScale = lumpedStrengthScale(pattern, infill / 100, wallCreditFraction(walls));
   const orientMul  = orient === 'flat' ? 0.55 : orient === 'upright' ? 0.90 : 0.75;
-  return combined * patternMul * orientMul;
+  return strengthScale * orientMul;
 }
 
 
@@ -6549,8 +6586,9 @@ function updateSettingsPreview() {
 
   const patternMul = PATTERN_MUL[pattern] || 1.0;
   const orientMul  = orient === 'flat' ? 0.55 : orient === 'upright' ? 0.90 : 0.75;
-  const infillMul  = infillStrengthCurve(infill);
-  const wallBonus  = (walls - 1) * 0.10;
+  // Wall-credit + Gibson-Ashby section strength (walls + infill lattice + pattern),
+  // the same law the solver uses (issue #340). Orientation is applied separately.
+  const sectionStrength = lumpedStrengthScale(pattern, infill / 100, wallCreditFraction(walls));
 
   const confidence = PATTERN_CONFIDENCE[pattern] || 'limited data';
   const lh  = +(document.getElementById('s-lh')?.value ?? 20) / 100;
@@ -6559,8 +6597,8 @@ function updateSettingsPreview() {
   document.getElementById('preview-content').innerHTML = `
     Effective yield strength: <b style="color:var(--text-hi)">${effY} MPa</b> (base ${baseY} MPa)<br>
     Effective stiffness: <b style="color:var(--text-hi)">${effE} MPa</b><br>
-    Infill (${infill}%): ${(Math.min(1,infillMul+wallBonus)*100).toFixed(0)}% of solid strength<br>
-    Pattern (${pattern}): ${(patternMul*100).toFixed(0)}× <span style="color:var(--text-label)">— ${confidence}</span><br>
+    Infill (${infill}%) + ${walls} ${walls === 1 ? 'wall' : 'walls'}: ${(sectionStrength*100).toFixed(0)}% of solid strength <span style="color:var(--text-label)">— wall-credit + Gibson-Ashby</span><br>
+    Pattern (${pattern}): ${(patternMul*100).toFixed(0)}% core factor <span style="color:var(--text-label)">— ${confidence}</span><br>
     Orientation: ${(orientMul*100).toFixed(0)}% <span style="color:${orientMul<0.6?'var(--gold)':'var(--text-lo)'}">${orient === 'flat' ? '<svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> inter-layer loading — weakest direction' : orient === 'upright' ? '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> in-layer — strongest' : 'angled'}</span><br>
     Layer height (${lh.toFixed(2)}mm): <span style="color:${lhf>1.02?'var(--gold)':lhf<0.96?'var(--gold)':'var(--text-lo)'}">${lhPct > 0 ? '+' : ''}${lhPct.toFixed(0)}% Z-strength vs 0.2mm baseline</span>
   `;

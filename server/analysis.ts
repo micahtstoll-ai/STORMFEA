@@ -67,13 +67,13 @@ import { buildTwoRegionField, buildWallBondField, estimateWallLoopPerimeterMm, T
 import {
   LATTICE_PARAMS,
   LATTICE_STIFFNESS_FLOOR,
-  PATTERN_MULTIPLIERS,
   latticeStiffnessScale,
   latticeStiffnessScales,
   latticeStrengthFraction,
   latticeStrengthFractions,
   latticeStrengthExpExcursion,
   lumpedInPlaneStiffnessScale,
+  lumpedStrengthScale,
   wallCreditFraction,
   patternFamilyOf,
   dfaPressureSensitivity,
@@ -1329,42 +1329,44 @@ export function buildOrthotropicMaterial(
  *
  * WHAT IS WELL-SUPPORTED BY PUBLISHED DATA:
  *
- * 1. Infill density: strength increases approximately linearly with infill %.
- *    At 100% infill, tensile strength ~45 MPa (PLA) vs ~22 MPa at 40%.
- *    Source: multiple studies including Garg et al. 2025, showing monotonic increase.
- *    NOTE: 100% infill is more brittle but not weaker in tensile/pull-through.
- *    We use a linear model: 0.30 (0%) to 1.0 (100%).
+ * 1. Infill density: a wall-free lattice loses strength with decreasing relative
+ *    density following the Gibson & Ashby (1997) cellular-solid power law
+ *    s(ρ) = min(1, patternMul·ρ^m) (Cellular Solids, 2nd ed., Ch. 5-6:
+ *    σ* / σ_s ∝ (ρ* / ρ_s)^m, m ≈ 1.5 for the bending-dominated plastic collapse
+ *    of open-cell structures, ~1.2-1.3 for stretch-dominated topologies). A real
+ *    part adds fully-dense perimeter walls, so the single-material multiplier is
+ *    a Voigt volume average of solid walls and that lattice core
+ *    (`lumpedStrengthScale`, solver/lattice.ts) — the strength-side mirror of the
+ *    stiffness law issue #176 unified (`lumpedInPlaneStiffnessScale`) and the
+ *    lumped limit of the two-region core (`latticeStrengthFractions`). This
+ *    replaced the disowned `0.30 + 0.70ρ` linear curve (issue #340), which had no
+ *    checkable citation and disagreed with the two-region default.
  *
  * 2. Layer orientation: well-established. Inter-layer bond is ~50-60% of in-layer.
  *    "Flat" print = load perpendicular to layers = weakest (~0.55×).
  *    "Upright" = load parallel to layers = strongest (~0.90×).
- *    Source: Rodriguez et al. 2001, confirmed by many studies.
+ *    Source: Rodriguez et al. 2001 (Rapid Prototyping J. 7(3):148-158), confirmed
+ *    by many studies. Orientation is the criterion's job in the SOLVED path
+ *    (audit A4); it survives here only in the scalar what-if estimator.
  *
  * 3. Wall count: each perimeter is fully dense. More walls = more load-bearing
- *    cross-section at the part boundary.
+ *    cross-section at the part boundary. Estimated geometry-free as
+ *    `wallCreditFraction` (min(0.9, 0.10·wallCount)) — the SAME wall model the
+ *    stiffness lumped law and the mass model use.
  *
  * 4. Pattern multipliers: THE LITERATURE IS INCONSISTENT.
  *    Different studies rank patterns differently depending on load type, printer,
  *    and settings. Gyroid is often cited as near-isotropic, but some studies find
  *    grid or honeycomb stronger in tension. We apply small, conservative adjustments
- *    with explicit uncertainty. These should be treated as rough guidance only.
- *    Do not rely on pattern multipliers for safety-critical decisions.
+ *    with explicit uncertainty (`PATTERN_MULTIPLIERS`, solver/lattice.ts). These
+ *    should be treated as rough guidance only, and they credit only the infill
+ *    lattice (never the solid walls). Do not rely on them for safety-critical
+ *    decisions.
  *
- * Sources: Wittbrodt & Pearce 2015, Rodriguez et al. 2001, Garg et al. 2025,
- * multiple PLA tensile studies on PubMed/ResearchGate.
+ * Sources: Gibson & Ashby, Cellular Solids (1997); Rodriguez et al. 2001.
+ * Exponents/multipliers are confidence LOW, regression-locked in
+ * core-lattice.test.ts.
  */
-
-// Linear infill model — better supported than a peak curve
-function infillStrengthCurve(pct: number): number {
-  // Linear from 0.30 (walls only at 0%) to 1.0 (solid at 100%)
-  // This matches the monotonically increasing trend seen in most studies
-  return 0.30 + (pct / 100) * 0.70;
-}
-
-// Pattern multipliers — conservative, treat as approximate guidance only.
-// Moved to solver/lattice.ts (imported above) so the strength prefactor lives
-// beside the Gibson-Ashby exponent tables; values are unchanged, keeping the
-// legacy uniform path bit-identical.
 
 // Pattern uncertainty — shown to user so they know how reliable each value is
 export const PATTERN_CONFIDENCE: Record<string, string> = {
@@ -1415,8 +1417,9 @@ export function effectiveStrengthMultiplier(
   wallCount:   number,
   pattern:     string,
   orientation: string,
+  strengthExpOverride?: number | null,
 ): number {
-  return materialStrengthMultiplier(infillPct, wallCount, pattern)
+  return materialStrengthMultiplier(infillPct, wallCount, pattern, strengthExpOverride)
        * orientationMultiplier(orientation);
 }
 
@@ -1433,6 +1436,15 @@ export function effectiveStrengthMultiplier(
  * infill/walls/pattern stay: they describe how much load-bearing section
  * exists, which the continuum mesh cannot see.
  *
+ * The section model is `lumpedStrengthScale` (solver/lattice.ts): a Voigt volume
+ * average of solid perimeter walls (`wallCreditFraction`) and a Gibson-Ashby
+ * infill lattice (`latticeStrengthFraction`). This is the SAME law the
+ * two-region core uses, so the single-material path and the default two-region
+ * path can no longer report disagreeing infill-strength numbers (issue #340) —
+ * it replaced the disowned `0.30 + 0.70ρ` linear curve, mirroring what issue
+ * #176 did for stiffness. A calibration `latticeStrengthExp` override flows
+ * through the same way it does for the two-region core.
+ *
  * effectiveStrengthMultiplier (above) KEEPS orientation and remains the
  * quick scalar ESTIMATOR for recommendations / what-if ranking only — it
  * approximates the direction effect without solving.
@@ -1441,22 +1453,27 @@ export function materialStrengthMultiplier(
   infillPct: number,
   wallCount: number,
   pattern:   string,
+  strengthExpOverride?: number | null,
 ): number {
-  const infillMul  = infillStrengthCurve(infillPct);
-  const wallBonus  = (wallCount - 1) * 0.10;
-  const combined   = Math.min(1.0, infillMul + wallBonus);
-  const patternMul = PATTERN_MULTIPLIERS[pattern] ?? 1.0;
-  return combined * patternMul;
+  return lumpedStrengthScale(
+    pattern,
+    infillPct / 100,
+    wallCreditFraction(wallCount),
+    strengthExpOverride,
+  );
 }
 
 /**
  * Strength multiplier for a WALL-FREE homogenized infill lattice (the core
- * region of the two-region model). Unlike infillStrengthCurve — whose 0.30
- * intercept at 0% infill represents the perimeter walls — a pure lattice
- * carries ~nothing at 0% and follows a Gibson-Ashby power law in relative
- * density (solver/lattice.ts: s(ρ) = min(1, patternMul·ρ^m), m per pattern
- * family). Clamped at solid; anchored s(1) = min(1, patternMul), identical
- * to the legacy linear curve's ρ=1 value.
+ * region of the two-region model). Unlike the lumped single-material multiplier
+ * (`materialStrengthMultiplier` / `lumpedStrengthScale`), which credits solid
+ * perimeter walls via `wallCreditFraction`, a pure lattice carries ~nothing at
+ * 0% and follows the Gibson-Ashby power law in relative density alone
+ * (solver/lattice.ts: s(ρ) = min(1, patternMul·ρ^m), m per pattern family).
+ * Both are built on the SAME `latticeStrengthFraction`, so they agree on the
+ * infill-lattice contribution and differ only in how the wall fraction is
+ * estimated — geometric shell Vf (two-region) vs the `wallCreditFraction`
+ * heuristic (lumped). Clamped at solid; anchored s(1) = min(1, patternMul).
  *
  * Orientation-free (audit A4): direction is the criterion's job. The core is
  * still layered material — its through-layer weakness enters via yieldZ.
@@ -1630,22 +1647,25 @@ export function buildCoreMaterial(
  * stiffness already does. Without this a 20%-infill part carried full solid
  * density against infill-scaled stiffness, underestimating frequencies ~2×.
  *
- * Model: deliberately the SAME load-bearing-section model that
- * effectiveStrengthMultiplier uses for its combined infill+wall term
- * (infillStrengthCurve linear term + 0.10 per extra perimeter, clamped at
- * 1.0). That model already interprets its coefficients as the fraction of
- * solid, load-carrying cross-section (shells fully dense, interior at the
- * infill ratio); to first order the solid VOLUME fraction equals that solid
- * SECTION fraction. The pattern and orientation multipliers are strength
- * adjustments, not density adjustments, so they are excluded here.
+ * Model: an EXPLICIT linear solid-section fraction — 0.30 (walls-only floor at
+ * 0% infill) rising to 1.0 at 100%, plus 0.10 per extra perimeter, clamped at
+ * 1.0. Mass tracks VOLUME, which is ~linear in infill % (each 1% of infill lays
+ * down ~1% more material), NOT the steeper Gibson & Ashby STRENGTH knockdown —
+ * so this deliberately keeps its own linear expression rather than borrowing the
+ * strength law. It used to reuse `infillStrengthCurve` as that linear proxy;
+ * when the strength side moved to the Gibson-Ashby `lumpedStrengthScale` (issue
+ * #340), the linear expression was inlined here so the mass model stays exactly
+ * what it was (this returns bit-identical values). The pattern and orientation
+ * multipliers are strength adjustments, not density adjustments, so they are
+ * excluded here.
  *
  * Limitations (documented, accepted at first order): the true shell fraction
  * depends on part surface-to-volume ratio and wall width, and infill patterns
  * differ a few percent in material use at equal percentage. Both effects are
- * far smaller than the 5× mass error this replaces.
+ * far smaller than the 5× mass error this replaces. LOW confidence.
  */
 export function effectiveVolumeFraction(infillPct: number, wallCount: number): number {
-  const infillFrac = infillStrengthCurve(infillPct);       // 0.30 → 1.0 linear
+  const infillFrac = 0.30 + (infillPct / 100) * 0.70;      // 0.30 → 1.0 linear
   const wallBonus  = (wallCount - 1) * 0.10;
   return Math.min(1.0, infillFrac + wallBonus);
 }
@@ -5000,11 +5020,14 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
 
   // Orientation-free material multiplier (audit A4): the criterion resolves
   // load-vs-layer direction; only the angled-no-bed case keeps a scalar
-  // fallback (no directional model exists there).
+  // fallback (no directional model exists there). A calibration
+  // latticeStrengthExp flows through here exactly as latticeStiffExp does for
+  // the stiffness knockdown below (issue #340).
   const strengthMul = materialStrengthMultiplier(
     req.print.infillPct,
     req.print.wallCount,
     req.print.pattern ?? "grid",
+    req.calibration?.latticeStrengthExp,
   );
   const orientFallbackMul = angledNoBedFallbackMul(req.print.orientation, weakAxis);
   const effectiveYield = baseMat.yieldMPa * strengthMul * orientFallbackMul;
@@ -5483,9 +5506,10 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
       // Core: wall-free homogenized lattice — per-axis Gibson-Ashby power
       // laws applied to the solid lattice base (see buildCoreMaterial: frame
       // handling, Poisson guard, ρ=1 anchors, CLT-at-100% composition; near 0
-      // at 0% infill — infillStrengthCurve's 0.30 intercept represents the
-      // walls and must NOT be reused here). The shell stays on the solid
-      // builder: perimeters are solid extrusions, not the infill ply stack.
+      // at 0% infill — the wall credit lives in the lumped SINGLE-material path
+      // (wallCreditFraction), NOT here, because the walls are their own region).
+      // The shell stays on the solid builder: perimeters are solid extrusions,
+      // not the infill ply stack.
       const rho = req.print.infillPct / 100;
       const pattern = req.print.pattern ?? "grid";
       // Reporting scales: the in-plane stiffness law and the strength
@@ -7375,7 +7399,8 @@ export async function runAnalysis(req: AnalysisRequest): Promise<AnalysisResult>
 
   const recommendations: PrintRecommendation[] = candidates
     .map(c => {
-      const mul       = effectiveStrengthMultiplier(c.infill, c.walls, c.pattern, c.orient);
+      const mul       = effectiveStrengthMultiplier(c.infill, c.walls, c.pattern, c.orient,
+                                                     req.calibration?.latticeStrengthExp);
       const lhf       = layerHeightFactor(c.lh);
       const adjYieldZ = baseMat2.yieldMPa * mul * FDM_ORTHO_RATIOS.yieldZ_over_yieldXY * lhf;
       const adjYield  = baseMat2.yieldMPa * mul;
