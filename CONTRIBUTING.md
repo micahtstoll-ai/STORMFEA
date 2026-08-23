@@ -8,6 +8,27 @@ Thanks for taking an interest. Contributions from FTC teams, engineering student
 - **Tests must pass.** Run `npm run test` before opening a PR. The full suite covers 1133 vitest unit tests across 107 files, 187 solver validation tests (patch tests, cantilever benchmarks, isotropic-limit and FDM dual-criterion checks, hole-in-plate Kt, weak-axis Bond rotation, two-region field equivalence), the parallel-assembly equivalence check, and 296 client logic checks. A regression in any of these is a blocker. See [docs/METHODOLOGY.md](docs/METHODOLOGY.md#9-validation) for what the solver suite proves.
 - **Keep the design system.** If you're touching the frontend, read `DESIGN.md` first. Three fonts, no gradients, no purple/cyan/blue/green — the aesthetic is intentional.
 
+## Versioning
+
+STORMFEA uses semantic versioning `MAJOR.MINOR.PATCH`, with one house rule:
+**MAJOR is the analysis-engine generation, not an ordinary breaking-change counter.**
+
+- `1.x` — the original engine (historical).
+- `2.x` — the current, improved engine (two-region material model, FDM dual
+  criterion + bond model, C3D10 default, adaptive refinement). This is what
+  ships at launch.
+- `3.x` — reserved for generative design (FDM-aware topology optimization),
+  a substantial research effort back into the codebase (#327).
+
+Within an engine era, bump MINOR for features and PATCH for fixes as usual. Do
+**not** bump MAJOR for a routine breaking change — a new MAJOR means a new engine
+generation. (The pre-2.0 number had drifted to `43.0.0`; it was reset to `2.0.0`
+when this scheme was adopted.)
+
+The version currently lives in three places that must stay in sync until it is
+single-sourced (#373): `package.json`, the `/api/health` response in
+`server/index.ts`, and the in-app string in `client/index.html`.
+
 ## Setting Up
 
 ```bash
@@ -39,6 +60,28 @@ Read `DESIGN.md`. Post a screenshot or description in an issue before writing co
 
 ### Documentation
 Typos, clarifications, and example walkthroughs are always welcome — open a PR directly.
+
+## Stacked PRs
+
+When a change naturally splits into dependent pieces — or an issue is large
+enough that a single PR would be hard to review — use a stack of small PRs rather
+than one big branch.
+
+- Branch each PR off the branch below it, not off `main`
+  (e.g. `feat/x-base` → `feat/x-part-2` → `feat/x-part-3`).
+- Set each PR's **base** to the branch below it (the "base" dropdown when opening
+  the PR), so its diff shows only its own change.
+- Merge bottom-up. When the base PR merges to `main`, GitHub retargets the next
+  PR's base to `main`; merge `main` forward and resolve as needed.
+- Keep each PR independently reviewable and, ideally, independently green in CI.
+- Link every PR to its issue with `Fixes #N`, and note the stack position in the
+  body ("2 of 3, stacked on #<prev-PR>").
+
+Stack only when there's a real dependency. Independent issues (for example, the
+launch UI fixes) are better as parallel PRs straight off `main`. On the physics
+roadmap, the natural stack is bolt-load application (#371) → spinning/rotational
+load cases (#363), since the spinning-shaft-through-bolts case builds on the
+former.
 
 ## Pull Request Checklist
 

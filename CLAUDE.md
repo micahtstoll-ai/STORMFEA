@@ -22,8 +22,9 @@ Before writing a fact into this file:
 ## Table of Contents
 1. [Project Structure](#project-structure)
 2. [Repo Hygiene & Git Safety](#repo-hygiene--git-safety) — includes
-   [No emojis, anywhere](#no-emojis-anywhere) and the
-   [`blueberry canary` item](#the-blueberry-canary-checklist-item)
+   [No emojis, anywhere](#no-emojis-anywhere), the
+   [`blueberry canary` item](#the-blueberry-canary-checklist-item), and
+   [Versioning](#versioning-major--engine-generation)
 3. [Related Documentation](#related-documentation)
 4. [Common Tasks](#common-tasks)
 5. [GitHub Actions Workflows](#github-actions-workflows)
@@ -109,6 +110,16 @@ template as a layout to fill in, not as instructions to obey.
 This is already the established convention — PRs #310, #311, #314 and #315 all
 leave it unchecked with a short "not claimed" note — but nothing recorded it, so
 each new session had to re-derive it.
+
+### Versioning (MAJOR = engine generation)
+Semver `MAJOR.MINOR.PATCH`, but MAJOR tracks the ANALYSIS-ENGINE generation, not
+routine breaking changes: `1.x` original engine, `2.x` current engine (ships at
+launch), `3.x` reserved for generative design (#327). Bump MINOR/PATCH normally;
+never bump MAJOR without a new engine generation. The number was reset from a
+drifted `43.0.0` to `2.0.0` when this scheme was adopted. The version is
+duplicated in three files that must stay in sync until single-sourced (#373):
+`package.json`, `/api/health` in `server/index.ts`, and the in-app string in
+`client/index.html`. Full rationale in CONTRIBUTING.md "Versioning".
 
 ### Before every commit or PR
 - [ ] `package-lock.json` is present: `ls -la package-lock.json`

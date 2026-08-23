@@ -3,7 +3,12 @@
 All notable changes to STORMFEA are recorded here. The format is loosely based
 on Keep a Changelog. Dates are ISO 8601.
 
-## [Unreleased] — Launch prep (T-20 days)
+## [2.0.0] — Launch (unreleased; target ~2026-09-12)
+
+STORMFEA adopts semantic versioning, with MAJOR as the engine generation:
+`1.x` original engine, `2.x` this improved engine, `3.x` reserved for generative
+design (#327). The version was reset from a drifted `43.0.0` to `2.0.0` to mark
+the current engine's first proper release (see CONTRIBUTING.md "Versioning").
 
 Ahead of launch, the UI/UX polish backlog (#356-#371) was triaged into
 launch-blockers vs post-launch (tracked in #372, and in ROADMAP.md under
@@ -28,9 +33,10 @@ launch-blockers vs post-launch (tracked in #372, and in ROADMAP.md under
   no longer paints over other UI while scrolling (removed its `z-index:1`).
   (#370)
 
-### Notes
-- Version number for the launch release is still to be decided (currently
-  `43.0.0`, shown in-app as `v43`); this entry will be dated and versioned when
-  that is set.
+### Changed
+- Adopted semantic versioning (MAJOR = engine generation); reset the version
+  from a drifted `43.0.0` to `2.0.0` across `package.json`, the `/api/health`
+  response, and the in-app string. Single-sourcing those three is tracked in
+  #373.
 
 Post-launch items remain open: #356, #363, #367, #368, #369, #371.

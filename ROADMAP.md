@@ -23,6 +23,15 @@ Settings-vs-Preferences split (#365), and standardizing spelling on US "analyze"
 bolt head types + default (#367), chamber/ambient temp input (#368), the report
 PDF/export overhaul (#369), and applying loads directly to bolts (#371).
 
+**Versioning.** Adopted semantic versioning with MAJOR = engine generation
+(1.x original, 2.x current, 3.x generative design); version reset `43.0.0` →
+`2.0.0` (see CONTRIBUTING.md "Versioning", #373 for single-sourcing).
+
+**Process.** Dependent work goes through stacked PRs (CONTRIBUTING.md
+"Stacked PRs"); independent launch fixes are parallel PRs off `main`. The four
+remaining launch-blockers — #358, #362, #365, #366 — are the first priorities
+when work resumes.
+
 ---
 
 ## COMPLETED ✓
