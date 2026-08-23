@@ -1806,7 +1806,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
                oninput="updateLayerHeightDisplay(this.value);updateSettingsPreview()">
         <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-lo);margin-top:3px">
           <span>0.05mm</span>
-          <span style="color:var(--text-label)">stronger Z ←-> faster print</span>
+          <span style="color:var(--text-label)" title="Conservative, medium-confidence central trend — not a rule. Thinner layers usually strengthen Z bonds, but the optimum varies with infill and pattern (Hikmat 2023: peak strength near 0.3mm; Garg 2025: near 0.4mm). Model slope -1.0/mm, clamped -15%/+10%. See CITATIONS → Layer Height Effect.">thinner ≈ stronger Z (typical) ←-> faster print</span>
           <span>0.35mm</span>
         </div>
       </div>
@@ -10994,7 +10994,7 @@ const SOURCES_DB = [
         url: "https://doi.org/10.1007/s40964-021-00247-6",
         usedFor: "Layer height slope calibration: up to 20% reduction with increasing layer thickness",
         confidence: "high",
-        note: "Meta-analysis of 131 samples. Most comprehensive layer height dataset found. Used to cap layer height effect at ±15% and reduce slope from -1.4 to -1.0/mm.",
+        note: "Meta-analysis of 131 samples. Most comprehensive layer height dataset found. Used to cap layer height effect at -15%/+10% (clamp [0.85, 1.10]) and reduce slope from -1.4 to -1.0/mm.",
       },
       {
         id: "szust2022",
