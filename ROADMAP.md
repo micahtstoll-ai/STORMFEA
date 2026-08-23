@@ -3,6 +3,28 @@
 
 ---
 
+## LAUNCH PREP (T-20 days)
+
+Tracked in #372. UI/UX polish backlog #356-#371, triaged into launch-blockers
+vs post-launch. Not a hard gate list — the split reflects effort and visibility,
+not correctness.
+
+**Launch-blockers.** Six already fixed on `claude/ui-ux-issues-backlog-s6d65z`
+(client suite green): bolt/force badge bottom gap (#357), layer-height arrow
+glyph (#359), two-line fail-force label (#360), axis-triad green removed (#361),
+workflow-rail circle sizing + connector (#364), and the delamination strip's
+banned-green ramp + scroll overlap (#370). Still open for launch: the "?"-button
+overlap with ANALYSE (#358), landing-page light mode (#362), a clear
+Settings-vs-Preferences split (#365), and standardizing spelling on US "analyze"
+(#366 — the `/api/analyse` route/ID rename may slip past launch).
+
+**Deferred to post-launch** (larger efforts): direction-dropdown hover preview
+(#356), rotational/spinning load cases (#363 — a whole new failure mode), more
+bolt head types + default (#367), chamber/ambient temp input (#368), the report
+PDF/export overhaul (#369), and applying loads directly to bolts (#371).
+
+---
+
 ## COMPLETED ✓
 
 ### Core Solver

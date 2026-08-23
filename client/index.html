@@ -1207,7 +1207,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
          style="display:none;position:absolute;top:48px;right:12px;pointer-events:none;overflow:visible"></svg>
 
     <!-- Bottom badges -->
-    <div id="badges" style="display:none;position:absolute;bottom:54px;left:12px;display:flex;gap:8px">
+    <div id="badges" style="display:none;position:absolute;bottom:12px;left:12px;display:flex;gap:8px">
       <div id="mesh-stats-badge" style="display:none;padding:3px 8px;background:var(--bg-panel);border:1px solid var(--border);border-radius:3px;font-size:10px;color:var(--text-mid);letter-spacing:.06em"></div>
       <span id="badge-bolts"  style="font-size:11px;background:var(--gold-faint);border:1px solid var(--gold-faint);color:var(--gold);padding:3px 8px;border-radius:2px"><svg width="11" height="11" viewBox="0 0 11 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5.5" cy="5.5" r="4"/><circle cx="5.5" cy="5.5" r="1.5" fill="currentColor" stroke="none"/></svg> 0 bolts</span>
       <span id="badge-forces" style="font-size:11px;background:var(--gold-faint);border:1px solid var(--gold)22;color:var(--gold);padding:3px 8px;border-radius:2px"><svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> 0 forces</span>
@@ -1393,7 +1393,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <div style="width:1px;height:32px;background:var(--border);flex-shrink:0"></div>
       <!-- Fail force -->
       <div style="display:flex;flex-direction:column;gap:1px" title="Applied load x the GOVERNING safety factor. Linear first-yield estimate, not an ultimate/collapse load — see full results for the caveat.">
-        <div style="font-size:10px;color:var(--text-lo);letter-spacing:.06em;font-weight:600">FAIL FORCE (EST., GOVERNING MODE)</div>
+        <div style="font-size:10px;color:var(--text-lo);letter-spacing:.06em;font-weight:600;line-height:1.15">FAIL FORCE<br><span style="font-size:9px;font-weight:400;letter-spacing:.04em">(est., governing mode)</span></div>
         <div id="sticky-fail" style="font-family:'DM Mono',monospace;font-size:13px;
               color:var(--text-hi);line-height:1.3">—</div>
         <div id="sticky-fail-sub" style="font-size:9px;color:var(--text-lo);line-height:1.2"></div>
@@ -1806,7 +1806,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
                oninput="updateLayerHeightDisplay(this.value);updateSettingsPreview()">
         <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-lo);margin-top:3px">
           <span>0.05mm</span>
-          <span style="color:var(--text-label)" title="Conservative, medium-confidence central trend — not a rule. Thinner layers usually strengthen Z bonds, but the optimum varies with infill and pattern (Hikmat 2023: peak strength near 0.3mm; Garg 2025: near 0.4mm). Model slope -1.0/mm, clamped -15%/+10%. See CITATIONS → Layer Height Effect.">thinner ≈ stronger Z (typical) ←-> faster print</span>
+          <span style="color:var(--text-label)" title="Conservative, medium-confidence central trend — not a rule. Thinner layers usually strengthen Z bonds, but the optimum varies with infill and pattern (Hikmat 2023: peak strength near 0.3mm; Garg 2025: near 0.4mm). Model slope -1.0/mm, clamped -15%/+10%. See CITATIONS → Layer Height Effect.">thinner ≈ stronger Z (typical) ↔ faster print</span>
           <span>0.35mm</span>
         </div>
       </div>
@@ -2992,10 +2992,16 @@ function updateAxesTriad() {
   const up    = new THREE.Vector3(e[4], e[5], e[6]).normalize();
   const fwd   = new THREE.Vector3(-e[8], -e[9], -e[10]).normalize();
   const cx = 42, cy = 42, L = 26;
+  // Axis colors from theme tokens (no green — DESIGN.md palette bans it), re-read
+  // each draw so the triad adapts to light/dark. X rust, Y neutral, Z gold accent.
+  const _triadCS = getComputedStyle(document.documentElement);
+  const colX = _triadCS.getPropertyValue('--danger').trim()   || '#C2452F';
+  const colY = _triadCS.getPropertyValue('--text-mid').trim() || '#9a8c70';
+  const colZ = _triadCS.getPropertyValue('--gold').trim()     || '#C9A227';
   const axes = [
-    { dir: bedDirToWorld(new THREE.Vector3(1,0,0)), color:'#C2452F', label:'X' },
-    { dir: bedDirToWorld(new THREE.Vector3(0,1,0)), color:'#3E8E5A', label:'Y' },
-    { dir: bedDirToWorld(new THREE.Vector3(0,0,1)), color:'#C9A227', label:'Z' },
+    { dir: bedDirToWorld(new THREE.Vector3(1,0,0)), color:colX, label:'X' },
+    { dir: bedDirToWorld(new THREE.Vector3(0,1,0)), color:colY, label:'Y' },
+    { dir: bedDirToWorld(new THREE.Vector3(0,0,1)), color:colZ, label:'Z' },
   ];
   axes.forEach(a => { a.sx = a.dir.dot(right); a.sy = a.dir.dot(up); a.depth = a.dir.dot(fwd); });
   axes.sort((a, b) => a.depth - b.depth);   // far axes first (drawn under)
@@ -7513,7 +7519,7 @@ function showResults(s) {
         <div style="font-size:18px;font-weight:500;color:var(--text-hi)">${s.maxDisplacementMm.toFixed(4)} <span style="font-size:10px;color:var(--text-label)">mm</span></div>
       </div>
       <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px" title="Applied load x the GOVERNING safety factor. Linear first-yield estimate: assumes stress ∝ load and failure at first yield — not an ultimate/collapse load. Actual capacity is typically higher for ductile bending, lower if buckling governs.">
-        <div style="font-size:10px;color:var(--text-label);margin-bottom:4px">EST. FAIL FORCE (GOVERNING MODE)${bucklingGoverns ? ' <span style="color:var(--warn)">(buckling-limited)</span>' : ''}</div>
+        <div style="font-size:10px;color:var(--text-label);margin-bottom:4px;line-height:1.2">FAIL FORCE${bucklingGoverns ? ' <span style="color:var(--warn)">(buckling-limited)</span>' : ''}<br><span style="font-size:9px">(est., governing mode)</span></div>
         <div style="font-size:18px;font-weight:500;color:var(--text-hi)">${U.force(displayFailForceN).toFixed(S.units==='imperial'?1:0)} <span style="font-size:10px;color:var(--text-label)">${U.forceLabel()}</span></div>
         <div style="font-size:10px;color:var(--text-hi);margin-top:2px">${gov.mode}</div>
         ${gov.analyticGoverns ? `<div style="font-size:10px;color:var(--text-lo);margin-top:2px">Bulk yield alone: <b>${U.force(gov.bulkFailForceN).toFixed(S.units==='imperial'?1:0)} ${U.forceLabel()}</b></div>` : ''}
@@ -7878,14 +7884,15 @@ function showResults(s) {
 }
 
 // ── Layer-by-layer delamination risk strip ───────────────────────────────────
-// Maps interface utilization (1/SF) to a green→amber→red ramp so the worst
-// printed layers stand out at a glance. util 0 = safe (green), util≥1 = at the
-// interface limit (red). Independent of the heatmap colormap on purpose — this
+// Maps interface utilization (1/SF) to a gold→amber→red ramp so the worst
+// printed layers stand out at a glance. util 0 = safe (gold), util≥1 = at the
+// interface limit (red). No green — DESIGN.md palette. Independent of the
+// heatmap colormap on purpose — this
 // is a pass/fail risk read, not a stress magnitude.
 function layerRiskColor(sf) {
   const util = Math.min(sf > 1e-6 ? 1 / sf : 2, 1.5);   // 0 (safe) … 1.5 (well past limit)
   const t = Math.min(util, 1);                          // clamp the hue ramp at the limit
-  const hue = 130 * (1 - t);                            // 130° green → 0° red
+  const hue = 45 * (1 - t);                             // 45° gold → 0° red (no green)
   const light = 42 + 8 * (1 - t);                       // slightly brighter when safe
   return `hsl(${hue.toFixed(0)},72%,${light.toFixed(0)}%)`;
 }
@@ -7905,7 +7912,7 @@ function renderLayerRiskProfile(s) {
     const hPct = 22 + 78 * Math.min(util / 1.5, 1);
     const isGov = i === p.governingIndex;
     const tip = `Layer ${L.layer} (z≈${U.lenStr ? U.lenStr(L.zMidMm) : L.zMidMm.toFixed(2) + ' mm'}) — SF ${L.sf.toFixed(2)}× · tension ${(L.uTension * 100).toFixed(0)}% · shear ${(L.uShear * 100).toFixed(0)}%`;
-    return `<div title="${tip}" style="flex:1 1 0;min-width:2px;height:${hPct.toFixed(0)}%;align-self:flex-end;background:${layerRiskColor(L.sf)};${isGov ? 'outline:1.5px solid var(--text-hi);outline-offset:-1px;z-index:1;' : ''}border-radius:1px"></div>`;
+    return `<div title="${tip}" style="flex:1 1 0;min-width:2px;height:${hPct.toFixed(0)}%;align-self:flex-end;background:${layerRiskColor(L.sf)};${isGov ? 'outline:1.5px solid var(--text-hi);outline-offset:-1px;' : ''}border-radius:1px"></div>`;
   }).join('');
   const govSfColor = gov.sf >= 2 ? 'var(--gold)' : gov.sf >= 1 ? 'var(--warn)' : 'var(--danger)';
   return `
@@ -8792,7 +8799,7 @@ function renderWorkflowRail() {
     return `<div onclick="switchTab('${s.tab}')" style="display:flex;align-items:stretch;cursor:pointer;border-left:2px solid ${stripColor};padding-left:10px">
   <div style="display:flex;flex-direction:column;align-items:center;width:14px;flex-shrink:0;padding-top:4px">
     <div style="width:6px;height:6px;border-radius:50%;background:${circleBg};border:1.5px solid ${circleBorder};display:flex;align-items:center;justify-content:center;flex-shrink:0;${circleAnim}">${innerIcon}</div>
-    ${!isLast ? `<div style="width:1px;flex:1;min-height:8px;background:${lineColor};margin:3px 0"></div>` : ''}
+    <div style="width:1px;flex:1;min-height:8px;background:${lineColor};margin:3px 0"></div>
   </div>
   <div style="flex:1;padding:0 10px ${isLast ? '0' : '10px'} 8px">
     <div style="font-family:'Outfit',sans-serif;font-size:var(--text-sm);font-weight:600;color:${titleColor};letter-spacing:.04em">${s.t}</div>
@@ -8804,9 +8811,9 @@ function renderWorkflowRail() {
   const runCircleColor = canAnalyse ? 'var(--gold)' : 'var(--border-mid)';
   const runAnim = canAnalyse ? 'animation:pulse 1.6s ease-in-out infinite' : '';
 
-  const runRow = `<div onclick="${canAnalyse ? 'runAnalysis()' : ''}" style="display:flex;align-items:stretch;cursor:${canAnalyse ? 'pointer' : 'default'};border-left:2px solid ${canAnalyse ? 'var(--gold)' : 'transparent'};padding-left:10px;margin-top:4px">
+  const runRow = `<div onclick="${canAnalyse ? 'runAnalysis()' : ''}" style="display:flex;align-items:stretch;cursor:${canAnalyse ? 'pointer' : 'default'};border-left:2px solid ${canAnalyse ? 'var(--gold)' : 'transparent'};padding-left:10px">
   <div style="display:flex;flex-direction:column;align-items:center;width:14px;flex-shrink:0;padding-top:4px">
-    <div style="width:8px;height:8px;border-radius:50%;background:${canAnalyse ? 'var(--gold)' : 'transparent'};border:1.5px solid ${runCircleColor};display:flex;align-items:center;justify-content:center;flex-shrink:0">
+    <div style="width:6px;height:6px;border-radius:50%;background:${canAnalyse ? 'var(--gold)' : 'transparent'};border:1.5px solid ${runCircleColor};display:flex;align-items:center;justify-content:center;flex-shrink:0">
       ${canAnalyse ? '<svg width="4" height="5" viewBox="0 0 4 5" fill="white"><polygon points="0,0.5 4,2.5 0,4.5"/></svg>' : ''}
     </div>
   </div>
