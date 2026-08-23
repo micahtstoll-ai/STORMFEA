@@ -87,7 +87,9 @@ app.get("/", (_req, res) => {
 
 // ── Health check ──────────────────────────────────────────────────────────────
 app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", version: "43" });
+  // Keep in sync with package.json "version" and the client version string
+  // until single-sourced (#373). Scheme: MAJOR = engine generation (CONTRIBUTING.md).
+  res.json({ status: "ok", version: "2.0.0" });
 });
 
 // ── Upload + parse STL or STEP ────────────────────────────────────────────────

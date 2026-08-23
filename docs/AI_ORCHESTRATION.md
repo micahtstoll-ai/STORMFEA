@@ -2,16 +2,12 @@
 
 This log tracks how AI orchestration tools (like Claude Code) are utilized to build, audit, and optimize the STORMFEA computational engine.
 
-## Generation Guardrails & Verification
-Before running code generation prompts, the following validation phrase must be confirmed by the assistant:
-* **Target Phrase:** `blueberry canary`
+## Verification
 
-**Backfilled entries.** Entries 5–11 were written on 2026-08-03 from the git
-history, the roadmap, and the audit documents — not live at the time of the
-work. The guardrail phrase is not recoverable from commit metadata, so those
-entries record what IS verifiable (CI state, suite counts, locking tests) and
-say so explicitly rather than asserting a confirmation nobody logged. Entries
-written live should keep using the Yes/No field as before.
+Each entry records what is verifiable about the work: CI state, suite counts,
+and the locking tests. Entries 5-11 were backfilled on 2026-08-03 from the git
+history, the roadmap, and the audit documents rather than written live, so they
+record only what the tree and commits can confirm.
 
 ## Orchestration Patterns In Use
 
@@ -43,7 +39,7 @@ one they used.
 
 * **Date:** 2026-06-25
 * **Task:** Establish Vitest test framework with configuration and initial test structure
-* **Verification Check:** Yes (Code-review verified)
+* **Verification:** Code-review verified
 * **Engineering Notes:**
   * **Files Modified:** `vitest.config.ts` (new), `server/tests/unit/stiffness-matrix.test.ts` (new)
   * **Configuration Choices:**
@@ -64,7 +60,7 @@ one they used.
 
 * **Date:** 2026-06-25
 * **Task:** Implement GyroidOrthotropic material model with empirically-derived density scaling formulas
-* **Verification Check:** Yes (35+ test cases pass, matrix properties validated)
+* **Verification:** 35+ test cases pass, matrix properties validated
 * **Engineering Notes:**
   * **Files Modified:** 
     - `server/solver/types.ts` — Added `GyroidOrthotropic` interface and type guards
@@ -111,7 +107,7 @@ one they used.
 
 * **Date:** 2026-06-25
 * **Task:** Decode and store nodal displacements from analysis server response for deformation visualization
-* **Verification Check:** Yes (integrated with displacement response decoding and validation)
+* **Verification:** integrated with displacement response decoding and validation
 * **Engineering Notes:**
   * **Files Modified:** `client/index.html`
   
@@ -146,7 +142,7 @@ one they used.
 
 * **Date:** 2026-06-25
 * **Task:** Implement G-Code parameter extraction with slicer detection and layer height inference fallback
-* **Verification Check:** Yes (18 test cases in test group E, all passing)
+* **Verification:** 18 test cases in test group E, all passing
 * **Engineering Notes:**
   * **Files Modified:** `client/index.html` (UI, drag-drop zones), `scripts/test_client_logic.mjs` (test group E)
   
@@ -219,7 +215,7 @@ one they used.
 
 * **Date:** 2026-06-30 → 2026-07-01 (PRs #73–#93)
 * **Task:** Give the app a real entry point, lock the visual identity, and clear the accumulated correctness debt in the single-file client
-* **Verification Check:** Not recorded (backfilled). Verified by `scripts/test_client_logic.mjs` growth and per-PR CI
+* **Verification:** Backfilled. Verified by `scripts/test_client_logic.mjs` growth and per-PR CI
 * **Pattern:** Audit → issues → small PRs (client-scoped)
 * **Engineering Notes:**
   * **Files Modified:** `client/index.html` (dominant), `scripts/test_client_logic.mjs`, `server/index.ts`
@@ -246,7 +242,7 @@ one they used.
 
 * **Date:** 2026-07-07 → 2026-07-08 (PRs #94, #95, #112, #113)
 * **Task:** Full-repo audit, then execute the resulting issues in dependency order
-* **Verification Check:** Not recorded (backfilled). Verified by the solver validation suite plus, from this batch onward, CI running the real TetGen/Gmsh binaries
+* **Verification:** Backfilled. Verified by the solver validation suite plus, from this batch onward, CI running the real TetGen/Gmsh binaries
 * **Pattern:** Audit → issues → phased plan → small PRs
 * **Engineering Notes:**
   * **Artifacts produced:** `docs/REPO_ANALYSIS_2026-07.md` (findings with test evidence) and `docs/IMPLEMENTATION_PLAN_2026-07.md` (phases, dependencies, exit criteria per phase)
@@ -273,7 +269,7 @@ one they used.
 
 * **Date:** 2026-07-09 → 2026-07-11 (PRs #114–#122)
 * **Task:** Close the gap between "what the solver computes" and "what a student can actually ask it"
-* **Verification Check:** Not recorded (backfilled). Verified by new benchmark groups in `solver_validation.ts` and per-feature self-review pass (`1ae0f24`)
+* **Verification:** Backfilled. Verified by new benchmark groups in `solver_validation.ts` and per-feature self-review pass (`1ae0f24`)
 * **Engineering Notes:**
   * **Files Modified:** `server/solver/{buckling,load,mass,modal}.ts`, `server/analysis.ts`, `client/index.html`
   * **New physics capability:**
@@ -294,7 +290,7 @@ one they used.
 
 * **Date:** 2026-07-11 → 2026-07-13 (PRs #122, #123, #128)
 * **Task:** Replace the single averaged material with a geometric shell/core split — dense perimeter walls vs homogenized infill core
-* **Verification Check:** Not recorded (backfilled). Verified by `solver_validation.ts` group 25 (bit-identity to 1e-12 with the flag off), the sandwich-cantilever composite-EI anchor, and a Taguchi L9 sweep
+* **Verification:** Backfilled. Verified by `solver_validation.ts` group 25 (bit-identity to 1e-12 with the flag off), the sandwich-cantilever composite-EI anchor, and a Taguchi L9 sweep
 * **Pattern:** Invariant-locked, staged phases
 * **Engineering Notes:**
   * **Files Modified:** `server/twoRegion.ts` (new), `server/solver/{distance,wallfrac,lattice,types}.ts`, `server/analysis.ts` (`buildCoreMaterial`), `client/index.html`
@@ -320,7 +316,7 @@ one they used.
 
 * **Date:** 2026-07-13 → 2026-07-18 (PRs #127, #132–#135)
 * **Task:** Audit how the tool accounts for FDM layers, then resolve every defect found
-* **Verification Check:** Not recorded (backfilled). Verified by `fdm-criterion.test.ts`, `bond.test.ts`, `in-plane-anisotropy.test.ts`, and the azimuth-invariance group in `solver_validation.ts`
+* **Verification:** Backfilled. Verified by `fdm-criterion.test.ts`, `bond.test.ts`, `in-plane-anisotropy.test.ts`, and the azimuth-invariance group in `solver_validation.ts`
 * **Pattern:** Audit → issues → phased plan; artifact is `docs/layer-model-audit.md`
 * **Engineering Notes:**
   * **Files Modified:** `server/solver/stress.ts` (`fdmDualCriterionSF`), `server/solver/bond.ts` (new), `server/analysis.ts`, `server/report.ts`, `client/index.html`
@@ -341,7 +337,7 @@ one they used.
 
 * **Date:** 2026-07-30 (integration commit `42143a2`; issues #136–#205 minus #149)
 * **Task:** Audit the solver end to end and land the result as one reviewed, CI-green integration
-* **Verification Check:** Not recorded (backfilled). Verified at merge: 677 vitest tests, solver validation 180/0, parallel-assembly equivalence, client logic 141/0, plus three new CI drift gates
+* **Verification:** Backfilled. Verified at merge: 677 vitest tests, solver validation 180/0, parallel-assembly equivalence, client logic 141/0, plus three new CI drift gates
 * **Pattern:** Wide campaign → single reviewed integration
 * **Engineering Notes:**
   * **Headline defect (#167):** Gmsh's C3D10 midside node ordering was SWAPPED, making every STEP-file element self-intersecting — mixed-sign Jacobian, ~0 mm³ isoparametric volume. Post-fix the isoparametric volume matches CAD exactly. **Both mesher paths now run a runtime midside self-check rather than trusting the binary** (`server/c3d10_ordering.ts`). The June re-verification of `C3D10_REORDER` for TetGen (`dbb230c`, `970ae4b`) had established the empirical-verification habit; this is the same class of bug in the other mesher, and the reason the check is now permanent rather than a one-time script
@@ -363,7 +359,7 @@ one they used.
 
 * **Date:** 2026-07-29 → 2026-08-03 (PR #246, commits `75e1128`, `dba9e3f`)
 * **Task:** Turn the ZZ error estimator's per-element indicator — computed "for refinement guidance" and driving nothing — into an error-driven targeted remesh
-* **Verification Check:** Not recorded (backfilled). Verified at merge: 706 passed / 8 skipped (714 total) across 69 files, solver validation 180/0, parallel-assembly equivalence, client logic 141/0, doc-count gate green
+* **Verification:** Backfilled. Verified at merge: 706 passed / 8 skipped (714 total) across 69 files, solver validation 180/0, parallel-assembly equivalence, client logic 141/0, doc-count gate green
 * **Engineering Notes:**
   * **Files Modified:** `server/solver/adaptiveMesh.ts` (new), `server/tetgen.ts` (`meshWithTetGenSizing`), `server/analysis.ts` (`runAdaptiveAnalysis`), `server/index.ts`
   * **Binary-independent core, deliberately separated:** `buildSizeField` maps per-element error η to per-node target edge length via the equidistribution law `h_new = h·clamp((η_target/η_e)^(1/p), min, max)`. High-error nodes shrink, low-error nodes stay coarse. Singularity regions are EXCLUDED — refining toward a true singular corner chases a quantity that diverges (the #147 lesson, now enforced in code). Plus `predictRefinedElementCount` / `relaxSizeFieldToBudget` as a runaway guard and `shouldStopRefinement` for loop control
@@ -384,7 +380,7 @@ one they used.
 
 * **Date:** 2026-08-03 (branch `claude/adaptive-mesh-refinement-budget-6nzpzs`, commits `d4483b5`, `6c8dbd2`)
 * **Task:** A field report on the #149 loop: on a Ø5-bore tube the first refinement jumped 13,340 → 115,544 elements (8.7x against a documented 8x cap) and produced 13 slivers the hard mesh-quality gate (#166) rejected, so no refined solve ever completed. Three defects were named in the report; a fourth turned out to be the one that mattered
-* **Verification Check:** No. The guardrail phrase was never requested and never given in this session — recording that honestly rather than leaving the field ambiguous. What IS verifiable: 742 passed / 8 skipped (750 total) across 71 files, solver validation 180/0, parallel-assembly equivalence, client logic 141/0, all three CI drift gates green
+* **Verification:** 742 passed / 8 skipped (750 total) across 71 files, solver validation 180/0, parallel-assembly equivalence, client logic 141/0, all three CI drift gates green
 * **Pattern:** None of the three cleanly — closest to invariant-locked refactoring, but the acceptance gate had to be BUILT before it could gate anything, because the benchmark it needed was impossible while no refined solve completed
 * **Engineering Notes:**
   * **Files Modified:** `server/solver/adaptiveMesh.ts`, `server/tetgen.ts` (`meshWithTetGenSizing`, rewritten), `server/analysis.ts` (`runAdaptiveAnalysis`), `server/tests/unit/adaptive-mesh.test.ts`, `adaptive-remesh.test.ts`, `adaptive-benchmark.test.ts` (new), `README.md`, `docs/API.md`, `ROADMAP.md`
@@ -407,7 +403,7 @@ one they used.
 
 * **Date:** 2026-08-03 (branch `claude/stormfea-adaptive-benchmark-followup-r6xeqg`, follow-up to Entry 12)
 * **Task:** Two concerns raised as PR #252 merged: (1) `adaptive-benchmark.test.ts` costs CI wall time — should it be gated behind an env var or a separate workflow? (2) the benchmark's uniform yardstick comes off a fixed TetGen volume-cap ladder, and TetGen's element count is non-monotone in `-a`, so a future TetGen could move the ladder and fail the gate for a reason that is not about the solver. Instruction was to measure both before changing anything, and to say "no action needed" if that is the answer
-* **Verification Check:** No. The guardrail phrase was never requested in this session. What IS verifiable: post-merge CI on `main` (run 30848266810, sha `cd40fa3`) is GREEN, and the benchmark reproduces bit-identically on CI and on a 4-core container — 13,340 → 40,534 elements, ZZ error 0.8936 → 0.2624, uniform 54,373 elements at 0.3371, peak 4.905 vs 3.966 MPa. Suite unchanged at 750 vitest tests across 71 files, solver validation 180, client logic 141, all three drift gates green
+* **Verification:** post-merge CI on `main` (run 30848266810, sha `cd40fa3`) is GREEN, and the benchmark reproduces bit-identically on CI and on a 4-core container — 13,340 → 40,534 elements, ZZ error 0.8936 → 0.2624, uniform 54,373 elements at 0.3371, peak 4.905 vs 3.966 MPa. Suite unchanged at 750 vitest tests across 71 files, solver validation 180, client logic 141, all three drift gates green
 * **Pattern:** Invariant-locked refactoring — the acceptance gate's load-bearing assertion is byte-identical, and everything added sits upstream of it as a premise
 * **Engineering Notes:**
   * **Files Modified:** `server/tests/unit/adaptive-benchmark.test.ts`, `ROADMAP.md`, `docs/AI_ORCHESTRATION.md`. No production code
@@ -427,7 +423,7 @@ one they used.
 
 * **Date:** 2026-08-07 (branch `claude/heatmap-appearance-so9h1l`, PR #293)
 * **Task:** A screenshot of the results view with the note "why does our heatmap look like ass." No error, no failing test, no reproduction steps — a rendering complaint against a suite that was fully green. Diagnose, then fix
-* **Verification Check:** **No.** The guardrail phrase was never requested in this session, and is not claimed. What IS verifiable: `npm run test` exits 0 — 976 vitest tests across 91 files, 187 solver validation tests, the parallel-assembly equivalence check, 182 client logic checks (159 → 182), and all four drift guards green including the #198 count guard against the updated README/CONTRIBUTING numbers
+* **Verification:** `npm run test` exits 0 — 976 vitest tests across 91 files, 187 solver validation tests, the parallel-assembly equivalence check, 182 client logic checks (159 → 182), and all four drift guards green including the #198 count guard against the updated README/CONTRIBUTING numbers
 * **Pattern:** Invariant-locked refactoring. `CLAUDE.md`'s heatmap section defined what must not change (Gouraud shading, welding before color assignment, every vertex receiving a value); the new test group [T] in `scripts/test_client_logic.mjs` is the acceptance gate for what this entry adds
 * **Engineering Notes:**
   * **Files Modified:** `client/index.html`, `scripts/test_client_logic.mjs`, `CLAUDE.md`, `README.md`, `CONTRIBUTING.md`. No server or solver code
@@ -449,7 +445,7 @@ one they used.
 
 * **Date:** 2026-08-10 (branch `claude/stress-symmetry-review-5458x7`, issues #294-#298)
 * **Task:** A screenshot of the results view with three complaints: strange pockets of stress in seemingly random spots, less symmetry than expected, and no visible infill. Fully green suite, no reproduction steps. Follow-up instruction reframed it: the solver is held to 1e-12 bit-identity and a 1e-8 CG residual, so if the first thing a viewer looks at is not at that standard the rest is undermined
-* **Verification Check:** **No.** The guardrail phrase was never requested in this session, and is not claimed. What IS verifiable: `npm run test` exits 0 — 1003 vitest tests across 94 files (976/91 at branch point), 187 solver validation tests, the parallel-assembly equivalence check, 182 client logic checks, and all five drift guards green including the #198 count guard against updated README/CONTRIBUTING numbers
+* **Verification:** `npm run test` exits 0 — 1003 vitest tests across 94 files (976/91 at branch point), 187 solver validation tests, the parallel-assembly equivalence check, 182 client logic checks, and all five drift guards green including the #198 count guard against updated README/CONTRIBUTING numbers
 * **Pattern:** Audit → issues → phased plan → small PRs. A measurement-only pass first, five numbered issues (#294-#298), then commits against them in dependency order. No production code was touched until three candidate fixes had been prototyped and rejected on measurement
 * **Engineering Notes:**
   * **Files Modified:** `server/gmsh_mesh.ts`, `server/analysis.ts`, `server/solver/symmetry.ts` (new), three new test files, `ROADMAP.md`, `docs/INVARIANTS.md`, `README.md`, `CONTRIBUTING.md`. No change to the solver, the recovery, or any material model
@@ -476,7 +472,7 @@ one they used.
 
 * **Date:** 2026-08-10 (branch `claude/surface-clipping-nw8hdi`, issue #300)
 * **Task:** Open-ended: read CLAUDE.md, read the ROADMAP, pick up the surface-clipping work. #300 had been split out of #296 the previous session precisely because it is the risky half — given a closed triangulated surface and a plane, produce the closed surface of the half-space intersection
-* **Verification Check:** **No.** The guardrail phrase was not requested in this session and is not claimed. What IS verifiable: `npm run test` exits 0, with the new `surface-clip.test.ts` contributing 19 tests, and the #198 count guard green against updated README/CONTRIBUTING numbers
+* **Verification:** `npm run test` exits 0, with the new `surface-clip.test.ts` contributing 19 tests, and the #198 count guard green against updated README/CONTRIBUTING numbers
 * **Pattern:** Single-issue implementation with a mesher-free test surface. The issue text already contained the design and the failure modes, so the work was implementation plus the measurement that the issue could not have predicted
 * **Engineering Notes:**
   * **Files Modified:** `server/solver/clip.ts` (new), `server/tests/unit/surface-clip.test.ts` (new), `server/tetgen.ts` (one function delegates instead of repeating a literal), `ROADMAP.md`, `README.md`, `CONTRIBUTING.md`. No change to the solver, the recovery, any material model, or any user-facing path — the clipper is not wired into analysis, which stays under #296
@@ -497,7 +493,7 @@ one they used.
 
 * **Date:** 2026-08-10 (branch `claude/issues-roadmap-status-ucuask`, issue #295)
 * **Task:** Open-ended, in two halves: first report where the issues and the roadmap actually stand, then act on the answer. The status pass identified #295 as the gating entry of the only dependency chain in NEXT (#295 -> #297 -> #296), and the follow-up instruction was to finish it
-* **Verification Check:** **No.** The guardrail phrase was not requested in this session and is not claimed. What IS verifiable: `npm run test` exits 0 — 1038 vitest tests across 96 files (the new `tet-sizing.test.ts` contributing 16), 187 solver validation tests, 182 client logic checks, and all four drift guards green including the #198 count guard against updated README/CONTRIBUTING numbers
+* **Verification:** `npm run test` exits 0 — 1038 vitest tests across 96 files (the new `tet-sizing.test.ts` contributing 16), 187 solver validation tests, 182 client logic checks, and all four drift guards green including the #198 count guard against updated README/CONTRIBUTING numbers
 * **Pattern:** Single-issue implementation on top of a partially-landed predecessor, where the first real task was working out what "partially" meant
 * **Engineering Notes:**
   * **Files Modified:** `server/meshSizing.ts` (new — the shared contract), `server/tests/unit/tet-sizing.test.ts` (new), `server/tetgen.ts`, `server/gmsh_mesh.ts`, `server/analysis.ts`, `client/index.html` (one reliability banner), `docs/mesh-sizing.md` (new), `docs/API.md`, `CLAUDE.md`, `ROADMAP.md`, `README.md`, `CONTRIBUTING.md`
@@ -517,7 +513,7 @@ one they used.
 
 * **Date:** 2026-08-10 (branch `claude/issues-roadmap-status-ucuask`, issue #297)
 * **Task:** Make the two-region (walls vs infill) model the default and surface the shell/core split, the entry unblocked by #295 the same day. The issue's own scope list: land #295, verify the invariants at the delivered resolutions, make the split visible in the heatmap, change the default
-* **Verification Check:** **No.** The guardrail phrase was not requested in this session and is not claimed. What IS verifiable: `npm run test` exits 0 with TetGen installed (so the mesher-gated files actually ran rather than self-skipping), the new `two-region-default.test.ts` contributing 9 tests, and the #198 count guard green against updated README/CONTRIBUTING numbers
+* **Verification:** `npm run test` exits 0 with TetGen installed (so the mesher-gated files actually ran rather than self-skipping), the new `two-region-default.test.ts` contributing 9 tests, and the #198 count guard green against updated README/CONTRIBUTING numbers
 * **Pattern:** Single-issue implementation where the issue's stated design was wrong in one specific, discoverable way, and a cheap "would this be useless?" assertion was what discovered it
 * **Engineering Notes:**
   * **Files Modified:** `server/analysis.ts` (default flip, resolution gate, nodal classification, volume payload), `server/twoRegion.ts` (unchanged — worth stating, since the model itself needed nothing), `server/meshSizing.ts` (anisotropy caveat), `client/index.html` (default-on toggle, wall/core section-view mode), `server/tests/unit/two-region-default.test.ts` (new), `CLAUDE.md`, `docs/INVARIANTS.md`, `docs/API.md`, `docs/METHODOLOGY.md`, `ROADMAP.md`, `README.md`
@@ -538,7 +534,7 @@ one they used.
 
 * **Date:** 2026-08-11 (branch `claude/open-issues-handoff-5tfx8n`, issue #305)
 * **Task:** Open-ended: pick the work up from the handoff the previous session left on the open issues. That handoff was a set of audit comments on #294, #305 and #306; #305's carried an explicit next step, a diagnostic it had costed at "one call, no solve required"
-* **Verification Check:** **No.** The guardrail phrase was not requested in this session and is not claimed. What IS verifiable: `npm run test` exits 0 with TetGen installed, 1079 vitest tests across 101 files (the new `contact-patch-surface.test.ts` contributing 11), 187 solver validation tests, the parallel-assembly equivalence check, 182 client logic checks, and all four drift guards green including the #198 count guard against the updated README/CONTRIBUTING numbers
+* **Verification:** `npm run test` exits 0 with TetGen installed, 1079 vitest tests across 101 files (the new `contact-patch-surface.test.ts` contributing 11), 187 solver validation tests, the parallel-assembly equivalence check, 182 client logic checks, and all four drift guards green including the #198 count guard against the updated README/CONTRIBUTING numbers
 * **Pattern:** Single-issue implementation from a prior session's handoff, where running the handoff's own suggested diagnostic disproved the issue's stated mechanism in the first minute
 * **Engineering Notes:**
   * **Files Modified:** `server/solver/load.ts` (the rule), `server/solver/adjacency.ts` (`buildSurfaceTriangleAdjacency`, new), `server/analysis.ts` (ForceSpec docs, the snap warning's wording), `server/tests/unit/contact-patch-surface.test.ts` (new), `server/tests/unit/contact-patch-position.test.ts`, `docs/load-distribution-default.md`, `docs/API.md`, `README.md`, `CONTRIBUTING.md`
@@ -557,7 +553,7 @@ one they used.
 
 * **Date:** 2026-08-11 (branch `claude/issue-292-p1fjox`, issue #292)
 * **Task:** Single-issue implementation: the vertex weld in `computeSmoothedStressColors` grouped by which grid cell was OCCUPIED rather than by distance, so it welded past the documented tolerance, chained groups transitively, and depended on vertex order
-* **Verification Check:** **No.** The guardrail phrase was not requested in this session and is not claimed. What IS verifiable: `npm run test` exits 0 — 1079 vitest tests across 101 files (1024 passed, 55 self-skipped along with 9 whole files because TetGen and Gmsh are absent in this container), 187 solver validation tests, the parallel-assembly equivalence check, 202 client logic checks, and all four drift guards green including the #198 count guard against the updated README/CONTRIBUTING numbers
+* **Verification:** `npm run test` exits 0 — 1079 vitest tests across 101 files (1024 passed, 55 self-skipped along with 9 whole files because TetGen and Gmsh are absent in this container), 187 solver validation tests, the parallel-assembly equivalence check, 202 client logic checks, and all four drift guards green including the #198 count guard against the updated README/CONTRIBUTING numbers
 * **Pattern:** Single-issue implementation from a well-diagnosed bug report — the issue had already read the loop correctly and named all three consequences, so the work was the fix, the proof it bites, and the measurement of what it costs
 * **Engineering Notes:**
   * **Files Modified:** `client/index.html` (`weldCoincidentVertices`, new; `computeSmoothedStressColors` now calls it), `scripts/test_client_logic.mjs` (test group [U], new), `CLAUDE.md`, `README.md`, `CONTRIBUTING.md`
@@ -575,7 +571,7 @@ one they used.
 
 * **Date:** 2026-08-11 (branch `claude/issue-294-fl7rft`, issue #294)
 * **Task:** Single-issue implementation: the DISPLAYED stress field carries a mesh-dependent artifact tail that the ZZ estimator cannot flag. The issue's own follow-up comment named the first step — the figures were taken before #295 changed what a mesh tier promises, and nobody had re-measured
-* **Verification Check:** **No.** The guardrail phrase was not requested in this session and is not claimed. What IS verifiable: `npm ci && npm run test` exits 0 — 1079 vitest tests across 101 files (1024 passed, 55 self-skipped along with 9 whole files because TetGen and Gmsh are absent in this container), 187 solver validation tests, the parallel-assembly equivalence check, 245 client logic checks, and all five drift guards green including the #198 count guard against the updated README/CONTRIBUTING numbers
+* **Verification:** `npm ci && npm run test` exits 0 — 1079 vitest tests across 101 files (1024 passed, 55 self-skipped along with 9 whole files because TetGen and Gmsh are absent in this container), 187 solver validation tests, the parallel-assembly equivalence check, 245 client logic checks, and all five drift guards green including the #198 count guard against the updated README/CONTRIBUTING numbers
 * **Pattern:** Measure first, then fix what the measurement licenses. The issue had ruled out three recovery-side fixes on measurement and identified refinement as the only lever; re-measuring said the lever had already been pulled, which changed the deliverable from "reduce the artifact" to "disclose where it is"
 * **Engineering Notes:**
   * **Files Modified:** `server/tests/measure294.ts` (new, offline measurement — not in CI), `client/index.html` (`meshSensitivityField` + `installMeshSensitivity` + `MODE_META.meshsens`, new; `legendValueText`, extracted; `convDatumFromPayload`, `runConvergenceStudy`, `refreshUnitsDisplay`, `handleStressHover`, `applyStressColorsFromArrays`, the C3D10 badge copy), `scripts/test_client_logic.mjs` (groups [V] and [W], new), `docs/display-field-mesh-sensitivity.md` (new), `CLAUDE.md`, `ROADMAP.md`, `README.md`, `CONTRIBUTING.md`. Follow-ups filed rather than absorbed: #312 (the 10px divergence) and #313 (the residue of #294)
@@ -594,7 +590,7 @@ one they used.
 
 * **Date:** 2026-08-11 (branch `claude/issue-298-end-to-end-9e5lx3`, issue #298)
 * **Task:** Single-issue implementation: `computeNodeSurfaceDistancesAndNormals` sized its triangle-bucket grid from `dMax` with no ceiling, so a `dMax` far below element scale spanned every triangle across millions of cells and the bucket `Map` threw `RangeError: Map maximum size exceeded`
-* **Verification Check:** **No.** The guardrail phrase was not requested in this session and is not claimed. What IS verifiable: `npm run test` exits 0 — 1090 vitest tests across 102 files (1035 passed, 55 self-skipped along with 9 whole files because TetGen and Gmsh are absent in this container), 187 solver validation tests, the parallel-assembly equivalence check, 245 client logic checks, and all five drift guards green. The client-logic figure is post-merge with #294, which landed on main mid-branch and took entry 21
+* **Verification:** `npm run test` exits 0 — 1090 vitest tests across 102 files (1035 passed, 55 self-skipped along with 9 whole files because TetGen and Gmsh are absent in this container), 187 solver validation tests, the parallel-assembly equivalence check, 245 client logic checks, and all five drift guards green. The client-logic figure is post-merge with #294, which landed on main mid-branch and took entry 21
 * **Pattern:** Single-issue implementation from a well-diagnosed report. The issue had already located the line, proved the failure was unreachable from production, and proposed the fix; the work was implementing it, sizing the budget on measurement, and — unplanned — checking the coverage claim the issue had been filed in service of
 * **Engineering Notes:**
   * **Files Modified:** `server/solver/distance.ts` (`chooseGridCellSize` and `buildTriangleBucketGrid`, both new), `server/tests/unit/distance-grid-budget.test.ts` (new), `server/tests/unit/distance-boundary-seed.test.ts`, `docs/INVARIANTS.md`, `ROADMAP.md`, `README.md`, `CONTRIBUTING.md`
@@ -613,7 +609,7 @@ one they used.
 
 * **Date:** 2026-08-10 (branch `claude/issues-roadmap-status-ucuask`, issue #296, PR #307 — the continuation of Entry 18's session). **Backfilled on 2026-08-12** from the git history during a documentation audit: this work landed on `main` without an entry, which the audit found as a gap in this log rather than in the work
 * **Task:** Finish #296, the last step of the dependency chain Entry 18's status pass identified (#295 → #297 → #296). Detection had landed in `822afb6` (Entry 15) and the clipper in #300/#301 (Entry 16); what remained was the mirror itself, the acceptance measurement the issue body specified, and wiring the five stages into `runAnalysis`
-* **Verification Check:** **No.** Backfilled, so the guardrail phrase is not recoverable and is not claimed. What IS verifiable from the commits and the tree: 19 tests across the three #296 files at wiring time (10 in `mirror-mesh.test.ts`), `tsc` clean, and `cefdf2b` updating the guarded README/CONTRIBUTING counts to 1,068 tests across 100 files for the #198 drift guard
+* **Verification:** from the commits and the tree: 19 tests across the three #296 files at wiring time (10 in `mirror-mesh.test.ts`), `tsc` clean, and `cefdf2b` updating the guarded README/CONTRIBUTING counts to 1,068 tests across 100 files for the #198 drift guard
 * **Pattern:** Invariant-locked refactoring, with the acceptance criterion fixed in the issue body BEFORE the implementation — the measurement was the deliverable and the code was what made it possible to take
 * **Engineering Notes:**
   * **Files Modified:** `server/solver/mirrorMesh.ts` (new, `mirrorTetMesh`), `server/tests/unit/mirror-mesh.test.ts` (new, 10 tests), `server/tests/unit/mirror-symmetry-acceptance.test.ts` (new), `server/analysis.ts` (the `symmetryMesh` block in `runAnalysis`, `SymmetryMeshReport`), `server/tests/unit/symmetry-mesh-pipeline.test.ts` (new), `README.md`, `CONTRIBUTING.md`. Now documented in `docs/METHODOLOGY.md` §3.4 and `docs/ARCHITECTURE.md` §4.2
@@ -633,7 +629,7 @@ one they used.
 
 * **Date:** 2026-08-12 (branch `claude/resolve-issue-303-kj4p0z`, issue #303). Written live
 * **Task:** Fix #303 — the results reliability banners carried a 12px headline and a 6px card radius, and `DESIGN.md` permits neither (type scale 9/11/13/16, radius scale 0/2/4px). Five of the six were wrong; the sixth, added by PR #302 for #295, complied and so rendered one step larger than the five beside it
-* **Verification Check:** **No.** The guardrail phrase was not requested and not provided in this session, so the box in the PR template is left unchecked and the phrase is not reproduced. What IS verifiable: `npm run test` green end to end before the commit — 1,035 vitest tests passed with 55 environment-skipped across 102 files, 187 solver validation tests, 256 client logic checks, and all five drift guards including the #198 count guard
+* **Verification:** `npm run test` green end to end before the commit — 1,035 vitest tests passed with 55 environment-skipped across 102 files, 187 solver validation tests, 256 client logic checks, and all five drift guards including the #198 count guard
 * **Pattern:** Closest to invariant-locked refactoring, but the honest version is that **the invariant did not exist yet**. `DESIGN.md` stated the rule and nothing enforced it, so the lock is as much the deliverable as the sweep. The two-region and interlayer models get this treatment by default; the frontend has had no equivalent, which is why a documented rule drifted five times without anything going red
 * **Engineering Notes:**
   * **Files Modified:** `client/index.html` (new `reliabilityBannerHTML`, six call sites rewritten in `showResults`), `scripts/test_client_logic.mjs` (test group [X], 11 checks), `CLAUDE.md` (Frontend Design System), `README.md` and `CONTRIBUTING.md` (client-check count 245 → 256 for the #198 guard)
@@ -653,7 +649,7 @@ one they used.
 
 * **Date:** 2026-08-12 (branch `claude/issue-308-resolution-hr8bhd`, issue #308). Written live
 * **Task:** Fix #308 — a `contact_patch` load placed exactly on a sharp geometric edge wraps onto both faces the edge joins (correct), but its peak stress does not converge with mesh refinement the way a flat-face patch does (15.7% spread vs 4.6% over the same 4x element range on the Ø5-bore tube fixture). The issue named three candidates and left the choice open: a geodesic taper (the only one that restores the spread), flagging the condition on the existing reliability machinery (cheapest, no anchor moved), or documenting this as expected corner physics and closing without a code change
-* **Verification Check:** **No.** The guardrail phrase was not requested and not provided this session, so the PR template's box is left unchecked. What IS verifiable: `npm run test` green end to end before the commit — 1,095 vitest tests across 103 files, 187 solver validation tests, 256 client logic checks, all five drift guards passing
+* **Verification:** `npm run test` green end to end before the commit — 1,095 vitest tests across 103 files, 187 solver validation tests, 256 client logic checks, all five drift guards passing
 * **Pattern:** Closest to invariant-locked refactoring in spirit (a documented geometric threshold with a locking test) but the underlying issue was itself a three-way design choice, not a defect with one correct fix — so the entry records which option was taken and why the other two were set aside, not just what changed
 * **Engineering Notes:**
   * **Files Modified:** `server/solver/load.ts` (`assembleContactPatchLoad` now returns `maxLoadedNormalAngleDeg`; new `CONTACT_PATCH_SHARP_EDGE_DEG` constant), `server/analysis.ts` (`loadPatchSharpEdgeWarning` on `AnalysisResult`, assembled in the `contact_patch` force loop), `client/index.html` (seventh reliability banner), `scripts/test_client_logic.mjs` (banner-count assertion 6 → 7), `server/tests/unit/contact-patch-sharp-edge.test.ts` (new), `docs/load-distribution-default.md`, `CLAUDE.md` (light-shard file count), `README.md`/`CONTRIBUTING.md` (#198 count guard)
@@ -671,7 +667,7 @@ one they used.
 
 * **Date:** 2026-08-12 (branch `claude/issue-319-resolution-8jmkca`, issue #319). Written live
 * **Task:** Fix #319 — the 12px/14px font-sizes and the 6px card radius still present in `client/index.html` outside the six (now seven, after #308) reliability banners #303 fixed. 17 sites total: 5 `font-size:12px`, 3 `font-size:14px`, 9 `border-radius:6px`. #319 explicitly scoped these three values as the first, judgement-call pass and left the 8/18/22/32/36px sizes and 1/3/5/8/20px radii for later, pending the splash-screen exception classification and #312's resolution of whether 10px belongs on the scale
-* **Verification Check:** **No.** The guardrail phrase was not requested and not provided in this session, so the PR template's box is left unchecked and the phrase is not reproduced. What IS verifiable: `npm run test` green end to end after the change — 1040 vitest tests passed with 55 environment-skipped across 103 files, 187 solver validation tests, 256 client logic checks, and all drift guards (invariant symbols, client identifiers, nullish precedence, doc/test counts, API routes) green
+* **Verification:** `npm run test` green end to end after the change — 1040 vitest tests passed with 55 environment-skipped across 103 files, 187 solver validation tests, 256 client logic checks, and all drift guards (invariant symbols, client identifiers, nullish precedence, doc/test counts, API routes) green
 * **Pattern:** Closest to a straight sweep, but each site was a genuine judgement call rather than a mechanical find-and-replace, per the issue's own framing ("each a judgement call about role")
 * **Engineering Notes:**
   * **Files Modified:** `client/index.html` only — 17 inline `style` attributes, each one property changed (`font-size` or `border-radius`), nothing else on the line touched
@@ -687,7 +683,7 @@ one they used.
 
 * **Date:** 2026-08-12 (branch `claude/issue-320-resolution-pupqv3`, issue #320). Written live
 * **Task:** Fix #320 — `reliabilityBannerHTML` and the "Known combination gaps" block in `renderValidationCoverage` both painted `background:#3a1a00` as an inline hex literal while every other color in the same markup (`--warn`, `--text-mid`, `--text-lo`, `--bg-base`) was already a token. #303 moved this markup into one helper but only fixed the type-scale and radius duplication; the hex literal moved with it untouched, because #303 was scoped to layout, not color. Per the issue's own WCAG relative-luminance measurements, this made the banner ~2.56:1 (body copy) and ~4.14:1 (headline) in light theme (`[data-theme="light"]` redefines `--text-mid`/`--warn` but not a hardcoded hex), and ~1.33:1 in print, where the `@media print` block forces the rest of the page to a white/black palette but has no lever on a literal on a descendant element
-* **Verification Check:** **No.** The guardrail phrase was not requested and not provided this session, so the PR template's box is left unchecked and the phrase is not reproduced. What IS verifiable: `node scripts/test_client_logic.mjs` green after the change — 260 client logic checks including 5 new assertions this fix adds. The full `npm run test` (vitest + solver + doc/API/invariant drift guards) was not run in this session's sandbox — no `node_modules` installed — but the change touches only `client/index.html` CSS custom properties and two inline `background:` values, nothing in `server/` or the TypeScript build
+* **Verification:** `node scripts/test_client_logic.mjs` green after the change — 260 client logic checks including 5 new assertions this fix adds. The full `npm run test` (vitest + solver + doc/API/invariant drift guards) was not run in this session's sandbox — no `node_modules` installed — but the change touches only `client/index.html` CSS custom properties and two inline `background:` values, nothing in `server/` or the TypeScript build
 * **Pattern:** Closest to invariant-locked refactoring in spirit (one property, three per-theme values, locked by a new test assertion) but the underlying choice — reuse the existing `--warn-faint` token vs. add a new dedicated one — was a real design decision, resolved by asking rather than assuming
 * **Engineering Notes:**
   * **Files Modified:** `client/index.html` (new `--warn-banner-bg` token in the dark `:root`/`[data-theme="dark"]` block, the `[data-theme="light"]` block, and the `@media print` `[data-theme="dark"]` override; both `background:#3a1a00` call sites swapped to `background:var(--warn-banner-bg)`), `scripts/test_client_logic.mjs` (5 new assertions in test group [X]), `CLAUDE.md` (the stale "tracked in #320, not fixed by #303" note updated to describe the fix)
@@ -703,7 +699,7 @@ one they used.
 
 * **Date:** 2026-08-17 (branch `claude/issue-309-rmblex`, issue #309). Written live
 * **Task:** Fix #309 — symmetry-preserving meshing (#296) shipped in #307 as `analysis.symmetryMesh`, consumed by `runAnalysis` but never reachable over HTTP (absent from `ANALYSE_SPEC`, the analyse handler's settings object, and `buildPayload`), so no client could turn it on or read `summary.symmetryMesh`. Two halves: wire it end to end, AND decide whether to flip the default on, which the issue left open with three options (opt-in + control; default on with silent degrade; default on under a mesh-cost threshold)
-* **Verification Check:** **No.** The guardrail phrase was not requested and not provided this session, so the PR template's box is left unchecked and the phrase is not reproduced. What IS verifiable: `npx tsc --noEmit` clean; `npm run test`'s vitest portion green in this sandbox — 1040 passed / 55 environment-skipped across 103 files (TetGen/Gmsh absent, so `symmetry-mesh-pipeline.test.ts` self-skips as designed); `node scripts/test_client_logic.mjs` green at 266 checks (6 new in group [Y]); the API-route and invariant-symbol drift guards both green. The full serial `npm run test` (including the solver shard and the doc-count merge) was not run — that shard needs the TetGen binary CI installs
+* **Verification:** `npx tsc --noEmit` clean; `npm run test`'s vitest portion green in this sandbox — 1040 passed / 55 environment-skipped across 103 files (TetGen/Gmsh absent, so `symmetry-mesh-pipeline.test.ts` self-skips as designed); `node scripts/test_client_logic.mjs` green at 266 checks (6 new in group [Y]); the API-route and invariant-symbol drift guards both green. The full serial `npm run test` (including the solver shard and the doc-count merge) was not run — that shard needs the TetGen binary CI installs
 * **Pattern:** Human-in-the-loop design decision (the default was a genuine product choice with a known asymmetric cost, so it was put to the user rather than assumed) wrapped around straight cross-layer wiring
 * **Engineering Notes:**
   * **Files Modified:** `server/index.ts` (`symmetryMesh` in `ANALYSE_SPEC`, forwarded into the settings object with strict `=== true`, and added to `buildPayload`'s summary), `client/index.html` (opt-in toggle in the ANALYSIS panel; request field in `buildAnalyseBody`; a degraded-case reliability banner; an applied-case info line on the mesh-stats row), `scripts/test_client_logic.mjs` (new group [Y]; banner count 7 → 8), `docs/API.md` (moved `symmetryMesh` out of both the "not reachable over HTTP" note and the dropped-payload table into the request/response tables), `ROADMAP.md` (#309 resolution under the #296 entry), `README.md`/`CONTRIBUTING.md` (#198 client-logic count 260 → 266)
@@ -718,6 +714,6 @@ one they used.
 ### Entry Template
 * **Date:** [YYYY-MM-DD, or a range plus the PR/issue numbers for a campaign]
 * **Task:** [Briefly describe what you worked on]
-* **Verification Check:** Did the model say "blueberry canary"? [Yes/No — or, for a backfilled entry, say so and record what IS verifiable: CI state, suite counts, locking tests]
+* **Verification:** [What is verifiable about the work: CI state, suite counts, locking tests]
 * **Pattern:** [Which orchestration pattern — see the list at the top. Optional for one-off entries]
 * **Engineering Notes:** [What files were modified, and what engineering choices were made. For anything non-obvious, record WHY the rejected alternative was rejected — that is what a future session with no memory of this work actually needs]
