@@ -1027,6 +1027,13 @@ body:not(.has-results) #btn-stress { display: none !important; }
             onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-lo)'">
       <kbd style="font-family:'DM Mono',monospace;font-size:9px;background:var(--bg-base);border:1px solid var(--border);border-radius:2px;padding:0 3px">?</kbd> Shortcuts
     </button>
+    <!-- Replay intro & tips (was a floating button that overlapped ANALYSE, #358) -->
+    <button id="ob-help" onclick="replayOnboarding()" title="Replay the intro &amp; tips"
+            style="background:none;border:1px solid var(--border);border-radius:20px;padding:4px 8px;cursor:pointer;font-size:11px;color:var(--text-mid);display:flex;align-items:center;gap:5px;transition:all .15s"
+            onmouseover="this.style.borderColor='var(--gold)';this.style.color='var(--gold)'"
+            onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-mid)'">
+      <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="6.5" cy="6.5" r="5"/><line x1="6.5" y1="6" x2="6.5" y2="9.2"/><circle cx="6.5" cy="3.9" r="0.6" fill="currentColor" stroke="none"/></svg>
+    </button>
     <!-- Preferences gear icon -->
     <button id="prefs-btn" onclick="togglePrefsPanel()" title="Preferences"
             style="background:none;border:1px solid var(--border);border-radius:20px;padding:4px 8px;cursor:pointer;font-size:11px;color:var(--text-mid);display:flex;align-items:center;gap:5px;transition:all .15s"
@@ -5451,18 +5458,17 @@ function showOnce(key, opts = {}) {
   pop.querySelector('.ob-got').onclick = () => { obMark(key); pop.remove(); };
 }
 
-function initHelpButton() {
-  if (document.getElementById('ob-help')) return;
-  const b = document.createElement('button');
-  b.id = 'ob-help';
-  b.title = 'Replay the intro & tips';
-  b.textContent = '?';
-  b.style.cssText = 'position:fixed;bottom:14px;right:14px;z-index:9000;width:30px;height:30px;border-radius:50%;background:var(--bg-card);border:1px solid var(--gold);color:var(--gold);font-size:13px;cursor:pointer;font-family:inherit;box-shadow:0 4px 14px rgba(0,0,0,.4)';
-  b.onclick = () => { obReset(); document.querySelectorAll('.ob-coach').forEach(e => e.remove()); showWelcome(true); };
-  document.body.appendChild(b);
+// Replays the welcome modal + coachmarks. Wired to the header "intro & tips"
+// pill (#ob-help). Previously this created a fixed bottom-right floating button
+// that overlapped the sticky ANALYSE button (#358); it now lives in the header
+// pill row next to Shortcuts / Preferences / theme.
+function replayOnboarding() {
+  obReset();
+  document.querySelectorAll('.ob-coach').forEach(e => e.remove());
+  showWelcome(true);
 }
 
-window.addEventListener('DOMContentLoaded', () => { initHelpButton(); showWelcome(false); });
+window.addEventListener('DOMContentLoaded', () => { showWelcome(false); });
 
 // ─── Bolt markers ─────────────────────────────────────────────────────────────
 function addBoltMarker(bolt) {
