@@ -2126,7 +2126,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <button id="ab-compare-btn" class="btn" style="width:100%;font-size:11px;margin-bottom:8px" onclick="runABComparison()">Run Comparison vs Baseline</button>
         <div id="ab-comparison-content" style="display:none"></div>
         <div style="font-size:9px;color:var(--text-lo);margin-top:8px;line-height:1.6">
-          Baseline is captured once and stays locked, even if you re-run ANALYSE with different settings — so you can safely test multiple changes before clicking Run Comparison. Click "reset" above to capture a new baseline from the current result instead.
+          Baseline is captured once and stays locked, even if you re-run ANALYZE with different settings — so you can safely test multiple changes before clicking Run Comparison. Click "reset" above to capture a new baseline from the current result instead.
         </div>
       </div>
         </div>  <!-- end scrollable content -->
@@ -2494,7 +2494,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
     <!-- ANALYSE BUTTON (always visible at bottom) -->
     <div style="padding:16px 22px;border-top:1px solid var(--border);background:var(--bg-panel);position:sticky;bottom:0">
       <button id="analyse-btn" class="btn primary" style="width:100%;padding:12px;font-size:11px;letter-spacing:.04em" onclick="runAnalysis()" disabled>
-        ANALYSE
+        ANALYZE
       </button>
       <div id="analyse-status" aria-live="polite" aria-atomic="true" style="font-size:11px;color:var(--text-lo);text-align:center;margin-top:6px">Upload a part to begin.</div>
       <button id="convergence-btn" style="display:none;width:100%;margin-top:6px;padding:8px;font-size:11px;background:transparent;border:1px solid var(--border-mid);color:var(--text-mid);border-radius:3px;cursor:pointer;font-family:inherit;line-height:1.3" onclick="runConvergenceStudy()"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><rect x="1" y="1" width="8" height="8" rx="1"/><line x1="1" y1="4" x2="9" y2="4"/><line x1="1" y1="7" x2="9" y2="7"/><line x1="4" y1="1" x2="4" y2="9"/><line x1="7" y1="1" x2="7" y2="9"/></svg> MESH CONVERGENCE STUDY<br><span style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text-lo)">Checks if results would change with a finer mesh.</span></button>
@@ -4693,7 +4693,7 @@ function updateHintBar() {
         );
       } else {
         setHint(
-          `${nBolts} bolt${nBolts>1?'s':''} · ${nForces} force${nForces>1?'s':''} — ready to analyse`,
+          `${nBolts} bolt${nBolts>1?'s':''} · ${nForces} force${nForces>1?'s':''} — ready to analyze`,
           'Press Ctrl+Enter to run analysis · drag to rotate · scroll to zoom'
         );
       }
@@ -7337,7 +7337,7 @@ function showResults(s) {
   if (s.meshFallback) {
     reliabilityBanner += reliabilityBannerHTML(
       'Approximate result — mesh fallback',
-      'STL meshing failed, so the part was analysed as a solid bounding box. Holes, fillets, and stress concentrations are <b>not modelled</b> — the true peak stress is higher than shown. Re-export the STL (check for non-manifold edges or self-intersections) and re-run before trusting this number.');
+      'STL meshing failed, so the part was analyzed as a solid bounding box. Holes, fillets, and stress concentrations are <b>not modelled</b> — the true peak stress is higher than shown. Re-export the STL (check for non-manifold edges or self-intersections) and re-run before trusting this number.');
   }
   if (s.converged === false) {
     const rbm = s.rigidBodyMode;
@@ -14772,7 +14772,7 @@ function demoVerdictText() {
 const DEMO_STEPS = [
   {
     tab: "setup",
-    title: "A Real Part, Ready to Analyse",
+    title: "A Real Part, Ready to Analyze",
     text: "This part is bolted at its holes and loaded at an edge — a complete setup, generated automatically. " +
           "The workflow rail on the left shows part, constraints, and load all in place, " +
           "and the part is already resting on the build plate in the orientation it will be printed.",
@@ -15159,7 +15159,7 @@ const CHECKLIST = [
   { id:'export_zip',   label:'Export ZIP — .json file downloads' },
   { id:'onshape_key',  label:'Onshape — enter API keys, green dot appears' },
   { id:'onshape_import', label:'Onshape — paste URL, <svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M7.5 3A3.5 3.5 0 1 0 8.5 6"/><polyline points="7,1.5 8.5,3 7,4.5" fill="none"/></svg> loads parts, import works' },
-  { id:'c3d10',        label:'C3D10 elements — Settings -> Quadratic -> analyse STEP -> <svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> C3D10 badge' },
+  { id:'c3d10',        label:'C3D10 elements — Settings -> Quadratic -> analyze STEP -> <svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> C3D10 badge' },
   { id:'dark_light',   label:'Dark/light mode — toggle works, persists after reload' },
   { id:'keyboard',     label:'Keyboard shortcuts — 1-5 switch tabs, Ctrl+Enter runs analysis' },
   { id:'demo_mode',    label:'Demo mode — About section -> <svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><polygon points="2.5,2 8.5,5 2.5,8"/></svg> JUDGE DEMO MODE -> steps advance' },
