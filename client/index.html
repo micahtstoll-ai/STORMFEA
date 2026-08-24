@@ -944,30 +944,36 @@ body:not(.has-results) #btn-stress { display: none !important; }
 <!-- HEADER -->
 <header style="border-bottom:1px solid var(--border);padding:0 20px;display:flex;align-items:center;gap:0;background:var(--bg-panel);flex-shrink:0;height:56px;position:relative">
 
-  <!-- STORMFEA Compass Mark -->
-  <svg width="34" height="34" viewBox="0 0 34 34" fill="none" style="margin-right:10px;flex-shrink:0" aria-label="STORMFEA compass mark">
-    <!-- Bezel ring -->
-    <circle cx="17" cy="17" r="15.5" fill="none" stroke="var(--gold)" stroke-width="1.1" opacity=".7"/>
-    <!-- Cardinal diamond points: N bright, S/E/W dim -->
-    <polygon points="17,2 20,17 17,14 14,17" fill="var(--gold)"/>
-    <polygon points="17,32 20,17 17,20 14,17" fill="var(--gold)" opacity=".5"/>
-    <polygon points="32,17 17,20 20,17 17,14" fill="var(--gold)" opacity=".5"/>
-    <polygon points="2,17  17,20 14,17 17,14" fill="var(--gold)" opacity=".5"/>
-    <!-- Intercardinal ticks at 45° -->
-    <line x1="28.5" y1="5.5"  x2="26"  y2="8"    stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
-    <line x1="5.5"  y1="5.5"  x2="8"   y2="8"    stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
-    <line x1="28.5" y1="28.5" x2="26"  y2="26"   stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
-    <line x1="5.5"  y1="28.5" x2="8"   y2="26"   stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
-    <!-- Pivot -->
-    <circle cx="17" cy="17" r="2.5" fill="none" stroke="var(--gold)" stroke-width="1.1" opacity=".8"/>
-    <circle cx="17" cy="17" r="1"   fill="var(--gold)"/>
-  </svg>
+  <!-- Home: click compass/wordmark to return to the landing screen without
+       losing in-progress work (issue #346) — the non-destructive counterpart
+       to "Start New File". -->
+  <button onclick="showLandingScreen()" title="Back to home"
+          style="display:flex;align-items:center;background:none;border:none;padding:0;margin-right:16px;cursor:pointer;text-align:left">
+    <!-- STORMFEA Compass Mark -->
+    <svg width="34" height="34" viewBox="0 0 34 34" fill="none" style="margin-right:10px;flex-shrink:0" aria-label="STORMFEA compass mark">
+      <!-- Bezel ring -->
+      <circle cx="17" cy="17" r="15.5" fill="none" stroke="var(--gold)" stroke-width="1.1" opacity=".7"/>
+      <!-- Cardinal diamond points: N bright, S/E/W dim -->
+      <polygon points="17,2 20,17 17,14 14,17" fill="var(--gold)"/>
+      <polygon points="17,32 20,17 17,20 14,17" fill="var(--gold)" opacity=".5"/>
+      <polygon points="32,17 17,20 20,17 17,14" fill="var(--gold)" opacity=".5"/>
+      <polygon points="2,17  17,20 14,17 17,14" fill="var(--gold)" opacity=".5"/>
+      <!-- Intercardinal ticks at 45° -->
+      <line x1="28.5" y1="5.5"  x2="26"  y2="8"    stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
+      <line x1="5.5"  y1="5.5"  x2="8"   y2="8"    stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
+      <line x1="28.5" y1="28.5" x2="26"  y2="26"   stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
+      <line x1="5.5"  y1="28.5" x2="8"   y2="26"   stroke="var(--gold)" stroke-width="1.1" opacity=".4" stroke-linecap="round"/>
+      <!-- Pivot -->
+      <circle cx="17" cy="17" r="2.5" fill="none" stroke="var(--gold)" stroke-width="1.1" opacity=".8"/>
+      <circle cx="17" cy="17" r="1"   fill="var(--gold)"/>
+    </svg>
 
-  <!-- App name -->
-  <div style="display:flex;flex-direction:column;margin-right:16px;gap:2px">
-    <h1 style="font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;letter-spacing:.06em;color:var(--gold);line-height:1;margin:0">STORMFEA</h1>
-    <div style="font-family:'Outfit',sans-serif;font-size:9px;color:var(--text-lo);letter-spacing:.04em;line-height:1">Presented by Nordic Storm · FTC 5962</div>
-  </div>
+    <!-- App name -->
+    <div style="display:flex;flex-direction:column;gap:2px">
+      <h1 style="font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;letter-spacing:.06em;color:var(--gold);line-height:1;margin:0">STORMFEA</h1>
+      <div style="font-family:'Outfit',sans-serif;font-size:9px;color:var(--text-lo);letter-spacing:.04em;line-height:1">Presented by Nordic Storm · FTC 5962</div>
+    </div>
+  </button>
 
   <div style="width:1px;height:20px;background:var(--border);margin-right:16px"></div>
 
@@ -2586,23 +2592,43 @@ function dismissLandingScreen() {
   requestAnimationFrame(() => { if (typeof resizeViewer === 'function') resizeViewer(); });
 }
 
+// Symmetric inverse of dismissLandingScreen() (issue #346): a pure show/hide
+// toggle back to the landing nav. Does NOT touch S, resultsSummary, or
+// trigger a reload — whatever is on screen (including a completed analysis)
+// is still there when the user navigates back from the landing screen via
+// a NEW ANALYSIS / RESUME SESSION card or dismissLandingScreen() again.
+function showLandingScreen() {
+  _landingScreenActive = true;
+  document.getElementById('app-shell').style.display = 'none';
+  document.getElementById('sf-landing').style.display = '';
+  initLandingRain();
+}
+
 // ─── Tier-1 CSS rain (landing screen only) ────────────────────────────────────
+// State and resize/step are hoisted to module scope (rather than re-created
+// per call) so that initLandingRain() is idempotent: showLandingScreen()
+// (issue #346) may call it again after dismissLandingScreen() stopped the
+// RAF loop, and the SAME canvas/context/drops must keep being driven by a
+// single resize listener rather than a stale one from an earlier call.
+let _landingRainReady = false;
+let _landingRainDrops = [];
+const _LANDING_RAIN_DROP_COUNT = 45;
+const _LANDING_RAIN_ANGLE = 10 * Math.PI / 180; // 10° from vertical
+
+function _landingRainMakeDrop(w, h) {
+  return {
+    x: Math.random() * w,
+    y: Math.random() * h,
+    len: 10 + Math.random() * 8,       // 10–18px
+    speed: 2.5 + Math.random() * 2.5,  // 2.5–5px/frame
+  };
+}
+
 function initLandingRain() {
   const canvas = document.getElementById('sf-rain-canvas');
   if (!canvas) return;
+  if (_landingRainFrame !== null) return; // already running (e.g. re-entrant showLandingScreen call)
   const ctx = canvas.getContext('2d');
-  const DROP_COUNT = 45;
-  const ANGLE = 10 * Math.PI / 180; // 10° from vertical
-  let drops = [];
-
-  function makeDrop(w, h) {
-    return {
-      x: Math.random() * w,
-      y: Math.random() * h,
-      len: 10 + Math.random() * 8,       // 10–18px
-      speed: 2.5 + Math.random() * 2.5,  // 2.5–5px/frame
-    };
-  }
 
   function resize() {
     const dpr = window.devicePixelRatio || 1;
@@ -2611,7 +2637,7 @@ function initLandingRain() {
     canvas.width = w * dpr;
     canvas.height = h * dpr;
     ctx.scale(dpr, dpr);
-    drops = Array.from({ length: DROP_COUNT }, () => makeDrop(w, h));
+    _landingRainDrops = Array.from({ length: _LANDING_RAIN_DROP_COUNT }, () => _landingRainMakeDrop(w, h));
   }
 
   const rootStyle = getComputedStyle(document.documentElement);
@@ -2625,10 +2651,10 @@ function initLandingRain() {
     ctx.strokeStyle = accentColor;
     ctx.globalAlpha = rainOpacity;
     ctx.lineWidth = 0.8;
-    const dx = Math.sin(ANGLE);
-    const dy = Math.cos(ANGLE);
+    const dx = Math.sin(_LANDING_RAIN_ANGLE);
+    const dy = Math.cos(_LANDING_RAIN_ANGLE);
 
-    for (const d of drops) {
+    for (const d of _landingRainDrops) {
       const x2 = d.x + dx * d.len;
       const y2 = d.y + dy * d.len;
       ctx.beginPath();
@@ -2651,7 +2677,10 @@ function initLandingRain() {
   }
 
   resize();
-  window.addEventListener('resize', resize);
+  if (!_landingRainReady) {
+    window.addEventListener('resize', resize);
+    _landingRainReady = true;
+  }
   _landingRainFrame = requestAnimationFrame(step);
 }
 
