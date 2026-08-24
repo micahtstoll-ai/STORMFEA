@@ -112,7 +112,21 @@ misreading this tool exists to prevent.
 **Landing screen — `--sf-*`.** `--sf-bg`, `--sf-mid`, `--sf-accent`,
 `--sf-highlight`, `--sf-text`, `--sf-text-lo`, `--sf-border`,
 `--sf-rain-opacity`. These are a self-contained brand palette for the splash
-screen and are not available to, or usable by, ordinary UI.
+screen and are not available to, or usable by, ordinary UI. The palette is
+theme-aware: the `:root` values are the dark splash (`--sf-bg: #080603`), and a
+`[data-theme="light"]` block redefines them for the light splash (#362).
+
+The light-splash background is a **standard, not a free choice: `--sf-bg:
+#f4eee2`** — a mid-cream that is deliberately warmer and a shade deeper than the
+app chrome's `--bg-base` (#faf7f2), and **not** pure white. The falling "rain"
+is gold (`--sf-accent`) drawn at `--sf-rain-opacity` (0.22 dark / 0.10 light);
+on white or near-white the gold washes out and the rain disappears, so the cream
+is what keeps it readable. Keep the two paired — if you lighten the background
+toward white you must raise the rain opacity, and vice versa. The rest of the
+light set: `--sf-mid: #ffffff` (nav cards), `--sf-highlight: #B0851A` (a gold
+that stays legible on cream), `--sf-text: #1c1a16`, `--sf-text-lo: #7a7060`,
+`--sf-border: rgba(176,133,26,0.30)`; `--sf-accent` stays `#C9A227` in both
+themes.
 
 ### The rules
 
