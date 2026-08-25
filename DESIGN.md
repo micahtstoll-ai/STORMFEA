@@ -79,7 +79,9 @@ consistent across light and dark:
 
 | Token | Use |
 |---|---|
-| `--gold` | The accent itself: active state, primary button fill, data-card rule |
+| `--gold` | The accent itself: active state, primary button fill, data-card rule, borders. Theme-invariant (`#C9A227` always) — this is what a *filled* gold surface needs, paired with `--gold-ink` text. As plain text on an ordinary background it fails WCAG AA in light theme (~2.3:1) — use `--gold-text` there instead. |
+| `--gold-text` | Gold **as text or an informational icon fill** on an ordinary background: `var(--gold)` in dark theme (already compliant), `var(--gold-dim)` in light theme (light theme's own `--gold` is not AA-compliant as text). `--success` derives from this. |
+| `--gold-ink` | Fixed near-black for text/icons sitting on a *solid* `--gold` fill (the primary button). Theme-invariant, unlike `--bg-base` — that flips polarity per theme and would put near-white text on gold in light theme. |
 | `--gold-bright` | Hover on a gold-filled surface only |
 | `--gold-dim` | Gold on a light/print background, and secondary gold copy |
 | `--gold-glow` | Gold at low alpha for borders and focus rings |
@@ -101,8 +103,8 @@ steps and the fourth is decoration.
 | Token | Value | Meaning |
 |---|---|---|
 | `--warn` (+ `--warn-faint`, `--warn-glow`) | amber/orange, not yellow | A caveat the reader must act on |
-| `--danger` (+ `--danger-faint`) | rust red, not pure red | A failure or a blocking condition |
-| `--success` | **always `var(--gold)`** | Pass / complete |
+| `--danger` (+ `--danger-faint`, `--danger-glow`) | rust red, not pure red | A failure or a blocking condition |
+| `--success` | **always `var(--gold-text)`** (gold, theme-corrected) | Pass / complete |
 
 `--success` is gold and **never green**, in the UI chrome, in a canvas-rendered
 report page, and in a print stylesheet alike. A green "safe" badge is the single
@@ -412,18 +414,24 @@ explain in its `title` why it cannot be.
 ## Themes, contrast and print
 
 The token layer is what makes these work, which is why hardcoded literals are a
-correctness bug and not a style nit. Four presentations share one set of rules:
+correctness bug and not a style nit. Three presentations share one set of rules:
 
 - **Dark** (`:root`, `[data-theme="dark"]`) — black page, warm-tinted text
 - **Light** (`[data-theme="light"]`) — warm off-white page, near-black text
-- **High contrast** — redefines the text scale toward pure black/white, collapses
-  `--border` onto `--border-mid`, and swaps `--gold` / `--success` for
-  `--gold-dim`
 - **Print** (`@media print`) — white page, black text, all chrome hidden, all
   transitions off, gold dropped to `--gold-dim` so it survives a mono printer
 
-An element styled with literals appears identically in all four, which means it
-appears *wrong* in at least three.
+An element styled with literals appears identically in all three, which means it
+appears *wrong* in at least two.
+
+A fourth presentation, "High contrast," was documented here for a time
+(redefining the text scale toward pure black/white, collapsing `--border` onto
+`--border-mid`, and swapping `--gold`/`--success` for `--gold-dim`) but was
+never implemented — no `[data-contrast]` selector, no `prefers-contrast` media
+query, no third state in `toggleTheme()`. Removed rather than left as a
+documented feature the product doesn't have (found during a contrast audit,
+2026-08-25). If it gets built, it belongs back here with the real selector it
+uses.
 
 ---
 
