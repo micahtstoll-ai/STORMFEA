@@ -487,7 +487,7 @@ input[type=range]:focus-visible { outline: 2px solid var(--gold); outline-offset
 }
 .btn.primary:hover { background: var(--gold-bright); border-color: var(--gold-bright); }
 .btn.primary:disabled { background: var(--border); color: var(--text-lo); border-color: var(--border); cursor: not-allowed; opacity: 0.5; }
-.btn.cyan { border-color: var(--gold-glow); color: var(--gold-dim); }
+.btn.cyan { border-color: var(--gold-glow); color: var(--gold-text); }
 .btn.cyan.active { background: var(--gold-faint); border-color: var(--gold); color: var(--gold-text); }
 
 /* ── Labels ─────────────────────────────────────────────────────────────────── */
@@ -1101,7 +1101,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
     </button>
     <!-- Team badge -->
     <div style="border:1px solid var(--gold-glow);border-radius:3px;padding:4px 10px;display:flex;align-items:center;gap:6px;background:var(--gold-faint)">
-      <span style="font-size:10px;color:var(--gold-dim);letter-spacing:.04em">FTC</span>
+      <span style="font-size:10px;color:var(--gold-text);letter-spacing:.04em">FTC</span>
       <span style="font-size:10px;font-family:'Rajdhani',sans-serif;font-weight:700;color:var(--gold-text);letter-spacing:.1em">5962</span>
       <span style="width:1px;height:10px;background:var(--gold-glow)"></span>
       <span style="font-size:10px;color:var(--text-mid);letter-spacing:.08em">ST. PETER MN</span>
@@ -1192,9 +1192,9 @@ body:not(.has-results) #btn-stress { display: none !important; }
     <!-- Toolbar (shown when file loaded) -->
     <div id="toolbar" style="display:none;position:absolute;top:12px;left:12px;display:flex;gap:6px;flex-wrap:wrap;max-width:440px">
       <button class="btn active" id="btn-view"  onclick="setMode('view')"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="5" y1="1" x2="5" y2="9"/><line x1="1" y1="5" x2="9" y2="5"/><line x1="2.2" y1="2.2" x2="7.8" y2="7.8"/><line x1="7.8" y1="2.2" x2="2.2" y2="7.8"/></svg> ORBIT</button>
-      <button class="btn"        id="btn-bed"   onclick="setMode('bed')" style="color:var(--gold-dim);border-color:var(--gold-glow)" title="Click to select which face rests on the print bed — this sets load direction"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="1.5" y="1.5" width="7" height="7" rx="1"/><rect x="3.5" y="3.5" width="3" height="3"/></svg> BED</button>
-      <button class="btn"        id="btn-force" onclick="setMode('force')" style="color:var(--gold-dim);border-color:var(--gold-glow)"><svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> FORCE</button>
-      <button class="btn"        id="btn-addhole" onclick="toggleMode('addhole')" style="color:var(--gold-dim);border-color:var(--gold-glow)" title="Manually define a hole the auto-detector missed (e.g. angled / side-wall holes)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> HOLE</button>
+      <button class="btn"        id="btn-bed"   onclick="setMode('bed')" style="color:var(--gold-text);border-color:var(--gold-glow)" title="Click to select which face rests on the print bed — this sets load direction"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="1.5" y="1.5" width="7" height="7" rx="1"/><rect x="3.5" y="3.5" width="3" height="3"/></svg> BED</button>
+      <button class="btn"        id="btn-force" onclick="setMode('force')" style="color:var(--gold-text);border-color:var(--gold-glow)"><svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> FORCE</button>
+      <button class="btn"        id="btn-addhole" onclick="toggleMode('addhole')" style="color:var(--gold-text);border-color:var(--gold-glow)" title="Manually define a hole the auto-detector missed (e.g. angled / side-wall holes)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> HOLE</button>
         <div style="width:1px;height:20px;background:var(--border);margin:0 4px;align-self:center;flex-shrink:0"></div>
         <button class="btn" id="undo-btn" onclick="performUndo()" disabled
           aria-label="Undo" title="Nothing to undo"
@@ -1490,7 +1490,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
           <div style="font-size:10px;color:var(--text-lo);margin-bottom:8px;line-height:1.6">
             Paste your Onshape API access key and secret key from<br>
             <a href="https://dev-portal.onshape.com/keys" target="_blank"
-               style="color:var(--gold-dim);text-decoration:none">dev-portal.onshape.com/keys <svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg></a>
+               style="color:var(--gold-text);text-decoration:none">dev-portal.onshape.com/keys <svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg></a>
           </div>
           <input id="onshape-ak" type="text" placeholder="Access Key"
             style="margin-bottom:6px;font-size:11px;padding:5px 8px;background:var(--bg-input);color:var(--text-hi);border:1px solid var(--border-mid);border-radius:3px;width:100%;font-family:inherit;outline:none">
@@ -1539,7 +1539,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       </div>
       <div id="orient-file-instructions" style="font-size:11px;color:var(--text-lo);margin-bottom:14px;line-height:1.7">
         Hover over a face — it highlights gold. Click to snap that face flat to the build plate.
-        <br><span style="color:var(--gold-dim)">Right-drag to pan · left-drag to rotate · scroll to zoom</span>
+        <br><span style="color:var(--gold-text)">Right-drag to pan · left-drag to rotate · scroll to zoom</span>
       </div>
 
       <!-- Current orientation display — data-display card -->
@@ -1553,16 +1553,16 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <div style="font-size:11px;color:var(--text-label);letter-spacing:.04em;margin-bottom:8px">QUICK PRESETS</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:16px">
         <button class="btn" onclick="applyOrientPreset('top')" onmouseenter="showOrientPresetPreview('top')" onmouseleave="clearOrientPresetPreview()" style="padding:8px;font-size:11px;text-align:left">
-          <svg width="11" height="8" viewBox="0 0 11 8" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" rx="1"><rect x="0.7" y="0.7" width="9.6" height="6.6" rx="1"/></svg> Top face down<br><span style="color:var(--text-lo);font-size:10px">flat · weakest</span><br><span id="preset-face-top" style="color:var(--gold-dim);font-size:9px;font-family:'DM Mono',monospace"></span>
+          <svg width="11" height="8" viewBox="0 0 11 8" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" rx="1"><rect x="0.7" y="0.7" width="9.6" height="6.6" rx="1"/></svg> Top face down<br><span style="color:var(--text-lo);font-size:10px">flat · weakest</span><br><span id="preset-face-top" style="color:var(--gold-text);font-size:9px;font-family:'DM Mono',monospace"></span>
         </button>
         <button class="btn" onclick="applyOrientPreset('bottom')" onmouseenter="showOrientPresetPreview('bottom')" onmouseleave="clearOrientPresetPreview()" style="padding:8px;font-size:11px;text-align:left">
-          <svg width="11" height="8" viewBox="0 0 11 8" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" rx="1"><rect x="0.7" y="0.7" width="9.6" height="6.6" rx="1"/></svg> Bottom face down<br><span style="color:var(--text-lo);font-size:10px">flat · mirrored</span><br><span id="preset-face-bottom" style="color:var(--gold-dim);font-size:9px;font-family:'DM Mono',monospace"></span>
+          <svg width="11" height="8" viewBox="0 0 11 8" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" rx="1"><rect x="0.7" y="0.7" width="9.6" height="6.6" rx="1"/></svg> Bottom face down<br><span style="color:var(--text-lo);font-size:10px">flat · mirrored</span><br><span id="preset-face-bottom" style="color:var(--gold-text);font-size:9px;font-family:'DM Mono',monospace"></span>
         </button>
         <button class="btn" onclick="applyOrientPreset('side-x')" onmouseenter="showOrientPresetPreview('side-x')" onmouseleave="clearOrientPresetPreview()" style="padding:8px;font-size:11px;text-align:left">
-          <svg width="8" height="11" viewBox="0 0 8 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="0.7" y="0.7" width="6.6" height="9.6" rx="1"/></svg> Stand on X face<br><span style="color:var(--text-lo);font-size:10px">upright · stronger</span><br><span id="preset-face-side-x" style="color:var(--gold-dim);font-size:9px;font-family:'DM Mono',monospace"></span>
+          <svg width="8" height="11" viewBox="0 0 8 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="0.7" y="0.7" width="6.6" height="9.6" rx="1"/></svg> Stand on X face<br><span style="color:var(--text-lo);font-size:10px">upright · stronger</span><br><span id="preset-face-side-x" style="color:var(--gold-text);font-size:9px;font-family:'DM Mono',monospace"></span>
         </button>
         <button class="btn" onclick="applyOrientPreset('side-y')" onmouseenter="showOrientPresetPreview('side-y')" onmouseleave="clearOrientPresetPreview()" style="padding:8px;font-size:11px;text-align:left">
-          <svg width="8" height="11" viewBox="0 0 8 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="0.7" y="0.7" width="6.6" height="9.6" rx="1"/></svg> Stand on Y face<br><span style="color:var(--text-lo);font-size:10px">upright · stronger</span><br><span id="preset-face-side-y" style="color:var(--gold-dim);font-size:9px;font-family:'DM Mono',monospace"></span>
+          <svg width="8" height="11" viewBox="0 0 8 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="0.7" y="0.7" width="6.6" height="9.6" rx="1"/></svg> Stand on Y face<br><span style="color:var(--text-lo);font-size:10px">upright · stronger</span><br><span id="preset-face-side-y" style="color:var(--gold-text);font-size:9px;font-family:'DM Mono',monospace"></span>
         </button>
       </div>
 
@@ -1588,7 +1588,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
 
       <!-- STEP 1: Detected holes — click to bolt -->
       <div style="margin-bottom:24px">
-        <div style="font-size:11px;letter-spacing:.04em;color:var(--gold-dim);margin-bottom:10px"><svg width="11" height="11" viewBox="0 0 11 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5.5" cy="5.5" r="4"/><circle cx="5.5" cy="5.5" r="1.5" fill="currentColor" stroke="none"/></svg> STEP 1 — SELECT BOLT HOLES</div>
+        <div style="font-size:11px;letter-spacing:.04em;color:var(--gold-text);margin-bottom:10px"><svg width="11" height="11" viewBox="0 0 11 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5.5" cy="5.5" r="4"/><circle cx="5.5" cy="5.5" r="1.5" fill="currentColor" stroke="none"/></svg> STEP 1 — SELECT BOLT HOLES</div>
         <div id="holes-info-wrap">
           <div style="font-size:11px;color:var(--text-mid);padding:12px;border:1px dashed var(--border);border-radius:3px;text-align:center">Upload a file to detect holes.</div>
         </div>
@@ -1604,8 +1604,8 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <!-- STEP 2: Forces -->
       <div style="margin-bottom:24px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-          <div style="font-size:11px;letter-spacing:.04em;color:var(--gold-dim)"><svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> STEP 2 — APPLY FORCE</div>
-          <button class="btn" id="place-force-btn" onclick="openForceEditorDirect()" style="color:var(--gold-dim);border-color:var(--gold-glow)">+ Place Force</button>
+          <div style="font-size:11px;letter-spacing:.04em;color:var(--gold-text)"><svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> STEP 2 — APPLY FORCE</div>
+          <button class="btn" id="place-force-btn" onclick="openForceEditorDirect()" style="color:var(--gold-text);border-color:var(--gold-glow)">+ Place Force</button>
         </div>
         <div style="font-size:11px;color:var(--text-lo);margin-bottom:8px">Click <svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> FORCE in the toolbar, then click anywhere on the 3D model.</div>
 
@@ -2174,7 +2174,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
           </div>
           <div style="color:var(--text-lo)">vs</div>
           <div style="padding:4px 10px;background:var(--gold-faint);border:1px solid var(--gold-glow);border-radius:3px;flex:1">
-            <div style="color:var(--gold-dim);font-size:9px;margin-bottom:2px">CURRENT (B)</div>
+            <div style="color:var(--gold-text);font-size:9px;margin-bottom:2px">CURRENT (B)</div>
             <div style="color:var(--text-mid);font-size:11px">Current file + settings</div>
           </div>
         </div>
@@ -2554,7 +2554,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <div id="analyse-status" aria-live="polite" aria-atomic="true" style="font-size:11px;color:var(--text-lo);text-align:center;margin-top:6px">Upload a part to begin.</div>
       <button id="convergence-btn" style="display:none;width:100%;margin-top:6px;padding:8px;font-size:11px;background:transparent;border:1px solid var(--border-mid);color:var(--text-mid);border-radius:3px;cursor:pointer;font-family:inherit;line-height:1.3" onclick="runConvergenceStudy()"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><rect x="1" y="1" width="8" height="8" rx="1"/><line x1="1" y1="4" x2="9" y2="4"/><line x1="1" y1="7" x2="9" y2="7"/><line x1="4" y1="1" x2="4" y2="9"/><line x1="7" y1="1" x2="7" y2="9"/></svg> MESH CONVERGENCE STUDY<br><span style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text-lo)">Checks if results would change with a finer mesh.</span></button>
       <div style="display:flex;gap:4px;margin-top:4px">
-        <button id="export-pdf-btn" style="display:none;flex:1;padding:8px;font-size:11px;background:transparent;border:1px solid var(--gold-glow);color:var(--gold-text);border-radius:3px;cursor:pointer;font-family:inherit;letter-spacing:.08em;line-height:1.2" onclick="exportFullReportPDF()"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="1.5" x2="5" y2="7"/><polyline points="2.5,5 5,7.5 7.5,5"/><line x1="1.5" y1="9" x2="8.5" y2="9"/></svg> REPORT PDF<br><span style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--gold-dim)">Full analysis report</span></button>
+        <button id="export-pdf-btn" style="display:none;flex:1;padding:8px;font-size:11px;background:transparent;border:1px solid var(--gold-glow);color:var(--gold-text);border-radius:3px;cursor:pointer;font-family:inherit;letter-spacing:.08em;line-height:1.2" onclick="exportFullReportPDF()"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="1.5" x2="5" y2="7"/><polyline points="2.5,5 5,7.5 7.5,5"/><line x1="1.5" y1="9" x2="8.5" y2="9"/></svg> REPORT PDF<br><span style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--gold-text)">Full analysis report</span></button>
         <button id="export-zip-btn" style="display:none;flex:1;padding:8px;font-size:11px;background:transparent;border:1px solid var(--border);color:var(--text-mid);border-radius:3px;cursor:pointer;font-family:inherit;letter-spacing:.08em;line-height:1.2" onclick="exportZip()" title="Export session + report bundle"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="1.5" x2="5" y2="7"/><polyline points="2.5,5 5,7.5 7.5,5"/><line x1="1.5" y1="9" x2="8.5" y2="9"/></svg> EXPORT ZIP<br><span style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text-lo)">All session files</span></button>
         <button id="export-img-btn" style="display:none;flex:1;padding:8px;font-size:11px;background:transparent;border:1px solid var(--border);color:var(--text-mid);border-radius:3px;cursor:pointer;font-family:inherit;letter-spacing:.08em;line-height:1.2" onclick="exportSummaryImage()" title="Export summary image for sharing"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1.5" width="8" height="7" rx="1"/><circle cx="3.5" cy="4" r="1"/><polyline points="1,8 3.5,5.5 5.5,7 7,5.5 9,8"/></svg> IMAGE<br><span style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text-lo)">Results summary image</span></button>
       </div>
@@ -4846,14 +4846,14 @@ function setMode(m) {
     const btn = document.getElementById('btn-' + id);
     if (btn) btn.className = 'btn' + (id === m ? ' active' : id === 'bolt' ? ' cyan' : '');
   });
-  document.getElementById('btn-force').style.color = m === 'force' ? '' : 'var(--gold-dim)';
+  document.getElementById('btn-force').style.color = m === 'force' ? '' : 'var(--gold-text)';
   document.getElementById('btn-force').style.borderColor = m === 'force' ? '' : 'var(--gold-glow)';
 
   // BED button styling
   const bedBtn = document.getElementById('btn-bed');
   if (bedBtn) {
     bedBtn.className = 'btn' + (m === 'bed' ? ' active' : '');
-    bedBtn.style.color       = m === 'bed' ? '' : 'var(--gold-dim)';
+    bedBtn.style.color       = m === 'bed' ? '' : 'var(--gold-text)';
     bedBtn.style.borderColor = m === 'bed' ? '' : 'var(--gold-glow)';
   }
 
@@ -4861,7 +4861,7 @@ function setMode(m) {
   const ahBtn = document.getElementById('btn-addhole');
   if (ahBtn) {
     ahBtn.className = 'btn' + (m === 'addhole' ? ' active' : '');
-    ahBtn.style.color       = m === 'addhole' ? '' : 'var(--gold-dim)';
+    ahBtn.style.color       = m === 'addhole' ? '' : 'var(--gold-text)';
     ahBtn.style.borderColor = m === 'addhole' ? '' : 'var(--gold-glow)';
   }
 
@@ -6020,7 +6020,7 @@ function updateBoltList() {
   el.innerHTML = S.bolts.map((b,i) => `
     <div class="card" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--gold-faint);border:1px solid var(--gold-faint);border-radius:3px;margin-bottom:6px">
       <div style="width:8px;height:8px;border-radius:50%;background:var(--gold);flex-shrink:0"></div>
-      <div style="flex:1;font-size:10px;color:var(--gold-dim)">
+      <div style="flex:1;font-size:10px;color:var(--gold-text)">
         ${b.label} · ø${U.lenStr(b.holeRadius*2)} ·
         <span style="color:var(--text-lo)">${
           b.fastenerType === 'shank'  ? 'Shank only' :
@@ -6076,7 +6076,7 @@ function updateForceList() {
   el.innerHTML = resultantHtml + S.forces.map((f,i) => `
     <div class="card" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--gold-faint);border:1px solid var(--gold-glow);border-radius:3px;margin-bottom:6px">
       <div style="width:8px;height:8px;border-radius:50%;background:var(--gold);flex-shrink:0"></div>
-      <div style="flex:1;font-size:10px;color:var(--gold-dim)">${f.label} · ${U.forceStr(f.magnitude)} · ${dirLabel(f.direction)}${forcePlacementBadge(f)}${f._replaceRecommended ? ' <span style="color:var(--warn)">re-place recommended</span>' : ''}</div>
+      <div style="flex:1;font-size:10px;color:var(--gold-text)">${f.label} · ${U.forceStr(f.magnitude)} · ${dirLabel(f.direction)}${forcePlacementBadge(f)}${f._replaceRecommended ? ' <span style="color:var(--warn)">re-place recommended</span>' : ''}</div>
       <button class="btn" style="padding:2px 8px;font-size:11px" onclick="editForce(${i})" aria-label="Edit force"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 2 L8 3.5 L3.5 8 L1.5 8.5 L2 6.5 Z"/><line x1="5.5" y1="3" x2="7" y2="4.5"/></svg></button>
       <button class="btn" style="padding:2px 8px;font-size:11px" onclick="removeForce(${i})" aria-label="Remove force"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg></button>
     </div>
@@ -7519,7 +7519,7 @@ function showResults(s) {
   } else if (govTier === 'marginal') {
     actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--gold-glow);border-radius:4px;margin-bottom:16px">
       <div style="font-size:13px;font-weight:600;color:var(--warn);margin-bottom:6px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Marginal — SF ${govSF.toFixed(2)}×</div>
-      <div style="font-size:11px;color:var(--gold-dim);margin-bottom:10px">${s.verdict}</div>
+      <div style="font-size:11px;color:var(--gold-text);margin-bottom:10px">${s.verdict}</div>
       ${bestRec ? `<div style="font-size:11px;color:var(--text-mid);border-top:1px solid var(--border);padding-top:8px;margin-top:4px">
         <span style="color:var(--success)">Improve: </span>Print ${bestRec.label} — SF ${bestRec.estimatedSF.toFixed(2)}× (${bestRec.vsCurrentPct > 0 ? '+' : ''}${bestRec.vsCurrentPct}%)
       </div>` : ''}
@@ -7530,7 +7530,7 @@ function showResults(s) {
     // and "Safe" (warn-colored text, no checkmark) so it never reads as green.
     actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--gold-glow);border-radius:4px;margin-bottom:16px">
       <div style="font-size:13px;font-weight:600;color:var(--warn);margin-bottom:6px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Acceptable — below recommended 2× margin</div>
-      <div style="font-size:11px;color:var(--gold-dim);margin-bottom:10px">SF ${govSF.toFixed(2)}× — ${s.verdict}</div>
+      <div style="font-size:11px;color:var(--gold-text);margin-bottom:10px">SF ${govSF.toFixed(2)}× — ${s.verdict}</div>
       ${bestRec ? `<div style="font-size:11px;color:var(--text-mid);border-top:1px solid var(--border);padding-top:8px;margin-top:4px">
         <span style="color:var(--success)">Improve: </span>Print ${bestRec.label} — SF ${bestRec.estimatedSF.toFixed(2)}× (${bestRec.vsCurrentPct > 0 ? '+' : ''}${bestRec.vsCurrentPct}%)
       </div>` : ''}
@@ -7538,7 +7538,7 @@ function showResults(s) {
   } else {
     actionHTML = `<div style="padding:14px 16px;background:var(--gold-faint);border:2px solid var(--gold-glow);border-radius:4px;margin-bottom:16px">
       <div style="font-size:13px;font-weight:600;color:var(--success);margin-bottom:4px"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> Safe — SF ${govSF.toFixed(2)}×</div>
-      <div style="font-size:11px;color:var(--gold-dim)">${s.verdict}</div>
+      <div style="font-size:11px;color:var(--gold-text)">${s.verdict}</div>
     </div>`;
   }
 
@@ -7793,7 +7793,7 @@ function showResults(s) {
         <span style="font-size:9px;color:var(--warn);border:1px solid var(--gold-glow);padding:1px 5px;border-radius:2px">${s.singularity.confidence.toUpperCase()} CONFIDENCE</span>
         <span style="font-size:9px;color:var(--text-lo);border:1px solid var(--border);padding:1px 5px;border-radius:2px">${s.singularity.evidence === 'refinement' ? 'REFINEMENT EVIDENCE' : 'SINGLE-MESH HEURISTIC'}</span>
       </div>
-      <div style="font-size:10px;color:var(--gold-dim);line-height:1.6">${s.singularity.message}</div>
+      <div style="font-size:10px;color:var(--gold-text);line-height:1.6">${s.singularity.message}</div>
       <div style="font-size:10px;color:var(--text-lo);margin-top:6px">
         Peak: ${U.stressStr(s.singularity.peakStressMPa)} · neighborhood${s.singularity.neighborhoodRadiusMm != null ? ` (${s.singularity.neighborhoodRadiusMm.toFixed(2)}mm ≈ 2.5× element)` : ''}: ${U.stressStr(s.singularity.stressAt1mmMPa)} · ratio: ${s.singularity.concentrationRatio}×${s.singularity.peakLocation ? ` · at (${s.singularity.peakLocation.map(v=>v.toFixed(1)).join(', ')}) mm` : ''}
       </div>
@@ -7834,7 +7834,7 @@ function showResults(s) {
             <div style="font-size:10px;color:var(--text-lo)">treats part as solid</div>
           </div>
           <div style="padding:8px;background:var(--gold-faint);border-radius:3px;border:1px solid var(--gold-glow)">
-            <div style="font-size:9px;color:var(--gold-dim);letter-spacing:.1em;margin-bottom:3px">STORMFEA (orthotropic)</div>
+            <div style="font-size:9px;color:var(--gold-text);letter-spacing:.1em;margin-bottom:3px">STORMFEA (orthotropic)</div>
             <div style="font-size:16px;font-weight:700;color:${sfColor};font-family:'Outfit',system-ui,sans-serif">
               ${s.safetyFactorAvailable ? s.safetyFactor.toFixed(2) : 'N/A'}<span style="font-size:10px">×</span>
             </div>
@@ -10290,7 +10290,7 @@ async function runConvergenceStudy() {
   const metricChangePct = useRobust ? robustChangePct : changePct;
   const converged = metricChangePct < 5.0;
   const singularNote = sel.singularAtPeak
-    ? `<div style="padding:6px 8px;margin-top:6px;background:var(--gold-faint);border:1px solid var(--gold-glow);border-radius:3px;font-size:10px;color:var(--gold-dim);line-height:1.6"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Peak stress is at a likely ${finest.singularity?.cause === 'constraint-edge' ? 'constraint-edge' : finest.singularity?.cause === 'load-edge' ? 'loaded-edge' : 'geometric'} singularity (evidence: ${sel.evidence === 'refinement' ? 'refinement divergence' : 'single-mesh gradient heuristic'}) — ${sel.reason}. It will not converge under refinement; showing convergence of the 99th-percentile stress instead${finest.singularity?.peakLocation ? ` (peak at ${finest.singularity.peakLocation.map(v=>v.toFixed(1)).join(', ')} mm)` : ''}.</div>`
+    ? `<div style="padding:6px 8px;margin-top:6px;background:var(--gold-faint);border:1px solid var(--gold-glow);border-radius:3px;font-size:10px;color:var(--gold-text);line-height:1.6"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Peak stress is at a likely ${finest.singularity?.cause === 'constraint-edge' ? 'constraint-edge' : finest.singularity?.cause === 'load-edge' ? 'loaded-edge' : 'geometric'} singularity (evidence: ${sel.evidence === 'refinement' ? 'refinement divergence' : 'single-mesh gradient heuristic'}) — ${sel.reason}. It will not converge under refinement; showing convergence of the 99th-percentile stress instead${finest.singularity?.peakLocation ? ` (peak at ${finest.singularity.peakLocation.map(v=>v.toFixed(1)).join(', ')} mm)` : ''}.</div>`
     : '';
 
   // Find or create report
@@ -10317,12 +10317,16 @@ async function runConvergenceStudy() {
     // Non-monotone is the stronger warning and gets the stronger colour: it
     // means element count does not predict the answer, so "just use the fine
     // mesh" is not a remedy.
-    const col = spread.monotoneInDensity ? 'var(--gold-dim)' : 'var(--warn)';
+    const col = spread.monotoneInDensity ? 'var(--gold-text)' : 'var(--warn)';
+    // Border companion, not an alpha suffix on col (var(--x)NN is invalid CSS —
+    // the declaration is dropped silently): --gold-glow/--warn-glow are the
+    // tokens for this exact "faint border to match a text color" job.
+    const colGlow = spread.monotoneInDensity ? 'var(--gold-glow)' : 'var(--warn-glow)';
     const bg  = spread.monotoneInDensity ? 'var(--gold-faint)' : 'var(--bg-card)';
     const tail = spread.monotoneInDensity
       ? 'The number is still settling — treat the reported safety factor as approximate to about this much.'
       : 'It did NOT move consistently with element count, so a finer mesh is not a more trustworthy number here. That is the signature of a peak at a singularity (a clamp rim, a loaded-patch rim, a sharp corner), where the peak is set by the element size and no mesh converges it. Judge your margin against the whole range, not the single value.';
-    return `<div style="padding:6px 8px;margin-top:6px;background:${bg};border:1px solid ${col}55;border-radius:3px;font-size:10px;color:${col};line-height:1.6">
+    return `<div style="padding:6px 8px;margin-top:6px;background:${bg};border:1px solid ${colGlow};border-radius:3px;font-size:10px;color:${col};line-height:1.6">
       <b>Headline spread across these ${spread.samples} meshes:</b> ${sfTxt}${sfTxt ? ', peak ' : 'peak '}${peakTxt}. ${tail}
       <div style="color:var(--text-lo);margin-top:3px">This is the range the meshes produced, not a confidence interval — it says whether refining changes the answer, not how close any of them is to the truth.</div>
     </div>`;
@@ -10339,7 +10343,7 @@ async function runConvergenceStudy() {
     // Same 5% cutoff the study's own convergence criterion uses, deliberately:
     // two readouts of mesh-dependence in one panel must not use two thresholds.
     const hot = sens.p95 >= 5;
-    const col = hot ? 'var(--warn)' : 'var(--gold-dim)';
+    const col = hot ? 'var(--warn)' : 'var(--gold-text)';
     // DESIGN.md, Cards → Status/callout: a note is border-left + padding-left,
     // no card box and no background. The blocks either side of this one are
     // boxed 10px/3px cards, which DESIGN.md's type scale and radius table both
@@ -10356,6 +10360,8 @@ async function runConvergenceStudy() {
 
   const metricName = useRobust ? '99th-percentile stress' : 'peak stress';
   const statusColor = converged ? 'var(--success)' : 'var(--warn)';
+  // Border companion, not an alpha suffix on statusColor (var(--x)NN is invalid CSS).
+  const statusColorGlow = converged ? 'var(--gold-glow)' : 'var(--warn-glow)';
   const statusText  = converged
     ? `<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> Converged — ${metricName} stable within ${metricChangePct.toFixed(1)}% between last two mesh levels`
     : `<svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Not converged — ${metricChangePct.toFixed(1)}% change in ${metricName} between last two meshes`;
@@ -10386,7 +10392,7 @@ async function runConvergenceStudy() {
     ${singularNote}
     <div style="padding:5px 0;font-size:10px;color:var(--text-lo);border-bottom:1px solid var(--border);line-height:1.6">${orderDiag}</div>
     ${richardsonNote ? `<div style="padding:5px 0;font-size:10px;color:var(--text-label);border-bottom:1px solid var(--border)">${richardsonNote}</div>` : ''}
-    <div style="margin-top:8px;padding:8px;background:var(--bg-card);border:1px solid ${statusColor}44;border-radius:3px;font-size:11px;color:${statusColor}">
+    <div style="margin-top:8px;padding:8px;background:var(--bg-card);border:1px solid ${statusColorGlow};border-radius:3px;font-size:11px;color:${statusColor}">
       ${statusText}
     </div>
     <div style="font-size:10px;color:var(--text-lo);margin-top:6px;line-height:1.6">
@@ -11308,6 +11314,8 @@ function renderSourcesTab() {
   if (!el) return;
 
   const confidenceColor = { high:'var(--success)', medium:'var(--warn)', low:'var(--text-lo)' };
+  // Border companion, not an alpha suffix on confidenceColor (var(--x)NN is invalid CSS).
+  const confidenceGlow  = { high:'var(--gold-glow)', medium:'var(--warn-glow)', low:'var(--border-mid)' };
   const confidenceLabel = { high:'HIGH CONFIDENCE', medium:'MEDIUM CONFIDENCE', low:'LOW CONFIDENCE' };
 
   let html = '';
@@ -11320,17 +11328,18 @@ function renderSourcesTab() {
 
     for (const e of cat.entries) {
       const cc = confidenceColor[e.confidence] || 'var(--text-lo)';
+      const ccGlow = confidenceGlow[e.confidence] || 'var(--border-mid)';
       const cl = confidenceLabel[e.confidence] || e.confidence;
       html += `<div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;margin-bottom:6px">
         <div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:6px">
-          <span style="font-size:9px;color:${cc};border:1px solid ${cc}44;padding:1px 5px;border-radius:2px;flex-shrink:0;margin-top:1px;letter-spacing:.08em">${cl}</span>
+          <span style="font-size:9px;color:${cc};border:1px solid ${ccGlow};padding:1px 5px;border-radius:2px;flex-shrink:0;margin-top:1px;letter-spacing:.08em">${cl}</span>
           <div style="font-size:10px;color:var(--text-mid);line-height:1.6">${e.citation}</div>
         </div>
         <div style="font-size:10px;color:var(--text-lo);margin-bottom:4px;line-height:1.5">
           <b style="color:var(--text-label);letter-spacing:.06em">USED FOR:</b> ${e.usedFor}
         </div>
         <div style="font-size:10px;color:var(--text-lo);line-height:1.5;font-style:italic">${e.note}</div>
-        ${e.url ? `<a href="${e.url}" target="_blank" style="font-size:9px;color:var(--gold-dim);text-decoration:none;margin-top:4px;display:inline-block;letter-spacing:.04em"<svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg>> view source</a>` : ''}
+        ${e.url ? `<a href="${e.url}" target="_blank" style="font-size:9px;color:var(--gold-text);text-decoration:none;margin-top:4px;display:inline-block;letter-spacing:.04em"<svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg>> view source</a>` : ''}
       </div>`;
     }
     html += '</div>';
