@@ -255,8 +255,13 @@
   --text-lo:    #80786c;
   --text-label: #847c70;
   --accent-dim: rgba(201,162,39,0.12);
+  /* --gold-text: gold used AS TEXT/icon-fill on an ordinary background — distinct
+     from --gold itself (button fills, borders, active-state) because bare
+     --gold (#C9A227) fails WCAG AA (~2.3:1) as text on the light theme's
+     near-white backgrounds. Dark theme: same as --gold (already >=4.5:1 there). */
+  --gold-text:  var(--gold);
   /* Semantic */
-  --success:      var(--gold);
+  --success:      var(--gold-text);
   --warn:         #D6862E;
   --warn-faint:   #D6862E18;
   --warn-glow:    #D6862E55;
@@ -281,7 +286,11 @@
   --text-lo:    #766e62;
   --text-label: #7a7060;
   --accent-dim: rgba(201,162,39,0.08);
-  --success:    var(--gold);
+  /* --gold as TEXT measures ~2.3:1 here (fails AA 4.5:1) — --gold-dim is the
+     token DESIGN.md already documents for "gold on a light/print background",
+     and print already makes this exact substitution (see @media print below). */
+  --gold-text:  var(--gold-dim);
+  --success:    var(--gold-text);
   --warn:       #BD7016;
   --warn-banner-bg: #FBF4EA;
   --danger:     #B23A28;
@@ -444,9 +453,9 @@ input[type=range]:focus-visible { outline: 2px solid var(--gold); outline-offset
   transition: border-color var(--t-fast), color var(--t-fast), background var(--t-fast);
   line-height: 1;
 }
-.btn:hover { border-color: var(--gold); color: var(--gold); }
+.btn:hover { border-color: var(--gold); color: var(--gold-text); }
 /* Tier 2 — secondary/active: gold identity without weight of primary */
-.btn.active { background: var(--gold-faint); border-color: var(--gold); color: var(--gold); }
+.btn.active { background: var(--gold-faint); border-color: var(--gold); color: var(--gold-text); }
 /* Tier 1 — primary action: substantial, weighted */
 .btn.primary {
   background: var(--gold);
@@ -461,7 +470,7 @@ input[type=range]:focus-visible { outline: 2px solid var(--gold); outline-offset
 .btn.primary:hover { background: var(--gold-bright); border-color: var(--gold-bright); }
 .btn.primary:disabled { background: var(--border); color: var(--text-lo); border-color: var(--border); cursor: not-allowed; opacity: 0.5; }
 .btn.cyan { border-color: var(--gold-glow); color: var(--gold-dim); }
-.btn.cyan.active { background: var(--gold-faint); border-color: var(--gold); color: var(--gold); }
+.btn.cyan.active { background: var(--gold-faint); border-color: var(--gold); color: var(--gold-text); }
 
 /* ── Labels ─────────────────────────────────────────────────────────────────── */
 label {
@@ -546,7 +555,7 @@ h1, h2, h3 { font-weight: inherit; font-size: inherit; margin: 0; }
   background: transparent;
   border-color: var(--gold);
   border-bottom: 2px solid var(--gold);
-  color: var(--gold);
+  color: var(--gold-text);
 }
 
 /* Post-solve heatmap-field selector (VIEW:) — one uniform button shape and
@@ -592,7 +601,7 @@ h1, h2, h3 { font-weight: inherit; font-size: inherit; margin: 0; }
   line-height: 1;
   color: var(--text-lo);
 }
-#stress-mode-wrap .btn.vmode-btn.active .vmode-cap { color: var(--gold); }
+#stress-mode-wrap .btn.vmode-btn.active .vmode-cap { color: var(--gold-text); }
 #stress-mode-wrap .btn.vmode-btn:disabled,
 #stress-mode-wrap .btn.vmode-btn.disabled {
   opacity: 0.35;
@@ -640,7 +649,7 @@ h1, h2, h3 { font-weight: inherit; font-size: inherit; margin: 0; }
   .print-page-header { display: block !important; }
   [data-theme="dark"] { --bg-base:#fff; --bg-panel:#fff; --bg-card:var(--bg-card);
     --text-hi:#000; --text-mid:var(--text-hi); --text-lo:var(--text-mid); --text-label:var(--text-lo);
-    --border:var(--border-mid); --border-mid:var(--text-lo); --gold:var(--gold-dim); --success:var(--gold-dim);
+    --border:var(--border-mid); --border-mid:var(--text-lo); --gold:var(--gold-dim); --gold-text:var(--gold-dim); --success:var(--gold-dim);
     --warn:#9a5512; --danger:#9e2f1f; --warn-banner-bg:#fff; }
   * { transition: none !important; }
 }
@@ -832,7 +841,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       width:260px;background:var(--bg-panel);border:1px solid var(--border);
       border-radius:4px;box-shadow:0 8px 24px rgba(0,0,0,.4);padding:14px 16px">
 
-  <div style="font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;letter-spacing:.10em;color:var(--gold);margin-bottom:12px">PREFERENCES</div>
+  <div style="font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;letter-spacing:.10em;color:var(--gold-text);margin-bottom:12px">PREFERENCES</div>
 
   <!-- Accent colour -->
   <!-- Heatmap colormap -->
@@ -972,7 +981,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
 
     <!-- App name -->
     <div style="display:flex;flex-direction:column;gap:2px">
-      <h1 style="font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;letter-spacing:.06em;color:var(--gold);line-height:1;margin:0">STORMFEA</h1>
+      <h1 style="font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;letter-spacing:.06em;color:var(--gold-text);line-height:1;margin:0">STORMFEA</h1>
       <div style="font-family:'Outfit',sans-serif;font-size:9px;color:var(--text-lo);letter-spacing:.04em;line-height:1">Presented by Nordic Storm · FTC 5962</div>
     </div>
   </button>
@@ -1017,7 +1026,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
     .tab-btn:first-child { border-left: 1px solid var(--border); }
     .tab-btn:hover { color: var(--text-mid); }
     .tab-btn.active {
-      color: var(--gold);
+      color: var(--gold-text);
       border-top-color: var(--gold);
       background: var(--gold-faint);
     }
@@ -1029,7 +1038,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       gap: 4px;
     }
     .tab-btn.tab-util.active {
-      color: var(--gold);
+      color: var(--gold-text);
       border-top-color: var(--gold);
     }
     /* Dev-only tab: visually muted to distinguish from workflow tabs */
@@ -1044,21 +1053,21 @@ body:not(.has-results) #btn-stress { display: none !important; }
     <!-- Keyboard shortcuts link -->
     <button onclick="if(!_landingScreenActive)openShortcuts()" title="Keyboard shortcuts"
             style="background:none;border:1px solid var(--border);border-radius:20px;padding:4px 9px;cursor:pointer;font-size:9px;color:var(--text-lo);letter-spacing:.05em;display:flex;align-items:center;gap:4px;transition:all .15s"
-            onmouseover="this.style.borderColor='var(--gold)';this.style.color='var(--gold)'"
+            onmouseover="this.style.borderColor='var(--gold)';this.style.color='var(--gold-text)'"
             onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-lo)'">
       <kbd style="font-family:'DM Mono',monospace;font-size:9px;background:var(--bg-base);border:1px solid var(--border);border-radius:2px;padding:0 3px">?</kbd> Shortcuts
     </button>
     <!-- Replay intro & tips (was a floating button that overlapped ANALYSE, #358) -->
     <button id="ob-help" onclick="replayOnboarding()" title="Replay the intro &amp; tips"
             style="background:none;border:1px solid var(--border);border-radius:20px;padding:4px 8px;cursor:pointer;font-size:11px;color:var(--text-mid);display:flex;align-items:center;gap:5px;transition:all .15s"
-            onmouseover="this.style.borderColor='var(--gold)';this.style.color='var(--gold)'"
+            onmouseover="this.style.borderColor='var(--gold)';this.style.color='var(--gold-text)'"
             onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-mid)'">
       <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="6.5" cy="6.5" r="5"/><line x1="6.5" y1="6" x2="6.5" y2="9.2"/><circle cx="6.5" cy="3.9" r="0.6" fill="currentColor" stroke="none"/></svg>
     </button>
     <!-- Preferences gear icon -->
     <button id="prefs-btn" onclick="togglePrefsPanel()" title="Preferences"
             style="background:none;border:1px solid var(--border);border-radius:20px;padding:4px 8px;cursor:pointer;font-size:11px;color:var(--text-mid);display:flex;align-items:center;gap:5px;transition:all .15s"
-            onmouseover="this.style.borderColor='var(--gold)';this.style.color='var(--gold)'"
+            onmouseover="this.style.borderColor='var(--gold)';this.style.color='var(--gold-text)'"
             onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-mid)'">
       <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
         <polygon points="6.5,1.5 10.83,4 10.83,9 6.5,11.5 2.17,9 2.17,4"/>
@@ -1068,14 +1077,14 @@ body:not(.has-results) #btn-stress { display: none !important; }
     <!-- Dark/Light toggle -->
     <button id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark mode"
             style="background:none;border:1px solid var(--border);border-radius:20px;padding:4px 10px;cursor:pointer;font-size:11px;color:var(--text-mid);display:flex;align-items:center;gap:5px;transition:all .15s"
-            onmouseover="this.style.borderColor='var(--gold)';this.style.color='var(--gold)'"
+            onmouseover="this.style.borderColor='var(--gold)';this.style.color='var(--gold-text)'"
             onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-mid)'">
       <span id="theme-icon"><svg width="12" height="12" viewBox="0 0 12 12" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><circle cx="6" cy="6" r="2.2"/><line x1="6" y1="1" x2="6" y2="2.2"/><line x1="6" y1="9.8" x2="6" y2="11"/><line x1="1" y1="6" x2="2.2" y2="6"/><line x1="9.8" y1="6" x2="11" y2="6"/><line x1="2.5" y1="2.5" x2="3.4" y2="3.4"/><line x1="8.6" y1="8.6" x2="9.5" y2="9.5"/><line x1="9.5" y1="2.5" x2="8.6" y2="3.4"/><line x1="3.4" y1="8.6" x2="2.5" y2="9.5"/></svg></span>
     </button>
     <!-- Team badge -->
     <div style="border:1px solid var(--gold-glow);border-radius:3px;padding:4px 10px;display:flex;align-items:center;gap:6px;background:var(--gold-faint)">
       <span style="font-size:10px;color:var(--gold-dim);letter-spacing:.04em">FTC</span>
-      <span style="font-size:10px;font-family:'Rajdhani',sans-serif;font-weight:700;color:var(--gold);letter-spacing:.1em">5962</span>
+      <span style="font-size:10px;font-family:'Rajdhani',sans-serif;font-weight:700;color:var(--gold-text);letter-spacing:.1em">5962</span>
       <span style="width:1px;height:10px;background:var(--gold-glow)"></span>
       <span style="font-size:10px;color:var(--text-mid);letter-spacing:.08em">ST. PETER MN</span>
     </div>
@@ -1099,13 +1108,13 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <div id="split-label-a" style="position:absolute;top:54px;left:12px;pointer-events:none;
               background:rgba(10,8,6,.75);border:1px solid var(--border);border-radius:3px;
               padding:4px 10px;font-family:'DM Mono',monospace;font-size:10px;color:var(--text-mid)">
-          <span id="split-name-a">Design A</span> &nbsp;·&nbsp; <span id="split-sf-a" style="color:var(--gold)">—</span>
+          <span id="split-name-a">Design A</span> &nbsp;·&nbsp; <span id="split-sf-a" style="color:var(--gold-text)">—</span>
         </div>
         <!-- Right label (Design B) -->
         <div id="split-label-b" style="position:absolute;top:54px;right:12px;pointer-events:none;
               background:rgba(10,8,6,.75);border:1px solid var(--border);border-radius:3px;
               padding:4px 10px;font-family:'DM Mono',monospace;font-size:10px;color:var(--text-mid)">
-          <span id="split-sf-b" style="color:var(--gold)">—</span> &nbsp;·&nbsp; <span id="split-name-b">Design B</span>
+          <span id="split-sf-b" style="color:var(--gold-text)">—</span> &nbsp;·&nbsp; <span id="split-name-b">Design B</span>
         </div>
         <!-- Fixed divider at 50% — Design A left, Design B right -->
         <div id="split-divider" style="position:absolute;top:0;bottom:0;left:50%;width:2px;
@@ -1237,8 +1246,8 @@ body:not(.has-results) #btn-stress { display: none !important; }
     <!-- Bottom badges -->
     <div id="badges" style="display:none;position:absolute;bottom:12px;left:12px;display:flex;gap:8px">
       <div id="mesh-stats-badge" style="display:none;padding:3px 8px;background:var(--bg-panel);border:1px solid var(--border);border-radius:3px;font-size:10px;color:var(--text-mid);letter-spacing:.06em"></div>
-      <span id="badge-bolts"  style="font-size:11px;background:var(--gold-faint);border:1px solid var(--gold-faint);color:var(--gold);padding:3px 8px;border-radius:2px"><svg width="11" height="11" viewBox="0 0 11 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5.5" cy="5.5" r="4"/><circle cx="5.5" cy="5.5" r="1.5" fill="currentColor" stroke="none"/></svg> 0 bolts</span>
-      <span id="badge-forces" style="font-size:11px;background:var(--gold-faint);border:1px solid var(--gold-glow);color:var(--gold);padding:3px 8px;border-radius:2px"><svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> 0 forces</span>
+      <span id="badge-bolts"  style="font-size:11px;background:var(--gold-faint);border:1px solid var(--gold-faint);color:var(--gold-text);padding:3px 8px;border-radius:2px"><svg width="11" height="11" viewBox="0 0 11 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5.5" cy="5.5" r="4"/><circle cx="5.5" cy="5.5" r="1.5" fill="currentColor" stroke="none"/></svg> 0 bolts</span>
+      <span id="badge-forces" style="font-size:11px;background:var(--gold-faint);border:1px solid var(--gold-glow);color:var(--gold-text);padding:3px 8px;border-radius:2px"><svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> 0 forces</span>
     </div>
 
     <!-- Stress legend — title and swatch stack share one flex container so
@@ -1300,12 +1309,12 @@ body:not(.has-results) #btn-stress { display: none !important; }
           <button class="btn" id="legend-filter-side" onclick="flipStressFilterSide()" style="font-size:10px;padding:2px 6px;display:none" title="Switch between showing values above vs below the threshold">▲ above</button>
         </div>
         <input type="range" id="legend-filter-range" min="0" max="100" value="50" step="1" oninput="onStressFilterInput(this.value)" style="width:100%;display:none" title="Threshold — drag to move the cutoff">
-        <div id="legend-filter-val" style="display:none;font-family:'DM Mono',monospace;font-size:9px;color:var(--gold);text-align:right"></div>
+        <div id="legend-filter-val" style="display:none;font-family:'DM Mono',monospace;font-size:9px;color:var(--gold-text);text-align:right"></div>
       </div>
     </div>
 
     <!-- Stress hover readout — fixed panel, shown while hovering the heatmap in view mode -->
-    <div id="stress-readout" style="display:none;position:absolute;top:54px;left:12px;background:var(--bg-base);border:1px solid var(--gold-glow);border-radius:3px;padding:6px 12px;font-size:11px;color:var(--gold);letter-spacing:.04em;pointer-events:none;white-space:nowrap">
+    <div id="stress-readout" style="display:none;position:absolute;top:54px;left:12px;background:var(--bg-base);border:1px solid var(--gold-glow);border-radius:3px;padding:6px 12px;font-size:11px;color:var(--gold-text);letter-spacing:.04em;pointer-events:none;white-space:nowrap">
       <span id="stress-readout-text">—</span>
     </div>
 
@@ -1315,7 +1324,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
     </div>
 
     <!-- Bed orientation indicator -->
-    <div id="bed-indicator" style="display:none;position:absolute;bottom:62px;left:50%;transform:translateX(-50%);background:var(--bg-base);border:1px solid var(--gold-glow);border-radius:3px;padding:5px 12px;font-size:11px;color:var(--gold);letter-spacing:.1em;pointer-events:none">
+    <div id="bed-indicator" style="display:none;position:absolute;bottom:62px;left:50%;transform:translateX(-50%);background:var(--bg-base);border:1px solid var(--gold-glow);border-radius:3px;padding:5px 12px;font-size:11px;color:var(--gold-text);letter-spacing:.1em;pointer-events:none">
       <span id="bed-face-label">CLICK A FACE TO SET AS PRINT BED</span>
     </div>
 
@@ -1327,7 +1336,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
 
     <!-- Loading overlay -->
     <div id="overlay" style="display:none;position:absolute;inset:0;background:color-mix(in srgb, var(--viewer-bg) 80%, transparent);align-items:center;justify-content:center;flex-direction:column;z-index:50">
-      <div style="font-size:32px;animation:pulse 1s infinite;color:var(--gold);margin-bottom:14px"><svg width="11" height="11" viewBox="0 0 11 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5.5" cy="5.5" r="4"/><circle cx="5.5" cy="5.5" r="1.5" fill="currentColor" stroke="none"/></svg></div>
+      <div style="font-size:32px;animation:pulse 1s infinite;color:var(--gold-text);margin-bottom:14px"><svg width="11" height="11" viewBox="0 0 11 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5.5" cy="5.5" r="4"/><circle cx="5.5" cy="5.5" r="1.5" fill="currentColor" stroke="none"/></svg></div>
       <div id="overlay-msg" style="font-size:10px;color:var(--text-hi);letter-spacing:.04em;margin-bottom:6px">Loading...</div>
       <div id="overlay-sub" style="font-size:10px;color:var(--text-lo);letter-spacing:.1em;margin-bottom:14px;min-height:12px"></div>
       <div id="overlay-bar-wrap" style="display:none;width:160px;height:2px;background:var(--border);border-radius:1px;overflow:hidden">
@@ -1408,7 +1417,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <div style="display:flex;flex-direction:column;gap:1px" title="The governing safety factor: the lowest across every checked failure mode, the same number the verdict reports.">
         <div style="font-size:10px;color:var(--text-lo);letter-spacing:.06em;font-weight:600">SAFETY FACTOR (GOVERNING)</div>
         <div id="sticky-sf" style="font-family:'DM Mono',monospace;font-size:22px;font-weight:700;
-              color:var(--gold);line-height:1">—</div>
+              color:var(--gold-text);line-height:1">—</div>
         <div id="sticky-sf-sub" style="font-size:9px;color:var(--text-lo);line-height:1.2"></div>
       </div>
       <div style="width:1px;height:32px;background:var(--border);flex-shrink:0"></div>
@@ -1434,7 +1443,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       </div>
       <!-- Export shortcut -->
       <button class="btn" onclick="exportFullReportPDF()" id="sticky-export-btn"
-        style="display:none;font-size:10px;padding:5px 10px;flex-shrink:0;color:var(--gold);border-color:var(--gold-glow)">
+        style="display:none;font-size:10px;padding:5px 10px;flex-shrink:0;color:var(--gold-text);border-color:var(--gold-glow)">
         <svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="1.5" x2="5" y2="7"/><polyline points="2.5,5 5,7.5 7.5,5"/><line x1="1.5" y1="9" x2="8.5" y2="9"/></svg>
         PDF
       </button>
@@ -1454,7 +1463,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
             <rect width="16" height="16" rx="3" fill="var(--gold-faint)" stroke="var(--gold-glow)" stroke-width="1"/>
-            <text x="3" y="12" font-size="9" fill="var(--gold)" font-family="monospace" font-weight="bold">OS</text>
+            <text x="3" y="12" font-size="9" fill="var(--gold-text)" font-family="monospace" font-weight="bold">OS</text>
           </svg>
           <div style="font-size:11px;color:var(--text-mid);letter-spacing:.1em">IMPORT FROM ONSHAPE</div>
           <div id="onshape-status-dot" style="width:6px;height:6px;border-radius:50%;background:var(--text-lo);margin-left:auto"></div>
@@ -1587,7 +1596,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
              ids as before so confirmForce/applyForcePreset/refreshUnits work. -->
         <div id="force-editor" style="display:none;background:var(--bg-card);border:1px solid var(--gold-glow);border-radius:4px;padding:12px;margin-bottom:10px">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-            <div id="force-editor-title" style="font-size:11px;color:var(--gold);letter-spacing:.1em">APPLY FORCE</div>
+            <div id="force-editor-title" style="font-size:11px;color:var(--gold-text);letter-spacing:.1em">APPLY FORCE</div>
             <select id="fp-preset-select"
               onchange="applyForcePreset(this.value); this.value=''"
               style="font-size:10px;padding:2px 6px;max-width:150px"
@@ -1903,7 +1912,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         </div>
         <div style="font-size:10px;color:var(--text-lo);line-height:1.5">Auto-fills material, layer height, infill, and wall count from your slicer output.</div>
         <!-- .gcode import badge — shown by applyGcodeParamsToUI() -->
-        <div id="gcode-import-badge" style="display:none;margin-top:8px;font-size:10px;color:var(--gold)">
+        <div id="gcode-import-badge" style="display:none;margin-top:8px;font-size:10px;color:var(--gold-text)">
           <svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg>
           <span id="gcode-import-badge-text">Imported from .gcode</span>
           <span id="gcode-import-badge-extra" style="color:var(--text-lo);margin-left:6px"></span>
@@ -2240,7 +2249,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
             <b style="color:var(--text-hi);font-size:11px">Dog-bone tensile coupon</b>
             <a href="/api/calibration/coupon/tensile" download="stressform_tensile_coupon.stl"
-               style="font-size:10px;color:var(--gold);border:1px solid var(--gold-glow);border-radius:2px;padding:2px 8px;text-decoration:none;letter-spacing:.06em"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="1.5" x2="5" y2="7"/><polyline points="2.5,5 5,7.5 7.5,5"/><line x1="1.5" y1="9" x2="8.5" y2="9"/></svg> STL</a>
+               style="font-size:10px;color:var(--gold-text);border:1px solid var(--gold-glow);border-radius:2px;padding:2px 8px;text-decoration:none;letter-spacing:.06em"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="1.5" x2="5" y2="7"/><polyline points="2.5,5 5,7.5 7.5,5"/><line x1="1.5" y1="9" x2="8.5" y2="9"/></svg> STL</a>
           </div>
           <div style="font-size:11px;color:var(--text-mid);line-height:1.8;margin-bottom:8px">
             <b style="color:var(--text-hi)">Dog-bone tensile coupon</b> — measures in-plane yield strength and stiffness.<br>
@@ -2253,7 +2262,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
               <rect x="10" y="20" width="60" height="30" rx="3" fill="var(--bg-input)" stroke="var(--border-mid)" stroke-width="1.5"/>
               <rect x="210" y="20" width="60" height="30" rx="3" fill="var(--bg-input)" stroke="var(--border-mid)" stroke-width="1.5"/>
               <path d="M70 25 Q90 25 90 30 L190 30 Q190 25 210 25 L210 45 Q190 45 190 40 L90 40 Q90 45 70 45 Z" fill="var(--gold-faint)" stroke="var(--gold)" stroke-width="1.5"/>
-              <text x="140" y="37" text-anchor="middle" font-size="8" fill="var(--gold)" font-family="monospace">50mm gauge</text>
+              <text x="140" y="37" text-anchor="middle" font-size="8" fill="var(--gold-text)" font-family="monospace">50mm gauge</text>
               <text x="40" y="37" text-anchor="middle" font-size="7" fill="var(--text-lo)" font-family="monospace">grip</text>
               <text x="240" y="37" text-anchor="middle" font-size="7" fill="var(--text-lo)" font-family="monospace">grip</text>
               <line x1="0" y1="35" x2="15" y2="35" stroke="var(--success)" stroke-width="1.5" marker-end="url(#arr)"/>
@@ -2276,7 +2285,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
             <b style="color:var(--text-hi);font-size:11px">Z-tension coupon (inter-layer)</b>
             <a href="/api/calibration/coupon/ztensile" download="stressform_ztensile_coupon.stl"
-               style="font-size:10px;color:var(--gold);border:1px solid var(--gold-glow);border-radius:2px;padding:2px 8px;text-decoration:none;letter-spacing:.06em"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="1.5" x2="5" y2="7"/><polyline points="2.5,5 5,7.5 7.5,5"/><line x1="1.5" y1="9" x2="8.5" y2="9"/></svg> STL</a>
+               style="font-size:10px;color:var(--gold-text);border:1px solid var(--gold-glow);border-radius:2px;padding:2px 8px;text-decoration:none;letter-spacing:.06em"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="1.5" x2="5" y2="7"/><polyline points="2.5,5 5,7.5 7.5,5"/><line x1="1.5" y1="9" x2="8.5" y2="9"/></svg> STL</a>
           </div>
           <div style="font-size:11px;color:var(--text-mid);line-height:1.8;margin-bottom:8px">
             <b style="color:var(--text-hi)">Z-tension dog-bone</b> — measures inter-layer bond TENSILE strength directly (delamination allowable S_zt).<br>
@@ -2313,7 +2322,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
             <b style="color:var(--text-hi);font-size:11px">Lap shear coupon</b>
             <a href="/api/calibration/coupon/lapshear" download="stressform_lapshear_coupon.stl"
-               style="font-size:10px;color:var(--gold);border:1px solid var(--gold-glow);border-radius:2px;padding:2px 8px;text-decoration:none;letter-spacing:.06em"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="1.5" x2="5" y2="7"/><polyline points="2.5,5 5,7.5 7.5,5"/><line x1="1.5" y1="9" x2="8.5" y2="9"/></svg> STL</a>
+               style="font-size:10px;color:var(--gold-text);border:1px solid var(--gold-glow);border-radius:2px;padding:2px 8px;text-decoration:none;letter-spacing:.06em"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="1.5" x2="5" y2="7"/><polyline points="2.5,5 5,7.5 7.5,5"/><line x1="1.5" y1="9" x2="8.5" y2="9"/></svg> STL</a>
           </div>
           <div style="font-size:11px;color:var(--text-mid);line-height:1.8;margin-bottom:8px">
             <b style="color:var(--text-hi)">Lap shear coupon</b> — measures inter-layer bond strength (Z-direction).<br>
@@ -2326,8 +2335,8 @@ body:not(.has-results) #btn-stress { display: none !important; }
               <rect x="10" y="15" width="70" height="20" rx="2" fill="var(--bg-input)" stroke="var(--border-mid)" stroke-width="1.5"/>
               <rect x="160" y="35" width="70" height="20" rx="2" fill="var(--bg-input)" stroke="var(--border-mid)" stroke-width="1.5"/>
               <rect x="80" y="15" width="80" height="40" rx="2" fill="var(--gold-faint)" stroke="var(--gold)" stroke-width="1.5"/>
-              <text x="120" y="38" text-anchor="middle" font-size="7" fill="var(--gold)" font-family="monospace">overlap</text>
-              <text x="120" y="48" text-anchor="middle" font-size="7" fill="var(--gold)" font-family="monospace">20×20mm</text>
+              <text x="120" y="38" text-anchor="middle" font-size="7" fill="var(--gold-text)" font-family="monospace">overlap</text>
+              <text x="120" y="48" text-anchor="middle" font-size="7" fill="var(--gold-text)" font-family="monospace">20×20mm</text>
               <line x1="0" y1="25" x2="14" y2="25" stroke="var(--success)" stroke-width="1.5"/>
               <line x1="240" y1="45" x2="226" y2="45" stroke="var(--success)" stroke-width="1.5"/>
               <text x="2" y="20" font-size="7" fill="var(--success)" font-family="monospace">F</text>
@@ -2346,7 +2355,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
             <b style="color:var(--text-hi);font-size:11px">Bearing coupon</b>
             <a href="/api/calibration/coupon/bearing" download="stressform_bearing_coupon.stl"
-               style="font-size:10px;color:var(--gold);border:1px solid var(--gold-glow);border-radius:2px;padding:2px 8px;text-decoration:none;letter-spacing:.06em"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="1.5" x2="5" y2="7"/><polyline points="2.5,5 5,7.5 7.5,5"/><line x1="1.5" y1="9" x2="8.5" y2="9"/></svg> STL</a>
+               style="font-size:10px;color:var(--gold-text);border:1px solid var(--gold-glow);border-radius:2px;padding:2px 8px;text-decoration:none;letter-spacing:.06em"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="1.5" x2="5" y2="7"/><polyline points="2.5,5 5,7.5 7.5,5"/><line x1="1.5" y1="9" x2="8.5" y2="9"/></svg> STL</a>
           </div>
           <div style="font-size:11px;color:var(--text-mid);line-height:1.8;margin-bottom:8px">
             <b style="color:var(--text-hi)">Bearing coupon</b> — measures hole wall bearing strength.<br>
@@ -2361,7 +2370,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
               <line x1="70" y1="0" x2="70" y2="8" stroke="var(--success)" stroke-width="2"/>
               <line x1="70" y1="52" x2="70" y2="60" stroke="var(--success)" stroke-width="2" stroke-dasharray="3,2"/>
               <text x="63" y="8" font-size="7" fill="var(--success)" font-family="monospace">F</text>
-              <text x="80" y="34" font-size="7" fill="var(--gold)" font-family="monospace">M3 hole</text>
+              <text x="80" y="34" font-size="7" fill="var(--gold-text)" font-family="monospace">M3 hole</text>
             </svg>
           </div>
         </div>
@@ -2417,7 +2426,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
           </div>
           <div id="kt-status" style="font-size:10px;color:var(--text-lo);line-height:1.6;margin-bottom:6px"></div>
           <button class="btn" onclick="runFEAKtExtraction()"
-            style="font-size:10px;padding:5px 12px;color:var(--gold);border-color:var(--gold-glow)">
+            style="font-size:10px;padding:5px 12px;color:var(--gold-text);border-color:var(--gold-glow)">
             <svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><polygon points="2.5,2 8.5,5 2.5,8"/></svg>
             Compute Kt via FEA
           </button>
@@ -2441,7 +2450,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <div id="bond-sweep-rows"></div>
         <div style="display:flex;gap:8px;margin-top:6px">
           <button class="btn" style="font-size:10px;padding:4px 10px" onclick="addBondSweepRow()">+ Row</button>
-          <button class="btn" style="font-size:10px;padding:4px 12px;color:var(--gold);border-color:var(--gold-glow)" onclick="runBondSweepFit()">Fit bond model</button>
+          <button class="btn" style="font-size:10px;padding:4px 12px;color:var(--gold-text);border-color:var(--gold-glow)" onclick="runBondSweepFit()">Fit bond model</button>
         </div>
         <div id="bond-sweep-status" style="font-size:10px;color:var(--text-lo);line-height:1.6;margin-top:6px;min-height:14px"></div>
       </div>
@@ -2466,10 +2475,10 @@ body:not(.has-results) #btn-stress { display: none !important; }
         Developer tools — for diagnosing solver issues, not for regular use.
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-        <div style="font-family:'Outfit',system-ui,sans-serif;font-size:13px;font-weight:700;letter-spacing:.2em;color:var(--gold)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="2.3" y1="7.7" x2="7.7" y2="2.3"/></svg> DEBUG PANEL</div>
+        <div style="font-family:'Outfit',system-ui,sans-serif;font-size:13px;font-weight:700;letter-spacing:.2em;color:var(--gold-text)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="2.3" y1="7.7" x2="7.7" y2="2.3"/></svg> DEBUG PANEL</div>
         <div style="display:flex;gap:6px">
           <button class="btn" onclick="refreshDebugPanel()" style="font-size:11px;padding:4px 10px"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M7.5 3A3.5 3.5 0 1 0 8.5 6"/><polyline points="7,1.5 8.5,3 7,4.5" fill="none"/></svg> Refresh</button>
-          <button class="btn" onclick="copyBugReport()" style="font-size:11px;padding:4px 10px;color:var(--gold);border-color:var(--gold-glow)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><rect x="3.5" y="1" width="5.5" height="6.5" rx="1"/><rect x="1" y="3.5" width="5.5" height="6.5" rx="1" fill="var(--bg-base)"/></svg> Copy Bug Report</button>
+          <button class="btn" onclick="copyBugReport()" style="font-size:11px;padding:4px 10px;color:var(--gold-text);border-color:var(--gold-glow)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><rect x="3.5" y="1" width="5.5" height="6.5" rx="1"/><rect x="1" y="3.5" width="5.5" height="6.5" rx="1" fill="var(--bg-base)"/></svg> Copy Bug Report</button>
         </div>
       </div>
       <div style="font-size:10px;color:var(--text-lo);margin-bottom:16px;padding:8px 10px;background:var(--gold-faint);border:1px solid var(--gold-glow);border-radius:3px;line-height:1.7">
@@ -2480,9 +2489,9 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <!-- Solver validation suite -->
       <div style="margin-bottom:20px;padding-bottom:20px;border-bottom:1px solid var(--border)">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-          <div style="font-family:'Outfit',system-ui,sans-serif;font-size:11px;font-weight:600;color:var(--gold);letter-spacing:.04em">SOLVER VALIDATION SUITE</div>
+          <div style="font-family:'Outfit',system-ui,sans-serif;font-size:11px;font-weight:600;color:var(--gold-text);letter-spacing:.04em">SOLVER VALIDATION SUITE</div>
           <button class="btn" id="run-validation-btn" onclick="runSolverValidation()"
-            style="font-size:11px;padding:4px 12px;color:var(--gold);border-color:var(--gold-glow)">
+            style="font-size:11px;padding:4px 12px;color:var(--gold-text);border-color:var(--gold-glow)">
             <svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><polygon points="2.5,2 8.5,5 2.5,8"/></svg>
             Run Tests
           </button>
@@ -2496,25 +2505,25 @@ body:not(.has-results) #btn-stress { display: none !important; }
 
       <!-- System state -->
       <div style="margin-bottom:16px">
-        <div style="font-size:11px;color:var(--gold);letter-spacing:.04em;margin-bottom:8px;border-bottom:1px solid var(--gold-glow);padding-bottom:4px">SYSTEM STATE</div>
+        <div style="font-size:11px;color:var(--gold-text);letter-spacing:.04em;margin-bottom:8px;border-bottom:1px solid var(--gold-glow);padding-bottom:4px">SYSTEM STATE</div>
         <div id="debug-state" style="font-size:10px;color:var(--text-mid);line-height:2;white-space:pre-wrap"></div>
       </div>
 
       <!-- Last analysis result -->
       <div style="margin-bottom:16px">
-        <div style="font-size:11px;color:var(--gold);letter-spacing:.04em;margin-bottom:8px;border-bottom:1px solid var(--gold-glow);padding-bottom:4px">LAST ANALYSIS</div>
+        <div style="font-size:11px;color:var(--gold-text);letter-spacing:.04em;margin-bottom:8px;border-bottom:1px solid var(--gold-glow);padding-bottom:4px">LAST ANALYSIS</div>
         <div id="debug-analysis" style="font-size:10px;color:var(--text-mid);line-height:2;white-space:pre-wrap"></div>
       </div>
 
       <!-- Feature checklist -->
       <div style="margin-bottom:16px">
-        <div style="font-size:11px;color:var(--gold);letter-spacing:.04em;margin-bottom:8px;border-bottom:1px solid var(--gold-glow);padding-bottom:4px">FEATURE TEST CHECKLIST</div>
+        <div style="font-size:11px;color:var(--gold-text);letter-spacing:.04em;margin-bottom:8px;border-bottom:1px solid var(--gold-glow);padding-bottom:4px">FEATURE TEST CHECKLIST</div>
         <div id="debug-checklist" style="font-size:10px;color:var(--text-mid);line-height:1"></div>
       </div>
 
       <!-- Console log -->
       <div style="margin-bottom:16px">
-        <div style="font-size:11px;color:var(--gold);letter-spacing:.04em;margin-bottom:8px;border-bottom:1px solid var(--gold-glow);padding-bottom:4px">CONSOLE LOG (last 20)</div>
+        <div style="font-size:11px;color:var(--gold-text);letter-spacing:.04em;margin-bottom:8px;border-bottom:1px solid var(--gold-glow);padding-bottom:4px">CONSOLE LOG (last 20)</div>
         <div id="debug-log" style="font-size:10px;color:var(--text-mid);line-height:1.8;white-space:pre-wrap;background:var(--bg-card);padding:8px;border-radius:3px;max-height:200px;overflow-y:auto"></div>
       </div>
     </div>
@@ -2527,7 +2536,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <div id="analyse-status" aria-live="polite" aria-atomic="true" style="font-size:11px;color:var(--text-lo);text-align:center;margin-top:6px">Upload a part to begin.</div>
       <button id="convergence-btn" style="display:none;width:100%;margin-top:6px;padding:8px;font-size:11px;background:transparent;border:1px solid var(--border-mid);color:var(--text-mid);border-radius:3px;cursor:pointer;font-family:inherit;line-height:1.3" onclick="runConvergenceStudy()"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><rect x="1" y="1" width="8" height="8" rx="1"/><line x1="1" y1="4" x2="9" y2="4"/><line x1="1" y1="7" x2="9" y2="7"/><line x1="4" y1="1" x2="4" y2="9"/><line x1="7" y1="1" x2="7" y2="9"/></svg> MESH CONVERGENCE STUDY<br><span style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text-lo)">Checks if results would change with a finer mesh.</span></button>
       <div style="display:flex;gap:4px;margin-top:4px">
-        <button id="export-pdf-btn" style="display:none;flex:1;padding:8px;font-size:11px;background:transparent;border:1px solid var(--gold-glow);color:var(--gold);border-radius:3px;cursor:pointer;font-family:inherit;letter-spacing:.08em;line-height:1.2" onclick="exportFullReportPDF()"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="1.5" x2="5" y2="7"/><polyline points="2.5,5 5,7.5 7.5,5"/><line x1="1.5" y1="9" x2="8.5" y2="9"/></svg> REPORT PDF<br><span style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--gold-dim)">Full analysis report</span></button>
+        <button id="export-pdf-btn" style="display:none;flex:1;padding:8px;font-size:11px;background:transparent;border:1px solid var(--gold-glow);color:var(--gold-text);border-radius:3px;cursor:pointer;font-family:inherit;letter-spacing:.08em;line-height:1.2" onclick="exportFullReportPDF()"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="1.5" x2="5" y2="7"/><polyline points="2.5,5 5,7.5 7.5,5"/><line x1="1.5" y1="9" x2="8.5" y2="9"/></svg> REPORT PDF<br><span style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--gold-dim)">Full analysis report</span></button>
         <button id="export-zip-btn" style="display:none;flex:1;padding:8px;font-size:11px;background:transparent;border:1px solid var(--border);color:var(--text-mid);border-radius:3px;cursor:pointer;font-family:inherit;letter-spacing:.08em;line-height:1.2" onclick="exportZip()" title="Export session + report bundle"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="1.5" x2="5" y2="7"/><polyline points="2.5,5 5,7.5 7.5,5"/><line x1="1.5" y1="9" x2="8.5" y2="9"/></svg> EXPORT ZIP<br><span style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text-lo)">All session files</span></button>
         <button id="export-img-btn" style="display:none;flex:1;padding:8px;font-size:11px;background:transparent;border:1px solid var(--border);color:var(--text-mid);border-radius:3px;cursor:pointer;font-family:inherit;letter-spacing:.08em;line-height:1.2" onclick="exportSummaryImage()" title="Export summary image for sharing"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1.5" width="8" height="7" rx="1"/><circle cx="3.5" cy="4" r="1"/><polyline points="1,8 3.5,5.5 5.5,7 7,5.5 9,8"/></svg> IMAGE<br><span style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text-lo)">Results summary image</span></button>
       </div>
@@ -5453,7 +5462,7 @@ function showWelcome(force) {
   ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);backdrop-filter:blur(3px);z-index:9999;display:flex;align-items:center;justify-content:center;font-family:inherit';
   ov.innerHTML = `
     <div style="max-width:440px;background:var(--bg-card);border:1px solid var(--gold);border-radius:8px;padding:28px 26px;box-shadow:0 16px 50px rgba(0,0,0,.6)">
-      <div style="font-size:10px;letter-spacing:2px;color:var(--gold);text-transform:uppercase;margin-bottom:10px">Nordic Storm · FTC 5962</div>
+      <div style="font-size:10px;letter-spacing:2px;color:var(--gold-text);text-transform:uppercase;margin-bottom:10px">Nordic Storm · FTC 5962</div>
       <div style="font-size:22px;color:var(--text-hi);font-weight:600;margin-bottom:6px">Welcome to STORMFEA</div>
       <div style="font-size:13px;color:var(--text-mid);line-height:1.55;margin-bottom:16px">
         A finite-element stress tool for FDM 3D-printed FTC parts. Upload a part, set its print orientation, add bolts and forces, then solve.
@@ -5483,9 +5492,9 @@ function showOnce(key, opts = {}) {
   pop.dataset.key = key;
   pop.style.cssText = 'position:fixed;z-index:9998;max-width:260px;background:var(--bg-card);border:1px solid var(--gold);border-radius:4px;padding:13px 14px;box-shadow:0 10px 30px rgba(0,0,0,.5);font-family:inherit';
   pop.innerHTML = `
-    <div style="font-size:11px;color:var(--gold);font-weight:600;margin-bottom:5px">${title}</div>
+    <div style="font-size:11px;color:var(--gold-text);font-weight:600;margin-bottom:5px">${title}</div>
     <div style="font-size:10.5px;color:var(--text-mid);line-height:1.5;margin-bottom:11px">${body}</div>
-    <button class="ob-got" style="padding:5px 12px;background:transparent;border:1px solid var(--gold);color:var(--gold);border-radius:4px;font-size:10px;cursor:pointer;font-family:inherit">Got it</button>`;
+    <button class="ob-got" style="padding:5px 12px;background:transparent;border:1px solid var(--gold-text);color:var(--gold-text);border-radius:4px;font-size:10px;cursor:pointer;font-family:inherit">Got it</button>`;
   document.body.appendChild(pop);
   const anchor = anchorSel ? document.querySelector(anchorSel) : null;
   if (anchor) {
@@ -6041,7 +6050,7 @@ function updateForceList() {
   }
   const rmag = Math.sqrt(rx*rx + ry*ry + rz*rz);
   const resultantHtml = S.forces.length > 1
-    ? `<div style="padding:5px 10px;background:var(--gold-faint);border:1px solid var(--gold-glow);border-radius:3px;margin-bottom:6px;font-size:10px;color:var(--gold)">
+    ? `<div style="padding:5px 10px;background:var(--gold-faint);border:1px solid var(--gold-glow);border-radius:3px;margin-bottom:6px;font-size:10px;color:var(--gold-text)">
          Resultant: <b>${U.forceStr(rmag)}</b>
          &nbsp;·&nbsp; dir (${rx.toFixed(0)}, ${ry.toFixed(0)}, ${rz.toFixed(0)})
        </div>` : '';
@@ -6082,7 +6091,7 @@ function renderHolesList() {
     const border = alreadyAdded ? '1px solid var(--gold-glow)' : '1px solid var(--border)';
     const btnLabel = alreadyAdded ? '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> Added' : '+ Add Bolt';
     const btnStyle = alreadyAdded
-      ? 'padding:3px 10px;font-size:11px;background:var(--gold-faint);border:1px solid var(--gold-glow);color:var(--gold);border-radius:3px;cursor:default;font-family:inherit'
+      ? 'padding:3px 10px;font-size:11px;background:var(--gold-faint);border:1px solid var(--gold-glow);color:var(--gold-text);border-radius:3px;cursor:default;font-family:inherit'
       : 'padding:3px 10px;font-size:11px;background:transparent;border:1px solid var(--border-mid);color:var(--text-mid);border-radius:3px;cursor:pointer;font-family:inherit';
     const override = S.holeTypeOverrides[h.id] || '';
     return `
@@ -6551,7 +6560,7 @@ function updateOrientDerivedDisplay() {
     labelEl.textContent = 'Set bed face in the ORIENT tab first';
     labelEl.style.color = 'var(--warn)';
     if (badgeEl) { badgeEl.textContent = ''; }
-    _setNav('<button onclick="switchTab(\'orient\')" style="background:none;border:none;padding:0;cursor:pointer;color:var(--gold);font-size:10px;font-family:inherit;text-decoration:underline">← Set in Orient</button>');
+    _setNav('<button onclick="switchTab(\'orient\')" style="background:none;border:none;padding:0;cursor:pointer;color:var(--gold-text);font-size:10px;font-family:inherit;text-decoration:underline">← Set in Orient</button>');
     return;
   }
 
@@ -6561,7 +6570,7 @@ function updateOrientDerivedDisplay() {
       : 'Add forces to derive orientation';
     labelEl.style.color = 'var(--text-mid)';
     if (badgeEl) { badgeEl.textContent = ''; }
-    _setNav('<button onclick="switchTab(\'loads\')" style="background:none;border:none;padding:0;cursor:pointer;color:var(--gold);font-size:10px;font-family:inherit;text-decoration:underline">← Add in Loads</button>');
+    _setNav('<button onclick="switchTab(\'loads\')" style="background:none;border:none;padding:0;cursor:pointer;color:var(--gold-text);font-size:10px;font-family:inherit;text-decoration:underline">← Add in Loads</button>');
     return;
   }
 
@@ -6656,7 +6665,7 @@ function updateSettingsPreview() {
     Infill (${infill}%) + ${walls} ${walls === 1 ? 'wall' : 'walls'}: ${(sectionStrength*100).toFixed(0)}% of solid strength <span style="color:var(--text-label)">— wall-credit + Gibson-Ashby</span><br>
     Pattern (${pattern}): ${(patternMul*100).toFixed(0)}% core factor <span style="color:var(--text-label)">— ${confidence}</span><br>
     Orientation: ${(orientMul*100).toFixed(0)}% <span style="color:${orientMul<0.6?'var(--gold)':'var(--text-lo)'}">${orient === 'flat' ? '<svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> inter-layer loading — weakest direction' : orient === 'upright' ? '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> in-layer — strongest' : 'angled'}</span><br>
-    Layer height (${lh.toFixed(2)}mm): <span style="color:${lhf>1.02?'var(--gold)':lhf<0.96?'var(--gold)':'var(--text-lo)'}">${lhPct > 0 ? '+' : ''}${lhPct.toFixed(0)}% Z-strength vs 0.2mm baseline</span>
+    Layer height (${lh.toFixed(2)}mm): <span style="color:${lhf>1.02?'var(--gold-text)':lhf<0.96?'var(--gold-text)':'var(--text-lo)'}">${lhPct > 0 ? '+' : ''}${lhPct.toFixed(0)}% Z-strength vs 0.2mm baseline</span>
   `;
 }
 
@@ -7316,7 +7325,7 @@ function showResults(s) {
   const oldBadge = document.getElementById('convergence-badge');
   if (oldBadge) oldBadge.remove();
 
-  const sfColor = s.safetyFactorAvailable ? (s.safetyFactor >= 2 ? 'var(--gold)' : s.safetyFactor >= 1 ? 'var(--gold)' : 'var(--danger)') : 'var(--text-lo)';
+  const sfColor = s.safetyFactorAvailable ? (s.safetyFactor >= 2 ? 'var(--gold-text)' : s.safetyFactor >= 1 ? 'var(--gold-text)' : 'var(--danger)') : 'var(--text-lo)';
   // Issue #278: the governing SF / mode / bulk-yield disclosure, from the
   // server. Used by every block below so the panel cannot name one mode and
   // print another mode's number.
@@ -7815,7 +7824,7 @@ function showResults(s) {
           </div>
         </div>
         ${s.isotropicComparison.falseSafe ? `
-        <div style="padding:5px 8px;background:var(--bg-card);border-radius:3px;margin-bottom:6px;font-size:11px;color:var(--gold);font-weight:600">
+        <div style="padding:5px 8px;background:var(--bg-card);border-radius:3px;margin-bottom:6px;font-size:11px;color:var(--gold-text);font-weight:600">
           <svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Conventional FEA would call this part SAFE — STORMFEA says it FAILS
         </div>` : ''}
         ${s.isotropicComparison.optimismPct > 2 ? `
@@ -7831,7 +7840,7 @@ function showResults(s) {
       <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:8px">WHERE TO ADD MATERIAL</div>
       ${s.topologySuggestions.map((t, i) => `
         <div style="padding:8px 10px;background:var(--bg-card);border:1px solid var(--border);border-radius:3px;margin-bottom:5px;display:flex;gap:10px;align-items:flex-start">
-          <div style="width:20px;height:20px;border-radius:50%;background:var(--gold-faint);border:1px solid var(--gold-glow);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--gold);flex-shrink:0">${i+1}</div>
+          <div style="width:20px;height:20px;border-radius:50%;background:var(--gold-faint);border:1px solid var(--gold-glow);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--gold-text);flex-shrink:0">${i+1}</div>
           <div style="flex:1">
             <div style="font-size:11px;color:var(--text-hi);margin-bottom:3px">${t.suggestion}</div>
             <div style="font-size:10px;color:var(--text-lo)">Peak ${U.stressStr(t.stressMPa)} · position (${U.lenStr(t.position[0],1)}, ${U.lenStr(t.position[1],1)}, ${U.lenStr(t.position[2],1)})</div>
@@ -7854,14 +7863,14 @@ function showResults(s) {
           ambiguous:'Ambiguous fit', nonstandard:'Non-standard', oversized:'OVERSIZED'
         }[h.type] || h.type;
         const typeColor = h.type==='nonstandard'||h.type==='oversized' ? 'var(--text-hi)'
-                        : h.type==='ambiguous' ? 'var(--gold)' : 'var(--text-lo)';
+                        : h.type==='ambiguous' ? 'var(--gold-text)' : 'var(--text-lo)';
         return `<div style="display:flex;gap:8px;padding:6px 10px;background:var(--bg-card);border:1px solid var(--border);border-radius:3px;margin-bottom:4px;font-size:11px">
           <div style="flex:1">
             <span style="color:var(--text-hi)">Hole ${i}: ${h.bolt ? h.bolt.label : 'unknown'}</span>
             <span style="color:${typeColor};margin-left:8px">${typeLabel}</span>
             <span style="color:var(--text-label);margin-left:8px">ø${U.lenStr(h.detectedDiamMm)}</span>
           </div>
-          ${h.warning ? `<div style="color:var(--gold);font-size:10px;margin-top:2px">${h.warning}</div>` : ''}
+          ${h.warning ? `<div style="color:var(--gold-text);font-size:10px;margin-top:2px">${h.warning}</div>` : ''}
         </div>`;
       }).join('')}
     </div>` : ''}
@@ -7871,8 +7880,8 @@ function showResults(s) {
       <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:8px">FAILURE MODE ANALYSIS</div>
       ${s.failureModes.map((m,i) => {
         const sfColor = !m.checked ? 'var(--text-mid)'
-                      : m.sf >= 2.0 ? 'var(--gold)'
-                      : m.sf >= 1.0 ? 'var(--gold)' : 'var(--text-hi)';
+                      : m.sf >= 2.0 ? 'var(--gold-text)'
+                      : m.sf >= 1.0 ? 'var(--gold-text)' : 'var(--text-hi)';
         const confColor = {high:'var(--text-lo)', medium:'var(--text-mid)', low:'var(--gold-glow)', unchecked:'var(--text-hi)'}[m.confidence] || 'var(--text-mid)';
         const confLabel = {high:'<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> high confidence', medium:'~ medium confidence', low:'<svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> low confidence — see note', unchecked:'<svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg> not checked'}[m.confidence] || '';
         // Issue #278: flag the row that actually set the headline SF (by name,
@@ -7880,7 +7889,7 @@ function showResults(s) {
         const isGoverning = m.checked && m.mode === gov.mode;
         return `<div style="padding:8px 10px;background:${isGoverning&&m.sf<2?'var(--gold-faint)':'var(--bg-card)'};border:1px solid ${isGoverning&&m.sf<2?'var(--gold-glow)':'var(--border)'};border-radius:3px;margin-bottom:5px">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
-            ${isGoverning ? '<div style="font-size:10px;color:var(--gold);margin-right:2px"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,1.5 8,7.5 1,7.5"/></svg> GOVERNING</div>' : ''}
+            ${isGoverning ? '<div style="font-size:10px;color:var(--gold-text);margin-right:2px"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,1.5 8,7.5 1,7.5"/></svg> GOVERNING</div>' : ''}
             <div style="flex:1;font-size:11px;color:${m.checked?'var(--text-hi)':'var(--text-mid)'}">${m.mode}</div>
             <div style="font-size:11px;font-weight:500;color:${sfColor}">${m.checked && s.safetyFactorAvailable ? 'SF '+m.sf.toFixed(2)+'×' : '—'}</div>
           </div>
@@ -7903,14 +7912,14 @@ function showResults(s) {
         Based on your geometry and load. Estimated fail force assumes same stress field.
       </div>
       ${s.recommendations.map(r => {
-        const sfColor = r.estimatedSF >= 2 ? 'var(--gold)' : r.estimatedSF >= 1 ? 'var(--warn)' : 'var(--danger)';
-        const changeColor = r.vsCurrentPct > 0 ? 'var(--gold)' : r.vsCurrentPct < -5 ? 'var(--danger)' : 'var(--text-hi)';
+        const sfColor = r.estimatedSF >= 2 ? 'var(--gold-text)' : r.estimatedSF >= 1 ? 'var(--warn)' : 'var(--danger)';
+        const changeColor = r.vsCurrentPct > 0 ? 'var(--gold-text)' : r.vsCurrentPct < -5 ? 'var(--danger)' : 'var(--text-hi)';
         const roundedPct = Math.round(r.vsCurrentPct / 5) * 5;
         const changeStr = roundedPct > 0 ? `+${roundedPct}%` : `${roundedPct}%`;
         return `<div style="display:flex;align-items:center;gap:8px;padding:7px 10px;background:${r.highlight?'var(--gold-faint)':'var(--bg-card)'};border:1px solid ${r.highlight?'var(--gold-glow)':'var(--border)'};border-radius:3px;margin-bottom:5px">
           ${r.highlight ? '<div style="width:6px;height:6px;border-radius:50%;background:var(--gold);flex-shrink:0"></div>' : '<div style="width:6px;height:6px;border-radius:50%;background:var(--border-mid);flex-shrink:0"></div>'}
           <div style="flex:1">
-            <div style="font-size:11px;color:${r.highlight?'var(--gold)':'var(--text-lo)'}">${r.label}</div>
+            <div style="font-size:11px;color:${r.highlight?'var(--gold-text)':'var(--text-lo)'}">${r.label}</div>
             <div style="font-size:10px;color:var(--text-label);margin-top:1px">${r.infillPct}% ${r.pattern} · ${r.orientation} · ${r.wallCount} walls</div>
           </div>
           <div style="text-align:right;flex-shrink:0">
@@ -7962,7 +7971,7 @@ function renderLayerRiskProfile(s) {
     const tip = `Layer ${L.layer} (z≈${U.lenStr ? U.lenStr(L.zMidMm) : L.zMidMm.toFixed(2) + ' mm'}) — SF ${L.sf.toFixed(2)}× · tension ${(L.uTension * 100).toFixed(0)}% · shear ${(L.uShear * 100).toFixed(0)}%`;
     return `<div title="${tip}" style="flex:1 1 0;min-width:2px;height:${hPct.toFixed(0)}%;align-self:flex-end;background:${layerRiskColor(L.sf)};${isGov ? 'outline:1.5px solid var(--text-hi);outline-offset:-1px;' : ''}border-radius:1px"></div>`;
   }).join('');
-  const govSfColor = gov.sf >= 2 ? 'var(--gold)' : gov.sf >= 1 ? 'var(--warn)' : 'var(--danger)';
+  const govSfColor = gov.sf >= 2 ? 'var(--gold-text)' : gov.sf >= 1 ? 'var(--warn)' : 'var(--danger)';
   return `
     <div style="margin-top:16px">
       <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:8px">DELAMINATION RISK BY LAYER</div>
@@ -7987,13 +7996,13 @@ function renderDelaminationDFM(s) {
   if (!d || !d.suggestions || !d.suggestions.length) return '';
   const modeLabel = d.governingSubMode === 'tension' ? 'Delamination (interlayer tension)' : 'Interlayer shear';
   const lines = d.suggestions.map(t =>
-    `<div style="display:flex;gap:6px;margin-bottom:4px"><span style="color:var(--gold)">→</span><span style="flex:1;font-size:10px;color:var(--text-lo);line-height:1.5">${t}</span></div>`
+    `<div style="display:flex;gap:6px;margin-bottom:4px"><span style="color:var(--gold-text)">→</span><span style="flex:1;font-size:10px;color:var(--text-lo);line-height:1.5">${t}</span></div>`
   ).join('');
   return `
     <div style="margin-top:16px;padding:10px 12px;background:var(--gold-faint);border:1px solid var(--gold-glow);border-radius:4px">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
         <div style="flex:1;font-size:11px;letter-spacing:.04em;color:var(--text-label)">STRENGTHEN THE LAYER BOND</div>
-        <span style="font-size:9px;color:var(--gold)">${modeLabel} · ~${d.inPlaneGainX.toFixed(1)}× in-plane</span>
+        <span style="font-size:9px;color:var(--gold-text)">${modeLabel} · ~${d.inPlaneGainX.toFixed(1)}× in-plane</span>
       </div>
       ${lines}
     </div>`;
@@ -8007,7 +8016,7 @@ function renderCouponRecommendations(s) {
   if (!recs || !recs.length) return '';
   const rows = recs.map(r => {
     const gov = r.governing
-      ? '<span style="font-size:9px;color:var(--gold);border:1px solid var(--gold-glow);border-radius:2px;padding:0 4px;margin-left:6px">GOVERNING</span>'
+      ? '<span style="font-size:9px;color:var(--gold-text);border:1px solid var(--gold-glow);border-radius:2px;padding:0 4px;margin-left:6px">GOVERNING</span>'
       : '';
     return `<div style="padding:7px 10px;background:${r.governing ? 'var(--gold-faint)' : 'var(--bg-card)'};border:1px solid ${r.governing ? 'var(--gold-glow)' : 'var(--border)'};border-radius:3px;margin-bottom:5px">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">
@@ -8456,7 +8465,7 @@ function renderBoltLoadTable(s) {
     const isMostLoaded = loadFrac > 0.95 && nBolts > 1;
 
     return `<tr style="border-bottom:1px solid var(--border);font-size:11px${isMostLoaded ? ';background:rgba(245,166,35,.04)' : ''}">
-      <td style="padding:6px 8px;color:var(--gold);font-weight:600">
+      <td style="padding:6px 8px;color:var(--gold-text);font-weight:600">
         ${b.label}${isMostLoaded ? ' <span style="font-size:9px;color:var(--warn)">▲</span>' : ''}
       </td>
       <td style="padding:6px 8px;color:var(--text-mid);font-family:'DM Mono',monospace">ø${U.lenStr(b.holeRadius*2)}</td>
@@ -8598,14 +8607,14 @@ function runOverlayPhases(phases) {
         <circle cx="18" cy="20" r="1.8" fill="var(--gold)"/>
       </svg>
       <div>
-        <div style="font-family:'Outfit',system-ui,sans-serif;font-size:13px;font-weight:700;color:var(--gold);letter-spacing:.04em">NORDIC STORM 5962</div>
+        <div style="font-family:'Outfit',system-ui,sans-serif;font-size:13px;font-weight:700;color:var(--gold-text);letter-spacing:.04em">NORDIC STORM 5962</div>
         <div style="font-size:10px;color:var(--text-lo);letter-spacing:.04em">SAINT PETER AREA ROBOTICS · ST. PETER, MN</div>
       </div>
     </div>
 
     <!-- Differentiator statement — this is the judge pitch -->
     <div style="padding:10px 12px;background:var(--gold-faint);border:1px solid var(--gold-glow);border-radius:4px;margin-bottom:12px">
-      <div style="font-size:11px;color:var(--gold);font-family:'Outfit',system-ui,sans-serif;font-weight:700;letter-spacing:.04em;margin-bottom:5px">WHY STORMFEA IS DIFFERENT</div>
+      <div style="font-size:11px;color:var(--gold-text);font-family:'Outfit',system-ui,sans-serif;font-weight:700;letter-spacing:.04em;margin-bottom:5px">WHY STORMFEA IS DIFFERENT</div>
       <div style="font-size:11px;color:var(--text-mid);line-height:1.7">
         Every other FEA tool treats 3D printed parts as solid isotropic material. <b style="color:var(--text-hi)">That's wrong.</b><br>
         FDM parts are anisotropic — the through-layer direction is only 65% as stiff as the in-layer direction,
@@ -8618,27 +8627,27 @@ function runOverlayPhases(phases) {
     <!-- Feature summary grid -->
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px;font-size:10px">
       <div style="padding:6px 8px;background:var(--bg-card);border:1px solid var(--border);border-radius:3px">
-        <div style="color:var(--gold);margin-bottom:3px;font-size:11px"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> Orthotropic FEM</div>
+        <div style="color:var(--gold-text);margin-bottom:3px;font-size:11px"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> Orthotropic FEM</div>
         <div style="color:var(--text-lo);line-height:1.5">Transversely isotropic C matrix. 5 independent constants. Hill yield criterion.</div>
       </div>
       <div style="padding:6px 8px;background:var(--bg-card);border:1px solid var(--border);border-radius:3px">
-        <div style="color:var(--gold);margin-bottom:3px;font-size:11px"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> SPR Stress Smoothing</div>
+        <div style="color:var(--gold-text);margin-bottom:3px;font-size:11px"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> SPR Stress Smoothing</div>
         <div style="color:var(--text-lo);line-height:1.5">Zienkiewicz-Zhu superconvergent patch recovery. 10–20% more accurate at holes.</div>
       </div>
       <div style="padding:6px 8px;background:var(--bg-card);border:1px solid var(--border);border-radius:3px">
-        <div style="color:var(--gold);margin-bottom:3px;font-size:11px"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> Auto Convergence</div>
+        <div style="color:var(--gold-text);margin-bottom:3px;font-size:11px"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> Auto Convergence</div>
         <div style="color:var(--text-lo);line-height:1.5">Fine mesh runs automatically. Results upgrade if not converged. Richardson extrapolation.</div>
       </div>
       <div style="padding:6px 8px;background:var(--bg-card);border:1px solid var(--border);border-radius:3px">
-        <div style="color:var(--gold);margin-bottom:3px;font-size:11px"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> 5 Failure Modes</div>
+        <div style="color:var(--gold-text);margin-bottom:3px;font-size:11px"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> 5 Failure Modes</div>
         <div style="color:var(--text-lo);line-height:1.5">Bulk yield, net-section, shear-out, thread strip-out, bearing — each with confidence label.</div>
       </div>
       <div style="padding:6px 8px;background:var(--bg-card);border:1px solid var(--border);border-radius:3px">
-        <div style="color:var(--gold);margin-bottom:3px;font-size:11px"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> Physical Calibration</div>
+        <div style="color:var(--gold-text);margin-bottom:3px;font-size:11px"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> Physical Calibration</div>
         <div style="color:var(--text-lo);line-height:1.5">3 coupon types, STL download, back-calculate your printer's actual constants.</div>
       </div>
       <div style="padding:6px 8px;background:var(--bg-card);border:1px solid var(--border);border-radius:3px">
-        <div style="color:var(--gold);margin-bottom:3px;font-size:11px"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> Cited Research</div>
+        <div style="color:var(--gold-text);margin-bottom:3px;font-size:11px"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> Cited Research</div>
         <div style="color:var(--text-lo);line-height:1.5">Every constant has a peer-reviewed source. Sources tab lists 10+ papers with confidence notes.</div>
       </div>
     </div>
@@ -8647,7 +8656,7 @@ function runOverlayPhases(phases) {
     <div style="font-size:9px;color:var(--text-lo);text-align:center;letter-spacing:.08em">
       STORMFEA · Built by Micah Stoll · Nordic Storm FTC 5962 · BIOBUZZ 2026–2027<br>
       Node.js · TypeScript · Three.js · TetGen · Gmsh · Electron<br><br>
-      <button onclick="startDemoMode()" style="padding:6px 14px;font-size:11px;background:var(--gold-faint);border:1px solid var(--gold-glow);color:var(--gold);border-radius:3px;cursor:pointer;font-family:inherit;letter-spacing:.1em"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><polygon points="2.5,2 8.5,5 2.5,8"/></svg> JUDGE DEMO MODE</button>
+      <button onclick="startDemoMode()" style="padding:6px 14px;font-size:11px;background:var(--gold-faint);border:1px solid var(--gold-glow);color:var(--gold-text);border-radius:3px;cursor:pointer;font-family:inherit;letter-spacing:.1em"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><polygon points="2.5,2 8.5,5 2.5,8"/></svg> JUDGE DEMO MODE</button>
     </div>`;
   setupTab.appendChild(footer);
 })();
@@ -8866,7 +8875,7 @@ function renderWorkflowRail() {
     </div>
   </div>
   <div style="flex:1;padding:0 10px 0 8px">
-    <div style="font-family:'Rajdhani',sans-serif;font-size:var(--text-sm);font-weight:700;color:${canAnalyse ? 'var(--gold)' : 'var(--text-mid)'};letter-spacing:.08em;${runAnim}">RUN ANALYSIS</div>
+    <div style="font-family:'Rajdhani',sans-serif;font-size:var(--text-sm);font-weight:700;color:${canAnalyse ? 'var(--gold-text)' : 'var(--text-mid)'};letter-spacing:.08em;${runAnim}">RUN ANALYSIS</div>
     <div style="font-family:'Outfit',sans-serif;font-size:var(--text-xs);color:var(--text-lo);margin-top:2px">${canAnalyse ? 'All steps complete — click to run.' : (blockingReason || '')}</div>
   </div>
 </div>`;
@@ -9790,7 +9799,7 @@ function handleBedHover(e) {
   indicator.style.display = 'block';
   if (valid) {
     indicator.style.borderColor = 'var(--gold-glow)';
-    indicator.style.color = 'var(--gold)';
+    indicator.style.color = 'var(--gold-text)';
     label.textContent = `${group.label} — click to set as bed`;
   } else {
     indicator.style.borderColor = 'var(--border-mid)';
@@ -9846,13 +9855,13 @@ function showOrientComparison(results) {
     const adjSF     = governingSF * o.mul / currentMul;
     const isCurrent = o.id === currentOrient;
     const isBest    = !isCurrent && o.id === bestAltId;
-    const sfColor   = adjSF >= 2 ? 'var(--gold)' : adjSF >= 1 ? 'var(--warn)' : 'var(--danger)';
+    const sfColor   = adjSF >= 2 ? 'var(--gold-text)' : adjSF >= 1 ? 'var(--warn)' : 'var(--danger)';
     const bg        = isCurrent ? 'var(--gold-faint)' : 'var(--bg-card)';
     const border    = isCurrent ? '1px solid var(--gold-glow)' : isBest ? '1px solid var(--border-mid)' : '1px solid var(--border)';
-    const nameColor = isCurrent ? 'var(--gold)' : isBest ? 'var(--text-hi)' : 'var(--text-mid)';
+    const nameColor = isCurrent ? 'var(--gold-text)' : isBest ? 'var(--text-hi)' : 'var(--text-mid)';
     const suffix    = isCurrent
       ? ' <svg width="8" height="9" viewBox="0 0 8 9" style="vertical-align:-1px" fill="currentColor"><polygon points="6,1.5 1,4.5 6,7.5"/></svg> current'
-      : isBest ? ' <svg width="8" height="9" viewBox="0 0 8 9" style="vertical-align:-1px;color:var(--gold)" fill="currentColor"><polygon points="2,1.5 7,4.5 2,7.5"/></svg> recommended'
+      : isBest ? ' <svg width="8" height="9" viewBox="0 0 8 9" style="vertical-align:-1px;color:var(--gold-text)" fill="currentColor"><polygon points="2,1.5 7,4.5 2,7.5"/></svg> recommended'
       : '';
     html += `<div style="padding:7px 10px;background:${bg};border:${border};border-radius:3px;margin-bottom:4px">
       <div style="display:flex;justify-content:space-between;align-items:center">
@@ -10549,7 +10558,7 @@ function togglePrefsPanel() {
   panel.style.display = opening ? 'block' : 'none';
   if (btn) {
     btn.style.borderColor = opening ? 'var(--gold)' : 'var(--border)';
-    btn.style.color       = opening ? 'var(--gold)'  : 'var(--text-mid)';
+    btn.style.color       = opening ? 'var(--gold-text)'  : 'var(--text-mid)';
   }
   if (opening) {
     const lb = document.getElementById('split-rot-linked');
@@ -10871,7 +10880,7 @@ async function runSolverValidation() {
 const SOURCES_DB = [
   {
     category: "ORTHOTROPIC MATERIAL MODEL",
-    color: "var(--gold)",
+    color: "var(--gold-text)",
     entries: [
       {
         id: "ahn2002",
@@ -10941,7 +10950,7 @@ const SOURCES_DB = [
   },
   {
     category: "INTERLAYER FAILURE & BOND MODEL",
-    color: "var(--gold)",
+    color: "var(--gold-text)",
     entries: [
       {
         id: "hashin1980",
@@ -11003,7 +11012,7 @@ const SOURCES_DB = [
   },
   {
     category: "MATERIAL UNCERTAINTY RANGES",
-    color: "var(--gold)",
+    color: "var(--gold-text)",
     entries: [
       {
         id: "uncertainty_table",
@@ -11041,7 +11050,7 @@ const SOURCES_DB = [
   },
   {
     category: "LAYER HEIGHT EFFECT",
-    color: "var(--gold)",
+    color: "var(--gold-text)",
     entries: [
       {
         id: "farashi2022",
@@ -11079,7 +11088,7 @@ const SOURCES_DB = [
   },
   {
     category: "BUILD ORIENTATION",
-    color: "var(--gold)",
+    color: "var(--gold-text)",
     entries: [
       {
         id: "chacon2019",
@@ -11109,7 +11118,7 @@ const SOURCES_DB = [
   },
   {
     category: "INFILL PATTERN",
-    color: "var(--gold)",
+    color: "var(--gold-text)",
     entries: [
       {
         id: "birosz2022",
@@ -11171,7 +11180,7 @@ const SOURCES_DB = [
   },
   {
     category: "MATERIAL BASE PROPERTIES",
-    color: "var(--gold)",
+    color: "var(--gold-text)",
     entries: [
       {
         id: "material_compare",
@@ -11238,7 +11247,7 @@ const SOURCES_DB = [
   },
   {
     category: "FATIGUE (S-N ESTIMATE)",
-    color: "var(--gold)",
+    color: "var(--gold-text)",
     entries: [
       {
         id: "wang2020_fatigue",
@@ -12915,7 +12924,7 @@ async function loadSession() {
           const filein = document.getElementById('filein');
           dropzone.style.display = 'flex';
           dropzone.innerHTML = `<div style="text-align:center">
-            <div style="font-size:11px;color:var(--gold);margin-bottom:8px">SESSION RESTORED</div>
+            <div style="font-size:11px;color:var(--gold-text);margin-bottom:8px">SESSION RESTORED</div>
             <div style="font-size:10px;color:var(--text-mid);margin-bottom:6px">${session.fileName || 'Unknown file'}</div>
             <div style="font-size:10px;color:var(--text-lo);margin-bottom:12px">
               Bolts, forces, and settings restored.<br>Re-upload the file to rebuild the 3D view.
@@ -13284,7 +13293,7 @@ function renderABComparison() {
   const splitBtnHtml = `
     <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <button class="btn" onclick="openSplitView()"
-        style="font-size:11px;padding:6px 14px;color:var(--gold);border-color:var(--gold-glow);display:flex;align-items:center;gap:6px">
+        style="font-size:11px;padding:6px 14px;color:var(--gold-text);border-color:var(--gold-glow);display:flex;align-items:center;gap:6px">
         <svg width="14" height="10" viewBox="0 0 14 10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
           <rect x="0.5" y="0.5" width="13" height="9" rx="1.5"/>
           <line x1="7" y1="0.5" x2="7" y2="9.5" stroke="var(--gold)" stroke-width="1.5"/>
@@ -13398,7 +13407,7 @@ function renderABComparison() {
     `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 60px;gap:6px;padding:4px 0;margin-bottom:4px">
       <div style="font-size:10px;color:var(--text-lo)">Metric</div>
       <div style="font-size:10px;color:var(--text-lo)">${AB.baseline.fileName}</div>
-      <div style="font-size:10px;color:var(--gold)">${AB.comparison.fileName}</div>
+      <div style="font-size:10px;color:var(--gold-text)">${AB.comparison.fileName}</div>
       <div style="font-size:10px;color:var(--text-lo);text-align:right">Δ</div>
     </div>` +
     resultsRows +
@@ -14632,7 +14641,7 @@ function buildShortcutPanel() {
       <div style="display:flex;align-items:baseline;justify-content:space-between;
                    padding:4px 0;border-bottom:1px solid var(--border)">
         <span style="font-size:11px;color:var(--text-mid)">${s.desc}</span>
-        <kbd style="font-family:'DM Mono',monospace;font-size:10px;color:var(--gold);
+        <kbd style="font-family:'DM Mono',monospace;font-size:10px;color:var(--gold-text);
                      background:var(--bg-base);border:1px solid var(--border);
                      border-radius:3px;padding:1px 6px;margin-left:12px;white-space:nowrap">${s.key}</kbd>
       </div>`).join('');
@@ -14985,7 +14994,7 @@ function pickDemoArchetype() {
     overlay.innerHTML = `
       <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:4px;padding:24px 28px;max-width:480px;width:90%">
         <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
-          <div style="font-family:'Rajdhani',sans-serif;font-size:16px;font-weight:700;letter-spacing:.08em;color:var(--gold)">JUDGE DEMO</div>
+          <div style="font-family:'Rajdhani',sans-serif;font-size:16px;font-weight:700;letter-spacing:.08em;color:var(--gold-text)">JUDGE DEMO</div>
           <button id="demo-picker-cancel" style="background:none;border:none;color:var(--text-lo);cursor:pointer;font-size:16px;line-height:1;padding:0;font-family:inherit">×</button>
         </div>
         <div style="font-size:11px;color:var(--text-lo);margin-bottom:18px;line-height:1.5">Choose a part archetype to demonstrate. Each shows a different failure mode.</div>
@@ -15081,11 +15090,11 @@ function showDemoStep() {
   const stepTitle = typeof step.title === 'function' ? step.title() : step.title;
   const stepText  = typeof step.text  === 'function' ? step.text()  : step.text;
   const reportBtn = step.showReportBtn
-    ? '<button onclick="exportFullReportPDF()" style="padding:5px 12px;font-size:11px;background:transparent;border:1px solid var(--gold-glow);color:var(--gold);border-radius:3px;cursor:pointer;font-family:inherit">Download report</button>'
+    ? '<button onclick="exportFullReportPDF()" style="padding:5px 12px;font-size:11px;background:transparent;border:1px solid var(--gold-glow);color:var(--gold-text);border-radius:3px;cursor:pointer;font-family:inherit">Download report</button>'
     : '';
   demoOverlayEl.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-      <div style="font-family:'Outfit',system-ui,sans-serif;font-size:11px;font-weight:700;color:var(--gold);letter-spacing:.04em">
+      <div style="font-family:'Outfit',system-ui,sans-serif;font-size:11px;font-weight:700;color:var(--gold-text);letter-spacing:.04em">
         JUDGE DEMO · ${demoStepIdx+1}/${DEMO_STEPS.length}
       </div>
       <button onclick="endDemoMode()" aria-label="End demo mode" style="background:none;border:none;color:var(--text-lo);cursor:pointer;font-size:11px;padding:0 4px"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg></button>
@@ -15097,7 +15106,7 @@ function showDemoStep() {
       <div style="display:flex;gap:6px">
         ${reportBtn}
         ${demoStepIdx > 0 ? '<button onclick="prevDemoStep()" style="padding:5px 12px;font-size:11px;background:transparent;border:1px solid var(--border);color:var(--text-lo);border-radius:3px;cursor:pointer;font-family:inherit">← Back</button>' : ''}
-        <button onclick="nextDemoStep()" style="padding:5px 14px;font-size:11px;background:var(--gold-faint);border:1px solid var(--gold-glow);color:var(--gold);border-radius:3px;cursor:pointer;font-family:inherit;letter-spacing:.08em">
+        <button onclick="nextDemoStep()" style="padding:5px 14px;font-size:11px;background:var(--gold-faint);border:1px solid var(--gold-glow);color:var(--gold-text);border-radius:3px;cursor:pointer;font-family:inherit;letter-spacing:.08em">
           ${demoStepIdx < DEMO_STEPS.length-1 ? 'Next ->' : 'Done <svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg>'}
         </button>
       </div>
@@ -15293,7 +15302,7 @@ function refreshDebugPanel() {
     const state = loadChecklistState();
     const done  = CHECKLIST.filter(c => state[c.id]).length;
     checkEl.innerHTML = `
-      <div style="margin-bottom:8px;font-size:11px;color:var(--gold)">${done}/${CHECKLIST.length} features verified</div>
+      <div style="margin-bottom:8px;font-size:11px;color:var(--gold-text)">${done}/${CHECKLIST.length} features verified</div>
       <div style="background:var(--bg-card);padding:8px;border-radius:3px;max-height:300px;overflow-y:auto">
         ${CHECKLIST.map(c => `
           <label for="chk-${c.id}" style="display:flex;align-items:flex-start;gap:8px;padding:5px 0;border-bottom:1px solid var(--bg-card);cursor:pointer;line-height:1.4">
@@ -15305,7 +15314,7 @@ function refreshDebugPanel() {
       </div>
       <div style="display:flex;gap:6px;margin-top:8px">
         <button class="btn" onclick="clearChecklist()" style="font-size:10px;padding:4px 8px;color:var(--text-mid)">Reset all</button>
-        <button class="btn" onclick="checkAllDone()" style="font-size:10px;padding:4px 8px;color:var(--gold);border-color:var(--gold-glow)">Mark all done</button>
+        <button class="btn" onclick="checkAllDone()" style="font-size:10px;padding:4px 8px;color:var(--gold-text);border-color:var(--gold-glow)">Mark all done</button>
       </div>
     `;
   }
@@ -15319,7 +15328,7 @@ function refreshDebugPanel() {
     } else {
       logEl.innerHTML = last20.map(entry => {
         const t = new Date(entry.t).toLocaleTimeString();
-        const color = entry.level==='error'?'var(--gold)':entry.level==='warn'?'var(--gold)':'var(--text-lo)';
+        const color = entry.level==='error'?'var(--gold-text)':entry.level==='warn'?'var(--gold-text)':'var(--text-lo)';
         return `<div style="color:${color};margin-bottom:2px">[${t}] ${entry.msg.slice(0,120)}</div>`;
       }).join('');
       logEl.scrollTop = logEl.scrollHeight;
@@ -15662,7 +15671,7 @@ fetch('/api/health').catch(() => {
                padding:24px 28px;max-width:540px;width:90%;max-height:80vh;overflow-y:auto">
     <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:18px">
       <h2 style="font-family:'Rajdhani',sans-serif;font-size:16px;font-weight:700;
-                  letter-spacing:.08em;color:var(--gold);margin:0">KEYBOARD SHORTCUTS</h2>
+                  letter-spacing:.08em;color:var(--gold-text);margin:0">KEYBOARD SHORTCUTS</h2>
       <button onclick="closeShortcuts()" aria-label="Close shortcuts"
         style="background:none;border:none;color:var(--text-lo);cursor:pointer;font-size:16px;
                padding:0;line-height:1;font-family:'Outfit',sans-serif">×</button>
