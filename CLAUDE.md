@@ -272,9 +272,15 @@ enforcing consistency — it relies on people (and agents) following
   (defined per-theme and for print, next to `--warn`), same value as the old
   literal in dark theme so that theme is unchanged; `renderValidationCoverage`'s
   "Known combination gaps" block shared the same literal and got the same fix
-  in the same pass. `--warn`'s own light-theme luminance caps headline
+  in the same pass. `--warn`'s own light-theme luminance capped headline
   contrast at ~3.8:1 regardless of background — a pre-existing limitation of
   that shared token, not something #320 introduced or was scoped to fix.
+  Fixed separately in a later WCAG contrast audit: `--warn` darkened from
+  `#BD7016` to `#9c5d12` in light theme (same amber/orange hue, just darker),
+  clearing 4.5:1 against every light background; dark theme's `--warn`
+  (`#D6862E`) was already compliant and is unchanged. Light theme also
+  gained its own `--warn-faint`/`--warn-glow` — previously undefined there,
+  they fell back to dark theme's (wrong-hued) values.
 - The rest of the file is not yet compliant: #319 (the 12px/14px and
   6px-radius sites outside the banners). Do not treat a nearby block as
   evidence of the house style.

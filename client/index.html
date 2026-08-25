@@ -299,7 +299,17 @@
      and print already makes this exact substitution (see @media print below). */
   --gold-text:  var(--gold-dim);
   --success:    var(--gold-text);
-  --warn:       #BD7016;
+  /* Darkened from #BD7016 (WCAG AA text audit): the original read
+     3.28-3.82:1 as text against light backgrounds, under the 4.5:1 floor
+     (this was CLAUDE.md's documented "~3.8:1 regardless of background"
+     limitation). Same hue (amber/orange, not yellow), just darker so it
+     carries as text on a near-white page. --warn-faint/--warn-glow were
+     previously undefined here and fell back to dark theme's (wrong-hued)
+     values -- now derived from light's own --warn like --danger-faint/
+     --danger-glow already are. */
+  --warn:       #9c5d12;
+  --warn-faint: #9c5d1218;
+  --warn-glow:  #9c5d1255;
   --warn-banner-bg: #FBF4EA;
   --danger:     #B23A28;
   --viewer-bg:  #eceae4;
@@ -11861,7 +11871,7 @@ function drawSummaryCanvas() {
 
     // ── Resolve theme colours ────────────────────────────────────────────────
     const isDark   = document.documentElement.getAttribute('data-theme') === 'dark';
-    // GOLD/TEXT_MID/TEXT_LO/DANGER mirror the CSS token values (canvas can't
+    // GOLD/TEXT_MID/TEXT_LO/DANGER/WARN mirror the CSS token values (canvas can't
     // read var()) — including the WCAG AA text-contrast fixes: bare gold
     // fails as text on a light background (~2.3:1), so light uses gold-dim;
     // dark's original text-mid/text-lo/danger read 3.7-4.4:1, under 4.5:1.
@@ -11873,7 +11883,7 @@ function drawSummaryCanvas() {
     const TEXT_LO  = isDark ? '#837c70' : '#766e62';
     const BORDER   = isDark ? '#251e10' : '#e4ddd0';
     const DANGER   = isDark ? '#c95b47' : '#B23A28';
-    const WARN     = '#D6862E';
+    const WARN     = isDark ? '#D6862E' : '#9c5d12';
 
     // ── Left panel: 3D viewer ─────────────────────────────────────────────────
     ctx.fillStyle = BG;
@@ -12118,7 +12128,7 @@ function drawDetailCanvas() {
   const ctx = out.getContext('2d');
 
   const isDark   = document.documentElement.getAttribute('data-theme') === 'dark';
-  // GOLD/TEXT_MID/TEXT_LO/DANGER mirror the CSS token values (canvas can't
+  // GOLD/TEXT_MID/TEXT_LO/DANGER/WARN mirror the CSS token values (canvas can't
   // read var()) — including the WCAG AA text-contrast fixes: bare gold
   // fails as text on a light background (~2.3:1), so light uses gold-dim;
   // dark's original text-mid/text-lo/danger read 3.7-4.4:1, under 4.5:1.
@@ -12130,7 +12140,7 @@ function drawDetailCanvas() {
   const TEXT_LO  = isDark ? '#837c70' : '#766e62';
   const BORDER   = isDark ? '#251e10' : '#e4ddd0';
   const DANGER   = isDark ? '#c95b47' : '#B23A28';
-  const WARN     = '#D6862E';
+  const WARN     = isDark ? '#D6862E' : '#9c5d12';
   const SUCCESS  = GOLD; // --success is always gold, never green (DESIGN.md) — including in a canvas-rendered report
 
   ctx.fillStyle = BG;
