@@ -239,6 +239,7 @@
   --gold-dim:   #8B6914;
   --gold-glow:  #C9A22740;
   --gold-faint: #C9A22714;
+  --gold-ink:   #0a0806; /* text/icons on a solid-gold fill — fixed near-black, theme-invariant since --gold itself is (unlike --bg-base, which flips polarity per theme and would go near-white text on gold in light mode) */
 }
 
 /* Dark mode: black page, warm-tinted text */
@@ -262,6 +263,7 @@
   --warn-banner-bg: #3a1a00;
   --danger:       #C2452F;
   --danger-faint: #C2452F1c;
+  --danger-glow:  #C2452F40;
   --viewer-bg:  #070604;
   --shadow:     0 4px 24px rgba(0,0,0,.7);
 }
@@ -448,7 +450,7 @@ input[type=range]:focus-visible { outline: 2px solid var(--gold); outline-offset
 /* Tier 1 — primary action: substantial, weighted */
 .btn.primary {
   background: var(--gold);
-  color: #0a0806;
+  color: var(--gold-ink);
   border-color: var(--gold);
   font-weight: 600;
   font-family: 'Outfit', sans-serif;
@@ -458,7 +460,7 @@ input[type=range]:focus-visible { outline: 2px solid var(--gold); outline-offset
 }
 .btn.primary:hover { background: var(--gold-bright); border-color: var(--gold-bright); }
 .btn.primary:disabled { background: var(--border); color: var(--text-lo); border-color: var(--border); cursor: not-allowed; opacity: 0.5; }
-.btn.cyan { border-color: var(--gold-glow); color: var(--gold)66; }
+.btn.cyan { border-color: var(--gold-glow); color: var(--gold-dim); }
 .btn.cyan.active { background: var(--gold-faint); border-color: var(--gold); color: var(--gold); }
 
 /* ── Labels ─────────────────────────────────────────────────────────────────── */
@@ -1157,15 +1159,15 @@ body:not(.has-results) #btn-stress { display: none !important; }
       #dropzone.drag-over { border-color: var(--gold); }
       #dropzone.drag-over #dropzone-compass { animation-duration: 2s; opacity: .6; }
       #dropzone:hover #dropzone-compass { animation-duration: 4s; opacity: .45; }
-      #dropzone.drop-error { border-color: #c0392b; }
+      #dropzone.drop-error { border-color: var(--danger); }
     </style>
 
     <!-- Toolbar (shown when file loaded) -->
     <div id="toolbar" style="display:none;position:absolute;top:12px;left:12px;display:flex;gap:6px;flex-wrap:wrap;max-width:440px">
       <button class="btn active" id="btn-view"  onclick="setMode('view')"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="5" y1="1" x2="5" y2="9"/><line x1="1" y1="5" x2="9" y2="5"/><line x1="2.2" y1="2.2" x2="7.8" y2="7.8"/><line x1="7.8" y1="2.2" x2="2.2" y2="7.8"/></svg> ORBIT</button>
-      <button class="btn"        id="btn-bed"   onclick="setMode('bed')" style="color:var(--gold)88;border-color:var(--gold-glow)" title="Click to select which face rests on the print bed — this sets load direction"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="1.5" y="1.5" width="7" height="7" rx="1"/><rect x="3.5" y="3.5" width="3" height="3"/></svg> BED</button>
-      <button class="btn"        id="btn-force" onclick="setMode('force')" style="color:var(--gold)88;border-color:var(--gold)33"><svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> FORCE</button>
-      <button class="btn"        id="btn-addhole" onclick="toggleMode('addhole')" style="color:var(--gold)88;border-color:var(--gold)33" title="Manually define a hole the auto-detector missed (e.g. angled / side-wall holes)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> HOLE</button>
+      <button class="btn"        id="btn-bed"   onclick="setMode('bed')" style="color:var(--gold-dim);border-color:var(--gold-glow)" title="Click to select which face rests on the print bed — this sets load direction"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="1.5" y="1.5" width="7" height="7" rx="1"/><rect x="3.5" y="3.5" width="3" height="3"/></svg> BED</button>
+      <button class="btn"        id="btn-force" onclick="setMode('force')" style="color:var(--gold-dim);border-color:var(--gold-glow)"><svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> FORCE</button>
+      <button class="btn"        id="btn-addhole" onclick="toggleMode('addhole')" style="color:var(--gold-dim);border-color:var(--gold-glow)" title="Manually define a hole the auto-detector missed (e.g. angled / side-wall holes)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="5" y1="2.2" x2="5" y2="7.8"/><line x1="2.2" y1="5" x2="7.8" y2="5"/></svg> HOLE</button>
         <div style="width:1px;height:20px;background:var(--border);margin:0 4px;align-self:center;flex-shrink:0"></div>
         <button class="btn" id="undo-btn" onclick="performUndo()" disabled
           aria-label="Undo" title="Nothing to undo"
@@ -1236,7 +1238,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
     <div id="badges" style="display:none;position:absolute;bottom:12px;left:12px;display:flex;gap:8px">
       <div id="mesh-stats-badge" style="display:none;padding:3px 8px;background:var(--bg-panel);border:1px solid var(--border);border-radius:3px;font-size:10px;color:var(--text-mid);letter-spacing:.06em"></div>
       <span id="badge-bolts"  style="font-size:11px;background:var(--gold-faint);border:1px solid var(--gold-faint);color:var(--gold);padding:3px 8px;border-radius:2px"><svg width="11" height="11" viewBox="0 0 11 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5.5" cy="5.5" r="4"/><circle cx="5.5" cy="5.5" r="1.5" fill="currentColor" stroke="none"/></svg> 0 bolts</span>
-      <span id="badge-forces" style="font-size:11px;background:var(--gold-faint);border:1px solid var(--gold)22;color:var(--gold);padding:3px 8px;border-radius:2px"><svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> 0 forces</span>
+      <span id="badge-forces" style="font-size:11px;background:var(--gold-faint);border:1px solid var(--gold-glow);color:var(--gold);padding:3px 8px;border-radius:2px"><svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> 0 forces</span>
     </div>
 
     <!-- Stress legend — title and swatch stack share one flex container so
@@ -1324,7 +1326,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
     </div>
 
     <!-- Loading overlay -->
-    <div id="overlay" style="display:none;position:absolute;inset:0;background:var(--viewer-bg)cc;align-items:center;justify-content:center;flex-direction:column;z-index:50">
+    <div id="overlay" style="display:none;position:absolute;inset:0;background:color-mix(in srgb, var(--viewer-bg) 80%, transparent);align-items:center;justify-content:center;flex-direction:column;z-index:50">
       <div style="font-size:32px;animation:pulse 1s infinite;color:var(--gold);margin-bottom:14px"><svg width="11" height="11" viewBox="0 0 11 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5.5" cy="5.5" r="4"/><circle cx="5.5" cy="5.5" r="1.5" fill="currentColor" stroke="none"/></svg></div>
       <div id="overlay-msg" style="font-size:10px;color:var(--text-hi);letter-spacing:.04em;margin-bottom:6px">Loading...</div>
       <div id="overlay-sub" style="font-size:10px;color:var(--text-lo);letter-spacing:.1em;margin-bottom:14px;min-height:12px"></div>
@@ -1432,7 +1434,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       </div>
       <!-- Export shortcut -->
       <button class="btn" onclick="exportFullReportPDF()" id="sticky-export-btn"
-        style="display:none;font-size:10px;padding:5px 10px;flex-shrink:0;color:var(--gold);border-color:var(--gold)44">
+        style="display:none;font-size:10px;padding:5px 10px;flex-shrink:0;color:var(--gold);border-color:var(--gold-glow)">
         <svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="1.5" x2="5" y2="7"/><polyline points="2.5,5 5,7.5 7.5,5"/><line x1="1.5" y1="9" x2="8.5" y2="9"/></svg>
         PDF
       </button>
@@ -1510,7 +1512,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
       </div>
       <div id="orient-file-instructions" style="font-size:11px;color:var(--text-lo);margin-bottom:14px;line-height:1.7">
         Hover over a face — it highlights gold. Click to snap that face flat to the build plate.
-        <br><span style="color:var(--gold)99">Right-drag to pan · left-drag to rotate · scroll to zoom</span>
+        <br><span style="color:var(--gold-dim)">Right-drag to pan · left-drag to rotate · scroll to zoom</span>
       </div>
 
       <!-- Current orientation display — data-display card -->
@@ -1559,7 +1561,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
 
       <!-- STEP 1: Detected holes — click to bolt -->
       <div style="margin-bottom:24px">
-        <div style="font-size:11px;letter-spacing:.04em;color:var(--gold)88;margin-bottom:10px"><svg width="11" height="11" viewBox="0 0 11 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5.5" cy="5.5" r="4"/><circle cx="5.5" cy="5.5" r="1.5" fill="currentColor" stroke="none"/></svg> STEP 1 — SELECT BOLT HOLES</div>
+        <div style="font-size:11px;letter-spacing:.04em;color:var(--gold-dim);margin-bottom:10px"><svg width="11" height="11" viewBox="0 0 11 11" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5.5" cy="5.5" r="4"/><circle cx="5.5" cy="5.5" r="1.5" fill="currentColor" stroke="none"/></svg> STEP 1 — SELECT BOLT HOLES</div>
         <div id="holes-info-wrap">
           <div style="font-size:11px;color:var(--text-mid);padding:12px;border:1px dashed var(--border);border-radius:3px;text-align:center">Upload a file to detect holes.</div>
         </div>
@@ -1575,8 +1577,8 @@ body:not(.has-results) #btn-stress { display: none !important; }
       <!-- STEP 2: Forces -->
       <div style="margin-bottom:24px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-          <div style="font-size:11px;letter-spacing:.04em;color:var(--gold)88"><svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> STEP 2 — APPLY FORCE</div>
-          <button class="btn" id="place-force-btn" onclick="openForceEditorDirect()" style="color:var(--gold)88;border-color:var(--gold)33">+ Place Force</button>
+          <div style="font-size:11px;letter-spacing:.04em;color:var(--gold-dim)"><svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> STEP 2 — APPLY FORCE</div>
+          <button class="btn" id="place-force-btn" onclick="openForceEditorDirect()" style="color:var(--gold-dim);border-color:var(--gold-glow)">+ Place Force</button>
         </div>
         <div style="font-size:11px;color:var(--text-lo);margin-bottom:8px">Click <svg width="11" height="10" viewBox="0 0 11 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,2 5,5 1.5,8"/><polyline points="5.5,2 9,5 5.5,8"/></svg> FORCE in the toolbar, then click anywhere on the 3D model.</div>
 
@@ -2207,7 +2209,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
           <select id="calib-profile-select" style="flex:1" onchange="onCalibProfileChange(this.value)">
             <option value="">Literature defaults (no calibration)</option>
           </select>
-          <button class="btn" onclick="deleteCalibProfile()" aria-label="Delete calibration profile" style="color:var(--danger);border-color:var(--danger)44;font-size:10px;padding:4px 8px"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg></button>
+          <button class="btn" onclick="deleteCalibProfile()" aria-label="Delete calibration profile" style="color:var(--danger);border-color:var(--danger-glow);font-size:10px;padding:4px 8px"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg></button>
         </div>
         <div style="display:flex;gap:6px;margin-top:6px">
           <button class="btn" onclick="exportAllCalibProfiles()" style="flex:1;font-size:10px;padding:4px 8px;display:flex;align-items:center;justify-content:center;gap:5px"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="4.5" y1="1" x2="4.5" y2="6.5"/><polyline points="2,4 4.5,6.5 7,4"/><line x1="1" y1="8" x2="8" y2="8"/></svg> Export all profiles</button>
@@ -2415,7 +2417,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
           </div>
           <div id="kt-status" style="font-size:10px;color:var(--text-lo);line-height:1.6;margin-bottom:6px"></div>
           <button class="btn" onclick="runFEAKtExtraction()"
-            style="font-size:10px;padding:5px 12px;color:var(--gold);border-color:var(--gold)44">
+            style="font-size:10px;padding:5px 12px;color:var(--gold);border-color:var(--gold-glow)">
             <svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><polygon points="2.5,2 8.5,5 2.5,8"/></svg>
             Compute Kt via FEA
           </button>
@@ -2439,7 +2441,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <div id="bond-sweep-rows"></div>
         <div style="display:flex;gap:8px;margin-top:6px">
           <button class="btn" style="font-size:10px;padding:4px 10px" onclick="addBondSweepRow()">+ Row</button>
-          <button class="btn" style="font-size:10px;padding:4px 12px;color:var(--gold);border-color:var(--gold)44" onclick="runBondSweepFit()">Fit bond model</button>
+          <button class="btn" style="font-size:10px;padding:4px 12px;color:var(--gold);border-color:var(--gold-glow)" onclick="runBondSweepFit()">Fit bond model</button>
         </div>
         <div id="bond-sweep-status" style="font-size:10px;color:var(--text-lo);line-height:1.6;margin-top:6px;min-height:14px"></div>
       </div>
@@ -2467,10 +2469,10 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <div style="font-family:'Outfit',system-ui,sans-serif;font-size:13px;font-weight:700;letter-spacing:.2em;color:var(--gold)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="5" cy="5" r="3.8"/><line x1="2.3" y1="7.7" x2="7.7" y2="2.3"/></svg> DEBUG PANEL</div>
         <div style="display:flex;gap:6px">
           <button class="btn" onclick="refreshDebugPanel()" style="font-size:11px;padding:4px 10px"><svg width="11" height="11" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M7.5 3A3.5 3.5 0 1 0 8.5 6"/><polyline points="7,1.5 8.5,3 7,4.5" fill="none"/></svg> Refresh</button>
-          <button class="btn" onclick="copyBugReport()" style="font-size:11px;padding:4px 10px;color:var(--gold);border-color:var(--gold)44"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><rect x="3.5" y="1" width="5.5" height="6.5" rx="1"/><rect x="1" y="3.5" width="5.5" height="6.5" rx="1" fill="var(--bg-base)"/></svg> Copy Bug Report</button>
+          <button class="btn" onclick="copyBugReport()" style="font-size:11px;padding:4px 10px;color:var(--gold);border-color:var(--gold-glow)"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><rect x="3.5" y="1" width="5.5" height="6.5" rx="1"/><rect x="1" y="3.5" width="5.5" height="6.5" rx="1" fill="var(--bg-base)"/></svg> Copy Bug Report</button>
         </div>
       </div>
-      <div style="font-size:10px;color:var(--text-lo);margin-bottom:16px;padding:8px 10px;background:var(--gold-faint);border:1px solid var(--gold)22;border-radius:3px;line-height:1.7">
+      <div style="font-size:10px;color:var(--text-lo);margin-bottom:16px;padding:8px 10px;background:var(--gold-faint);border:1px solid var(--gold-glow);border-radius:3px;line-height:1.7">
         If something isn't working, open this tab and click "Copy Bug Report" — paste that into a new chat with me and I'll diagnose it.
         To test a specific feature, use the checklist below. Check each box as you verify it works.
       </div>
@@ -2480,7 +2482,7 @@ body:not(.has-results) #btn-stress { display: none !important; }
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
           <div style="font-family:'Outfit',system-ui,sans-serif;font-size:11px;font-weight:600;color:var(--gold);letter-spacing:.04em">SOLVER VALIDATION SUITE</div>
           <button class="btn" id="run-validation-btn" onclick="runSolverValidation()"
-            style="font-size:11px;padding:4px 12px;color:var(--gold);border-color:var(--gold)44">
+            style="font-size:11px;padding:4px 12px;color:var(--gold);border-color:var(--gold-glow)">
             <svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><polygon points="2.5,2 8.5,5 2.5,8"/></svg>
             Run Tests
           </button>
@@ -2494,25 +2496,25 @@ body:not(.has-results) #btn-stress { display: none !important; }
 
       <!-- System state -->
       <div style="margin-bottom:16px">
-        <div style="font-size:11px;color:var(--gold);letter-spacing:.04em;margin-bottom:8px;border-bottom:1px solid var(--gold)22;padding-bottom:4px">SYSTEM STATE</div>
+        <div style="font-size:11px;color:var(--gold);letter-spacing:.04em;margin-bottom:8px;border-bottom:1px solid var(--gold-glow);padding-bottom:4px">SYSTEM STATE</div>
         <div id="debug-state" style="font-size:10px;color:var(--text-mid);line-height:2;white-space:pre-wrap"></div>
       </div>
 
       <!-- Last analysis result -->
       <div style="margin-bottom:16px">
-        <div style="font-size:11px;color:var(--gold);letter-spacing:.04em;margin-bottom:8px;border-bottom:1px solid var(--gold)22;padding-bottom:4px">LAST ANALYSIS</div>
+        <div style="font-size:11px;color:var(--gold);letter-spacing:.04em;margin-bottom:8px;border-bottom:1px solid var(--gold-glow);padding-bottom:4px">LAST ANALYSIS</div>
         <div id="debug-analysis" style="font-size:10px;color:var(--text-mid);line-height:2;white-space:pre-wrap"></div>
       </div>
 
       <!-- Feature checklist -->
       <div style="margin-bottom:16px">
-        <div style="font-size:11px;color:var(--gold);letter-spacing:.04em;margin-bottom:8px;border-bottom:1px solid var(--gold)22;padding-bottom:4px">FEATURE TEST CHECKLIST</div>
+        <div style="font-size:11px;color:var(--gold);letter-spacing:.04em;margin-bottom:8px;border-bottom:1px solid var(--gold-glow);padding-bottom:4px">FEATURE TEST CHECKLIST</div>
         <div id="debug-checklist" style="font-size:10px;color:var(--text-mid);line-height:1"></div>
       </div>
 
       <!-- Console log -->
       <div style="margin-bottom:16px">
-        <div style="font-size:11px;color:var(--gold);letter-spacing:.04em;margin-bottom:8px;border-bottom:1px solid var(--gold)22;padding-bottom:4px">CONSOLE LOG (last 20)</div>
+        <div style="font-size:11px;color:var(--gold);letter-spacing:.04em;margin-bottom:8px;border-bottom:1px solid var(--gold-glow);padding-bottom:4px">CONSOLE LOG (last 20)</div>
         <div id="debug-log" style="font-size:10px;color:var(--text-mid);line-height:1.8;white-space:pre-wrap;background:var(--bg-card);padding:8px;border-radius:3px;max-height:200px;overflow-y:auto"></div>
       </div>
     </div>
@@ -4817,14 +4819,14 @@ function setMode(m) {
     const btn = document.getElementById('btn-' + id);
     if (btn) btn.className = 'btn' + (id === m ? ' active' : id === 'bolt' ? ' cyan' : '');
   });
-  document.getElementById('btn-force').style.color = m === 'force' ? '' : 'var(--gold)88';
+  document.getElementById('btn-force').style.color = m === 'force' ? '' : 'var(--gold-dim)';
   document.getElementById('btn-force').style.borderColor = m === 'force' ? '' : 'var(--gold-glow)';
 
   // BED button styling
   const bedBtn = document.getElementById('btn-bed');
   if (bedBtn) {
     bedBtn.className = 'btn' + (m === 'bed' ? ' active' : '');
-    bedBtn.style.color       = m === 'bed' ? '' : 'var(--gold)88';
+    bedBtn.style.color       = m === 'bed' ? '' : 'var(--gold-dim)';
     bedBtn.style.borderColor = m === 'bed' ? '' : 'var(--gold-glow)';
   }
 
@@ -4832,8 +4834,8 @@ function setMode(m) {
   const ahBtn = document.getElementById('btn-addhole');
   if (ahBtn) {
     ahBtn.className = 'btn' + (m === 'addhole' ? ' active' : '');
-    ahBtn.style.color       = m === 'addhole' ? '' : 'var(--gold)88';
-    ahBtn.style.borderColor = m === 'addhole' ? '' : 'var(--gold)33';
+    ahBtn.style.color       = m === 'addhole' ? '' : 'var(--gold-dim)';
+    ahBtn.style.borderColor = m === 'addhole' ? '' : 'var(--gold-glow)';
   }
 
   updateHintBar();
@@ -5462,7 +5464,7 @@ function showWelcome(force) {
       <label style="display:flex;align-items:center;gap:7px;font-size:10px;color:var(--text-lo);margin-bottom:16px;cursor:pointer">
         <input type="checkbox" id="ob-dontshow" checked style="accent-color:var(--gold)"> Don't show this again
       </label>
-      <button id="ob-start" style="width:100%;padding:10px;background:var(--gold);color:#1a1712;border:none;border-radius:5px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit">Get started</button>
+      <button id="ob-start" style="width:100%;padding:10px;background:var(--gold);color:var(--gold-ink);border:none;border-radius:5px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit">Get started</button>
     </div>`;
   document.body.appendChild(ov);
   ov.querySelector('#ob-start').onclick = () => {
@@ -5991,7 +5993,7 @@ function updateBoltList() {
   el.innerHTML = S.bolts.map((b,i) => `
     <div class="card" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--gold-faint);border:1px solid var(--gold-faint);border-radius:3px;margin-bottom:6px">
       <div style="width:8px;height:8px;border-radius:50%;background:var(--gold);flex-shrink:0"></div>
-      <div style="flex:1;font-size:10px;color:var(--gold)aa">
+      <div style="flex:1;font-size:10px;color:var(--gold-dim)">
         ${b.label} · ø${U.lenStr(b.holeRadius*2)} ·
         <span style="color:var(--text-lo)">${
           b.fastenerType === 'shank'  ? 'Shank only' :
@@ -6045,9 +6047,9 @@ function updateForceList() {
        </div>` : '';
 
   el.innerHTML = resultantHtml + S.forces.map((f,i) => `
-    <div class="card" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--gold-faint);border:1px solid var(--gold)18;border-radius:3px;margin-bottom:6px">
+    <div class="card" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--gold-faint);border:1px solid var(--gold-glow);border-radius:3px;margin-bottom:6px">
       <div style="width:8px;height:8px;border-radius:50%;background:var(--gold);flex-shrink:0"></div>
-      <div style="flex:1;font-size:10px;color:var(--gold)aa">${f.label} · ${U.forceStr(f.magnitude)} · ${dirLabel(f.direction)}${forcePlacementBadge(f)}${f._replaceRecommended ? ' <span style="color:var(--warn,#e0a030)">re-place recommended</span>' : ''}</div>
+      <div style="flex:1;font-size:10px;color:var(--gold-dim)">${f.label} · ${U.forceStr(f.magnitude)} · ${dirLabel(f.direction)}${forcePlacementBadge(f)}${f._replaceRecommended ? ' <span style="color:var(--warn)">re-place recommended</span>' : ''}</div>
       <button class="btn" style="padding:2px 8px;font-size:11px" onclick="editForce(${i})" aria-label="Edit force"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 2 L8 3.5 L3.5 8 L1.5 8.5 L2 6.5 Z"/><line x1="5.5" y1="3" x2="7" y2="4.5"/></svg></button>
       <button class="btn" style="padding:2px 8px;font-size:11px" onclick="removeForce(${i})" aria-label="Remove force"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="1.5" y1="1.5" x2="7.5" y2="7.5"/><line x1="7.5" y1="1.5" x2="1.5" y2="7.5"/></svg></button>
     </div>
@@ -6080,7 +6082,7 @@ function renderHolesList() {
     const border = alreadyAdded ? '1px solid var(--gold-glow)' : '1px solid var(--border)';
     const btnLabel = alreadyAdded ? '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> Added' : '+ Add Bolt';
     const btnStyle = alreadyAdded
-      ? 'padding:3px 10px;font-size:11px;background:var(--gold-faint);border:1px solid var(--gold)66;color:var(--gold);border-radius:3px;cursor:default;font-family:inherit'
+      ? 'padding:3px 10px;font-size:11px;background:var(--gold-faint);border:1px solid var(--gold-glow);color:var(--gold);border-radius:3px;cursor:default;font-family:inherit'
       : 'padding:3px 10px;font-size:11px;background:transparent;border:1px solid var(--border-mid);color:var(--text-mid);border-radius:3px;cursor:pointer;font-family:inherit';
     const override = S.holeTypeOverrides[h.id] || '';
     return `
@@ -7050,19 +7052,19 @@ function showConvergenceBadge(state, changePct, nodesStd, nodesFine, opts) {
       sub: 'Fine mesh convergence check only runs when SF < 3.0. Results are reliable.',
     },
     c3d4_no_sf: {
-      color: 'var(--warn)', bg: 'var(--bg-card)', border: 'var(--gold)33',
+      color: 'var(--warn)', bg: 'var(--bg-card)', border: 'var(--gold-glow)',
       icon: '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="currentColor"><polygon points="5,1 9.5,9 0.5,9"/><rect x="4.4" y="4.2" width="1.2" height="2.8" fill="var(--bg-base)"/><rect x="4.4" y="7.5" width="1.2" height="1.2" fill="var(--bg-base)"/></svg>',
       text: `No safety factor — fine mesh skipped`,
       sub: `The solver did not produce a safety factor for this analysis. A finer mesh would not change this result.`,
     },
     c3d4_skipped: {
-      color: 'var(--warn)', bg: 'var(--bg-card)', border: 'var(--gold)33',
+      color: 'var(--warn)', bg: 'var(--bg-card)', border: 'var(--gold-glow)',
       icon: '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="currentColor"><polygon points="5,1 9.5,9 0.5,9"/><rect x="4.4" y="4.2" width="1.2" height="2.8" fill="var(--bg-base)"/><rect x="4.4" y="7.5" width="1.2" height="1.2" fill="var(--bg-base)"/></svg>',
       text: `C3D4 mesh, SF > 3.0 — fine mesh skipped, but C3D4 may underpredict bending stress`,
       sub: `Linear C3D4 tetrahedra underpredict bending deflection and stress by ~55% at practical mesh densities due to shear locking. The reported SF may be higher than the true value for bending-loaded geometry. Switch to C3D10 in the MATERIAL tab → Element order for accurate bending analysis.`,
     },
     c3d4_stable: {
-      color: 'var(--warn)', bg: 'var(--bg-card)', border: 'var(--gold)33',
+      color: 'var(--warn)', bg: 'var(--bg-card)', border: 'var(--gold-glow)',
       icon: '<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="currentColor"><polygon points="5,1 9.5,9 0.5,9"/><rect x="4.4" y="4.2" width="1.2" height="2.8" fill="var(--bg-base)"/><rect x="4.4" y="7.5" width="1.2" height="1.2" fill="var(--bg-base)"/></svg>',
       text: `C3D4 mesh stable within ${changePct?.toFixed(1)}% — but this is not convergence`,
       sub: `Standard and fine C3D4 meshes agree because both are equally locked, not because they are correct. C3D4 underpredicts bending stress by ~55% at practical mesh densities. Switch to C3D10 in the MATERIAL tab → Element order for bending-loaded geometry.`,
@@ -7074,7 +7076,7 @@ function showConvergenceBadge(state, changePct, nodesStd, nodesFine, opts) {
       sub: `Standard mesh (${nodesStd?.toLocaleString()} nodes) matches fine mesh (${nodesFine?.toLocaleString()} nodes). Results are mesh-independent.`,
     },
     upgraded: {
-      color: 'var(--warn)', bg: 'var(--bg-card)', border: 'var(--gold)33',
+      color: 'var(--warn)', bg: 'var(--bg-card)', border: 'var(--gold-glow)',
       icon: '',
       text: `Mesh auto-upgraded — standard mesh was not converged (${changePct?.toFixed(1)}% change)`,
       sub: `Results updated to fine mesh (${nodesFine?.toLocaleString()} nodes). Standard mesh underestimated peak stress by ${changePct?.toFixed(1)}%.`,
@@ -7084,7 +7086,7 @@ function showConvergenceBadge(state, changePct, nodesStd, nodesFine, opts) {
     // metric instead of a stuck "not converged" badge, and do NOT auto-upgrade.
     singular_robust: {
       color: opts?.robustConverged ? 'var(--success)' : 'var(--warn)',
-      bg: 'var(--bg-card)', border: 'var(--gold)33',
+      bg: 'var(--bg-card)', border: 'var(--gold-glow)',
       icon: '<svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg>',
       text: `Peak stress is at a likely geometric singularity — ${opts?.robustConverged ? 'robust metric converged' : 'showing robust metric'} (99th-pct VM ${changePct?.toFixed(1)}% between meshes)`,
       sub: `The peak von Mises grows without bound under refinement (${opts?.peakChange?.toFixed(1)}% peak change — ${opts?.reason || 'peak sits at a singularity'}), so it is not a convergence failure: the mesh is fine. Convergence is judged on the 99th-percentile stress instead, which excludes the singular point. Add a fillet at the flagged corner for a physical peak stress.`,
@@ -7479,7 +7481,7 @@ function showResults(s) {
   } else if (govTier === 'fail') {
     const failN = U.forceStr(displayFailForceN);
     const modeStr = bucklingGoverns ? 'buckling' : (govMode ? govMode.mode.toLowerCase() : 'bulk yield');
-    actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--text-hi)66;border-radius:4px;margin-bottom:16px">
+    actionHTML = `<div style="padding:14px 16px;background:var(--bg-card);border:2px solid var(--border-mid);border-radius:4px;margin-bottom:16px">
       <div style="font-size:13px;font-weight:600;color:var(--text-hi);margin-bottom:6px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Estimated failure load: ${failN}</div>
       <div style="font-size:11px;color:var(--text-hi);margin-bottom:2px">Governed by ${modeStr}</div>
       ${failForceCaveat}
@@ -7520,7 +7522,7 @@ function showResults(s) {
         <div style="font-size:18px;font-weight:500;color:var(--text-hi)">${s.maxVonMisesMPa.toFixed(2)} <span style="font-size:10px;color:var(--text-label)">MPa</span></div>
         <div style="font-size:10px;color:var(--text-lo);margin-top:2px">von Mises</div>
         ${(s.minSignedVonMisesMPa != null || s.maxSignedVonMisesMPa != null) ? `<div style="font-size:9px;color:var(--text-lo);margin-top:3px;line-height:1.4" title="Signed von Mises: sign(σxx+σyy+σzz)×σ_VM. Negative=compression, positive=tension.">
-          <span style="color:#1650d8">${(s.minSignedVonMisesMPa ?? 0).toFixed(1)} MPa</span> comp · <span style="color:#c01717">${(s.maxSignedVonMisesMPa ?? 0).toFixed(1)} MPa</span> tens
+          <span style="color:var(--text-hi)">${(s.minSignedVonMisesMPa ?? 0).toFixed(1)} MPa</span> comp · <span style="color:var(--text-hi)">${(s.maxSignedVonMisesMPa ?? 0).toFixed(1)} MPa</span> tens
         </div>` : ''}
       </div>
       ${s.safetyFactorAvailable ? `
@@ -7539,10 +7541,12 @@ function showResults(s) {
           const lo = s.safetyfactorLow, hi = s.safetyFactorHigh ?? s.safetyfactorLow, mid = gov.bulkSF;
           const span = Math.max(hi - lo, 0.01);
           const pctMid = Math.round(((mid - lo) / span) * 100);
-          // Green only at/above SAFE_SF_THRESHOLD (issue #141) — matches the
+          // Gold only at/above SAFE_SF_THRESHOLD (issue #141) — matches the
           // headline verdict tiering above instead of a locally-copied 1.5.
-          const loColor = lo < FAIL_SF_THRESHOLD ? '#c01717' : lo < SAFE_SF_THRESHOLD ? '#d97a00' : '#3a8a3a';
-          const hiColor = hi < SAFE_SF_THRESHOLD ? '#d97a00' : '#3a8a3a';
+          // --success is always gold, never green (DESIGN.md): a green tier
+          // here would read as reassurance a 1.9x-ish band should not give.
+          const loColor = lo < FAIL_SF_THRESHOLD ? 'var(--danger)' : lo < SAFE_SF_THRESHOLD ? 'var(--warn)' : 'var(--success)';
+          const hiColor = hi < SAFE_SF_THRESHOLD ? 'var(--warn)' : 'var(--success)';
           return `<div style="margin-top:5px" title="Material uncertainty range (yieldZ/yieldXY: 0.48–0.68, layer height slope: −1.3 to −0.7 /mm). Conservative=${lo.toFixed(2)}×, Central=${mid.toFixed(2)}×, Optimistic=${hi.toFixed(2)}×">
             <div style="font-size:8px;color:var(--text-lo);margin-bottom:2px;letter-spacing:.03em">MATERIAL UNCERTAINTY (BULK YIELD)</div>
             <div style="position:relative;height:6px;background:linear-gradient(to right,${loColor},${hiColor});border-radius:3px;width:100%">
@@ -7575,19 +7579,15 @@ function showResults(s) {
       </div>
     </div>
 
-    <div style="padding:10px 12px;background:${(s.yielding||govBelowOne)?'var(--bg-card)':'var(--gold-faint)'};border:1px solid ${(s.yielding||govBelowOne)?'var(--text-hi)33':'var(--gold-glow)'};border-radius:4px;margin-bottom:12px">
+    <div style="padding:10px 12px;background:${(s.yielding||govBelowOne)?'var(--bg-card)':'var(--gold-faint)'};border:1px solid ${(s.yielding||govBelowOne)?'var(--border-mid)':'var(--gold-glow)'};border-radius:4px;margin-bottom:12px">
       <div style="font-size:10px;margin-bottom:4px">${yieldNote}</div>
       <div style="font-size:11px;color:var(--text-mid)">${s.verdict}</div>
     </div>
 
-    ${(s.safetyFactorAvailable && s.safetyfactorLow !== undefined && s.safetyfactorLow < SAFE_SF_THRESHOLD && s.safetyFactor >= SAFE_SF_THRESHOLD) ? `
-    <div style="padding:10px 12px;background:#fdf3e0;border:1px solid #d97a00;border-radius:4px;margin-bottom:12px;display:flex;gap:8px;align-items:flex-start">
-      <span style="font-size:16px;line-height:1">&#9888;</span>
-      <div>
-        <div style="font-size:10px;font-weight:600;color:#8a5000;letter-spacing:.04em;margin-bottom:2px">MATERIAL UNCERTAINTY CAUTION</div>
-        <div style="font-size:11px;color:#6b3e00;line-height:1.5">The governing SF ${s.safetyFactor.toFixed(2)}× clears the recommended 2× threshold, but conservative material properties (yieldZ/yieldXY=0.48, steeper layer height penalty) pull the bulk-yield SF (central ${gov.bulkSF.toFixed(2)}×) down to ${s.safetyfactorLow.toFixed(2)}× — below 2×. Consider another design iteration or physical coupon testing to confirm margin.</div>
-      </div>
-    </div>` : ''}
+    ${(s.safetyFactorAvailable && s.safetyfactorLow !== undefined && s.safetyfactorLow < SAFE_SF_THRESHOLD && s.safetyFactor >= SAFE_SF_THRESHOLD) ? reliabilityBannerHTML(
+      'Material uncertainty caution',
+      `The governing SF ${s.safetyFactor.toFixed(2)}× clears the recommended 2× threshold, but conservative material properties (yieldZ/yieldXY=0.48, steeper layer height penalty) pull the bulk-yield SF (central ${gov.bulkSF.toFixed(2)}×) down to ${s.safetyfactorLow.toFixed(2)}× — below 2×. Consider another design iteration or physical coupon testing to confirm margin.`
+    ) : ''}
 
     <div style="padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;margin-bottom:12px;font-size:11px;color:var(--text-label);line-height:1.8">
       Effective yield: ${s.effectiveYieldMPa.toFixed(1)} MPa (print settings applied)<br>
@@ -7604,7 +7604,7 @@ function showResults(s) {
       const mqr = s.meshQualityReport;
       const qualityColor = mqr.qualityScore > 0.8 ? 'var(--success)' : mqr.qualityScore > 0.5 ? 'var(--warn)' : 'var(--danger)';
       const qualityBg = mqr.qualityScore > 0.8 ? 'var(--gold-faint)' : mqr.qualityScore > 0.5 ? 'var(--bg-card)' : 'var(--bg-card)';
-      const qualityBorder = mqr.qualityScore > 0.8 ? 'var(--gold-glow)' : mqr.qualityScore > 0.5 ? 'var(--gold-glow)' : 'var(--gold)33';
+      const qualityBorder = mqr.qualityScore > 0.8 ? 'var(--gold-glow)' : mqr.qualityScore > 0.5 ? 'var(--gold-glow)' : 'var(--gold-glow)';
       return `
       <details style="margin-bottom:12px">
         <summary style="cursor:pointer;font-size:11px;font-weight:600;color:var(--text-mid);padding:10px 12px;background:${qualityBg};border:1px solid ${qualityBorder};border-radius:4px;user-select:none">
@@ -7797,7 +7797,7 @@ function showResults(s) {
     ${s.isotropicComparison ? `
     <div style="margin-bottom:16px">
       <div style="font-size:11px;letter-spacing:.04em;color:var(--text-label);margin-bottom:4px">VS. CONVENTIONAL FEA</div>
-      <div style="padding:10px 12px;background:${s.isotropicComparison.falseSafe?'var(--gold-faint)':'var(--bg-card)'};border:1px solid ${s.isotropicComparison.falseSafe?'var(--gold-glow)':s.isotropicComparison.optimismPct>10?'var(--gold)33':'var(--border)'};border-radius:3px">
+      <div style="padding:10px 12px;background:${s.isotropicComparison.falseSafe?'var(--gold-faint)':'var(--bg-card)'};border:1px solid ${s.isotropicComparison.falseSafe?'var(--gold-glow)':s.isotropicComparison.optimismPct>10?'var(--gold-glow)':'var(--border)'};border-radius:3px">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
           <div style="padding:8px;background:var(--bg-input);border-radius:3px;border:1px solid var(--border-mid)">
             <div style="font-size:9px;color:var(--text-lo);letter-spacing:.1em;margin-bottom:3px">ISOTROPIC FEA (conventional)</div>
@@ -7881,7 +7881,7 @@ function showResults(s) {
         return `<div style="padding:8px 10px;background:${isGoverning&&m.sf<2?'var(--gold-faint)':'var(--bg-card)'};border:1px solid ${isGoverning&&m.sf<2?'var(--gold-glow)':'var(--border)'};border-radius:3px;margin-bottom:5px">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
             ${isGoverning ? '<div style="font-size:10px;color:var(--gold);margin-right:2px"><svg width="9" height="9" viewBox="0 0 9 9" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,1.5 8,7.5 1,7.5"/></svg> GOVERNING</div>' : ''}
-            <div style="flex:1;font-size:11px;color:${m.checked?'var(--bg-base)':'var(--text-mid)'}">${m.mode}</div>
+            <div style="flex:1;font-size:11px;color:${m.checked?'var(--text-hi)':'var(--text-mid)'}">${m.mode}</div>
             <div style="font-size:11px;font-weight:500;color:${sfColor}">${m.checked && s.safetyFactorAvailable ? 'SF '+m.sf.toFixed(2)+'×' : '—'}</div>
           </div>
           <div style="font-size:10px;color:${confColor}">${confLabel}</div>
@@ -7910,7 +7910,7 @@ function showResults(s) {
         return `<div style="display:flex;align-items:center;gap:8px;padding:7px 10px;background:${r.highlight?'var(--gold-faint)':'var(--bg-card)'};border:1px solid ${r.highlight?'var(--gold-glow)':'var(--border)'};border-radius:3px;margin-bottom:5px">
           ${r.highlight ? '<div style="width:6px;height:6px;border-radius:50%;background:var(--gold);flex-shrink:0"></div>' : '<div style="width:6px;height:6px;border-radius:50%;background:var(--border-mid);flex-shrink:0"></div>'}
           <div style="flex:1">
-            <div style="font-size:11px;color:${r.highlight?'var(--bg-base)':'var(--text-lo)'}">${r.label}</div>
+            <div style="font-size:11px;color:${r.highlight?'var(--gold)':'var(--text-lo)'}">${r.label}</div>
             <div style="font-size:10px;color:var(--text-label);margin-top:1px">${r.infillPct}% ${r.pattern} · ${r.orientation} · ${r.wallCount} walls</div>
           </div>
           <div style="text-align:right;flex-shrink:0">
@@ -9849,7 +9849,7 @@ function showOrientComparison(results) {
     const sfColor   = adjSF >= 2 ? 'var(--gold)' : adjSF >= 1 ? 'var(--warn)' : 'var(--danger)';
     const bg        = isCurrent ? 'var(--gold-faint)' : 'var(--bg-card)';
     const border    = isCurrent ? '1px solid var(--gold-glow)' : isBest ? '1px solid var(--border-mid)' : '1px solid var(--border)';
-    const nameColor = isCurrent ? 'var(--bg-base)' : isBest ? 'var(--text-hi)' : 'var(--text-mid)';
+    const nameColor = isCurrent ? 'var(--gold)' : isBest ? 'var(--text-hi)' : 'var(--text-mid)';
     const suffix    = isCurrent
       ? ' <svg width="8" height="9" viewBox="0 0 8 9" style="vertical-align:-1px" fill="currentColor"><polygon points="6,1.5 1,4.5 6,7.5"/></svg> current'
       : isBest ? ' <svg width="8" height="9" viewBox="0 0 8 9" style="vertical-align:-1px;color:var(--gold)" fill="currentColor"><polygon points="2,1.5 7,4.5 2,7.5"/></svg> recommended'
@@ -10871,7 +10871,7 @@ async function runSolverValidation() {
 const SOURCES_DB = [
   {
     category: "ORTHOTROPIC MATERIAL MODEL",
-    color: "#C9A227",
+    color: "var(--gold)",
     entries: [
       {
         id: "ahn2002",
@@ -10941,7 +10941,7 @@ const SOURCES_DB = [
   },
   {
     category: "INTERLAYER FAILURE & BOND MODEL",
-    color: "#b5651d",
+    color: "var(--gold)",
     entries: [
       {
         id: "hashin1980",
@@ -11003,7 +11003,7 @@ const SOURCES_DB = [
   },
   {
     category: "MATERIAL UNCERTAINTY RANGES",
-    color: "#d97a00",
+    color: "var(--gold)",
     entries: [
       {
         id: "uncertainty_table",
@@ -11238,7 +11238,7 @@ const SOURCES_DB = [
   },
   {
     category: "FATIGUE (S-N ESTIMATE)",
-    color: "#7a4fb5",
+    color: "var(--gold)",
     entries: [
       {
         id: "wang2020_fatigue",
@@ -12106,7 +12106,7 @@ function drawDetailCanvas() {
   const BORDER   = isDark ? '#251e10' : '#e4ddd0';
   const DANGER   = '#C2452F';
   const WARN     = '#D6862E';
-  const SUCCESS  = '#5A8F5A';
+  const SUCCESS  = GOLD; // --success is always gold, never green (DESIGN.md) — including in a canvas-rendered report
 
   ctx.fillStyle = BG;
   ctx.fillRect(0, 0, W, H_MAX);
@@ -13284,7 +13284,7 @@ function renderABComparison() {
   const splitBtnHtml = `
     <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <button class="btn" onclick="openSplitView()"
-        style="font-size:11px;padding:6px 14px;color:var(--gold);border-color:var(--gold)44;display:flex;align-items:center;gap:6px">
+        style="font-size:11px;padding:6px 14px;color:var(--gold);border-color:var(--gold-glow);display:flex;align-items:center;gap:6px">
         <svg width="14" height="10" viewBox="0 0 14 10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
           <rect x="0.5" y="0.5" width="13" height="9" rx="1.5"/>
           <line x1="7" y1="0.5" x2="7" y2="9.5" stroke="var(--gold)" stroke-width="1.5"/>
@@ -13375,7 +13375,7 @@ function renderABComparison() {
     : sfB > sfA
     ? `<div style="padding:8px 12px;background:var(--gold-faint);border:1px solid var(--gold-glow);border-radius:3px;font-size:11px;color:var(--success);margin-bottom:12px"><svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:-1px" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 3.8,7.8 8.5,2.5"/></svg> Design B is ${((sfB-sfA)/sfA*100).toFixed(0)}% stronger</div>`
     : sfB < sfA
-    ? `<div style="padding:8px 12px;background:var(--bg-card);border:1px solid var(--danger)44;border-radius:3px;font-size:11px;color:var(--danger);margin-bottom:12px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Design B is ${((sfA-sfB)/sfA*100).toFixed(0)}% weaker</div>`
+    ? `<div style="padding:8px 12px;background:var(--bg-card);border:1px solid var(--danger-glow);border-radius:3px;font-size:11px;color:var(--danger);margin-bottom:12px"><svg width="9" height="10" viewBox="0 0 9 10" style="vertical-align:-1px" fill="currentColor"><polygon points="4.5,0.5 9,9.5 0,9.5"/><rect x="4" y="4" width="1" height="3" fill="var(--bg-base)"/><rect x="4" y="7.8" width="1" height="1" fill="var(--bg-base)"/></svg> Design B is ${((sfA-sfB)/sfA*100).toFixed(0)}% weaker</div>`
     : `<div style="padding:8px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:3px;font-size:11px;color:var(--text-lo);margin-bottom:12px">≈ No significant difference (&lt;2%)</div>`;
 
   const sfAStr = sfAAvail ? `${sfA.toFixed(2)}×` : 'SF unavailable';
