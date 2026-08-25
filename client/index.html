@@ -251,8 +251,13 @@
   --border:     #251e10;
   --border-mid: #332810;
   --text-hi:    #f0e8d8;
-  --text-mid:   #827668;
-  --text-lo:    #80786c;
+  /* text-mid/text-lo brightened slightly (WCAG AA text audit): the originals
+     (#827668 / #80786c) read 4.2-4.45:1 against --bg-panel/--bg-card/--bg-input,
+     just under the 4.5:1 floor for normal-size text. Minimally brightened
+     toward white to clear 4.5:1 against all four dark backgrounds while
+     keeping the same warm-brown hue. */
+  --text-mid:   #867b6d;
+  --text-lo:    #837c70;
   --text-label: #847c70;
   --accent-dim: rgba(201,162,39,0.12);
   /* --gold-text: gold used AS TEXT/icon-fill on an ordinary background — distinct
@@ -266,9 +271,12 @@
   --warn-faint:   #D6862E18;
   --warn-glow:    #D6862E55;
   --warn-banner-bg: #3a1a00;
-  --danger:       #C2452F;
-  --danger-faint: #C2452F1c;
-  --danger-glow:  #C2452F40;
+  /* Brightened from #C2452F (WCAG AA text audit): the original read
+     3.73-3.99:1 as text against dark backgrounds, under the 4.5:1 floor.
+     Still rust red, not pure red — same hue direction, just lighter. */
+  --danger:       #c95b47;
+  --danger-faint: #c95b471c;
+  --danger-glow:  #c95b4740;
   --viewer-bg:  #070604;
   --shadow:     0 4px 24px rgba(0,0,0,.7);
 }
@@ -3055,7 +3063,7 @@ function updateAxesTriad() {
   // Axis colors from theme tokens (no green — DESIGN.md palette bans it), re-read
   // each draw so the triad adapts to light/dark. X rust, Y neutral, Z gold accent.
   const _triadCS = getComputedStyle(document.documentElement);
-  const colX = _triadCS.getPropertyValue('--danger').trim()   || '#C2452F';
+  const colX = _triadCS.getPropertyValue('--danger').trim()   || '#c95b47';
   const colY = _triadCS.getPropertyValue('--text-mid').trim() || '#9a8c70';
   const colZ = _triadCS.getPropertyValue('--gold').trim()     || '#C9A227';
   const axes = [
@@ -8061,7 +8069,7 @@ function renderConvergenceGraph(checkpoints) {
 
   // Get CSS variables for colors
   const style = getComputedStyle(document.documentElement);
-  const textColor = style.getPropertyValue('--text-mid').trim() || '#827668';
+  const textColor = style.getPropertyValue('--text-mid').trim() || '#867b6d';
   const lineColor = style.getPropertyValue('--gold').trim() || '#C9A227';
   const gridColor = style.getPropertyValue('--border').trim() || '#e4ddd0';
 
@@ -8273,13 +8281,13 @@ function renderBondSweep(canvas, sweep) {
   const yMin = 0.35, yMax = 1.55;
   const gold = _cssVar('--gold', '#C9A227');
   const grid = _cssVar('--border-mid', '#332810');
-  const textC = _cssVar('--text-lo', '#80786c');
+  const textC = _cssVar('--text-lo', '#837c70');
   const X = v => pad.l + (xMax > xMin ? (v - xMin) / (xMax - xMin) : 0.5) * plotW;
   const Y = v => pad.t + plotH - (Math.max(yMin, Math.min(yMax, v)) - yMin) / (yMax - yMin) * plotH;
 
   // title
   ctx.font = '10px system-ui, sans-serif';
-  ctx.fillStyle = _cssVar('--text-mid', '#827668');
+  ctx.fillStyle = _cssVar('--text-mid', '#867b6d');
   ctx.textAlign = 'left';
   ctx.fillText(sweep.label, pad.l - 2, 11);
 
@@ -8345,7 +8353,7 @@ function renderBondSurface(canvas, surf) {
   }
   // axes labels
   ctx.font = '10px system-ui, sans-serif';
-  ctx.fillStyle = _cssVar('--text-lo', '#80786c');
+  ctx.fillStyle = _cssVar('--text-lo', '#837c70');
   ctx.textAlign = 'left';
   ctx.fillText(`${surf.xValues[0].toFixed(0)}`, pad.l, h - 12);
   ctx.textAlign = 'right';
@@ -11853,14 +11861,18 @@ function drawSummaryCanvas() {
 
     // ── Resolve theme colours ────────────────────────────────────────────────
     const isDark   = document.documentElement.getAttribute('data-theme') === 'dark';
-    const GOLD     = '#C9A227';
+    // GOLD/TEXT_MID/TEXT_LO/DANGER mirror the CSS token values (canvas can't
+    // read var()) — including the WCAG AA text-contrast fixes: bare gold
+    // fails as text on a light background (~2.3:1), so light uses gold-dim;
+    // dark's original text-mid/text-lo/danger read 3.7-4.4:1, under 4.5:1.
+    const GOLD     = isDark ? '#C9A227' : '#8B6914';
     const BG       = isDark ? '#0a0806' : '#faf7f2';
     const BG_CARD  = isDark ? '#141210' : '#ffffff';
     const TEXT_HI  = isDark ? '#f0e8d8' : '#1c1a16';
-    const TEXT_MID = isDark ? '#827668' : '#6a6050';
-    const TEXT_LO  = isDark ? '#80786c' : '#766e62';
+    const TEXT_MID = isDark ? '#867b6d' : '#6a6050';
+    const TEXT_LO  = isDark ? '#837c70' : '#766e62';
     const BORDER   = isDark ? '#251e10' : '#e4ddd0';
-    const DANGER   = '#C2452F';
+    const DANGER   = isDark ? '#c95b47' : '#B23A28';
     const WARN     = '#D6862E';
 
     // ── Left panel: 3D viewer ─────────────────────────────────────────────────
@@ -12106,14 +12118,18 @@ function drawDetailCanvas() {
   const ctx = out.getContext('2d');
 
   const isDark   = document.documentElement.getAttribute('data-theme') === 'dark';
-  const GOLD     = '#C9A227';
+  // GOLD/TEXT_MID/TEXT_LO/DANGER mirror the CSS token values (canvas can't
+  // read var()) — including the WCAG AA text-contrast fixes: bare gold
+  // fails as text on a light background (~2.3:1), so light uses gold-dim;
+  // dark's original text-mid/text-lo/danger read 3.7-4.4:1, under 4.5:1.
+  const GOLD     = isDark ? '#C9A227' : '#8B6914';
   const BG       = isDark ? '#0a0806' : '#faf7f2';
   const BG_CARD  = isDark ? '#141210' : '#ffffff';
   const TEXT_HI  = isDark ? '#f0e8d8' : '#1c1a16';
-  const TEXT_MID = isDark ? '#827668' : '#6a6050';
-  const TEXT_LO  = isDark ? '#80786c' : '#766e62';
+  const TEXT_MID = isDark ? '#867b6d' : '#6a6050';
+  const TEXT_LO  = isDark ? '#837c70' : '#766e62';
   const BORDER   = isDark ? '#251e10' : '#e4ddd0';
-  const DANGER   = '#C2452F';
+  const DANGER   = isDark ? '#c95b47' : '#B23A28';
   const WARN     = '#D6862E';
   const SUCCESS  = GOLD; // --success is always gold, never green (DESIGN.md) — including in a canvas-rendered report
 
