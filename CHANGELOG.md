@@ -32,6 +32,16 @@ launch-blockers vs post-launch (tracked in #372, and in ROADMAP.md under
   the design palette); the ramp is now gold to amber to red. The worst-layer bar
   no longer paints over other UI while scrolling (removed its `z-index:1`).
   (#370)
+- Color palette: a hardcoded green "safe" color in the PDF report export (the
+  exact anti-pattern the design palette bans by name), a hardcoded blue and a
+  hardcoded purple, ~40 sites using an invalid `var(--token)NN` CSS pattern
+  that silently dropped the declaration, and a measured WCAG contrast audit
+  (not eyeballed) that found gold text/borders/focus-rings unreadable in light
+  theme (~2.3:1 against a 4.5:1/3:1 floor, including the site-wide keyboard
+  focus ring), several dark-theme text/border tokens under 4.5:1, and a
+  documented "High Contrast" theme that was never actually built. New
+  `--gold-text`/`--gold-ink` tokens; several existing tokens re-tuned to clear
+  their WCAG floors in both themes. (#388)
 
 ### Changed
 - Adopted semantic versioning (MAJOR = engine generation); reset the version
