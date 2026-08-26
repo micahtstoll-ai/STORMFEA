@@ -2165,6 +2165,79 @@ console.log('\n[AB] zoomWheelDelta — pinch (ctrlKey) vs plain scroll-wheel zoo
     zoomWheelDelta(-50, true) < 0);
 }
 
+// ── Test group AC: Solve overlay — text hierarchy, backdrop, sparkline caption (#344) ─
+console.log('\n[AC] Solve overlay — text hierarchy, backdrop opacity, sparkline caption (#344)');
+{
+  // Markup-level regression guards: the live CG/mesh text must not regress
+  // back to the pre-#344 dim tokens, and the backdrop must stay near-solid
+  // rather than the old ~80% opacity that let heatmap colors show through
+  // and vary overlay text contrast with camera angle. Must use color-mix(),
+  // not the var(--x)NN hex-alpha-suffix trick used elsewhere in this file --
+  // that pattern is invalid at computed-value time and background-color
+  // (non-inherited) falls back to transparent, confirmed by isolated test;
+  // the pre-#344 "cc" value had this exact bug, so the backdrop was never
+  // actually ~80% opaque.
+  const overlayDiv = html.match(/<div id="overlay" style="([^"]*)"/);
+  test('overlay backdrop uses color-mix at ~95%, not the broken var(--x)NN suffix trick',
+    !!overlayDiv && /color-mix\(in srgb, var\(--viewer-bg\) 95%, transparent\)/.test(overlayDiv[1])
+      && !/var\(--viewer-bg\)(cc|f2)\b/.test(overlayDiv[1]),
+    `got: ${overlayDiv && overlayDiv[1]}`);
+
+  const subDiv = html.match(/<div id="overlay-sub" style="([^"]*)"/);
+  test('#overlay-sub (live CG iteration/residual) uses --text-hi, not --text-lo',
+    !!subDiv && /var\(--text-hi\)/.test(subDiv[1]) && !/var\(--text-lo\)/.test(subDiv[1]),
+    `got: ${subDiv && subDiv[1]}`);
+
+  const meshDiv = html.match(/<div id="overlay-mesh" style="([^"]*)"/);
+  test('#overlay-mesh (live mesh size) uses --text-hi, not --text-mid',
+    !!meshDiv && /var\(--text-hi\)/.test(meshDiv[1]) && !/var\(--text-mid\)/.test(meshDiv[1]),
+    `got: ${meshDiv && meshDiv[1]}`);
+
+  test('#overlay-spark-caption element exists with the expected legend text',
+    /id="overlay-spark-caption"[^>]*>Relative residual, log scale — trending down = converging</.test(html));
+
+  // Behavioral checks: the caption's visibility must track the sparkline
+  // canvas it explains, not be permanently shown or missed on early return.
+  const start = html.indexOf('let _liveResidualPts = [];');
+  const end = html.indexOf('// ─── Three.js setup', start);
+  if (start < 0 || end < 0) throw new Error('Could not locate _resetLiveResidual/_pushLiveResidual source');
+  const src = html.slice(start, end);
+
+  const mod = { exports: {} };
+  const sparkCanvas = {
+    style: {}, width: 160, height: 34,
+    getContext: () => ({ clearRect(){}, beginPath(){}, moveTo(){}, lineTo(){}, stroke(){}, strokeStyle: '', lineWidth: 0 }),
+  };
+  const sparkCaption = { style: {} };
+  const els = { 'overlay-spark': sparkCanvas, 'overlay-spark-caption': sparkCaption };
+  global.document = { getElementById: (id) => els[id], documentElement: {} };
+  global.getComputedStyle = () => ({ getPropertyValue: () => '#C9A227' });
+  new Function('module', 'exports', src + '\nmodule.exports = { _resetLiveResidual, _pushLiveResidual };')(mod, mod.exports);
+  const { _resetLiveResidual, _pushLiveResidual } = mod.exports;
+
+  _resetLiveResidual();
+  test('reset hides the sparkline canvas', sparkCanvas.style.display === 'none');
+  test('reset hides the sparkline caption', sparkCaption.style.display === 'none');
+
+  _pushLiveResidual(1, 0.5);
+  test('a valid residual reading shows the sparkline canvas', sparkCanvas.style.display === 'block');
+  test('a valid residual reading shows the caption alongside it', sparkCaption.style.display === 'block');
+
+  // Regression guard: an invalid reading hits the function's early return
+  // (relRes null/non-finite/non-positive) and must not touch either element.
+  sparkCanvas.style.display = 'none';
+  sparkCaption.style.display = 'none';
+  _pushLiveResidual(2, null);
+  test('a null residual (early return) leaves canvas and caption hidden',
+    sparkCanvas.style.display === 'none' && sparkCaption.style.display === 'none');
+  _pushLiveResidual(3, -1);
+  test('a non-positive residual (early return) leaves canvas and caption hidden',
+    sparkCanvas.style.display === 'none' && sparkCaption.style.display === 'none');
+  _pushLiveResidual(4, NaN);
+  test('a NaN residual (early return) leaves canvas and caption hidden',
+    sparkCanvas.style.display === 'none' && sparkCaption.style.display === 'none');
+}
+
 console.log('\n' + '─'.repeat(52));
 console.log(`Client logic validation: ${passed} passed, ${failed} failed`);
 
