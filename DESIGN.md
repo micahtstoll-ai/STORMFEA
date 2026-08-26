@@ -79,7 +79,9 @@ consistent across light and dark:
 
 | Token | Use |
 |---|---|
-| `--gold` | The accent itself: active state, primary button fill, data-card rule |
+| `--gold` | The accent itself: primary button fill, the `.card-data` rule, decorative illustration strokes. Theme-invariant (`#C9A227` always) — this is what a *filled* gold surface needs, paired with `--gold-ink` text. As a plain foreground mark against an ordinary background — text, a border, an outline, a state-conveying icon or dot — it fails WCAG contrast in light theme (~2.3:1 against text's 4.5:1 floor, and even against the more lenient 3:1 non-text floor); use `--gold-text` there instead. |
+| `--gold-text` | Gold **as a foreground mark on an ordinary background** — text, an informational icon fill, a focus ring, or a border/fill that is the primary signal of an interactive state (hover, active, selected, done, current). Resolves to `var(--gold)` in dark theme (already compliant) and `var(--gold-dim)` in light theme (light theme's own `--gold` is not compliant as a foreground mark). `--success` derives from this. Not for a *filled* surface — that's `--gold` + `--gold-ink`, per above. |
+| `--gold-ink` | Fixed near-black for text/icons sitting on a *solid* `--gold` fill (the primary button). Theme-invariant, unlike `--bg-base` — that flips polarity per theme and would put near-white text on gold in light theme. |
 | `--gold-bright` | Hover on a gold-filled surface only |
 | `--gold-dim` | Gold on a light/print background, and secondary gold copy |
 | `--gold-glow` | Gold at low alpha for borders and focus rings |
@@ -101,8 +103,8 @@ steps and the fourth is decoration.
 | Token | Value | Meaning |
 |---|---|---|
 | `--warn` (+ `--warn-faint`, `--warn-glow`) | amber/orange, not yellow | A caveat the reader must act on |
-| `--danger` (+ `--danger-faint`) | rust red, not pure red | A failure or a blocking condition |
-| `--success` | **always `var(--gold)`** | Pass / complete |
+| `--danger` (+ `--danger-faint`, `--danger-glow`) | rust red, not pure red | A failure or a blocking condition |
+| `--success` | **always `var(--gold-text)`** (gold, theme-corrected) | Pass / complete |
 
 `--success` is gold and **never green**, in the UI chrome, in a canvas-rendered
 report page, and in a print stylesheet alike. A green "safe" badge is the single
@@ -292,8 +294,10 @@ paths — a decorative animation with no reduced-motion path is not shippable.
 
 ### Tab Navigation
 - No border-radius
-- Active state: `border-top: 2px solid var(--gold)` — a top line, plus at most
-  the `--gold-faint` wash. Not a filled box.
+- Active state: `border-top: 2px solid var(--gold-text)` — a top line, plus at
+  most the `--gold-faint` wash. Not a filled box. `--gold-text`, not `--gold`:
+  the border-top *is* the active-tab signal here, so it needs the
+  contrast-compliant token, not the raw accent.
 - Workflow tabs (SETUP → RESULTS): `--text-xs` Rajdhani 700, 0.12em
   letter-spacing
 - Utility tabs (PREFS, DBG): `--text-xs`, 0.08em, `var(--text-lo)`, separated
@@ -303,10 +307,14 @@ paths — a decorative animation with no reduced-motion path is not shippable.
 ### Buttons (three tiers)
 - **Tier 1 Primary** (Analyse, Add Bolt, Import): gold background, `10px 20px`
   padding, `--text-sm` Outfit 600, 0.06em letter-spacing
-- **Tier 2 Secondary** (active tool modes, active toggles): gold border + gold
-  text, transparent background, `--gold-faint` fill when active
-- **Tier 3 Ghost** (Cancel, Start New, undo/redo, utility): `var(--border)`
-  border, `var(--text-lo)` text, hover lifts to `var(--text-mid)`
+- **Tier 2 Secondary** (active tool modes, active toggles): `--gold-text`
+  border + text (the active/selected signal, not `--gold` — see the Colour
+  section), transparent background, `--gold-faint` fill when active
+- **Tier 3 Ghost** (Cancel, Start New, undo/redo, utility): `var(--border-mid)`
+  border, `var(--text-lo)` text, hover lifts to `var(--text-mid)`. The base
+  `.btn` rule has a transparent background, so this border is the only visible
+  edge of the button — `--border-mid`, not the lighter `--border`, is what
+  clears WCAG 1.4.11's 3:1 non-text floor there.
 - Toolbar buttons: `border-radius: 0`, bottom-border active indicator, not a
   background fill
 - Disabled is `opacity: 0.5` plus `cursor: not-allowed` — never a new colour
@@ -412,18 +420,24 @@ explain in its `title` why it cannot be.
 ## Themes, contrast and print
 
 The token layer is what makes these work, which is why hardcoded literals are a
-correctness bug and not a style nit. Four presentations share one set of rules:
+correctness bug and not a style nit. Three presentations share one set of rules:
 
 - **Dark** (`:root`, `[data-theme="dark"]`) — black page, warm-tinted text
 - **Light** (`[data-theme="light"]`) — warm off-white page, near-black text
-- **High contrast** — redefines the text scale toward pure black/white, collapses
-  `--border` onto `--border-mid`, and swaps `--gold` / `--success` for
-  `--gold-dim`
 - **Print** (`@media print`) — white page, black text, all chrome hidden, all
   transitions off, gold dropped to `--gold-dim` so it survives a mono printer
 
-An element styled with literals appears identically in all four, which means it
-appears *wrong* in at least three.
+An element styled with literals appears identically in all three, which means it
+appears *wrong* in at least two.
+
+A fourth presentation, "High contrast," was documented here for a time
+(redefining the text scale toward pure black/white, collapsing `--border` onto
+`--border-mid`, and swapping `--gold`/`--success` for `--gold-dim`) but was
+never implemented — no `[data-contrast]` selector, no `prefers-contrast` media
+query, no third state in `toggleTheme()`. Removed rather than left as a
+documented feature the product doesn't have (found during a contrast audit,
+2026-08-25). If it gets built, it belongs back here with the real selector it
+uses.
 
 ---
 
@@ -467,7 +481,13 @@ Every line below is checkable against the diff alone.
 - [ ] Transitions name their properties and use `--t-fast` or `--t-slow`; no
       `transition: all`
 - [ ] New animation honours `prefers-reduced-motion`
-- [ ] The change still reads correctly in light, high-contrast and print
+- [ ] The change still reads correctly in light and print
+- [ ] New text against a background clears 4.5:1 (WCAG AA); a new border,
+      outline, or icon/dot that signals state or focus clears 3:1 (WCAG
+      1.4.11) — in **both** themes, not just the one you're looking at. Gold
+      as a foreground mark (text, border, icon, focus ring) is `--gold-text`,
+      not `--gold` — bare `--gold` measures ~2.3:1 in light theme, under both
+      floors
 - [ ] A new view mode is declared in `MODE_META`, not in a bespoke paint path
 - [ ] A view with no measurement is hidden, not painted as zero
 - [ ] Any new "uncertain" signal says *where*, not only globally

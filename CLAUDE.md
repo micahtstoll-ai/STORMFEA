@@ -272,9 +272,58 @@ enforcing consistency — it relies on people (and agents) following
   (defined per-theme and for print, next to `--warn`), same value as the old
   literal in dark theme so that theme is unchanged; `renderValidationCoverage`'s
   "Known combination gaps" block shared the same literal and got the same fix
-  in the same pass. `--warn`'s own light-theme luminance caps headline
+  in the same pass. `--warn`'s own light-theme luminance capped headline
   contrast at ~3.8:1 regardless of background — a pre-existing limitation of
   that shared token, not something #320 introduced or was scoped to fix.
+  Fixed separately in a later WCAG contrast audit: `--warn` darkened from
+  `#BD7016` to `#9c5d12` in light theme (same amber/orange hue, just darker),
+  clearing 4.5:1 against every light background; dark theme's `--warn`
+  (`#D6862E`) was already compliant and is unchanged. Light theme also
+  gained its own `--warn-faint`/`--warn-glow` — previously undefined there,
+  they fell back to dark theme's (wrong-hued) values.
+- **A full WCAG contrast audit (2026-08-25) touched most of the palette.**
+  Measured actual contrast ratios rather than eyeballing; every fix below is
+  locked only by `scripts/test_client_logic.mjs`'s existing (non-contrast)
+  tests plus manual verification — there is no automated contrast-ratio test
+  yet (a gap, not a decision).
+  - **`--gold-text`** (new token): `--gold` (`#C9A227`) as a *foreground mark*
+    — text, a border, a focus ring, an icon or state-dot — measures ~2.3:1
+    against light theme's backgrounds, under both the 4.5:1 text floor and
+    the 3:1 non-text one. `--gold` itself couldn't just be redefined
+    per-theme: that would also redarken the Tier-1 button's *fill*, dropping
+    `--gold-ink`-on-`--gold` text contrast from 8.27:1 to 3.93:1. `--gold-text`
+    resolves to `--gold` in dark theme (unchanged) and `--gold-dim` in light
+    theme, and is now what every text/border/icon use of gold routes through;
+    `--gold` stays reserved for filled surfaces and decoration. `--success`
+    derives from `--gold-text`, not `--gold` directly. See DESIGN.md's Colour
+    section for the full token table.
+  - **`--gold-ink`** (new token): fixed near-black for text sitting on a
+    *solid* `--gold` fill (the Tier-1 button). Previously two different
+    hardcoded literals (`#0a0806`, `#1a1712`) did this inconsistently, and
+    a few sites used `--bg-base` instead, which flips to near-white in light
+    theme and would put invisible text on a gold button.
+  - Dark theme's `--text-mid`, `--text-lo`, and `--danger` all read
+    3.67-4.46:1 against panel/card/input backgrounds — under 4.5:1. Brightened
+    minimally (same hue) to clear 4.5:1 everywhere; `--danger-faint` and the
+    new `--danger-glow` were recomputed from the new base.
+  - The `var(--token)NN` alpha-suffix bug (invalid CSS — see "Never append an
+    alpha suffix" in DESIGN.md) recurred *after* being fixed once: a second
+    wave was built from JS template variables (`` `${col}55` ``) rather than
+    literal `var(--gold)NN` strings, so the first text-based sweep missed it.
+    Same fix both times — a named glow-token companion variable, never a
+    string-concatenated alpha suffix.
+  - `--border-mid` (not `--border`) is what the base `.btn` rule and every
+    form input/select actually use, and both render with a background that's
+    ~1.0-1.2:1 different from its surroundings — imperceptible — so the
+    border is their only visible boundary. Original values read 1.13-1.73:1
+    against the 3:1 WCAG 1.4.11 floor for a UI component's boundary.
+    `--border` (161 sites, mostly content dividers and floating panels that
+    already carry `--shadow`) was deliberately left alone — auditing found
+    its load-bearing cases were narrow (a handful of icon-only header
+    buttons, moved onto the now-fixed `--border-mid`), not systemic.
+  - DESIGN.md documented a "High contrast" fourth theme that was never built
+    (no selector, no toggle) — found while looking for the mechanism it
+    described. Removed from DESIGN.md rather than left as a claimed feature.
 - The rest of the file is not yet compliant: #319 (the 12px/14px and
   6px-radius sites outside the banners). Do not treat a nearby block as
   evidence of the house style.
