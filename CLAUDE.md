@@ -521,11 +521,13 @@ Search by symbol, not line number — these move:
 > implementing symbol and locking test — check there first when a change
 > might touch one of these.
 
-The two-region model (`analysis.twoRegion`, DEFAULT TRUE since issue #297 in
-the LIBRARY only — the analyse handler coerces an absent flag to explicit
-`false` via `twoRegion: body.analysis?.twoRegion === true`, so the default
-never reaches HTTP callers and the model is opt-in over the wire; treat that
-as a defect to fix, not a contract to preserve —
+The two-region model (`analysis.twoRegion`, DEFAULT TRUE since issue #297, on
+the LIBRARY path and over HTTP alike — the analyse handler resolves an absent
+flag with `twoRegion: body.analysis?.twoRegion !== false` (`server/index.ts`),
+so the library default reaches HTTP callers and the model is opt-OUT over the
+wire. It previously coerced an absent flag to explicit `false` via
+`=== true`, making the model opt-in over the wire; that defect was fixed in
+commit 8a9b964 —
 pass `false` for the legacy single-material path) classifies elements into dense
 perimeter walls vs homogenized infill core (`server/twoRegion.ts`,
 `server/solver/distance.ts`, `server/solver/wallfrac.ts`, consumed via
